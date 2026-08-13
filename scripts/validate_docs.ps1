@@ -22,7 +22,11 @@ foreach ($file in $markdownFiles) {
             $missing.Add("${relative}: $target")
         }
     }
-    if ($content -match 'images/ccload|ccload-dashboard|ccload-logs|github\.com/caidaoli/ccLoad') {
+    $legacyCheckContent = $content
+    if ($file.Name -in @('README.md', 'README.zh-CN.md')) {
+        $legacyCheckContent = $legacyCheckContent -replace '(?ms)^## (?:Acknowledgements|致谢)\s*$.*\z', ''
+    }
+    if ($legacyCheckContent -match 'images/ccload|ccload-dashboard|ccload-logs|github\.com/caidaoli/ccLoad') {
         $legacy.Add([IO.Path]::GetRelativePath($Root, $file.FullName))
     }
 }
