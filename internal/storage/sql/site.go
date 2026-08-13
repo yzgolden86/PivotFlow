@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func siteNow() int64 { return time.Now().UnixMilli() }
@@ -875,20 +875,46 @@ func (s *SQLStore) execAPIKeyTx(ctx context.Context, tx *sql.Tx, channelID int64
 
 func (s *SQLStore) DeactivateSiteProjectionsExcept(ctx context.Context, siteAccountID int64, activeProjectionKeys []string) error {
 	active := make(map[string]struct{}, len(activeProjectionKeys))
-	for _, key := range activeProjectionKeys { active[strings.TrimSpace(key)] = struct{}{} }
+	for _, key := range activeProjectionKeys {
+		active[strings.TrimSpace(key)] = struct{}{}
+	}
 	return s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, "SELECT id,projection_key,COALESCE(channel_id,0),ownership FROM site_channel_bindings WHERE site_account_id=?", siteAccountID)
-		if err != nil { return err }
-		type item struct { id, channelID int64; key, ownership string }
+		if err != nil {
+			return err
+		}
+		type item struct {
+			id, channelID  int64
+			key, ownership string
+		}
 		var items []item
-		for rows.Next() { var v item; if err := rows.Scan(&v.id, &v.key, &v.channelID, &v.ownership); err != nil { _ = rows.Close(); return err }; items = append(items, v) }
-		if err := rows.Close(); err != nil { return err }
+		for rows.Next() {
+			var v item
+			if err := rows.Scan(&v.id, &v.key, &v.channelID, &v.ownership); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			items = append(items, v)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
 		now := siteNow()
 		for _, v := range items {
-			if v.ownership != "projected" { continue }
-			if _, ok := active[v.key]; ok { continue }
-			if v.channelID > 0 { if _, err := s.execTx(ctx, tx, "UPDATE channels SET enabled=0,updated_at=? WHERE id=?", now, v.channelID); err != nil { return err } }
-			if _, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET status='inactive',last_sync_status='success',last_sync_error='upstream key removed or disabled',updated_at=? WHERE id=?", now, v.id); err != nil { return err }
+			if v.ownership != "projected" {
+				continue
+			}
+			if _, ok := active[v.key]; ok {
+				continue
+			}
+			if v.channelID > 0 {
+				if _, err := s.execTx(ctx, tx, "UPDATE channels SET enabled=0,updated_at=? WHERE id=?", now, v.channelID); err != nil {
+					return err
+				}
+			}
+			if _, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET status='inactive',last_sync_status='success',last_sync_error='upstream key removed or disabled',updated_at=? WHERE id=?", now, v.id); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

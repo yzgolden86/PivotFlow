@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/config"
-	sqlstore "ccLoad/internal/storage/sql"
+	"github.com/yzgolden86/PivotFlow/internal/config"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver (name: pgx)
@@ -23,22 +23,22 @@ import (
 //
 // 模式：
 //   - 纯 SQLite：未设置主库 DSN（默认）
-//   - 纯 MySQL：仅 CCLOAD_MYSQL
-//   - 纯 PostgreSQL：仅 CCLOAD_POSTGRES
-//   - 混合（主库 + SQLite 缓存）：主库 DSN + CCLOAD_ENABLE_SQLITE_REPLICA=1
+//   - 纯 MySQL：仅 PIVOTFLOW_MYSQL
+//   - 纯 PostgreSQL：仅 PIVOTFLOW_POSTGRES
+//   - 混合（主库 + SQLite 缓存）：主库 DSN + PIVOTFLOW_ENABLE_SQLITE_REPLICA=1
 //
 // 环境变量：
-//   - CCLOAD_MYSQL：MySQL DSN（与 CCLOAD_POSTGRES 互斥）
-//   - CCLOAD_POSTGRES：PostgreSQL DSN（URL 或 libpq 关键字串，与 CCLOAD_MYSQL 互斥）
-//   - CCLOAD_ENABLE_SQLITE_REPLICA：混合模式开关（1=启用）
-//   - SQLITE_PATH：SQLite 数据库路径（默认: data/ccload.db）
-//   - CCLOAD_SQLITE_LOG_DAYS：日志恢复天数（默认 7 天，0=不恢复日志，-1=全量）
+//   - PIVOTFLOW_MYSQL：MySQL DSN（与 PIVOTFLOW_POSTGRES 互斥）
+//   - PIVOTFLOW_POSTGRES：PostgreSQL DSN（URL 或 libpq 关键字串，与 PIVOTFLOW_MYSQL 互斥）
+//   - PIVOTFLOW_ENABLE_SQLITE_REPLICA：混合模式开关（1=启用）
+//   - SQLITE_PATH：SQLite 数据库路径（默认: data/pivotflow.db）
+//   - PIVOTFLOW_SQLITE_LOG_DAYS：日志恢复天数（默认 7 天，0=不恢复日志，-1=全量）
 func NewStore() (Store, error) {
-	mysqlDSN := strings.TrimSpace(os.Getenv("CCLOAD_MYSQL"))
-	pgDSN := strings.TrimSpace(os.Getenv("CCLOAD_POSTGRES"))
+	mysqlDSN := strings.TrimSpace(os.Getenv("PIVOTFLOW_MYSQL"))
+	pgDSN := strings.TrimSpace(os.Getenv("PIVOTFLOW_POSTGRES"))
 
 	if mysqlDSN != "" && pgDSN != "" {
-		log.Fatal("[FATAL] CCLOAD_MYSQL 与 CCLOAD_POSTGRES 互斥，请只设置其中一个主库 DSN")
+		log.Fatal("[FATAL] PIVOTFLOW_MYSQL 与 PIVOTFLOW_POSTGRES 互斥，请只设置其中一个主库 DSN")
 	}
 
 	// 场景 1：纯 SQLite 模式（默认）
@@ -56,7 +56,7 @@ func NewStore() (Store, error) {
 		return store, nil
 	}
 
-	enableHybrid := os.Getenv("CCLOAD_ENABLE_SQLITE_REPLICA") == "1"
+	enableHybrid := os.Getenv("PIVOTFLOW_ENABLE_SQLITE_REPLICA") == "1"
 
 	// 主库连接
 	var primary *sqlstore.SQLStore
@@ -255,10 +255,10 @@ func createSQLiteStore(path string) (*sqlstore.SQLStore, error) {
 }
 
 // resolveSQLitePath 解析SQLite数据库路径（未设置SQLITE_PATH时调用）
-// 优先使用默认路径 data/ccload.db，如果目录不可写则回退到系统临时目录
+// 优先使用默认路径 data/pivotflow.db，如果目录不可写则回退到系统临时目录
 func resolveSQLitePath() string {
 	defaultDir := "data"
-	defaultPath := filepath.Join(defaultDir, "ccload.db")
+	defaultPath := filepath.Join(defaultDir, "pivotflow.db")
 
 	// 检查默认目录是否可写
 	if isDirWritable(defaultDir) {
@@ -273,7 +273,7 @@ func resolveSQLitePath() string {
 	}
 
 	// 回退到系统临时目录
-	tmpPath := filepath.Join(os.TempDir(), "ccload", "ccload.db")
+	tmpPath := filepath.Join(os.TempDir(), "pivotflow", "pivotflow.db")
 	log.Printf("════════════════════════════════════════════════════════════")
 	log.Printf("[WARN] 警告: 默认路径 %s 不可写", defaultDir)
 	log.Printf("[WARN] 数据将存储在临时目录: %s", tmpPath)
@@ -340,18 +340,18 @@ func validateJournalMode(mode string) string {
 }
 
 // getLogSyncDays 获取日志同步天数配置
-// 环境变量 CCLOAD_SQLITE_LOG_DAYS：
+// 环境变量 PIVOTFLOW_SQLITE_LOG_DAYS：
 //   - -1 = 全量恢复（慎用，启动慢）
 //   - 0 = 仅恢复配置表，不恢复日志
 //   - 7 = 恢复配置表 + 最近 7 天日志（默认）
 func getLogSyncDays() int {
-	daysStr := os.Getenv("CCLOAD_SQLITE_LOG_DAYS")
+	daysStr := os.Getenv("PIVOTFLOW_SQLITE_LOG_DAYS")
 	if daysStr == "" {
 		return 7 // 默认 7 天
 	}
 	days, err := strconv.Atoi(daysStr)
 	if err != nil || days < -1 {
-		log.Printf("[WARN] 无效的 CCLOAD_SQLITE_LOG_DAYS=%s，使用默认值 7", daysStr)
+		log.Printf("[WARN] 无效的 PIVOTFLOW_SQLITE_LOG_DAYS=%s，使用默认值 7", daysStr)
 		return 7
 	}
 	return days

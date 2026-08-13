@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 )
 
 func newTestStore(t testing.TB, dbFile string) storage.Store {

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 
 	"github.com/gin-gonic/gin"
 )

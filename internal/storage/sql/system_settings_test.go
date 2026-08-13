@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestSystemSettings_GetSetting(t *testing.T) {

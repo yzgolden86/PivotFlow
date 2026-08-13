@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	sqlstore "ccLoad/internal/storage/sql"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 )
 
 // lastNonEmptyLine 取 CombinedOutput 最后一行非空内容（容器 ID）。

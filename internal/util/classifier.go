@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
 )
 
 // HTTP状态码错误分类器
@@ -299,7 +299,7 @@ func GetStatusCodeMeta(status int) StatusCodeMeta {
 }
 
 // IsModelScopedHTTPStatus 判断上游 HTTP 响应是否应先按模型级故障处理。
-// 596-599 是 ccLoad 内部状态码，必须保留各自明确语义。
+// 596-599 是 PivotFlow 内部状态码，必须保留各自明确语义。
 func IsModelScopedHTTPStatus(status int) bool {
 	return status >= 500 && status < StatusQuotaExceeded
 }

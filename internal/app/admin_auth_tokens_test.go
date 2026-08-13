@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestAuthToken_MaskToken(t *testing.T) {

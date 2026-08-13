@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"ccLoad/internal/config"
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/config"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"

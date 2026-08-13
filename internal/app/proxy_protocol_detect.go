@@ -5,15 +5,15 @@ import (
 	"fmt"
 	"strings"
 
-	"ccLoad/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	clientProtocolContextKey = "ccLoad.clientProtocol"
-	clientPathContextKey     = "ccLoad.clientPath"
+	clientProtocolContextKey = "PivotFlow.clientProtocol"
+	clientPathContextKey     = "PivotFlow.clientPath"
 )
 
 func captureClientRequestMetadata() gin.HandlerFunc {

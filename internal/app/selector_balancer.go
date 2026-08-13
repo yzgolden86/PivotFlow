@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	modelpkg "ccLoad/internal/model"
+	modelpkg "github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 const (

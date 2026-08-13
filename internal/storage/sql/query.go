@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // WhereBuilder SQL WHERE 子句构建器

@@ -7,13 +7,13 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 )
 
 const (
 	// EnvProvisionedAuthTokens contains comma-separated plaintext API tokens to seed on startup.
-	EnvProvisionedAuthTokens = "CCLOAD_API_TOKENS"
+	EnvProvisionedAuthTokens = "PIVOTFLOW_API_TOKENS"
 	// EnvProvisionedAuthTokensAlias keeps the shorter variable proposed by Docker examples compatible.
 	EnvProvisionedAuthTokensAlias = "API_TOKENS"
 

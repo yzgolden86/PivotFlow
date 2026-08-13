@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/config"
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/config"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 )
 
 func TestAuthService_GenerateToken_LengthAndHex(t *testing.T) {

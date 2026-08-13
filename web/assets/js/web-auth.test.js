@@ -16,7 +16,7 @@ function memoryStorage() {
 async function captureChannelReadURLs(role) {
   const urls = [];
   const storage = memoryStorage();
-  storage.setItem('ccload_web_role', role);
+  storage.setItem('pivotflow_web_role', role);
   const globals = {
     window: { WebAuth, t: key => key, showError: () => {} },
     localStorage: storage,
@@ -102,13 +102,13 @@ test('storeWebSession never persists submitted API token', () => {
   }, 1000);
 
   assert.deepEqual(storage.keys(), [
-    'ccload_token',
-    'ccload_token_expiry',
-    'ccload_web_role'
+    'pivotflow_token',
+    'pivotflow_token_expiry',
+    'pivotflow_web_role'
   ]);
-  assert.equal(storage.getItem('ccload_token'), 'random-web-session');
-  assert.equal(storage.getItem('ccload_web_role'), 'api_token');
-  assert.equal(storage.getItem('ccload_api_token'), null);
+  assert.equal(storage.getItem('pivotflow_token'), 'random-web-session');
+  assert.equal(storage.getItem('pivotflow_web_role'), 'api_token');
+  assert.equal(storage.getItem('pivotflow_api_token'), null);
 });
 
 test('navigation excludes administrative pages for API token role', () => {

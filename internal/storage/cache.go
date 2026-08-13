@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	modelpkg "ccLoad/internal/model"
+	modelpkg "github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // ChannelCache 高性能渠道缓存层

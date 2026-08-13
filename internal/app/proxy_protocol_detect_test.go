@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"ccLoad/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
 
 	"github.com/gin-gonic/gin"
 )

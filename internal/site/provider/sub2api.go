@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 type Sub2API struct {
@@ -299,10 +299,14 @@ func (p *Sub2API) ListRoutingKeys(ctx context.Context, req AccountRequest) ([]Ro
 			}
 			itemMap, _ := item.(map[string]any)
 			id := strings.TrimSpace(fmt.Sprint(itemMap["id"]))
-			if id == "<nil>" { id = "" }
+			if id == "<nil>" {
+				id = ""
+			}
 			group := firstSub2String(item, "group", "group_name", "groupName")
 			models := modelNames(itemMap["models"])
-			if len(models) == 0 { models = modelNames(itemMap["allowed_models"]) }
+			if len(models) == 0 {
+				models = modelNames(itemMap["allowed_models"])
+			}
 			out = append(out, RoutingKeySnapshot{ID: id, Name: name, Group: group, Models: models, Key: key, Enabled: sub2RoutingKeyEnabled(item)})
 		}
 		if len(out) > 0 {

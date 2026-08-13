@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	modelpkg "ccLoad/internal/model"
+	modelpkg "github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestEffPriorityBucket_FloatEdge(t *testing.T) {

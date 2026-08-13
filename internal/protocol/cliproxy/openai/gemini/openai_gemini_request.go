@@ -11,8 +11,8 @@ import (
 	"math/big"
 	"strings"
 
-	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
-	"ccLoad/internal/protocol/cliproxy/thinking"
+	translatorcommon "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/common"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/thinking"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"

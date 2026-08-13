@@ -4,12 +4,12 @@ import (
 	"errors"
 	"net/http"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 
 	"github.com/gin-gonic/gin"
 )
 
-const webIdentityContextKey = "ccLoad.webIdentity"
+const webIdentityContextKey = "PivotFlow.webIdentity"
 
 // WebIdentity is the authorization scope attached to an authenticated web request.
 type WebIdentity struct {

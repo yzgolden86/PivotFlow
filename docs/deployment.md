@@ -45,4 +45,4 @@ go test -tags sonic ./internal/protocol/cliproxy/...
 
 ## 更新原则
 
-PivotFlow 的自动更新功能固定为只读检查。Docker 用户通过镜像 tag 升级，源码用户先查看变更并运行定向测试，再替换二进制。不要把旧 ccLoad 自动更新脚本直接用于融合程序。
+PivotFlow 的自动更新功能固定为只读检查。Docker 用户通过镜像 tag 升级，源码用户先查看变更并运行定向测试，再替换二进制。不要把旧 PivotFlow 自动更新脚本直接用于融合程序。

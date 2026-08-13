@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // CreateWebSession persists a hashed role-aware browser session.

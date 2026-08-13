@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/cooldown"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestTryChannelWithKeys_ContextCanceled_Returns499(t *testing.T) {

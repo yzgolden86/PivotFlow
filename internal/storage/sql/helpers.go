@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // ChannelInfo 渠道基本信息（用于批量查询）

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage/schema"
-	sqlstore "ccLoad/internal/storage/sql"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage/schema"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 
 	_ "modernc.org/sqlite"
 )

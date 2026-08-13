@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"ccLoad/internal/protocol"
-	"ccLoad/internal/protocol/builtin"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/builtin"
 )
 
 func TestRegistry_TranslateRequest_GeminiToOpenAI(t *testing.T) {

@@ -3,9 +3,9 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.WebAuth = api;
 })(typeof window !== 'undefined' ? window : globalThis, function () {
-  const TOKEN_KEY = 'ccload_token';
-  const EXPIRY_KEY = 'ccload_token_expiry';
-  const ROLE_KEY = 'ccload_web_role';
+  const TOKEN_KEY = 'pivotflow_token';
+  const EXPIRY_KEY = 'pivotflow_token_expiry';
+  const ROLE_KEY = 'pivotflow_web_role';
   const API_TOKEN_ROLE = 'api_token';
   const API_TOKEN_NAV = new Set(['index', 'stats', 'trend', 'logs']);
 
@@ -25,7 +25,7 @@
     storage.removeItem(TOKEN_KEY);
     storage.removeItem(EXPIRY_KEY);
     storage.removeItem(ROLE_KEY);
-    storage.removeItem('ccload_api_token');
+    storage.removeItem('pivotflow_api_token');
   }
 
   function getWebRole(storage) {

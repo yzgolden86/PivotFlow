@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"ccLoad/internal/testutil"
+	"github.com/yzgolden86/PivotFlow/internal/testutil"
 )
 
 func TestNewRequest_NilBody_DoesNotPanic(t *testing.T) {

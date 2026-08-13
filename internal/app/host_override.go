@@ -24,15 +24,15 @@ func parseHostOverrides(raw string) (map[string]string, error) {
 		}
 		host, ip, ok := strings.Cut(entry, "=")
 		if !ok {
-			return nil, fmt.Errorf("invalid CCLOAD_HOST_OVERRIDES entry %q: want host=ip", entry)
+			return nil, fmt.Errorf("invalid PIVOTFLOW_HOST_OVERRIDES entry %q: want host=ip", entry)
 		}
 		host = strings.TrimSpace(host)
 		ip = strings.TrimSpace(ip)
 		if host == "" || ip == "" {
-			return nil, fmt.Errorf("invalid CCLOAD_HOST_OVERRIDES entry %q: host and ip are required", entry)
+			return nil, fmt.Errorf("invalid PIVOTFLOW_HOST_OVERRIDES entry %q: host and ip are required", entry)
 		}
 		if net.ParseIP(ip) == nil {
-			return nil, fmt.Errorf("invalid CCLOAD_HOST_OVERRIDES entry %q: %q is not an IP address", entry, ip)
+			return nil, fmt.Errorf("invalid PIVOTFLOW_HOST_OVERRIDES entry %q: %q is not an IP address", entry, ip)
 		}
 		result[host] = ip
 	}

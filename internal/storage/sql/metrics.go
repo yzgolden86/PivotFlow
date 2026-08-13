@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // executeStatsQuery 构建并执行统计 SQL，返回行结果与渠道 ID 集合（供后续批量补全）。

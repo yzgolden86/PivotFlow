@@ -13,10 +13,10 @@ import (
 	"math/big"
 	"strings"
 
-	"ccLoad/internal/protocol/cliproxy/common"
-	"ccLoad/internal/protocol/cliproxy/registry"
-	"ccLoad/internal/protocol/cliproxy/thinking"
-	"ccLoad/internal/protocol/cliproxy/util"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/common"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/registry"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/thinking"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/util"
 
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"

@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 const (
@@ -83,7 +83,7 @@ func NewModelCatalogSyncer(client *http.Client, endpoint, cachePath string) *Mod
 }
 
 func modelCatalogCachePath() string {
-	if path := strings.TrimSpace(os.Getenv("CCLOAD_MODEL_CATALOG_CACHE")); path != "" {
+	if path := strings.TrimSpace(os.Getenv("PIVOTFLOW_MODEL_CATALOG_CACHE")); path != "" {
 		return path
 	}
 
@@ -96,7 +96,7 @@ func modelCatalogCachePath() string {
 		return defaultPath
 	}
 
-	tmpPath := filepath.Join(os.TempDir(), "ccload", "model-catalog.json")
+	tmpPath := filepath.Join(os.TempDir(), "pivotflow", "model-catalog.json")
 	log.Printf("[WARN] 模型目录缓存默认路径 %s 不可写，降级到临时路径 %s；系统重启后缓存可能丢失", defaultPath, tmpPath)
 	return tmpPath
 }

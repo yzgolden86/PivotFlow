@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // AggregateRangeWithFilter 聚合指定时间范围的指标数据，支持多种筛选条件

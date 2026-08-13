@@ -1,6 +1,6 @@
 package app
 
-import "ccLoad/internal/model"
+import "github.com/yzgolden86/PivotFlow/internal/model"
 
 func configuredURLFrom(configured model.ChannelURLs, index int, runtimeURL string) model.ChannelURL {
 	if index >= 0 && index < len(configured) && configured[index].RuntimeURL() == runtimeURL {

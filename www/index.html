@@ -19,15 +19,15 @@
     </section>
     <section class="section intro">
       <div><p class="eyebrow">个人 AI API 控制面</p><h1>一个界面管理站点，<br>一套路由连接所有工具。</h1></div>
-      <p>统一余额、签到、公告和模型测试，保留 ccLoad 的多 Key、多 URL、冷却、故障切换与协议转换。PivotFlow 专注个人高频工作流，不堆叠企业级复杂度。</p>
+      <p>统一余额、签到、公告和模型测试，保留 PivotFlow 的多 Key、多 URL、冷却、故障切换与协议转换。PivotFlow 专注个人高频工作流，不堆叠企业级复杂度。</p>
     </section>
     <section class="section screenshot"><img src="assets/images/dashboard.png" alt="PivotFlow 首页概览"><div><p class="eyebrow">全局概览</p><h2>余额和真实消耗放在同一张图上</h2><p>按模型、站点和客户端查看请求与费用。Claude Code、Codex、Gemini 和 OpenAI 的入口消耗清晰分开。</p></div></section>
     <section class="feature-band"><div><strong>站点控制面</strong><span>账号 · 余额 · 签到 · 公告</span></div><div><strong>路由数据面</strong><span>优先级 · 冷却 · 故障切换</span></div><div><strong>多协议</strong><span>Anthropic · OpenAI · Gemini · Codex</span></div><div><strong>本地优先</strong><span>SQLite 起步，可切换 MySQL / PostgreSQL</span></div></section>
-    <section class="section screenshot screenshot--reverse"><img src="assets/images/routing.png" alt="PivotFlow 渠道与分发"><div><p class="eyebrow">ccLoad 核心路由</p><h2>站点账号同步为路由渠道</h2><p>发现模型与 API Key 后创建来源绑定的渠道。特殊上游仍可手工配置多 URL、多 Key、模型映射和协议模式。</p></div></section>
+    <section class="section screenshot screenshot--reverse"><img src="assets/images/routing.png" alt="PivotFlow 渠道与分发"><div><p class="eyebrow">PivotFlow 核心路由</p><h2>站点账号同步为路由渠道</h2><p>发现模型与 API Key 后创建来源绑定的渠道。特殊上游仍可手工配置多 URL、多 Key、模型映射和协议模式。</p></div></section>
     <section class="section quickstart"><div><p class="eyebrow">快速开始</p><h2>用 Docker Compose 启动</h2></div><pre><code>cp .env.docker.example .env
-# 设置 CCLOAD_PASS
+# 设置 PIVOTFLOW_PASS
 docker compose -f docker-compose.build.yml up -d --build</code></pre><a class="button" href="https://github.com/yzgolden86/PivotFlow/blob/main/docs/getting-started.md">查看完整说明</a></section>
   </main>
-  <footer><span>PivotFlow · 枢衡</span><span>MIT License · Built on the ccLoad routing core</span></footer>
+  <footer><span>PivotFlow · 枢衡</span><span>MIT License · Built on the PivotFlow routing core</span></footer>
 </body>
 </html>

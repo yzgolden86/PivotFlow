@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
+	translatorcommon "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/common"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"

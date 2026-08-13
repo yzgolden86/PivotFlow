@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	modelpkg "ccLoad/internal/model"
+	modelpkg "github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // SmoothWeightedRR 平滑加权轮询调度器

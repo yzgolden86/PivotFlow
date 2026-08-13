@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	internalsignature "ccLoad/internal/protocol/cliproxy/signature"
+	internalsignature "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/signature"
 
 	"github.com/tidwall/gjson"
 )

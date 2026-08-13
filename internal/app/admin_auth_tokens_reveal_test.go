@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/site/credential"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/site/credential"
 
 	"github.com/gin-gonic/gin"
 )

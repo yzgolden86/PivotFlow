@@ -1420,7 +1420,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
       });
     });
 
-    window.addEventListener('ccload:themechange', function() {
+    window.addEventListener('pivotflow:themechange', function() {
       if (currentView === 'chart') {
         renderCharts();
       }

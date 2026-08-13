@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/model"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/cooldown"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"

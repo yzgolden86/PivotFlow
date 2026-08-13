@@ -155,7 +155,7 @@ type CheckinAttempt struct {
 	AttemptNo       int      `json:"attempt_no"`
 }
 
-// SiteChannelBinding links account facts to an existing ccLoad channel.
+// SiteChannelBinding links account facts to an existing PivotFlow channel.
 type SiteChannelBinding struct {
 	ID                int64  `json:"id"`
 	SiteAccountID     int64  `json:"site_account_id"`

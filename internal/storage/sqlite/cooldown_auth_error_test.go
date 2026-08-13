@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 // TestAuthErrorInitialCooldown 验证401/403错误的初始冷却时间为5分钟

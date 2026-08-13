@@ -5,23 +5,23 @@ description: Use when asked to 同步、更新、升级或审计 CLIProxyAPI、c
 
 # 同步 CLIProxy 转换核心
 
-只同步 CLIProxyAPI 的纯协议转换代码和对应测试。保持 ccLoad Registry 线协议契约，不引入上游运行时系统。
+只同步 CLIProxyAPI 的纯协议转换代码和对应测试。保持 PivotFlow Registry 线协议契约，不引入上游运行时系统。
 
 默认调用 `$sync-cliproxy-core` 时，自动同步上游最新稳定版本并完成验证，不等待目标确认。用户明确指定 commit/tag 时使用指定目标；用户明确要求仅审计时保持只读。
 
 ## 权威边界
 
 1. 先读仓库根目录 `CLAUDE.md` 和 `internal/protocol/cliproxy/UPSTREAM.md`。后者是来源、固定提交、排除范围和本地契约的唯一事实源。
-2. `internal/protocol/registry.go` 定义 ccLoad 契约；`internal/protocol/builtin/cliproxy_adapter.go` 处理 ccLoad 输入验证、JSON/SSE 规范化和流帧封装；`internal/protocol/cliproxy/` 保存同步的纯转换核心。
+2. `internal/protocol/registry.go` 定义 PivotFlow 契约；`internal/protocol/builtin/cliproxy_adapter.go` 处理 PivotFlow 输入验证、JSON/SSE 规范化和流帧封装；`internal/protocol/cliproxy/` 保存同步的纯转换核心。
 3. 不引入 CLIProxyAPI 的认证、配置、路由、缓存、插件、动态 Registry、网络刷新、Antigravity 或 Interactions 代码。
-4. 不添加 CLIProxyAPI 运行时 Go module 依赖或 `replace`。源码继续使用 `ccLoad/internal/protocol/cliproxy/...` 导入路径。
-5. Registry 边界测试是 ccLoad 兼容性权威。上游行为与本地线协议冲突时，修正根因并保留本地契约，不盲目覆盖。
+4. 不添加 CLIProxyAPI 运行时 Go module 依赖或 `replace`。源码继续使用 `github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/...` 导入路径。
+5. Registry 边界测试是 PivotFlow 兼容性权威。上游行为与本地线协议冲突时，修正根因并保留本地契约，不盲目覆盖。
 
 ## 同步流程
 
 ### 1. 预检
 
-- 确认当前目录属于 ccLoad，并检查 `git status --short`。
+- 确认当前目录属于 PivotFlow，并检查 `git status --short`。
 - 保护已有修改。若工作区改动覆盖协议目录、适配器、Registry、`go.mod`、`go.sum` 或 `UPSTREAM.md`，先区分用户修改与本次同步；无法安全隔离时停止并说明冲突。
 - 记录当前同步 commit 和目标 commit。
 
@@ -39,14 +39,14 @@ description: Use when asked to 同步、更新、升级或审计 CLIProxyAPI、c
 - 同时比较纯转换生产源码和对应 `_test.go`，不要只看生产文件。
 - 先生成目标 commit 相对当前记录 commit 的目录级和文件级差异，再确认每个新增目录确属纯转换核心。
 - 新增纯转换顶层目录时，同步更新 `scripts/verify.sh` 的显式允许列表；审计失败不能靠跳过检查解决。
-- 明确列出排除的上游包。不要因为编译缺失就把上游运行时依赖一起搬入；在转换核心或 ccLoad 适配边界消除依赖。
+- 明确列出排除的上游包。不要因为编译缺失就把上游运行时依赖一起搬入；在转换核心或 PivotFlow 适配边界消除依赖。
 - 复查 `UPSTREAM.md` 已排除项的排除理由是否仍成立：上游重构可能使旧理由失效（该同步的补回来），也可能采纳了本地契约（删掉过期的本地差异注记）。
 
 ### 4. 集成变更
 
 - 以小批次应用转换源码和匹配测试，保持来源可审查。
-- 将上游 import 改为本地 `ccLoad/internal/protocol/cliproxy/...`。
-- 将 ccLoad 特有的传输适配留在 `builtin/cliproxy_adapter.go`；只有协议语义本身需要时才修改同步核心。
+- 将上游 import 改为本地 `github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/...`。
+- 将 PivotFlow 特有的传输适配留在 `builtin/cliproxy_adapter.go`；只有协议语义本身需要时才修改同步核心。
 - 对工具调用、reasoning/signature、usage、JSON 字段形状、SSE framing/终止事件和跨 chunk 状态逐项核对 Registry 契约。
 - 无法表示的客户端请求继续返回 `RequestTranslationError`，由代理映射为 HTTP 400；不得触发渠道切换或冷却。
 
@@ -92,6 +92,6 @@ git diff --check
 
 - 原同步 commit、目标 commit 和上游 checkout；
 - 同步的目录/文件与明确排除的上游模块；
-- 为维持 ccLoad wire contract 保留或新增的本地差异；
+- 为维持 PivotFlow wire contract 保留或新增的本地差异；
 - `UPSTREAM.md`、许可证和三份项目文档是否更新；
 - 每条验证命令的结果。

@@ -1590,7 +1590,7 @@ function shouldShowZoom(points, hours, trendType) {
         }
       });
 
-      window.addEventListener('ccload:themechange', () => {
+      window.addEventListener('pivotflow:themechange', () => {
         if (window.chartInstance && window.trendData && window.trendData.length) {
           renderChart();
         }

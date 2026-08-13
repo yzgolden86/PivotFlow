@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 // TestCooldownConsistency_401Error 验证401错误时Key级别和渠道级别冷却时间一致性

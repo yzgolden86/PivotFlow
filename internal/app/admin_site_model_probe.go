@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"strings"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/site/credential"
-	"ccLoad/internal/site/provider"
-	"ccLoad/internal/testutil"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/site/credential"
+	"github.com/yzgolden86/PivotFlow/internal/site/provider"
+	"github.com/yzgolden86/PivotFlow/internal/testutil"
 
 	"github.com/gin-gonic/gin"
 )
@@ -35,7 +35,7 @@ func (r *siteModelProbeRequest) Validate() error {
 }
 
 // HandleSiteAccountModelProbe executes a model request directly against a
-// managed site account while reusing CCLoad's protocol conversion and response
+// managed site account while reusing PivotFlow's protocol conversion and response
 // parsing. The transient config is never persisted and the raw upstream body is
 // intentionally omitted from the normalized response.
 func (s *Server) HandleSiteAccountModelProbe(c *gin.Context) {

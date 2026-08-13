@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/testutil"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/testutil"
 )
 
 // TestSelectRouteCandidates_NormalRequest 测试普通请求的路由选择

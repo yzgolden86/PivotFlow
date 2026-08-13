@@ -1,12 +1,12 @@
 # PivotFlow Makefile - build, verification and optional macOS service helpers
 
 # 变量定义
-SERVICE_NAME = com.ccload.service
+SERVICE_NAME = com.pivotflow.service
 PLIST_TEMPLATE = $(SERVICE_NAME).plist.template
 PLIST_FILE = $(SERVICE_NAME).plist
 LAUNCH_AGENTS_DIR = $(HOME)/Library/LaunchAgents
 TARGET_PLIST = $(LAUNCH_AGENTS_DIR)/$(PLIST_FILE)
-BINARY_NAME = ccload
+BINARY_NAME = pivotflow
 LOG_DIR = logs
 PROJECT_DIR = $(shell pwd)
 GOTAGS ?= sonic
@@ -20,7 +20,7 @@ VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME ?= $(shell date '+%Y-%m-%d %H:%M:%S %z')
 BUILT_BY ?= $(shell whoami)
-VERSION_PKG = ccLoad/internal/version
+VERSION_PKG = github.com/yzgolden86/PivotFlow/internal/version
 LDFLAGS = -s -w \
 	-X $(VERSION_PKG).Version=$(VERSION) \
 	-X $(VERSION_PKG).Commit=$(COMMIT) \
@@ -216,19 +216,19 @@ status:
 # 查看日志
 logs:
 	@echo "=== 标准输出日志 ==="
-	@if [ -f "$(LOG_DIR)/ccload.log" ]; then \
-		tail -f $(LOG_DIR)/ccload.log; \
+	@if [ -f "$(LOG_DIR)/pivotflow.log" ]; then \
+		tail -f $(LOG_DIR)/pivotflow.log; \
 	else \
-		echo "日志文件不存在: $(LOG_DIR)/ccload.log"; \
+		echo "日志文件不存在: $(LOG_DIR)/pivotflow.log"; \
 	fi
 
 # 查看错误日志
 error-logs:
 	@echo "=== 错误日志 ==="
-	@if [ -f "$(LOG_DIR)/ccload.error.log" ]; then \
-		tail -f $(LOG_DIR)/ccload.error.log; \
+	@if [ -f "$(LOG_DIR)/pivotflow.error.log" ]; then \
+		tail -f $(LOG_DIR)/pivotflow.error.log; \
 	else \
-		echo "错误日志文件不存在: $(LOG_DIR)/ccload.error.log"; \
+		echo "错误日志文件不存在: $(LOG_DIR)/pivotflow.error.log"; \
 	fi
 
 # 清理文件

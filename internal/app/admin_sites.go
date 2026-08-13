@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/site/provider"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/site/provider"
 
 	"github.com/gin-gonic/gin"
 )

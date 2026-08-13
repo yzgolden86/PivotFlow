@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/site/credential"
-	"ccLoad/internal/site/provider"
-	sitewebhook "ccLoad/internal/site/webhook"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/site/credential"
+	"github.com/yzgolden86/PivotFlow/internal/site/provider"
+	sitewebhook "github.com/yzgolden86/PivotFlow/internal/site/webhook"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -475,11 +475,19 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 			models := item.Models
 			if len(models) == 0 {
 				facts, _ := s.store.ListSiteAccountModels(ctx, model.SiteModelFilter{SiteAccountID: account.ID, Limit: 1000})
-				for _, fact := range facts { if !fact.Disabled && !fact.Stale { models = append(models, fact.Model) } }
+				for _, fact := range facts {
+					if !fact.Disabled && !fact.Stale {
+						models = append(models, fact.Model)
+					}
+				}
 			}
 			name := fmt.Sprintf("%s / %s", site.Name, account.Label)
-			if strings.TrimSpace(item.Group) != "" { name += " / " + strings.TrimSpace(item.Group) }
-			if strings.TrimSpace(item.Name) != "" && strings.TrimSpace(item.Name) != strings.TrimSpace(item.Group) && !strings.EqualFold(strings.TrimSpace(item.Name), strings.TrimSpace(account.Label)) { name += " / " + strings.TrimSpace(item.Name) }
+			if strings.TrimSpace(item.Group) != "" {
+				name += " / " + strings.TrimSpace(item.Group)
+			}
+			if strings.TrimSpace(item.Name) != "" && strings.TrimSpace(item.Name) != strings.TrimSpace(item.Group) && !strings.EqualFold(strings.TrimSpace(item.Name), strings.TrimSpace(account.Label)) {
+				name += " / " + strings.TrimSpace(item.Name)
+			}
 			if _, err := s.projectAccountWithModels(ctx, account, site, keyCreds, projectionKey, name, models, false); err != nil {
 				s.updateTask(ctx, task, model.SiteTaskStatusPartial, fmt.Sprintf("site_account:%d", accountID), siteTaskError(err))
 				return
@@ -526,24 +534,39 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 
 func (s *siteControlService) routingSnapshots(ctx context.Context, account *model.SiteAccount, site *model.Site, adapter provider.SiteAdapter, creds provider.Credentials) ([]provider.RoutingKeySnapshot, error) {
 	if account.CredentialType == model.CredentialTypeAPIKey {
-		if strings.TrimSpace(creds.APIKey) == "" { return nil, &provider.Error{Code: provider.CodeRoutingKeyUnavailable, Message: "routing API key is unavailable"} }
+		if strings.TrimSpace(creds.APIKey) == "" {
+			return nil, &provider.Error{Code: provider.CodeRoutingKeyUnavailable, Message: "routing API key is unavailable"}
+		}
 		return []provider.RoutingKeySnapshot{{ID: "account", Name: account.Label, Key: strings.TrimSpace(creds.APIKey), Enabled: true}}, nil
 	}
 	keyProvider, ok := adapter.(provider.RoutingKeyProvider)
-	if !ok { return nil, &provider.Error{Code: provider.CodeRoutingKeyUnavailable, Message: "routing API key discovery is unavailable"} }
+	if !ok {
+		return nil, &provider.Error{Code: provider.CodeRoutingKeyUnavailable, Message: "routing API key discovery is unavailable"}
+	}
 	keyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	keys, err := keyProvider.ListRoutingKeys(keyCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: creds})
 	cancel()
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	filtered := make([]provider.RoutingKeySnapshot, 0, len(keys))
-	for _, key := range keys { if key.Enabled && strings.TrimSpace(key.Key) != "" { key.Key = strings.TrimSpace(key.Key); filtered = append(filtered, key) } }
-	if len(filtered) == 0 { return nil, &provider.Error{Code: provider.CodeRoutingKeyUnavailable, Message: "no enabled routing API key found"} }
+	for _, key := range keys {
+		if key.Enabled && strings.TrimSpace(key.Key) != "" {
+			key.Key = strings.TrimSpace(key.Key)
+			filtered = append(filtered, key)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil, &provider.Error{Code: provider.CodeRoutingKeyUnavailable, Message: "no enabled routing API key found"}
+	}
 	return filtered, nil
 }
 
 func stableProjectionKey(item provider.RoutingKeySnapshot, index int) string {
 	identity := strings.TrimSpace(item.ID)
-	if identity == "" { identity = model.HashToken(item.Key)[:12] }
+	if identity == "" {
+		identity = model.HashToken(item.Key)[:12]
+	}
 	return "key:" + identity
 }
 
@@ -629,11 +652,28 @@ func (s *siteControlService) projectAccount(ctx context.Context, account *model.
 }
 
 func (s *siteControlService) projectAccountWithModels(ctx context.Context, account *model.SiteAccount, site *model.Site, creds provider.Credentials, projectionKey, name string, names []string, force bool) (*model.SiteProjectionResult, error) {
-	filtered := make([]string, 0, len(names)); seen := map[string]struct{}{}
-	for _, item := range names { item = strings.TrimSpace(item); if item == "" { continue }; if _, ok := seen[item]; ok { continue }; seen[item] = struct{}{}; filtered = append(filtered, item) }
-	if len(filtered) == 0 { return nil, errors.New("models_required") }
-	if strings.TrimSpace(projectionKey) == "" { projectionKey = "default" }
-	if strings.TrimSpace(name) == "" { name = fmt.Sprintf("%s / %s", site.Name, account.Label) }
+	filtered := make([]string, 0, len(names))
+	seen := map[string]struct{}{}
+	for _, item := range names {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		filtered = append(filtered, item)
+	}
+	if len(filtered) == 0 {
+		return nil, errors.New("models_required")
+	}
+	if strings.TrimSpace(projectionKey) == "" {
+		projectionKey = "default"
+	}
+	if strings.TrimSpace(name) == "" {
+		name = fmt.Sprintf("%s / %s", site.Name, account.Label)
+	}
 	sourceHash := model.SiteProjectionSourceHash(site.BaseURL, []string{"openai"}, filtered, creds.APIKey, account.Enabled)
 	return s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: site.BaseURL, Protocols: []string{"openai"}, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, Enabled: account.Enabled, Force: force})
 }

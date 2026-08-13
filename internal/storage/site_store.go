@@ -3,7 +3,7 @@ package storage
 import (
 	"context"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // SiteStore is the durable control-plane contract. It is embedded by Store so

@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"testing"
 
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/cooldown"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 // Test_HandleProxyError_Basic 基础错误处理测试(不依赖数据库)

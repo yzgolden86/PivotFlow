@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/cooldown"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 
 	"github.com/gin-gonic/gin"
 )

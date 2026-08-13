@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestAdminAPI_ListSettings_ResponseShape(t *testing.T) {

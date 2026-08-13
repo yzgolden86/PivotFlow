@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/testutil"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/testutil"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"

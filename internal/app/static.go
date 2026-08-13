@@ -8,7 +8,7 @@ import (
 	"path"
 	"strings"
 
-	"ccLoad/internal/version"
+	"github.com/yzgolden86/PivotFlow/internal/version"
 
 	"github.com/gin-gonic/gin"
 )

@@ -24,7 +24,7 @@ let logsLoadPending = false;
 // logsLoadScheduled 已被 _scheduleLoadTimer 取代
 
 // === 列显隐 ===
-const LOGS_COL_STORAGE_KEY = 'ccload_logs_columns';
+const LOGS_COL_STORAGE_KEY = 'pivotflow_logs_columns';
 
 const LOG_COLUMNS = [
   { key: 'time',        cls: 'logs-col-time',        i18n: 'logs.colTime' },

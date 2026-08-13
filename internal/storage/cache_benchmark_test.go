@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 var benchmarkConfigsSink []*model.Config

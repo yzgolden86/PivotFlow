@@ -1,4 +1,4 @@
-// Package main 是 ccLoad 应用入口
+// Package main 是 PivotFlow 应用入口
 package main
 
 import (
@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"ccLoad/internal/app"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/util"
-	"ccLoad/internal/version"
+	"github.com/yzgolden86/PivotFlow/internal/app"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/version"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"

@@ -179,7 +179,7 @@ type ManagementCredentialResolver interface {
 }
 
 // RoutingKeyProvider exposes model-call API keys owned by a management
-// session. The control plane uses this to build ccLoad channels without asking
+// session. The control plane uses this to build PivotFlow channels without asking
 // the user to paste the same key twice.
 type RoutingKeyProvider interface {
 	ListRoutingKeys(ctx context.Context, req AccountRequest) ([]RoutingKeySnapshot, error)

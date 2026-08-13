@@ -4,17 +4,17 @@ const TEST_MODE_CHAT = 'chat';
 const TEST_MODE_FINGERPRINT = 'fingerprint';
 
 // localStorage keys
-const STORAGE_KEY_TEST_MODE = 'ccload_model_test_mode';
-const STORAGE_KEY_SELECTED_CHANNEL_ID = 'ccload_model_test_channel_id';
-const STORAGE_KEY_SELECTED_MODEL_NAME = 'ccload_model_test_model_name';
-const STORAGE_KEY_SELECTED_PROTOCOL = 'ccload_model_test_protocol';
-const STORAGE_KEY_STREAM_ENABLED = 'ccload_model_test_stream_enabled';
-const STORAGE_KEY_CHAT_MODEL = 'ccload_model_test_chat_model';
-const STORAGE_KEY_CHAT_CHANNEL_ID = 'ccload_model_test_chat_channel_id';
-const STORAGE_KEY_CHAT_STREAM_ENABLED = 'ccload_model_test_chat_stream_enabled';
-const STORAGE_KEY_CHAT_THINKING_EFFORT = 'ccload_model_test_chat_thinking_effort';
-const STORAGE_KEY_CHAT_BUILTIN_SEARCH = 'ccload_model_test_chat_builtin_search';
-const STORAGE_KEY_CHAT_MESSAGES = 'ccload_model_test_chat_messages';
+const STORAGE_KEY_TEST_MODE = 'pivotflow_model_test_mode';
+const STORAGE_KEY_SELECTED_CHANNEL_ID = 'pivotflow_model_test_channel_id';
+const STORAGE_KEY_SELECTED_MODEL_NAME = 'pivotflow_model_test_model_name';
+const STORAGE_KEY_SELECTED_PROTOCOL = 'pivotflow_model_test_protocol';
+const STORAGE_KEY_STREAM_ENABLED = 'pivotflow_model_test_stream_enabled';
+const STORAGE_KEY_CHAT_MODEL = 'pivotflow_model_test_chat_model';
+const STORAGE_KEY_CHAT_CHANNEL_ID = 'pivotflow_model_test_chat_channel_id';
+const STORAGE_KEY_CHAT_STREAM_ENABLED = 'pivotflow_model_test_chat_stream_enabled';
+const STORAGE_KEY_CHAT_THINKING_EFFORT = 'pivotflow_model_test_chat_thinking_effort';
+const STORAGE_KEY_CHAT_BUILTIN_SEARCH = 'pivotflow_model_test_chat_builtin_search';
+const STORAGE_KEY_CHAT_MESSAGES = 'pivotflow_model_test_chat_messages';
 
 let channelsList = [];
 let selectedChannel = null;
@@ -3768,7 +3768,7 @@ async function sendChatMessage() {
   let hasError = false;
 
   try {
-    const token = localStorage.getItem('ccload_token');
+    const token = localStorage.getItem('pivotflow_token');
     const chatStreamEnabled = document.getElementById('chatStreamEnabled')?.checked !== false;
     const chatThinkingEffort = getChatThinkingEffort();
     const chatBuiltinSearch = isChatBuiltinSearchEnabled();

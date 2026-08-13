@@ -7,12 +7,12 @@
 | [快速开始](getting-started.md) | 第一次启动、登录和验证 |
 | [核心概念](concepts.md) | 站点、账号、渠道、下游密钥的边界 |
 | [站点与账号管理](site-management.md) | 凭证、余额、签到、公告和 Provider 能力 |
-| [路由与分发](routing.md) | ccLoad 路由、Key/URL、优先级、冷却和同步 |
+| [路由与分发](routing.md) | PivotFlow 路由、Key/URL、优先级、冷却和同步 |
 | [模型测试](model-testing.md) | 模型同步、账号直测和渠道测试 |
 | [系统配置](configuration.md) | `.env` 和控制台系统设置 |
 | [部署](deployment.md) | Docker、源码构建、前端开发和升级 |
 | [安全与备份](security.md) | 主密钥、凭证、数据库和恢复 |
-| [维护与 ccLoad 同步](maintenance.md) | 上游更新的审计与同步边界 |
+| [维护与 PivotFlow 同步](maintenance.md) | 上游更新的审计与同步边界 |
 | [故障排查](troubleshooting.md) | 常见错误和定位顺序 |
 
 ## 文档图片

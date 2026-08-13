@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"ccLoad/internal/storage/schema"
+	"github.com/yzgolden86/PivotFlow/internal/storage/schema"
 )
 
 const (
@@ -442,7 +442,7 @@ func fingerprintNameWithSuffix(name string, suffix int) string {
 }
 
 func cleanupRemovedSettings(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	// skip_tls_verify 已移除：仅允许通过环境变量 CCLOAD_ALLOW_INSECURE_TLS 控制
+	// skip_tls_verify 已移除：仅允许通过环境变量 PIVOTFLOW_ALLOW_INSECURE_TLS 控制
 	if err := deleteSystemSetting(ctx, db, dialect, "skip_tls_verify"); err != nil {
 		return err
 	}

@@ -16,20 +16,20 @@
   const DEFAULT_CONCURRENCY = 5;
   const STREAM_FIELD_IDS = { calibrate: 'fpCalibrateStream', test: 'fpTestStream' };
   const STREAM_STORAGE_KEYS = {
-    calibrate: 'ccload_model_fingerprint_calibrate_stream',
-    test: 'ccload_model_fingerprint_test_stream'
+    calibrate: 'pivotflow_model_fingerprint_calibrate_stream',
+    test: 'pivotflow_model_fingerprint_test_stream'
   };
   const CLIENT_PROTOCOLS = new Set(['anthropic', 'codex', 'openai', 'gemini']);
   const CLIENT_PROTOCOL_FIELDS = Object.freeze({
     calibrate: {
       containerId: 'fpCalibrateClientProtocolContainer',
       hiddenId: 'fpCalibrateClientProtocol',
-      storageKey: 'ccload_model_fingerprint_calibrate_protocol'
+      storageKey: 'pivotflow_model_fingerprint_calibrate_protocol'
     },
     test: {
       containerId: 'fpTestClientProtocolContainer',
       hiddenId: 'fpTestClientProtocol',
-      storageKey: 'ccload_model_fingerprint_test_protocol'
+      storageKey: 'pivotflow_model_fingerprint_test_protocol'
     }
   });
 
@@ -955,7 +955,7 @@
 
     const controller = new AbortController();
     streamAbort = controller;
-    const token = localStorage.getItem('ccload_token');
+    const token = localStorage.getItem('pivotflow_token');
 
     try {
       const resp = await fetch('/admin/fingerprints/jobs/' + encodeURIComponent(jobId) + '/stream', {

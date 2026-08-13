@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestHandleError_1308Error(t *testing.T) {

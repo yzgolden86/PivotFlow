@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ccLoad/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
 )
 
 // requestContext 封装单次请求的上下文和超时控制

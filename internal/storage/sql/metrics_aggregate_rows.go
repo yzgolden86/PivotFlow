@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func scanAggregatedMetricsRows(rows *sql.Rows) (map[int64]*model.MetricPoint, map[int64]*metricAggregationHelper, map[int64]bool, error) {

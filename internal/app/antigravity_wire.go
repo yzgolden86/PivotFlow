@@ -16,10 +16,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"ccLoad/internal/antigravityauth"
-	"ccLoad/internal/model"
-	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/antigravityauth"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	cliproxyutil "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/util"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 const zeroWidthSpace = "\u200B"

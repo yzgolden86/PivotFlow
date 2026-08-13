@@ -1,7 +1,7 @@
 package storage
 
 import (
-	sqlstore "ccLoad/internal/storage/sql"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 )
 
 // quoteKeyIdent 返回 system_settings.key 在各数据库方言中的标识符。

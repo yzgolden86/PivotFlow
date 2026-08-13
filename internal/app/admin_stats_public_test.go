@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/protocol"
-	"ccLoad/internal/version"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/version"
 )
 
 func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {

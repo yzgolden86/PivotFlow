@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestNormalizeCooldownDetectionRules_SortsAndRenumbersPriority(t *testing.T) {

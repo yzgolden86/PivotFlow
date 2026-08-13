@@ -3,7 +3,7 @@ package app
 import (
 	"testing"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestDetectionLogFromResult_AllowsNilConfig(t *testing.T) {

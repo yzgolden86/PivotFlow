@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/config"
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/config"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 )
 
 // newStubConfigService 构造一个只有内存缓存的 ConfigService（不触库）。
@@ -123,7 +123,7 @@ func TestLoadServerRuntimeConfigRejectsInvertedCooldownBounds(t *testing.T) {
 	}
 }
 
-// Images 路径必须走独立上限：旧的 CCLOAD_MAX_BODY_BYTES 会把 20MB 特例一起吃掉。
+// Images 路径必须走独立上限：旧的 PIVOTFLOW_MAX_BODY_BYTES 会把 20MB 特例一起吃掉。
 func TestMaxProxyBodyBytesUsesSeparateImageLimit(t *testing.T) {
 	limits := newRequestBodyLimits(1024, 8192)
 	if got := limits.maxForPath("/v1/messages"); got != 1024 {
@@ -143,7 +143,7 @@ func TestMaxProxyBodyBytesUsesSeparateImageLimit(t *testing.T) {
 }
 
 func TestNewServerParallelConstructionKeepsRuntimeConfigIsolated(t *testing.T) {
-	t.Setenv("CCLOAD_PASS", "parallel-construction-test-password")
+	t.Setenv("PIVOTFLOW_PASS", "parallel-construction-test-password")
 
 	type serverCase struct {
 		bodyLimit int

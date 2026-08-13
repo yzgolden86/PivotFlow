@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 )
 
 type failingEnsureAuthTokenStore struct {

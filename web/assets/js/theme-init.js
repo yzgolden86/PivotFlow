@@ -1,5 +1,5 @@
 (function () {
-  const storageKey = 'ccload_theme';
+  const storageKey = 'pivotflow_theme';
   const modes = ['system', 'light', 'dark'];
 
   function getStoredTheme() {

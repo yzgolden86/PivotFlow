@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestHealthCache_Defaults(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 
 	"github.com/joho/godotenv"
 )
@@ -24,7 +24,7 @@ import (
 //   go test -tags sonic -bench=BenchmarkHybrid -benchtime=3s ./internal/storage/...
 //
 // 环境变量（从 .env 读取）：
-//   - CCLOAD_MYSQL: MySQL DSN（必需）
+//   - PIVOTFLOW_MYSQL: MySQL DSN（必需）
 
 func init() {
 	// 尝试从项目根目录加载 .env
@@ -37,9 +37,9 @@ func init() {
 
 // skipIfNoMySQL 如果没有配置 MySQL 则跳过测试
 func skipIfNoMySQL(b *testing.B) string {
-	dsn := os.Getenv("CCLOAD_MYSQL")
+	dsn := os.Getenv("PIVOTFLOW_MYSQL")
 	if dsn == "" {
-		b.Skip("跳过: 需要设置 CCLOAD_MYSQL 环境变量")
+		b.Skip("跳过: 需要设置 PIVOTFLOW_MYSQL 环境变量")
 	}
 	return dsn
 }

@@ -3,7 +3,7 @@ package sqlite_test
 import (
 	"testing"
 
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 )
 
 func setupSQLiteTestStore(t testing.TB, dbFile string) (storage.Store, func()) {

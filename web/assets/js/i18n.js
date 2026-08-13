@@ -36,7 +36,7 @@
    * 初始化 i18n
    */
   function init() {
-    const saved = localStorage.getItem('ccload_locale');
+    const saved = localStorage.getItem('pivotflow_locale');
     if (saved && SUPPORTED_LOCALES.includes(saved)) {
       currentLocale = saved;
     } else {
@@ -63,7 +63,7 @@
       return;
     }
     currentLocale = locale;
-    localStorage.setItem('ccload_locale', locale);
+    localStorage.setItem('pivotflow_locale', locale);
     document.documentElement.lang = locale;
 
     // 翻译静态页面元素

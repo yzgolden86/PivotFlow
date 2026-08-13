@@ -23,13 +23,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: ccload
+          POSTGRES_USER: pivotflow
           POSTGRES_PASSWORD: testpass
-          POSTGRES_DB: ccload_test
+          POSTGRES_DB: pivotflow_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ccload -d ccload_test"
+          --health-cmd "pg_isready -U pivotflow -d pivotflow_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -46,5 +46,5 @@ jobs:
 
       - name: Run PostgreSQL integration tests
         env:
-          CCLOAD_TEST_POSTGRES_DSN: postgres://ccload:testpass@127.0.0.1:5432/ccload_test?sslmode=disable
+          PIVOTFLOW_TEST_POSTGRES_DSN: postgres://pivotflow:testpass@127.0.0.1:5432/pivotflow_test?sslmode=disable
         run: go test -tags "sonic postgres_integration" ./internal/storage -run '^TestPostgres$' -count=1

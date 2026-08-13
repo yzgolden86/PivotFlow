@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"strings"
 
-	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
-	"ccLoad/internal/protocol/cliproxy/thinking"
-	"ccLoad/internal/protocol/cliproxy/util"
+	translatorcommon "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/common"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/thinking"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/util"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -318,7 +318,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		// No thinking config, set default effort
 		out, _ = sjson.SetBytes(out, "reasoning.effort", "medium")
 	}
-	// OpenAI documents reasoning summaries as explicit opt-in output. ccLoad
+	// OpenAI documents reasoning summaries as explicit opt-in output. PivotFlow
 	// excludes upstream's runtime summary applier, so the converter itself
 	// keeps requesting summaries to preserve visible reasoning downstream.
 	out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")

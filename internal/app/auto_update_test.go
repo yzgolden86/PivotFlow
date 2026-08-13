@@ -17,8 +17,8 @@ func TestStartUpdateManagerContainerSkipsReleaseChecks(t *testing.T) {
 	}))
 	t.Cleanup(releaseServer.Close)
 
-	t.Setenv("CCLOAD_CONTAINER", "1")
-	t.Setenv("CCLOAD_RELEASE_BASE_URL", releaseServer.URL+"/caidaoli/ccLoad/releases/latest/download")
+	t.Setenv("PIVOTFLOW_CONTAINER", "1")
+	t.Setenv("PIVOTFLOW_RELEASE_BASE_URL", releaseServer.URL+"/yzgolden86/PivotFlow/releases/latest/download")
 
 	originalRestartFunc := RestartFunc
 	var restartCalls atomic.Int64
@@ -57,7 +57,7 @@ func TestStartUpdateManagerDisabledMakesNoReleaseRequest(t *testing.T) {
 	}))
 	t.Cleanup(releaseServer.Close)
 
-	t.Setenv("CCLOAD_RELEASE_BASE_URL", releaseServer.URL+"/caidaoli/ccLoad/releases/latest/download")
+	t.Setenv("PIVOTFLOW_RELEASE_BASE_URL", releaseServer.URL+"/yzgolden86/PivotFlow/releases/latest/download")
 	server := &Server{
 		configService: newStubConfigService(map[string]string{
 			"auto_update_interval_hours": "0",

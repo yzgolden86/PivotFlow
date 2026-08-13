@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 func TestMarkSSEErrorForwardResultPreservesWebsocketStatusAndHeaders(t *testing.T) {

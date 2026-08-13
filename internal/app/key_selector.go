@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // KeySelector 负责从渠道的多个API Key中选择可用的Key

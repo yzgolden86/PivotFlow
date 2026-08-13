@@ -4,19 +4,19 @@
 
 | 变量 | 用途 |
 | --- | --- |
-| `CCLOAD_PASS` | 管理后台密码，必填 |
+| `PIVOTFLOW_PASS` | 管理后台密码，必填 |
 | `PORT` | HTTP 监听端口，默认 `8080` |
-| `SQLITE_PATH` | SQLite 路径，默认 `./data/ccload.db` |
+| `SQLITE_PATH` | SQLite 路径，默认 `./data/pivotflow.db` |
 | `FUSION_MASTER_KEY` | 凭证加密主密钥 |
 | `FUSION_MASTER_KEY_FILE` | 从文件读取凭证加密主密钥 |
-| `CCLOAD_API_TOKENS` | 启动时预置下游密钥，已有 token 不覆盖 |
-| `CCLOAD_ANTIGRAVITY_CLIENT_ID` | Antigravity OAuth 客户端 ID |
-| `CCLOAD_ANTIGRAVITY_CLIENT_SECRET` | Antigravity OAuth 客户端密钥 |
-| `CCLOAD_MYSQL` | 使用 MySQL 主存储 |
-| `CCLOAD_POSTGRES` | 使用 PostgreSQL 主存储 |
-| `CCLOAD_ENABLE_SQLITE_REPLICA` | 开启主库 + SQLite 副本 |
+| `PIVOTFLOW_API_TOKENS` | 启动时预置下游密钥，已有 token 不覆盖 |
+| `PIVOTFLOW_ANTIGRAVITY_CLIENT_ID` | Antigravity OAuth 客户端 ID |
+| `PIVOTFLOW_ANTIGRAVITY_CLIENT_SECRET` | Antigravity OAuth 客户端密钥 |
+| `PIVOTFLOW_MYSQL` | 使用 MySQL 主存储 |
+| `PIVOTFLOW_POSTGRES` | 使用 PostgreSQL 主存储 |
+| `PIVOTFLOW_ENABLE_SQLITE_REPLICA` | 开启主库 + SQLite 副本 |
 | `TRUSTED_PROXIES` | 可信代理 CIDR，`none` 表示不信任代理 |
-| `CCLOAD_ALLOW_INSECURE_TLS` | 临时禁用上游 TLS 校验，生产禁用 |
+| `PIVOTFLOW_ALLOW_INSECURE_TLS` | 临时禁用上游 TLS 校验，生产禁用 |
 
 完整注释见 [.env.example](../.env.example) 和 [.env.docker.example](../.env.docker.example)。
 

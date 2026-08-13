@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,7 +23,7 @@ func findAdminSetting(t *testing.T, settings []map[string]any, key string) map[s
 }
 
 func TestAdminContainerUpdateSettingsDisabled(t *testing.T) {
-	t.Setenv("CCLOAD_CONTAINER", "1")
+	t.Setenv("PIVOTFLOW_CONTAINER", "1")
 
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

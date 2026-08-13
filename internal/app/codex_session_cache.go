@@ -7,14 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"ccLoad/internal/protocol"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 
 	"github.com/bytedance/sonic"
 )
 
 // Codex Responses API 的 prompt 缓存需要 `prompt_cache_key` 请求体字段与 `Session_id` 请求头配合，
-// 仅当稳定分桶时 OpenAI 才能稳定命中缓存。ccLoad 需在 Anthropic/OpenAI 客户端转换到 Codex 上游时补齐，
+// 仅当稳定分桶时 OpenAI 才能稳定命中缓存。PivotFlow 需在 Anthropic/OpenAI 客户端转换到 Codex 上游时补齐，
 // 策略参考 CLIProxyAPI internal/runtime/executor/codex_executor.go:cacheHelper。
 
 type codexSessionEntry struct {
@@ -60,7 +60,7 @@ func codexSessionIDForOpenAIKey(apiKey string) string {
 	if apiKey == "" {
 		return ""
 	}
-	return util.NewUUIDv5(util.NameSpaceOID, "ccload:codex:prompt-cache:"+apiKey)
+	return util.NewUUIDv5(util.NameSpaceOID, "pivotflow:codex:prompt-cache:"+apiKey)
 }
 
 // resolveCodexSessionHint 仅在 Codex 上游场景下返回稳定的会话 ID；否则返回空。
@@ -82,7 +82,7 @@ func resolveCodexSessionHint(reqCtx *requestContext, translatedBody []byte, apiK
 			return getOrCreateCodexSessionID(model + "-" + userID)
 		}
 		if sid := strings.TrimSpace(header.Get("X-Claude-Code-Session-Id")); sid != "" {
-			return util.NewUUIDv5(util.NameSpaceOID, "ccload:codex:prompt-cache:session:"+sid)
+			return util.NewUUIDv5(util.NameSpaceOID, "pivotflow:codex:prompt-cache:session:"+sid)
 		}
 		return codexSessionIDForOpenAIKey(apiKey)
 	case protocol.Codex:

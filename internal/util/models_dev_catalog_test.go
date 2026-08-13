@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 func TestParseModelsDevCatalogNormalizesOfficialPrices(t *testing.T) {

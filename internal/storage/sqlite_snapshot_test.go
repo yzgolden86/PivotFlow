@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/site/credential"
-	"ccLoad/internal/site/provider"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/site/credential"
+	"github.com/yzgolden86/PivotFlow/internal/site/provider"
 )
 
 func TestSQLiteSnapshotPreservesEncryptedSiteCredentials(t *testing.T) {
@@ -37,7 +37,7 @@ func TestSQLiteSnapshotPreservesEncryptedSiteCredentials(t *testing.T) {
 	if _, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "main", CredentialType: model.CredentialTypeAPIKey, CredentialCiphertext: sealed, CredentialKeyVersion: cipher.Version(), Enabled: true, Status: model.SiteAccountStatusUnknown, BalanceCurrency: "CNY", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"}); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := filepath.Join(t.TempDir(), "backup", "ccload.db")
+	snapshot := filepath.Join(t.TempDir(), "backup", "pivotflow.db")
 	if err := CreateSQLiteSnapshot(ctx, store, snapshot); err != nil {
 		t.Fatal(err)
 	}

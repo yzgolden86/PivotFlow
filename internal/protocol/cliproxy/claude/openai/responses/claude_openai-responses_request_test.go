@@ -8,7 +8,7 @@ import (
 	"github.com/tidwall/gjson"
 	"google.golang.org/protobuf/encoding/protowire"
 
-	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
+	sigcompat "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/signature"
 )
 
 func TestConvertOpenAIResponsesRequestToClaude_SanitizesToolCallIDsForClaude(t *testing.T) {

@@ -21,10 +21,10 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/antigravityauth"
-	"ccLoad/internal/codexauth"
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/antigravityauth"
+	"github.com/yzgolden86/PivotFlow/internal/codexauth"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -103,6 +103,8 @@ func newAntigravityPaidTierTestService(t *testing.T) *antigravityauth.Service {
 	}))
 	t.Cleanup(server.Close)
 	service := antigravityauth.NewService(server.Client())
+	service.ClientID = "client-test"
+	service.ClientSecret = "secret-test"
 	service.TokenURL = server.URL + "/token"
 	service.DailyAPIBaseURL = server.URL
 	return service
@@ -234,6 +236,8 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 	defer oauthServer.Close()
 
 	service := antigravityauth.NewService(oauthServer.Client())
+	service.ClientID = "client-test"
+	service.ClientSecret = "secret-test"
 	service.AuthorizationURL = "https://accounts.example.test/authorize"
 	service.TokenURL = oauthServer.URL + "/token"
 	service.UserInfoURL = oauthServer.URL + "/userinfo"

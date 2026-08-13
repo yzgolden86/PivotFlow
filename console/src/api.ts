@@ -34,8 +34,8 @@ import type {
   VersionInfo,
 } from './types'
 
-const TOKEN_KEY = 'ccload_token'
-const EXPIRY_KEY = 'ccload_token_expiry'
+const TOKEN_KEY = 'pivotflow_token'
+const EXPIRY_KEY = 'pivotflow_token_expiry'
 
 function loginURL(): string {
   const redirect = `${window.location.pathname}${window.location.search}${window.location.hash}`
@@ -45,7 +45,7 @@ function loginURL(): string {
 function clearSession(): void {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(EXPIRY_KEY)
-  localStorage.removeItem('ccload_web_role')
+  localStorage.removeItem('pivotflow_web_role')
 }
 
 async function requestEnvelope<T>(path: string, init: RequestInit = {}): Promise<APIResponse<T>> {

@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ccLoad/internal/protocol/cliproxy/misc"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/misc"
 )
 
 // NormalizeOpenAIFileData returns the MIME type and raw base64 payload for OpenAI file content.

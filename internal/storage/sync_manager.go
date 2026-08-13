@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	sqlstore "ccLoad/internal/storage/sql"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 )
 
 // SyncManager 负责启动时从 MySQL 恢复数据到 SQLite
