@@ -163,3 +163,17 @@ npm run dev
 ## License
 
 MIT, see [LICENSE](LICENSE). Third-party provenance and retained notices are documented alongside the corresponding code. Use PivotFlow only with upstream services and accounts you are authorized to access.
+
+## Acknowledgements
+
+PivotFlow stands on the work and ideas of the open-source community. Special thanks to:
+
+- [ccLoad](https://github.com/caidaoli/ccLoad) for the routing, scheduling, cooldown, failover, and protocol-conversion foundation retained by PivotFlow.
+- [Metapi](https://github.com/cita-777/metapi) for its site aggregation, account workflows, and dashboard ideas.
+- [All API Hub](https://github.com/qixing-jk/all-api-hub) for its multi-site asset management, provider compatibility, and interaction design references.
+- [Octopus](https://github.com/Hureru/octopus) for its personal gateway, channel management, and concise console design ideas.
+- [Sub2API](https://github.com/Wei-Shaw/sub2api) and [New API](https://github.com/QuantumNous/new-api) for their upstream contracts, ecosystem conventions, and management workflows.
+
+Thanks to every maintainer and contributor who made these projects available to the community. References and acknowledgements do not replace the licenses and copyright notices of their respective projects.
+
+**学 AI，上 [LINUX.DO](https://linux.do)。**

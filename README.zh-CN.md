@@ -163,3 +163,17 @@ npm run dev
 ## 许可证
 
 MIT，见 [LICENSE](LICENSE)。第三方代码的来源和保留声明与对应代码放在一起。PivotFlow 只应用于你有权访问的上游服务和账号。
+
+## 致谢
+
+PivotFlow 的实现离不开开源社区已有的积累与启发，特别感谢：
+
+- [ccLoad](https://github.com/caidaoli/ccLoad)：为 PivotFlow 提供并保留了路由选择、调度、冷却、故障切换与协议转换基础。
+- [Metapi](https://github.com/cita-777/metapi)：站点聚合、账号管理流程与首页看板设计的重要参考。
+- [All API Hub](https://github.com/qixing-jk/all-api-hub)：多站点资产管理、Provider 兼容和交互设计的重要参考。
+- [Octopus](https://github.com/Hureru/octopus)：个人网关、渠道管理和简洁控制台设计的重要参考。
+- [Sub2API](https://github.com/Wei-Shaw/sub2api) 与 [New API](https://github.com/QuantumNous/new-api)：上游接口契约、生态约定和管理流程的重要参考。
+
+感谢以上项目的维护者与贡献者为社区提供优秀的开源成果。此处的参考与致谢不替代各项目自身的许可证及版权声明。
+
+**学 AI，上 [LINUX.DO](https://linux.do)。**
