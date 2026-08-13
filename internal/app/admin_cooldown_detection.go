@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/cooldown"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -89,7 +89,7 @@ func (r *cooldownDetectionTestRequest) Validate() error {
 }
 
 // normalizeCooldownDetectionTestInput accepts either a raw upstream response
-// body or ccLoad's canonical "upstream status N: body" log message. A parsed
+// body or PivotFlow's canonical "upstream status N: body" log message. A parsed
 // log status is authoritative because it describes the response being tested.
 func normalizeCooldownDetectionTestInput(statusCode int, input string) (int, string, bool, error) {
 	trimmed := strings.TrimSpace(input)

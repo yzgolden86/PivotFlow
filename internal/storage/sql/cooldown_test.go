@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 )
 
 func TestCooldown_ChannelCooldown(t *testing.T) {

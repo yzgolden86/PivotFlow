@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	sqlstore "ccLoad/internal/storage/sql"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 )
 
 // createTestStoreForSync 创建测试用的存储

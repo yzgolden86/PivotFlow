@@ -18,13 +18,13 @@ data/
 *.db-journal
 
 # 构建产物
-ccload
+pivotflow
 /tmp/
 
 # macOS LaunchAgent 相关
 *.plist
 *.plist.template
-com.ccload.service.plist
+com.pivotflow.service.plist
 
 # 测试文件
 *_test.go

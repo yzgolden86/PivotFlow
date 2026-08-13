@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> PivotFlow（枢衡）：个人 AI API 站点管理与智能路由控制台。站点/账号/签到/公告构成控制面，ccLoad 的渠道/Key/URL 选择、故障切换、协议转换与成本计量构成路由数据面。
+> PivotFlow（枢衡）：个人 AI API 站点管理与智能路由控制台。站点/账号/签到/公告构成控制面，PivotFlow 的渠道/Key/URL 选择、故障切换、协议转换与成本计量构成路由数据面。
 > 本文件是 AI 操作手册——只记命令、硬约束、反直觉机制与入口;展开细节读对应代码。
 
 ## 命令
@@ -11,7 +11,7 @@
 make build          # 构建(注入版本号+strip)
 make dev            # 开发运行
 bash .agents/skills/sync-cliproxy-core/scripts/verify.sh --tests # 协议快照审计+定向测试
-bash .agents/skills/ccload-release/scripts/release.sh --self-test # PivotFlow 发布脚本自检（目录名为兼容保留）
+bash .agents/skills/pivotflow-release/scripts/release.sh --self-test # PivotFlow 发布脚本自检（目录名为兼容保留）
 go test -tags sonic ./internal/...
 make race-fast      # 高价值 race 子集
 make race           # 全量 race(可用 RACE_P/RACE_PARALLEL 调并行度)
@@ -30,7 +30,7 @@ golangci-lint run ./...   # 提交前必须零警告
 
 ```
 internal/app/        HTTP+业务:proxy_* / admin_* / selector_* / *_cache / *_service
-internal/protocol/   协议契约与注册;builtin/ 是 ccLoad 适配层;cliproxy/ 是上游转换核心快照
+internal/protocol/   协议契约与注册;builtin/ 是 PivotFlow 适配层;cliproxy/ 是上游转换核心快照
 internal/storage/    存储(factory/hybrid_store/sync_manager/migrate;sql/ sqlite/)
 internal/cooldown/   冷却决策   internal/util/  classifier/cost_calculator/money/...
 internal/site/       站点 Provider、凭证加密与 Webhook;控制面处理入口在 internal/app/admin_sites*.go
@@ -85,8 +85,8 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 - **自定义请求规则**(`custom_rules.go`):`channels.custom_request_rules` JSON;header remove/override/append、body remove/override(点分路径);`validateCustomRequestRules` 强制认证头黑名单 + 禁 CRLF
 - **Codex 上游 Header 契约**(`codex_credentials.go`+`codex_upstream_websocket.go`):不走通用反代透传；HTTP 只接收 Codex 客户端白名单，静态 Key 与 OAuth 都只用 `Authorization: Bearer`，固定官方 `User-Agent`/`Originator`，认证与身份头在自定义规则后重建。原生 WebSocket 额外接收 turn state/timing/`OpenAI-Beta`，握手前删除 HTTP 传输头并归一 `OpenAI-Beta`、`Session_id`、`Conversation_id`；渠道自定义 Header 规则仍可显式增加非认证 Header
 - **系统设置无热重载**(`config_service.go`+`admin_settings.go`):`LoadDefaults` 启动读一次进内存,运行期只读;单改/重置/批量三个写入口都是写库后 `go triggerRestart()`,2 秒后重启进程生效。别在 `AdminUpdateSetting` 里加"顺手刷新缓存"——重启才是生效机制
-- **引导期配置只能是环境变量**:`ConfigService` 依赖已建好的 `storage.Store`,所以建库阶段消费的配置不可能迁进系统设置(要读设置得先开库,要开库得先知道设置)。`SQLITE_PATH`/`SQLITE_JOURNAL_MODE`(拼 DSN,`factory.go:buildSQLiteDSN`)、`CCLOAD_MYSQL`/`CCLOAD_POSTGRES`/`CCLOAD_ENABLE_SQLITE_REPLICA`/`CCLOAD_SQLITE_LOG_DAYS`(`factory.go:NewStore`)全部属于这一类,保持环境变量;运行期策略才进系统设置
-- **全局限额与冷却时长**(`server.go:loadServerRuntimeConfig`):均为系统设置,启动读一次,改后重启生效。`max_concurrency`(全局并发信号量,注意与 Auth Token、渠道的同名字段是三个独立层级)、`max_body_bytes`/`max_image_body_bytes`(Images 路径独立上限,同时约束 Responses WS 帧与 transcript,注入见 `newRequestBodyLimits`)、`cooldown_{auth,server,timeout,rate_limit,min,max}_seconds`(`loadCooldownSettings` 读出 `util.CooldownSettings`,经 `Store.ConfigureCooldown` 注入;下限>上限时整对回退默认)。旧 `CCLOAD_MAX_CONCURRENCY`/`CCLOAD_MAX_BODY_BYTES`/`CCLOAD_COOLDOWN_*` 已废弃,仍设置时启动打 WARN
+- **引导期配置只能是环境变量**:`ConfigService` 依赖已建好的 `storage.Store`,所以建库阶段消费的配置不可能迁进系统设置(要读设置得先开库,要开库得先知道设置)。`SQLITE_PATH`/`SQLITE_JOURNAL_MODE`(拼 DSN,`factory.go:buildSQLiteDSN`)、`PIVOTFLOW_MYSQL`/`PIVOTFLOW_POSTGRES`/`PIVOTFLOW_ENABLE_SQLITE_REPLICA`/`PIVOTFLOW_SQLITE_LOG_DAYS`(`factory.go:NewStore`)全部属于这一类,保持环境变量;运行期策略才进系统设置
+- **全局限额与冷却时长**(`server.go:loadServerRuntimeConfig`):均为系统设置,启动读一次,改后重启生效。`max_concurrency`(全局并发信号量,注意与 Auth Token、渠道的同名字段是三个独立层级)、`max_body_bytes`/`max_image_body_bytes`(Images 路径独立上限,同时约束 Responses WS 帧与 transcript,注入见 `newRequestBodyLimits`)、`cooldown_{auth,server,timeout,rate_limit,min,max}_seconds`(`loadCooldownSettings` 读出 `util.CooldownSettings`,经 `Store.ConfigureCooldown` 注入;下限>上限时整对回退默认)。旧 `PIVOTFLOW_MAX_CONCURRENCY`/`PIVOTFLOW_MAX_BODY_BYTES`/`PIVOTFLOW_COOLDOWN_*` 已废弃,仍设置时启动打 WARN
 - **上游超时**(`server.go:loadProtocolTimeouts`):`upstream_first_byte_timeout`(0=禁用,仅流式)、`stream_timeout`(0=禁用,流式总时长)、`non_stream_timeout`(120s),首字节与非流式超时可按实际上游协议 `{protocol}_*` 覆盖;写回前调 `disableResponseWriteTimeout` 防 `WriteTimeout` 截断响应体
 - **上游连接最长复用时间**(`upstream_connection_age.go`+`codex_upstream_websocket.go`):`upstream_connection_reuse_limit_seconds`(默认 0=不限制)统一约束直连及渠道代理池中的 HTTP/1.1、HTTP/2、WebSocket 物理连接；达到时限后不再接收新请求，空闲连接立即关闭，在途请求/turn 完成后关闭，新请求自动建连。原生 WS 新物理连接必须用 execution session 完整 transcript 重放，不能携带旧 socket 的 `previous_response_id`；计划轮换不记失败、不触发冷却
 - **Anthropic thinking**:项目生成的 Anthropic 请求用 `thinking.type=adaptive` + `output_config.effort`;anyrouter `/v1/messages` 兜底补 adaptive 并归一旧 `enabled`;anyrouter 额外注入 `anthropic-beta: context-1m`
@@ -94,25 +94,25 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 
 ## 发布与更新
 
-- 发布必须使用仓库 Skill：Codex 调 `$pivotflow-release`，Claude Code 调 `/pivotflow-release`；实现目录暂保留 `.agents/skills/ccload-release/` 以兼容现有工具入口
+- 发布必须使用仓库 Skill：Codex 调 `$pivotflow-release`，Claude Code 调 `/pivotflow-release`；实现目录暂保留 `.agents/skills/pivotflow-release/` 以兼容现有工具入口
 - 无参数默认 Beta；只有显式 `stable` 才发稳定版。Tag 只允许 `vX.Y.Z-beta.N` / `vX.Y.Z`
 - `.github/workflows/release.yml` 是唯一发布入口：Tag 先跑 `internal/...`、Web 验证、构建、lint，再生成多平台 Release 和 GHCR 镜像；Beta=`prerelease=true` 且不改 GitHub latest，镜像发布精确版本 Tag+`beta`；稳定版更新 GitHub latest，镜像发布精确版本 Tag+`latest`
-- 官方容器直接打包同一 Release 的 Linux 二进制；`CCLOAD_CONTAINER=1` 时不启动版本检查或进程内更新，`auto_update_*` 设置只读；稳定版/测试版分别通过 `latest`/`beta` 镜像标签切换
+- 官方容器直接打包同一 Release 的 Linux 二进制；`PIVOTFLOW_CONTAINER=1` 时不启动版本检查或进程内更新，`auto_update_*` 设置只读；稳定版/测试版分别通过 `latest`/`beta` 镜像标签切换
 - 非容器部署的单一更新管理器同时负责前端版本提示和可选自动应用；默认 `auto_update_channel=stable`，`preview` 同时考虑稳定版/测试版并按 SemVer 取最高版本；`auto_update_interval_hours=0` 关闭全部版本检查
 
 ## 协议转换核心(改前必读)
 
 - 同步/审查转换核心必须使用仓库 Skill：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；唯一源码在 `.agents/skills/`，`.claude/skills/` 只放发现链接
 - `protocol/registry.go` 是唯一契约/调度边界:同协议原样透传;跨协议只走 `builtin/register.go` 注册的 12 个有向转换对
-- `builtin/cliproxy_adapter.go` 只处理 ccLoad 边界(输入验证、JSON/SSE 规范化、流帧封装);`protocol/cliproxy/` 只放从 CLIProxyAPI 同步的纯转换核心
+- `builtin/cliproxy_adapter.go` 只处理 PivotFlow 边界(输入验证、JSON/SSE 规范化、流帧封装);`protocol/cliproxy/` 只放从 CLIProxyAPI 同步的纯转换核心
 - 不要把上游 auth/config/routing/cache/plugin/network 代码搬进来,也不要改成运行时 Go module 依赖;来源 commit、许可证和同步步骤以 `protocol/cliproxy/UPSTREAM.md` 为准
 - `RequestTranslationError` 是客户端语义错误:代理返回 HTTP 400,不切渠道、不冷却;不要把无法表示的请求伪装成上游故障
-- Registry 边界测试定义 ccLoad 线协议契约,上游同步测试守住转换行为;改协议后先跑命令区快照审计,再跑全量 `internal/...`
+- Registry 边界测试定义 PivotFlow 线协议契约,上游同步测试守住转换行为;改协议后先跑命令区快照审计,再跑全量 `internal/...`
 
 ## 计费与限额
 
 - **渠道倍率** `cost_multiplier`(≤0 归 1):× 标准成本 = `effective_cost`,写日志时快照到 `logs.cost_multiplier` 避免历史污染
-- **Auth Token**:`cost_*_microusd`(微美元整数避浮点);仅 2xx 累加费用,失败只计次,允许「超额一个请求」;`CCLOAD_API_TOKENS` 启动预置
+- **Auth Token**:`cost_*_microusd`(微美元整数避浮点);仅 2xx 累加费用,失败只计次,允许「超额一个请求」;`PIVOTFLOW_API_TOKENS` 启动预置
 - **Auth Token 访问控制**(`model/auth_token.go`、`auth_service.go`):`allowed_models` 模型白名单(空=无限制);`allowed_channel_ids`+`channel_restriction_mode`(`allow` 白名单/`deny` 黑名单,空 mode 视为 allow,空列表始终无限制),`ChannelRestriction.Allows` 封装极性,选择链路走 `FilterAllowedChannels`;`max_concurrency` 令牌级并发上限(0=无限),`acquireTokenConcurrencySlot` 获取槽位
 - **渠道每日限额** `daily_cost_limit`(美元,0=无限);`CostCache` 内存缓存按天重置
 - **定价细节**(service_tier 倍率、GPT-5.4/Qwen-Plus 分层降档、Gemini 长上下文翻倍、缓存读折扣/写乘数):读 `cost_calculator.go`
@@ -120,10 +120,10 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 ## 存储
 
 - 存储相关配置全是引导期环境变量,不进系统设置(原因见"关键机制"引导期配置条)
-- 模式:纯 SQLite(默认)/ 纯 MySQL(`CCLOAD_MYSQL`)/ 纯 PostgreSQL(`CCLOAD_POSTGRES`)/ 混合(主库 DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1`)
-- 互斥:`CCLOAD_MYSQL` 与 `CCLOAD_POSTGRES` 同时设置 → `log.Fatal`
+- 模式:纯 SQLite(默认)/ 纯 MySQL(`PIVOTFLOW_MYSQL`)/ 纯 PostgreSQL(`PIVOTFLOW_POSTGRES`)/ 混合(主库 DSN + `PIVOTFLOW_ENABLE_SQLITE_REPLICA=1`)
+- 互斥:`PIVOTFLOW_MYSQL` 与 `PIVOTFLOW_POSTGRES` 同时设置 → `log.Fatal`
 - PG DSN:URL(`postgres://user:pass@host:5432/db?sslmode=disable`)或 libpq 关键字串;驱动 `pgx/stdlib`
-- 混合数据流:写主库(MySQL/PG)→同步 SQLite,读 SQLite,日志先 SQLite 后异步主库;`CCLOAD_SQLITE_LOG_DAYS` 默认 7
+- 混合数据流:写主库(MySQL/PG)→同步 SQLite,读 SQLite,日志先 SQLite 后异步主库;`PIVOTFLOW_SQLITE_LOG_DAYS` 默认 7
 - 模型冷却状态:`channel_model_cooldowns(channel_id, model, cooldown_until)`;写主库后同步 SQLite,启动自动建表/恢复,渠道删除时级联清理
 - URL 禁用状态(`channel_url_states` 表)双写,重启 `URLSelector.LoadDisabled` 回填
 

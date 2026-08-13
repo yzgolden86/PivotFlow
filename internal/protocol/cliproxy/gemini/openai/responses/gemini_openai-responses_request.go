@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 
-	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
-	"ccLoad/internal/protocol/cliproxy/gemini/common"
-	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
-	"ccLoad/internal/protocol/cliproxy/util"
+	translatorcommon "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/common"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/gemini/common"
+	sigcompat "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/signature"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/util"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"

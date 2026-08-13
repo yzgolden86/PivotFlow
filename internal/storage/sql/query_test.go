@@ -3,8 +3,8 @@ package sql_test
 import (
 	"testing"
 
-	"ccLoad/internal/model"
-	sqlstore "ccLoad/internal/storage/sql"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 )
 
 func TestWhereBuilder_ApplyLogFilter(t *testing.T) {

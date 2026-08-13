@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/testutil"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/testutil"
 )
 
 func createScheduledCheckChannel(t *testing.T, srv *Server, cfg *model.Config, keys ...*model.APIKey) *model.Config {

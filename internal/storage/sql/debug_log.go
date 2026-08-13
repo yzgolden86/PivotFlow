@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // AddDebugLog 插入一条调试日志

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/site/credential"
-	"ccLoad/internal/site/provider"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/site/credential"
+	"github.com/yzgolden86/PivotFlow/internal/site/provider"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )

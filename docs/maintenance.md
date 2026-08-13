@@ -1,14 +1,14 @@
-# 维护与 ccLoad 同步
+# 维护与 PivotFlow 同步
 
 ## 三个独立来源
 
 1. PivotFlow 站点控制面、Provider 适配器、存储和控制台。
-2. ccLoad 路由选择器、冷却、Key/URL 调度和代理链路。
+2. PivotFlow 路由选择器、冷却、Key/URL 调度和代理链路。
 3. `internal/protocol/cliproxy` 的纯协议转换快照。
 
 它们不能用同一种“直接覆盖目录”方式升级。
 
-## 跟踪 ccLoad 上游
+## 跟踪 PivotFlow 上游
 
 建议每次上游发布都记录：版本/提交、变更范围、是否触及 selector、cooldown、proxy、protocol 或数据结构、对应测试和回滚点。只同步与核心路由相关的改动；上游 UI、配置、认证和自动更新逻辑不应直接覆盖 PivotFlow。
 
@@ -29,4 +29,4 @@ PivotFlow 在上游代码之外增加了站点控制面、凭证加密、投影�
 
 ## 发布入口
 
-当前仓库使用 `main`、`yzgolden86/PivotFlow` 和 `ghcr.io/yzgolden86/pivotflow`。发布脚本的目录名 `.agents/skills/ccload-release` 为兼容保留，Skill 名称和实际发布目标均为 PivotFlow；任何重新出现的 `master` 或 `caidaoli/ccLoad` 发布目标都应视为配置回退。
+当前仓库使用 `main`、`yzgolden86/PivotFlow` 和 `ghcr.io/yzgolden86/pivotflow`。发布 Skill 和实际发布目标均已统一为 PivotFlow；任何重新出现的 `master` 或其他仓库发布目标都应视为配置回退。

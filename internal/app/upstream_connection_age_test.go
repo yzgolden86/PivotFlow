@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 )
 
 func TestUpstreamHTTPTransportClosesIdleConnectionAtMaxAge(t *testing.T) {
@@ -72,7 +72,7 @@ func TestUpstreamHTTPTransportClosesIdleConnectionAtMaxAge(t *testing.T) {
 }
 
 func TestNewServerAppliesUpstreamConnectionMaxAgeToHTTP(t *testing.T) {
-	t.Setenv("CCLOAD_PASS", "upstream-connection-age-test-password")
+	t.Setenv("PIVOTFLOW_PASS", "upstream-connection-age-test-password")
 
 	store, err := storage.CreateSQLiteStore(":memory:")
 	if err != nil {

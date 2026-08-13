@@ -34,4 +34,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - ccLoad
+        - PivotFlow

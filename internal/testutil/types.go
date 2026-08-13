@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 type chatImageURL struct {
@@ -60,7 +60,7 @@ func (tr *TestChannelRequest) ResolveSessionID() string {
 	if seed == "" {
 		tr.resolvedSessionID = util.NewUUIDv4()
 	} else {
-		tr.resolvedSessionID = util.NewUUIDv5(util.NameSpaceOID, "ccload:admin-test-session:"+seed)
+		tr.resolvedSessionID = util.NewUUIDv5(util.NameSpaceOID, "pivotflow:admin-test-session:"+seed)
 	}
 	return tr.resolvedSessionID
 }

@@ -17,4 +17,4 @@ make www-run
 - `assets/css/pivotflow-site.css`：静态页样式。
 - `assets/images/`：由 `docs/assets/` 同步的脱敏图片。
 
-旧 `install.html`、`config.html`、`usage.html` 和 `feedback.html` 只保留为兼容入口时，应重定向到根 README 或 `docs/`，不要继续维护旧 ccLoad 文案。
+旧 `install.html`、`config.html`、`usage.html` 和 `feedback.html` 只保留为兼容入口时，应重定向到根 README 或 `docs/`，不要继续维护旧 PivotFlow 文案。

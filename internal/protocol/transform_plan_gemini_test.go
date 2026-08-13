@@ -3,7 +3,7 @@ package protocol_test
 import (
 	"testing"
 
-	"ccLoad/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
 )
 
 func TestBuildTransformPlan_SupportsGeminiToAnthropic(t *testing.T) {

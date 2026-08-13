@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/testutil"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/testutil"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 
 	"github.com/google/uuid"
 )

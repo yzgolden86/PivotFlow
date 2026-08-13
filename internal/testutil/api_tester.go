@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/util"
-	"ccLoad/internal/version"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/version"
 
 	"github.com/bytedance/sonic"
 )
@@ -712,7 +712,7 @@ func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRe
 		"STREAM":          req.Stream,
 		"CONTENT":         testContent,
 		"SESSION_ID":      sessionID,
-		"INSTALLATION_ID": util.NewUUIDv5(util.NameSpaceOID, "ccload:admin-test-installation:"+sessionID),
+		"INSTALLATION_ID": util.NewUUIDv5(util.NameSpaceOID, "pivotflow:admin-test-installation:"+sessionID),
 	})
 	if err != nil {
 		return "", nil, nil, err
@@ -976,7 +976,7 @@ func newClaudeCLIUserID(sessionID string) string {
 	if strings.TrimSpace(sessionID) == "" {
 		sessionID = newTestSessionID()
 	}
-	deviceID := sha256.Sum256([]byte("ccload:admin-test-device:" + sessionID))
+	deviceID := sha256.Sum256([]byte("pivotflow:admin-test-device:" + sessionID))
 	return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"%s"}`, hex.EncodeToString(deviceID[:]), sessionID)
 }
 

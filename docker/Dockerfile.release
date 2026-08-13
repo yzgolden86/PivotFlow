@@ -4,24 +4,24 @@ FROM alpine:3.21
 ARG TARGETARCH
 
 RUN apk add --no-cache ca-certificates tzdata && \
-    addgroup -g 1001 -S ccload && \
-    adduser -u 1001 -S ccload -G ccload && \
+    addgroup -g 1001 -S pivotflow && \
+    adduser -u 1001 -S pivotflow -G pivotflow && \
     mkdir -p /app/data && \
-    chown -R ccload:ccload /app
+    chown -R pivotflow:pivotflow /app
 
 WORKDIR /app
 
 COPY dist/pivotflow-linux-${TARGETARCH} /app/pivotflow
-RUN chmod 0755 /app/pivotflow && chown ccload:ccload /app/pivotflow
+RUN chmod 0755 /app/pivotflow && chown pivotflow:pivotflow /app/pivotflow
 
-USER ccload
+USER pivotflow
 
 EXPOSE 8080
 
 ENV PORT=8080 \
-    SQLITE_PATH=/app/data/ccload.db \
+    SQLITE_PATH=/app/data/pivotflow.db \
     GIN_MODE=release \
-    CCLOAD_CONTAINER=1
+    PIVOTFLOW_CONTAINER=1
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1

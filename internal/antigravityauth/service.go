@@ -77,8 +77,8 @@ func NewService(client *http.Client) *Service {
 	return &Service{
 		Client: client, AuthorizationURL: DefaultAuthorizationURL, TokenURL: DefaultTokenURL,
 		UserInfoURL: DefaultUserInfoURL, APIBaseURL: DefaultAPIBaseURL, DailyAPIBaseURL: DefaultDailyAPIBaseURL,
-		ClientID:     strings.TrimSpace(os.Getenv("CCLOAD_ANTIGRAVITY_CLIENT_ID")),
-		ClientSecret: strings.TrimSpace(os.Getenv("CCLOAD_ANTIGRAVITY_CLIENT_SECRET")),
+		ClientID:     strings.TrimSpace(os.Getenv("PIVOTFLOW_ANTIGRAVITY_CLIENT_ID")),
+		ClientSecret: strings.TrimSpace(os.Getenv("PIVOTFLOW_ANTIGRAVITY_CLIENT_SECRET")),
 		RedirectURI:  DefaultRedirectURI, UserAgent: DefaultUserAgent, Sleep: sleepContext, OnboardPollAttempts: 5,
 	}
 }

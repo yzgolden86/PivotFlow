@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -24,11 +24,11 @@ import (
 //
 // 依赖环境：
 // - Docker 已安装
-// - 或设置 CCLOAD_TEST_MYSQL_DSN 环境变量指向现有 MySQL 实例
+// - 或设置 PIVOTFLOW_TEST_MYSQL_DSN 环境变量指向现有 MySQL 实例
 //
 // 示例：
 //   # 使用现有 MySQL
-//   CCLOAD_TEST_MYSQL_DSN="root:test@tcp(127.0.0.1:3306)/ccload_test?parseTime=true" \
+//   PIVOTFLOW_TEST_MYSQL_DSN="root:test@tcp(127.0.0.1:3306)/pivotflow_test?parseTime=true" \
 //       go test -tags "sonic mysql_integration" ./internal/storage/... -v -run TestMySQL
 //
 //   # 自动使用 Docker（无 DSN 环境变量时）
@@ -38,7 +38,7 @@ import (
 const (
 	testMySQLImage    = "mysql:8.0"
 	testMySQLRootPass = "testroot"
-	testMySQLDB       = "ccload_test"
+	testMySQLDB       = "pivotflow_test"
 )
 
 // mysqlTestEnv 管理测试用 MySQL 环境
@@ -49,11 +49,11 @@ type mysqlTestEnv struct {
 }
 
 // setupMySQLEnv 创建 MySQL 测试环境
-// 优先使用 CCLOAD_TEST_MYSQL_DSN 环境变量，否则启动 Docker 容器
+// 优先使用 PIVOTFLOW_TEST_MYSQL_DSN 环境变量，否则启动 Docker 容器
 func setupMySQLEnv(t *testing.T) *mysqlTestEnv {
 	t.Helper()
 
-	if dsn := os.Getenv("CCLOAD_TEST_MYSQL_DSN"); dsn != "" {
+	if dsn := os.Getenv("PIVOTFLOW_TEST_MYSQL_DSN"); dsn != "" {
 		t.Logf("使用环境变量提供的 MySQL DSN")
 		db, err := sql.Open("mysql", dsn)
 		if err != nil {
@@ -78,7 +78,7 @@ func startDockerMySQL(t *testing.T) *mysqlTestEnv {
 		t.Skip("Docker 不可用，跳过 MySQL 集成测试")
 	}
 
-	containerName := fmt.Sprintf("ccload-mysql-test-%d", time.Now().UnixNano())
+	containerName := fmt.Sprintf("pivotflow-mysql-test-%d", time.Now().UnixNano())
 
 	// 启动 MySQL 容器
 	args := []string{

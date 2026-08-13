@@ -10,8 +10,8 @@ import (
 
 	mysql "github.com/go-sql-driver/mysql"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 const mysqlDuplicateEntryCode uint16 = 1062
@@ -129,8 +129,12 @@ func scanAuthToken(scanner interface {
 	); err != nil {
 		return nil, err
 	}
-	if tokenCiphertext.Valid { token.TokenCiphertext = tokenCiphertext.String }
-	if tokenHint.Valid { token.TokenHint = tokenHint.String }
+	if tokenCiphertext.Valid {
+		token.TokenCiphertext = tokenCiphertext.String
+	}
+	if tokenHint.Valid {
+		token.TokenHint = tokenHint.String
+	}
 
 	token.CreatedAt = time.UnixMilli(createdAtMs)
 	if expiresAt.Valid {

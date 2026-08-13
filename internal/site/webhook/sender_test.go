@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/site/provider"
+	"github.com/yzgolden86/PivotFlow/internal/site/provider"
 )
 
 func TestSenderRetriesTransientFailuresAndPostsJSON(t *testing.T) {

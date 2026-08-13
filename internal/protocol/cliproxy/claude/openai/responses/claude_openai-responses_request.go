@@ -8,11 +8,11 @@ import (
 	"math/big"
 	"strings"
 
-	"ccLoad/internal/protocol/cliproxy/common"
-	"ccLoad/internal/protocol/cliproxy/registry"
-	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
-	"ccLoad/internal/protocol/cliproxy/thinking"
-	"ccLoad/internal/protocol/cliproxy/util"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/common"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/registry"
+	sigcompat "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/signature"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/thinking"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/util"
 
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -434,7 +434,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	}
 	flushPendingReasoning()
 	flushPendingToolUses()
-	// ccLoad's wire contract represents system-only input as the sole user turn;
+	// PivotFlow's wire contract represents system-only input as the sole user turn;
 	// otherwise the request has instructions but no actual prompt.
 	if len(messageBlocks) == 0 && len(systemBlocks) > 0 {
 		message := []byte(`{"role":"user","content":[]}`)

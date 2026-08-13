@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	sqlstore "ccLoad/internal/storage/sql"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 )
 
 func TestUpsertAuthTokenAllFields_SQLite(t *testing.T) {

@@ -5,17 +5,17 @@ import tempfile
 from playwright.sync_api import expect, sync_playwright
 
 
-BASE_URL = os.environ.get("CCLOAD_SMOKE_URL", "http://127.0.0.1:8080")
-PASSWORD = os.environ.get("CCLOAD_SMOKE_PASSWORD")
+BASE_URL = os.environ.get("PIVOTFLOW_SMOKE_URL", "http://127.0.0.1:8080")
+PASSWORD = os.environ.get("PIVOTFLOW_SMOKE_PASSWORD")
 MAX_STATIC_BYTES = 350_000
 MAX_CONSOLE_RESOURCES = 8
 
 
 def main():
     if not PASSWORD:
-        raise SystemExit("CCLOAD_SMOKE_PASSWORD is required")
+        raise SystemExit("PIVOTFLOW_SMOKE_PASSWORD is required")
 
-    artifact_dir = os.path.join(tempfile.gettempdir(), "ccload-console-ui")
+    artifact_dir = os.path.join(tempfile.gettempdir(), "pivotflow-console-ui")
     os.makedirs(artifact_dir, exist_ok=True)
     desktop_path = os.path.join(artifact_dir, "console-desktop.png")
     mobile_path = os.path.join(artifact_dir, "console-mobile.png")
@@ -141,7 +141,7 @@ def main():
         expect(page.get_by_role("tab", name="模型清单")).to_have_attribute("aria-selected", "true")
         page.get_by_role("tab", name="连通测试").click()
         expect(page.get_by_role("button", name="站点账号直测", exact=True)).to_be_visible()
-        expect(page.get_by_role("button", name="CCLoad 渠道", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="PivotFlow 渠道", exact=True)).to_be_visible()
 
         page.get_by_role("navigation", name="主导航").get_by_role("link", name="站点与账号", exact=True).click()
         page.wait_for_url("**/#/sites")

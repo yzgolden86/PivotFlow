@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"ccLoad/internal/version"
+	"github.com/yzgolden86/PivotFlow/internal/version"
 )
 
 const (
@@ -16,7 +16,7 @@ const (
 )
 
 func runningInContainer() bool {
-	return os.Getenv("CCLOAD_CONTAINER") == "1"
+	return os.Getenv("PIVOTFLOW_CONTAINER") == "1"
 }
 
 func normalizeAutoUpdateIntervalHours(hours int) int {
@@ -42,7 +42,7 @@ func (s *Server) StartUpdateManager() {
 		return
 	}
 
-	// The fusion build has a control plane layered on top of ccLoad. Keep the
+	// The fusion build has a control plane layered on top of PivotFlow. Keep the
 	// background loop read-only so an upstream binary can never overwrite the
 	// integrated site/account UI or restart the process without review.
 	applyUpdates := false

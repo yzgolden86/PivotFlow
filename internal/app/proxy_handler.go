@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/config"
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/model"
-	"ccLoad/internal/protocol"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/config"
+	"github.com/yzgolden86/PivotFlow/internal/cooldown"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -625,7 +625,7 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 func writeEmptyAlphaSearchResponse(w http.ResponseWriter) {
 	header := make(http.Header, 2)
 	header.Set("Content-Type", "application/json; charset=utf-8")
-	header.Set("X-CCLoad-Search-Fallback", "empty")
+	header.Set("X-PivotFlow-Search-Fallback", "empty")
 	writeResponseWithHeaders(w, http.StatusOK, header, []byte(`{"encrypted_output":null,"output":"","results":[]}`))
 }
 

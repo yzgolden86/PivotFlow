@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 )
 
 // StatsCache 统计结果缓存层

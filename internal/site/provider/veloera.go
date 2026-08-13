@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // Veloera keeps the New API resource layout but uses its own check-in endpoint

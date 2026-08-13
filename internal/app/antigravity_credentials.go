@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"ccLoad/internal/antigravityauth"
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/antigravityauth"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 
 	"golang.org/x/sync/singleflight"
 )

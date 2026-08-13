@@ -8,10 +8,10 @@ package claude
 import (
 	"strings"
 
-	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
-	"ccLoad/internal/protocol/cliproxy/gemini/common"
-	"ccLoad/internal/protocol/cliproxy/registry"
-	"ccLoad/internal/protocol/cliproxy/util"
+	translatorcommon "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/common"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/gemini/common"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/registry"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/util"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -397,7 +397,7 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 			if b := t.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
 				budget := int(b.Int())
 				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.thinkingBudget", budget)
-				// ccLoad excludes upstream's runtime summary applier, so the
+				// PivotFlow excludes upstream's runtime summary applier, so the
 				// converter itself must request visible thoughts.
 				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.includeThoughts", true)
 			}
@@ -411,7 +411,7 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 			if effort != "" {
 				effort = normalizeClaudeEffortForGemini(modelName, effort)
 				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.thinkingLevel", effort)
-				// ccLoad excludes upstream's runtime summary applier, so the
+				// PivotFlow excludes upstream's runtime summary applier, so the
 				// converter itself must request visible thoughts.
 				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.includeThoughts", true)
 			}

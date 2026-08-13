@@ -4,9 +4,9 @@
 
 [简体中文](README.zh-CN.md) · [Documentation](docs/README.md)
 
-PivotFlow is a personal AI API site manager and intelligent routing console. It brings upstream accounts, balances, check-ins, announcements, and model inventories into one interface while retaining ccLoad's proven routing core: multiple keys and URLs, priorities, protocol conversion, cooldowns, and failover.
+PivotFlow is a personal AI API site manager and intelligent routing console. It brings upstream accounts, balances, check-ins, announcements, and model inventories into one interface while retaining PivotFlow's proven routing core: multiple keys and URLs, priorities, protocol conversion, cooldowns, and failover.
 
-PivotFlow is the product. ccLoad remains the routing data-plane foundation, not the user-facing brand.
+PivotFlow is the product and the routing foundation is integrated into the same application.
 
 ![PivotFlow dashboard](docs/assets/dashboard.png)
 
@@ -23,7 +23,7 @@ PivotFlow is the product. ccLoad remains the routing data-plane foundation, not 
 - Send generic webhooks for low balances and check-in failures.
 - Project site accounts into idempotently managed routing channels.
 
-### ccLoad routing data plane
+### PivotFlow routing data plane
 
 - OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, Gemini, and Codex ingress.
 - Model-based channel selection with priority, key strategy, and URL scheduling.
@@ -74,11 +74,11 @@ See [Core concepts](docs/concepts.md) and [Routing](docs/routing.md) for project
 
 ```bash
 cp .env.docker.example .env
-# Set at least CCLOAD_PASS in .env
+# Set at least PIVOTFLOW_PASS in .env
 docker compose -f docker-compose.build.yml up -d --build
 ```
 
-On PowerShell, use `Copy-Item .env.docker.example .env`. This command builds the current checkout, so it does not depend on a published image. Open `http://127.0.0.1:8080/web/login.html` and sign in with `CCLOAD_PASS`.
+On PowerShell, use `Copy-Item .env.docker.example .env`. This command builds the current checkout, so it does not depend on a published image. Open `http://127.0.0.1:8080/web/login.html` and sign in with `PIVOTFLOW_PASS`.
 
 ### Build from source
 
@@ -119,7 +119,7 @@ Clients receive a PivotFlow downstream key. Upstream credentials stay in site ac
 - Set a strong admin password and never commit `.env`, databases, master keys, cookies, OAuth credentials, or API keys.
 - Site credentials and webhook URLs are encrypted. A personal SQLite deployment creates `fusion-master.key` beside the database when no explicit key is configured. Back up the database and that key together.
 - Use either `FUSION_MASTER_KEY` or `FUSION_MASTER_KEY_FILE`. Keep production key material outside the repository.
-- `CCLOAD_ALLOW_INSECURE_TLS=1` is a temporary diagnostic switch, not a production setting.
+- `PIVOTFLOW_ALLOW_INSECURE_TLS=1` is a temporary diagnostic switch, not a production setting.
 - Admin APIs require a login session; proxy APIs require a downstream key.
 
 Read [Security and backup](docs/security.md) before migrating or restoring data.
@@ -135,12 +135,12 @@ Read [Security and backup](docs/security.md) before migrating or restoring data.
 - [Configuration](docs/configuration.md)
 - [Deployment](docs/deployment.md)
 - [Security and backup](docs/security.md)
-- [Maintenance and ccLoad sync policy](docs/maintenance.md)
+- [Maintenance and PivotFlow sync policy](docs/maintenance.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
 ## Architecture and provenance
 
-PivotFlow maintains the site control plane, admin API, storage, and console. The ccLoad selector, cooldown, key/URL scheduling, and proxy path remain the routing foundation. `internal/protocol/cliproxy` is a pinned snapshot of the pure conversion core documented in [UPSTREAM.md](internal/protocol/cliproxy/UPSTREAM.md).
+PivotFlow maintains the site control plane, admin API, storage, and console. The PivotFlow selector, cooldown, key/URL scheduling, and proxy path remain the routing foundation. `internal/protocol/cliproxy` is a pinned snapshot of the pure conversion core documented in [UPSTREAM.md](internal/protocol/cliproxy/UPSTREAM.md).
 
 Upstream releases never overwrite PivotFlow automatically. They are reviewed, ported, and tested according to [Maintenance](docs/maintenance.md).
 
@@ -168,7 +168,7 @@ MIT, see [LICENSE](LICENSE). Third-party provenance and retained notices are doc
 
 PivotFlow stands on the work and ideas of the open-source community. Special thanks to:
 
-- [ccLoad](https://github.com/caidaoli/ccLoad) for the routing, scheduling, cooldown, failover, and protocol-conversion foundation retained by PivotFlow.
+- The upstream routing project that contributed the routing, scheduling, cooldown, failover, and protocol-conversion foundation retained by PivotFlow.
 - [Metapi](https://github.com/cita-777/metapi) for its site aggregation, account workflows, and dashboard ideas.
 - [All API Hub](https://github.com/qixing-jk/all-api-hub) for its multi-site asset management, provider compatibility, and interaction design references.
 - [Octopus](https://github.com/Hureru/octopus) for its personal gateway, channel management, and concise console design ideas.

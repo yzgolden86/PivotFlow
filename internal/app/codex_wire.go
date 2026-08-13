@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/protocol"
-	codexresponses "ccLoad/internal/protocol/cliproxy/codex/openai/responses"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	codexresponses "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/codex/openai/responses"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"

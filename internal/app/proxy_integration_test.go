@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/antigravityauth"
-	"ccLoad/internal/codexauth"
-	"ccLoad/internal/model"
-	"ccLoad/internal/protocol"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/antigravityauth"
+	"github.com/yzgolden86/PivotFlow/internal/codexauth"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -459,6 +459,8 @@ func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
 		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-old"),
 	}}, map[int]string{0: upstream.URL})
 	service := antigravityauth.NewService(tokenServer.Client())
+	service.ClientID = "client-test"
+	service.ClientSecret = "secret-test"
 	service.TokenURL = tokenServer.URL
 	service.DailyAPIBaseURL = tokenServer.URL
 	env.server.antigravityCredentials.service = service

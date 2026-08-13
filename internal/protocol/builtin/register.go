@@ -1,6 +1,6 @@
 package builtin
 
-import "ccLoad/internal/protocol"
+import "github.com/yzgolden86/PivotFlow/internal/protocol"
 
 // Register installs the built-in protocol translators used by the proxy.
 func Register(reg *protocol.Registry) {

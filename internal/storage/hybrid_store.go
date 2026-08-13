@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ccLoad/internal/model"
-	sqlstore "ccLoad/internal/storage/sql"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 // HybridStore 混合存储（MySQL 主 + SQLite 本地缓存）

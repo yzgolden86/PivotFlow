@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestEnsureAuthToken_CreatesAndSkipsExistingByToken(t *testing.T) {

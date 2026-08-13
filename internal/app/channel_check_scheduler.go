@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/protocol"
-	"ccLoad/internal/testutil"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/testutil"
 )
 
 const defaultChannelCheckIntervalHours = 0

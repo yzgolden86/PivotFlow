@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const STORAGE_KEY = 'ccload_model_test_chat_advanced_options';
+  const STORAGE_KEY = 'pivotflow_model_test_chat_advanced_options';
   const DEFAULT_OPTIONS = Object.freeze({
     systemPrompt: '',
     temperature: null,

@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 )
 
 // HealthCache 渠道健康度缓存

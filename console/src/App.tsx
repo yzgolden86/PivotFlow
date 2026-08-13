@@ -134,16 +134,16 @@ function App() {
   )
 
   const logout = async () => {
-    const token = localStorage.getItem('ccload_token')
+    const token = localStorage.getItem('pivotflow_token')
     try {
       await fetch('/logout', {
         method: 'POST',
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       })
     } finally {
-      localStorage.removeItem('ccload_token')
-      localStorage.removeItem('ccload_token_expiry')
-      localStorage.removeItem('ccload_web_role')
+      localStorage.removeItem('pivotflow_token')
+      localStorage.removeItem('pivotflow_token_expiry')
+      localStorage.removeItem('pivotflow_web_role')
       window.location.replace('/web/login.html')
     }
   }

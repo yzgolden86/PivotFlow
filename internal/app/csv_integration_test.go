@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/testutil"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/testutil"
 )
 
 // setupTestStoreWithContext 创建测试用的 Store 和 Context

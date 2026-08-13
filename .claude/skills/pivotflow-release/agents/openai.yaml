@@ -1,0 +1,4 @@
+interface:
+  display_name: "PivotFlow Release"
+  short_description: "自动提交并推送后发布 PivotFlow Beta 或稳定版本"
+  default_prompt: "Use $pivotflow-release to prepare the current main revision and publish the next PivotFlow Beta, or pass stable explicitly."

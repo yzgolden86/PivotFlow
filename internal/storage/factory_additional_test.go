@@ -41,8 +41,8 @@ func TestResolveSQLitePath_DefaultAndFallback(t *testing.T) {
 
 	// 默认：data 目录可创建/可写
 	got := resolveSQLitePath()
-	if got != filepath.Join("data", "ccload.db") {
-		t.Fatalf("resolveSQLitePath()=%q, want %q", got, filepath.Join("data", "ccload.db"))
+	if got != filepath.Join("data", "pivotflow.db") {
+		t.Fatalf("resolveSQLitePath()=%q, want %q", got, filepath.Join("data", "pivotflow.db"))
 	}
 
 	// fallback：用同名文件阻止 data 目录创建
@@ -54,33 +54,33 @@ func TestResolveSQLitePath_DefaultAndFallback(t *testing.T) {
 	}
 
 	got2 := resolveSQLitePath()
-	if !strings.Contains(got2, filepath.Join(os.TempDir(), "ccload")) {
+	if !strings.Contains(got2, filepath.Join(os.TempDir(), "pivotflow")) {
 		t.Fatalf("expected fallback path under temp dir, got %q", got2)
 	}
 }
 
 func TestGetLogSyncDays(t *testing.T) {
-	t.Setenv("CCLOAD_SQLITE_LOG_DAYS", "")
+	t.Setenv("PIVOTFLOW_SQLITE_LOG_DAYS", "")
 	if got := getLogSyncDays(); got != 7 {
 		t.Fatalf("default getLogSyncDays=%d, want 7", got)
 	}
 
-	t.Setenv("CCLOAD_SQLITE_LOG_DAYS", "0")
+	t.Setenv("PIVOTFLOW_SQLITE_LOG_DAYS", "0")
 	if got := getLogSyncDays(); got != 0 {
 		t.Fatalf("getLogSyncDays=%d, want 0", got)
 	}
 
-	t.Setenv("CCLOAD_SQLITE_LOG_DAYS", "-1")
+	t.Setenv("PIVOTFLOW_SQLITE_LOG_DAYS", "-1")
 	if got := getLogSyncDays(); got != -1 {
 		t.Fatalf("getLogSyncDays=%d, want -1", got)
 	}
 
-	t.Setenv("CCLOAD_SQLITE_LOG_DAYS", "-2")
+	t.Setenv("PIVOTFLOW_SQLITE_LOG_DAYS", "-2")
 	if got := getLogSyncDays(); got != 7 {
 		t.Fatalf("invalid getLogSyncDays=%d, want 7", got)
 	}
 
-	t.Setenv("CCLOAD_SQLITE_LOG_DAYS", "not-an-int")
+	t.Setenv("PIVOTFLOW_SQLITE_LOG_DAYS", "not-an-int")
 	if got := getLogSyncDays(); got != 7 {
 		t.Fatalf("invalid getLogSyncDays=%d, want 7", got)
 	}
@@ -97,7 +97,7 @@ func TestNewStore_SQLiteMode_UsesTempCWDDefaultPath(t *testing.T) {
 	}
 	defer func() { _ = os.Chdir(wd) }()
 
-	t.Setenv("CCLOAD_MYSQL", "")
+	t.Setenv("PIVOTFLOW_MYSQL", "")
 	t.Setenv("SQLITE_PATH", "")
 
 	s, err := NewStore()
@@ -154,7 +154,7 @@ func TestNewStore_WithExplicitSQLitePath(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "explicit.db")
 
-	t.Setenv("CCLOAD_MYSQL", "")
+	t.Setenv("PIVOTFLOW_MYSQL", "")
 	t.Setenv("SQLITE_PATH", dbPath)
 
 	s, err := NewStore()

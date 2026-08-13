@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/site/credential"
-	"ccLoad/internal/site/provider"
-	sitewebhook "ccLoad/internal/site/webhook"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/site/credential"
+	"github.com/yzgolden86/PivotFlow/internal/site/provider"
+	sitewebhook "github.com/yzgolden86/PivotFlow/internal/site/webhook"
 )
 
 func TestWebhookConfigResponseMasksEncryptedEndpoint(t *testing.T) {

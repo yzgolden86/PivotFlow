@@ -69,7 +69,7 @@ func NewFromEnv() (*Cipher, error) {
 			keyPath = filepath.Join(filepath.Dir(sqlitePath), "fusion-master.key")
 		} else {
 			// Keep the zero-configuration SQLite deployment usable. NewStore uses
-			// data/ccload.db when SQLITE_PATH is omitted, so the credential key
+			// data/pivotflow.db when SQLITE_PATH is omitted, so the credential key
 			// must resolve beside that same default database.
 			keyPath = filepath.Join("data", "fusion-master.key")
 		}

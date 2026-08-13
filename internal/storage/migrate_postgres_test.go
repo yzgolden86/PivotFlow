@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	sqlstore "ccLoad/internal/storage/sql"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -26,18 +26,18 @@ import (
 //
 // 环境：
 // - Docker 已安装；或
-// - CCLOAD_TEST_POSTGRES_DSN 指向已有实例
+// - PIVOTFLOW_TEST_POSTGRES_DSN 指向已有实例
 //
 // 示例：
-//   CCLOAD_TEST_POSTGRES_DSN="postgres://ccload:test@127.0.0.1:5432/ccload_test?sslmode=disable" \
+//   PIVOTFLOW_TEST_POSTGRES_DSN="postgres://pivotflow:test@127.0.0.1:5432/pivotflow_test?sslmode=disable" \
 //       go test -tags "sonic postgres_integration" ./internal/storage -v -count=1 -run TestPostgres
 // ============================================================================
 
 const (
 	testPostgresImage = "postgres:16-alpine"
-	testPostgresUser  = "ccload"
+	testPostgresUser  = "pivotflow"
 	testPostgresPass  = "testpass"
-	testPostgresDB    = "ccload_test"
+	testPostgresDB    = "pivotflow_test"
 )
 
 type postgresTestEnv struct {
@@ -49,7 +49,7 @@ type postgresTestEnv struct {
 func setupPostgresEnv(t *testing.T) *postgresTestEnv {
 	t.Helper()
 
-	if dsn := os.Getenv("CCLOAD_TEST_POSTGRES_DSN"); dsn != "" {
+	if dsn := os.Getenv("PIVOTFLOW_TEST_POSTGRES_DSN"); dsn != "" {
 		t.Logf("使用环境变量提供的 PostgreSQL DSN")
 		db, err := sql.Open("pgx", dsn)
 		if err != nil {
@@ -72,7 +72,7 @@ func startDockerPostgres(t *testing.T) *postgresTestEnv {
 		t.Skip("Docker 不可用，跳过 PostgreSQL 集成测试")
 	}
 
-	containerName := fmt.Sprintf("ccload-pg-test-%d", time.Now().UnixNano())
+	containerName := fmt.Sprintf("pivotflow-pg-test-%d", time.Now().UnixNano())
 	args := []string{
 		"run", "-d",
 		"--name", containerName,

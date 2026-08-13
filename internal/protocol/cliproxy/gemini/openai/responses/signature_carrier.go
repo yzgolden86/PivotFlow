@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
+	sigcompat "github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/signature"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"

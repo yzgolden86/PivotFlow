@@ -50,26 +50,26 @@ func TestReleaseAssetNameAndDownloadURL(t *testing.T) {
 	t.Parallel()
 
 	name, ok := releaseAssetName("linux", "amd64")
-	if !ok || name != "ccload-linux-amd64" {
+	if !ok || name != "pivotflow-linux-amd64" {
 		t.Fatalf("releaseAssetName(linux, amd64) = %q, %v", name, ok)
 	}
 
 	source := ReleaseSource{
 		Name:            "ghproxy.net",
-		DownloadBaseURL: "https://ghproxy.net/https://github.com/caidaoli/ccLoad/releases/download",
+		DownloadBaseURL: "https://ghproxy.net/https://github.com/yzgolden86/PivotFlow/releases/download",
 	}
 	assetURL, err := releaseDownloadURL(source, "v2.44.0", name)
 	if err != nil {
 		t.Fatalf("releaseDownloadURL(asset): %v", err)
 	}
-	if assetURL != "https://ghproxy.net/https://github.com/caidaoli/ccLoad/releases/download/v2.44.0/ccload-linux-amd64" {
+	if assetURL != "https://ghproxy.net/https://github.com/yzgolden86/PivotFlow/releases/download/v2.44.0/pivotflow-linux-amd64" {
 		t.Fatalf("asset download URL = %q", assetURL)
 	}
 	checksumURL, err := releaseDownloadURL(source, "v2.44.0", "checksums.txt")
 	if err != nil {
 		t.Fatalf("releaseDownloadURL(checksums): %v", err)
 	}
-	if checksumURL != "https://ghproxy.net/https://github.com/caidaoli/ccLoad/releases/download/v2.44.0/checksums.txt" {
+	if checksumURL != "https://ghproxy.net/https://github.com/yzgolden86/PivotFlow/releases/download/v2.44.0/checksums.txt" {
 		t.Fatalf("checksum download URL = %q", checksumURL)
 	}
 
@@ -84,31 +84,31 @@ func TestUpdateManagerReleaseSourceConfiguration(t *testing.T) {
 	Version = "v1.0.0"
 
 	t.Run("defaults try three mirrors then GitHub", func(t *testing.T) {
-		t.Setenv("CCLOAD_RELEASE_BASE_URL", "")
+		t.Setenv("PIVOTFLOW_RELEASE_BASE_URL", "")
 		assertUpdateManagerReleaseRequests(t, ReleaseChannelStable, []string{
-			"https://gh.monlor.com/https://github.com/caidaoli/ccLoad/releases/latest",
-			"https://fastgit.cc/https://github.com/caidaoli/ccLoad/releases/latest",
-			"https://ghfast.top/https://github.com/caidaoli/ccLoad/releases/latest",
-			"https://github.com/caidaoli/ccLoad/releases/latest",
+			"https://gh.monlor.com/https://github.com/yzgolden86/PivotFlow/releases/latest",
+			"https://fastgit.cc/https://github.com/yzgolden86/PivotFlow/releases/latest",
+			"https://ghfast.top/https://github.com/yzgolden86/PivotFlow/releases/latest",
+			"https://github.com/yzgolden86/PivotFlow/releases/latest",
 		})
 	})
 
 	t.Run("preview reads published GitHub releases", func(t *testing.T) {
-		t.Setenv("CCLOAD_RELEASE_BASE_URL", "")
+		t.Setenv("PIVOTFLOW_RELEASE_BASE_URL", "")
 		assertUpdateManagerReleaseRequests(t, ReleaseChannelPreview, []string{
-			"https://api.github.com/repos/caidaoli/ccLoad/releases?per_page=100",
+			"https://api.github.com/repos/yzgolden86/PivotFlow/releases?per_page=100",
 		})
 	})
 
 	t.Run("custom base disables built-in fallback", func(t *testing.T) {
-		t.Setenv("CCLOAD_RELEASE_BASE_URL", "https://mirror.example/https://github.com/caidaoli/ccLoad/releases/latest/download/")
+		t.Setenv("PIVOTFLOW_RELEASE_BASE_URL", "https://mirror.example/https://github.com/yzgolden86/PivotFlow/releases/latest/download/")
 		assertUpdateManagerReleaseRequests(t, ReleaseChannelStable, []string{
-			"https://mirror.example/https://github.com/caidaoli/ccLoad/releases/latest",
+			"https://mirror.example/https://github.com/yzgolden86/PivotFlow/releases/latest",
 		})
 	})
 
 	t.Run("invalid custom base fails", func(t *testing.T) {
-		t.Setenv("CCLOAD_RELEASE_BASE_URL", "https://mirror.example/releases/download")
+		t.Setenv("PIVOTFLOW_RELEASE_BASE_URL", "https://mirror.example/releases/download")
 		_, err := NewUpdateManager(UpdateManagerOptions{
 			Interval: time.Hour,
 		})
@@ -154,8 +154,8 @@ func TestUpdateManagerCheckOnlyPublishesReleaseStateWithoutDownload(t *testing.T
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/latest":
-			http.Redirect(w, r, "/caidaoli/ccLoad/releases/tag/v2.0.0", http.StatusFound)
-		case "/caidaoli/ccLoad/releases/tag/v2.0.0":
+			http.Redirect(w, r, "/yzgolden86/PivotFlow/releases/tag/v2.0.0", http.StatusFound)
+		case "/yzgolden86/PivotFlow/releases/tag/v2.0.0":
 			_, _ = fmt.Fprint(w, "<html></html>")
 		default:
 			downloadRequests.Add(1)
@@ -169,7 +169,7 @@ func TestUpdateManagerCheckOnlyPublishesReleaseStateWithoutDownload(t *testing.T
 		ReleaseSources: []ReleaseSource{{
 			Name:            "test",
 			LatestURL:       server.URL + "/latest",
-			DownloadBaseURL: server.URL + "/caidaoli/ccLoad/releases/download",
+			DownloadBaseURL: server.URL + "/yzgolden86/PivotFlow/releases/download",
 		}},
 		Client: server.Client(),
 	})
@@ -192,7 +192,7 @@ func TestUpdateManagerCheckOnlyPublishesReleaseStateWithoutDownload(t *testing.T
 	<-done
 
 	state := manager.State()
-	if !state.HasUpdate || state.LatestVersion != "v2.0.0" || state.ReleaseURL != server.URL+"/caidaoli/ccLoad/releases/tag/v2.0.0" {
+	if !state.HasUpdate || state.LatestVersion != "v2.0.0" || state.ReleaseURL != server.URL+"/yzgolden86/PivotFlow/releases/tag/v2.0.0" {
 		t.Fatalf("update state=%+v", state)
 	}
 	if state.PendingRestart || downloadRequests.Load() != 0 {
@@ -207,7 +207,7 @@ func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T)
 
 	binary := []byte("preview binary")
 	sum := sha256.Sum256(binary)
-	checksum := hex.EncodeToString(sum[:]) + "  ccload-linux-amd64\n"
+	checksum := hex.EncodeToString(sum[:]) + "  pivotflow-linux-amd64\n"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -223,7 +223,7 @@ func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T)
 ]`)
 		case "/download/v1.1.0-beta.2/checksums.txt":
 			_, _ = fmt.Fprint(w, checksum)
-		case "/download/v1.1.0-beta.2/ccload-linux-amd64":
+		case "/download/v1.1.0-beta.2/pivotflow-linux-amd64":
 			_, _ = w.Write(binary)
 		default:
 			http.NotFound(w, r)
@@ -231,7 +231,7 @@ func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T)
 	}))
 	defer server.Close()
 
-	exePath := filepath.Join(t.TempDir(), "ccload")
+	exePath := filepath.Join(t.TempDir(), "pivotflow")
 	if err := os.WriteFile(exePath, []byte("old"), 0o755); err != nil {
 		t.Fatalf("write old executable: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestUpdateManagerRetriesReleaseAssetPropagationFailure(t *testing.T) {
 
 	binary := []byte("published binary")
 	sum := sha256.Sum256(binary)
-	checksum := hex.EncodeToString(sum[:]) + "  ccload-linux-amd64\n"
+	checksum := hex.EncodeToString(sum[:]) + "  pivotflow-linux-amd64\n"
 	var checksumRequests atomic.Int64
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -306,7 +306,7 @@ func TestUpdateManagerRetriesReleaseAssetPropagationFailure(t *testing.T) {
 				return
 			}
 			_, _ = fmt.Fprint(w, checksum)
-		case "/download/v1.1.0-beta.1/ccload-linux-amd64":
+		case "/download/v1.1.0-beta.1/pivotflow-linux-amd64":
 			_, _ = w.Write(binary)
 		default:
 			http.NotFound(w, r)
@@ -314,7 +314,7 @@ func TestUpdateManagerRetriesReleaseAssetPropagationFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exePath := filepath.Join(t.TempDir(), "ccload")
+	exePath := filepath.Join(t.TempDir(), "pivotflow")
 	if err := os.WriteFile(exePath, []byte("old"), 0o755); err != nil {
 		t.Fatalf("write old executable: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestUpdateManagerDoesNotRetryInvalidChecksums(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exePath := filepath.Join(t.TempDir(), "ccload")
+	exePath := filepath.Join(t.TempDir(), "pivotflow")
 	if err := os.WriteFile(exePath, []byte("old"), 0o755); err != nil {
 		t.Fatalf("write old executable: %v", err)
 	}
@@ -473,7 +473,7 @@ func assertUpdateManagerReleaseRequests(t *testing.T, channel ReleaseChannel, wa
 	updater, err := NewUpdateManager(UpdateManagerOptions{
 		Interval:       time.Hour,
 		Channel:        channel,
-		ExecutablePath: filepath.Join(t.TempDir(), "ccload"),
+		ExecutablePath: filepath.Join(t.TempDir(), "pivotflow"),
 		Client:         client,
 		GOOS:           "linux",
 		GOARCH:         "amd64",
@@ -527,7 +527,7 @@ func TestFetchLatestReleaseReadsUnfollowedRedirectLocation(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		http.Redirect(w, r, "/caidaoli/ccLoad/releases/tag/v2.44.0", http.StatusFound)
+		http.Redirect(w, r, "/yzgolden86/PivotFlow/releases/tag/v2.44.0", http.StatusFound)
 	}))
 	defer server.Close()
 
@@ -543,7 +543,7 @@ func TestFetchLatestReleaseReadsUnfollowedRedirectLocation(t *testing.T) {
 	if release.TagName != "v2.44.0" {
 		t.Fatalf("TagName = %q", release.TagName)
 	}
-	wantURL := server.URL + "/caidaoli/ccLoad/releases/tag/v2.44.0"
+	wantURL := server.URL + "/yzgolden86/PivotFlow/releases/tag/v2.44.0"
 	if release.HTMLURL != wantURL {
 		t.Fatalf("HTMLURL = %q, want %q", release.HTMLURL, wantURL)
 	}
@@ -553,7 +553,7 @@ func TestChecksumVerification(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "ccload-linux-amd64")
+	path := filepath.Join(dir, "pivotflow-linux-amd64")
 	body := []byte("new binary")
 	if err := os.WriteFile(path, body, 0o755); err != nil {
 		t.Fatalf("write test file: %v", err)
@@ -561,19 +561,19 @@ func TestChecksumVerification(t *testing.T) {
 	sum := sha256.Sum256(body)
 	goodChecksum := hex.EncodeToString(sum[:])
 
-	checksums, err := parseChecksums([]byte(goodChecksum + "  ccload-linux-amd64\n"))
+	checksums, err := parseChecksums([]byte(goodChecksum + "  pivotflow-linux-amd64\n"))
 	if err != nil {
 		t.Fatalf("parseChecksums: %v", err)
 	}
-	if err := verifyFileChecksum(path, "ccload-linux-amd64", checksums); err != nil {
+	if err := verifyFileChecksum(path, "pivotflow-linux-amd64", checksums); err != nil {
 		t.Fatalf("verifyFileChecksum: %v", err)
 	}
 
-	badChecksums, err := parseChecksums([]byte("0000000000000000000000000000000000000000000000000000000000000000  ccload-linux-amd64\n"))
+	badChecksums, err := parseChecksums([]byte("0000000000000000000000000000000000000000000000000000000000000000  pivotflow-linux-amd64\n"))
 	if err != nil {
 		t.Fatalf("parse bad checksum fixture: %v", err)
 	}
-	if err := verifyFileChecksum(path, "ccload-linux-amd64", badChecksums); err == nil {
+	if err := verifyFileChecksum(path, "pivotflow-linux-amd64", badChecksums); err == nil {
 		t.Fatalf("verifyFileChecksum must reject checksum mismatch")
 	}
 }
@@ -592,23 +592,23 @@ func TestUpdateOnceReplacesPendingVersionWithNewerDownloadedRelease(t *testing.T
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/latest":
-			http.Redirect(w, r, "/caidaoli/ccLoad/releases/tag/"+latest, http.StatusFound)
-		case "/caidaoli/ccLoad/releases/tag/v1.0.1", "/caidaoli/ccLoad/releases/tag/v1.0.2":
+			http.Redirect(w, r, "/yzgolden86/PivotFlow/releases/tag/"+latest, http.StatusFound)
+		case "/yzgolden86/PivotFlow/releases/tag/v1.0.1", "/yzgolden86/PivotFlow/releases/tag/v1.0.2":
 			_, _ = fmt.Fprintf(w, "<html><title>%s</title></html>", latest)
-		case "/caidaoli/ccLoad/releases/download/v1.0.1/ccload-linux-amd64", "/caidaoli/ccLoad/releases/download/v1.0.2/ccload-linux-amd64":
+		case "/yzgolden86/PivotFlow/releases/download/v1.0.1/pivotflow-linux-amd64", "/yzgolden86/PivotFlow/releases/download/v1.0.2/pivotflow-linux-amd64":
 			tag := filepath.Base(filepath.Dir(r.URL.Path))
 			_, _ = w.Write(binaries[tag])
-		case "/caidaoli/ccLoad/releases/download/v1.0.1/checksums.txt", "/caidaoli/ccLoad/releases/download/v1.0.2/checksums.txt":
+		case "/yzgolden86/PivotFlow/releases/download/v1.0.1/checksums.txt", "/yzgolden86/PivotFlow/releases/download/v1.0.2/checksums.txt":
 			tag := filepath.Base(filepath.Dir(r.URL.Path))
 			sum := sha256.Sum256(binaries[tag])
-			_, _ = fmt.Fprintf(w, "%s  ccload-linux-amd64\n", hex.EncodeToString(sum[:]))
+			_, _ = fmt.Fprintf(w, "%s  pivotflow-linux-amd64\n", hex.EncodeToString(sum[:]))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
 
-	exePath := filepath.Join(t.TempDir(), "ccload")
+	exePath := filepath.Join(t.TempDir(), "pivotflow")
 	if err := os.WriteFile(exePath, []byte("old"), 0o755); err != nil {
 		t.Fatalf("write old executable: %v", err)
 	}
@@ -621,7 +621,7 @@ func TestUpdateOnceReplacesPendingVersionWithNewerDownloadedRelease(t *testing.T
 		ReleaseSources: []ReleaseSource{{
 			Name:            "test",
 			LatestURL:       server.URL + "/latest",
-			DownloadBaseURL: server.URL + "/caidaoli/ccLoad/releases/download",
+			DownloadBaseURL: server.URL + "/yzgolden86/PivotFlow/releases/download",
 		}},
 		ExecutablePath: exePath,
 		Client:         server.Client(),
@@ -670,7 +670,7 @@ func TestUpdateManagerFallsBackToNextReleaseSource(t *testing.T) {
 		t.Run(failStage, func(t *testing.T) {
 			binary := []byte("fallback binary")
 			sum := sha256.Sum256(binary)
-			checksum := hex.EncodeToString(sum[:]) + "  ccload-linux-amd64\n"
+			checksum := hex.EncodeToString(sum[:]) + "  pivotflow-linux-amd64\n"
 
 			var mu sync.Mutex
 			var requests []string
@@ -698,7 +698,7 @@ func TestUpdateManagerFallsBackToNextReleaseSource(t *testing.T) {
 						return
 					}
 					_, _ = fmt.Fprint(w, checksum)
-				case strings.HasSuffix(r.URL.Path, "/ccload-linux-amd64"):
+				case strings.HasSuffix(r.URL.Path, "/pivotflow-linux-amd64"):
 					if source == "proxy" && failStage == "asset" {
 						http.Error(w, "asset unavailable", http.StatusBadGateway)
 						return
@@ -710,7 +710,7 @@ func TestUpdateManagerFallsBackToNextReleaseSource(t *testing.T) {
 			}))
 			defer server.Close()
 
-			exePath := filepath.Join(t.TempDir(), "ccload")
+			exePath := filepath.Join(t.TempDir(), "pivotflow")
 			if err := os.WriteFile(exePath, []byte("old"), 0o755); err != nil {
 				t.Fatalf("write old executable: %v", err)
 			}
@@ -767,15 +767,15 @@ func TestUpdateManagerFallsBackToNextReleaseSource(t *testing.T) {
 			if failStage == "latest" {
 				wantPaths = append(wantPaths,
 					"/github/latest",
-					"/proxy/releases/download/v1.0.1/ccload-linux-amd64",
+					"/proxy/releases/download/v1.0.1/pivotflow-linux-amd64",
 				)
 			} else {
 				if failStage == "asset" {
-					wantPaths = append(wantPaths, "/proxy/releases/download/v1.0.1/ccload-linux-amd64")
+					wantPaths = append(wantPaths, "/proxy/releases/download/v1.0.1/pivotflow-linux-amd64")
 				}
 				wantPaths = append(wantPaths,
 					"/github/releases/download/v1.0.1/checksums.txt",
-					"/github/releases/download/v1.0.1/ccload-linux-amd64",
+					"/github/releases/download/v1.0.1/pivotflow-linux-amd64",
 				)
 			}
 			for _, path := range wantPaths {

@@ -12,15 +12,15 @@ import (
 )
 
 const (
-	githubLatestReleaseURL      = "https://github.com/caidaoli/ccLoad/releases/latest"
-	githubReleasesAPIURL        = "https://api.github.com/repos/caidaoli/ccLoad/releases?per_page=100"
-	githubDownloadBaseURL       = "https://github.com/caidaoli/ccLoad/releases/download"
-	monlorLatestReleaseURL      = "https://gh.monlor.com/https://github.com/caidaoli/ccLoad/releases/latest"
-	monlorDownloadBaseURL       = "https://gh.monlor.com/https://github.com/caidaoli/ccLoad/releases/download"
-	fastgitLatestReleaseURL     = "https://fastgit.cc/https://github.com/caidaoli/ccLoad/releases/latest"
-	fastgitDownloadBaseURL      = "https://fastgit.cc/https://github.com/caidaoli/ccLoad/releases/download"
-	ghfastLatestReleaseURL      = "https://ghfast.top/https://github.com/caidaoli/ccLoad/releases/latest"
-	ghfastDownloadBaseURL       = "https://ghfast.top/https://github.com/caidaoli/ccLoad/releases/download"
+	githubLatestReleaseURL      = "https://github.com/yzgolden86/PivotFlow/releases/latest"
+	githubReleasesAPIURL        = "https://api.github.com/repos/yzgolden86/PivotFlow/releases?per_page=100"
+	githubDownloadBaseURL       = "https://github.com/yzgolden86/PivotFlow/releases/download"
+	monlorLatestReleaseURL      = "https://gh.monlor.com/https://github.com/yzgolden86/PivotFlow/releases/latest"
+	monlorDownloadBaseURL       = "https://gh.monlor.com/https://github.com/yzgolden86/PivotFlow/releases/download"
+	fastgitLatestReleaseURL     = "https://fastgit.cc/https://github.com/yzgolden86/PivotFlow/releases/latest"
+	fastgitDownloadBaseURL      = "https://fastgit.cc/https://github.com/yzgolden86/PivotFlow/releases/download"
+	ghfastLatestReleaseURL      = "https://ghfast.top/https://github.com/yzgolden86/PivotFlow/releases/latest"
+	ghfastDownloadBaseURL       = "https://ghfast.top/https://github.com/yzgolden86/PivotFlow/releases/download"
 	releaseLatestDownloadSuffix = "/releases/latest/download"
 	releaseTagPathMarker        = "/releases/tag/"
 	releaseListMaxBodyBytes     = 2 << 20
@@ -91,11 +91,11 @@ func releaseSources(customBaseURL string) ([]ReleaseSource, error) {
 	}
 
 	if !strings.HasSuffix(customBaseURL, releaseLatestDownloadSuffix) {
-		return nil, fmt.Errorf("CCLOAD_RELEASE_BASE_URL must end with %s", releaseLatestDownloadSuffix)
+		return nil, fmt.Errorf("PIVOTFLOW_RELEASE_BASE_URL must end with %s", releaseLatestDownloadSuffix)
 	}
 	parsed, err := url.Parse(customBaseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return nil, fmt.Errorf("invalid CCLOAD_RELEASE_BASE_URL %q", customBaseURL)
+		return nil, fmt.Errorf("invalid PIVOTFLOW_RELEASE_BASE_URL %q", customBaseURL)
 	}
 
 	repositoryBaseURL := strings.TrimSuffix(customBaseURL, releaseLatestDownloadSuffix)

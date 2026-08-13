@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // AnyRouter is a New API-family variant with a distinct check-in endpoint.

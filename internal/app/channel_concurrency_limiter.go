@@ -6,7 +6,7 @@ import (
 	"io"
 	"sync"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 type channelConcurrencyExceededError struct {

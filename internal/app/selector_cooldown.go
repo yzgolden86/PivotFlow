@@ -7,9 +7,9 @@ import (
 	"slices"
 	"time"
 
-	modelpkg "ccLoad/internal/model"
-	"ccLoad/internal/protocol"
-	"ccLoad/internal/util"
+	modelpkg "github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 // filterCooldownChannels 过滤冷却中的渠道

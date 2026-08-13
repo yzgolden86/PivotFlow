@@ -5,14 +5,14 @@ import tempfile
 from playwright.sync_api import expect, sync_playwright
 
 
-BASE_URL = os.environ.get("CCLOAD_SMOKE_URL", "http://127.0.0.1:8080")
-PASSWORD = os.environ.get("CCLOAD_SMOKE_PASSWORD")
+BASE_URL = os.environ.get("PIVOTFLOW_SMOKE_URL", "http://127.0.0.1:8080")
+PASSWORD = os.environ.get("PIVOTFLOW_SMOKE_PASSWORD")
 
 
 def main():
     if not PASSWORD:
-        raise SystemExit("CCLOAD_SMOKE_PASSWORD is required")
-    artifact_dir = os.path.join(tempfile.gettempdir(), "ccload-sites-ui")
+        raise SystemExit("PIVOTFLOW_SMOKE_PASSWORD is required")
+    artifact_dir = os.path.join(tempfile.gettempdir(), "pivotflow-sites-ui")
     os.makedirs(artifact_dir, exist_ok=True)
     desktop_path = os.path.join(artifact_dir, "sites-desktop.png")
     mobile_path = os.path.join(artifact_dir, "sites-mobile.png")

@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 type NewAPI struct{ clients ClientFactory }
@@ -293,11 +293,17 @@ func (p *NewAPI) ListRoutingKeys(ctx context.Context, req AccountRequest) ([]Rou
 			name = fmt.Sprintf("token-%d", index+1)
 		}
 		id := strings.TrimSpace(fmt.Sprint(item["id"]))
-		if id == "<nil>" { id = "" }
+		if id == "<nil>" {
+			id = ""
+		}
 		group, _ := stringValue(item, "group")
-		if group == "" { group, _ = stringValue(item, "group_name") }
+		if group == "" {
+			group, _ = stringValue(item, "group_name")
+		}
 		models := modelNames(item["models"])
-		if len(models) == 0 { models = modelNames(item["model_limits"]) }
+		if len(models) == 0 {
+			models = modelNames(item["model_limits"])
+		}
 		enabled := true
 		if status, ok := numberValue(item, "status"); ok {
 			enabled = int(status) == 1

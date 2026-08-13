@@ -157,10 +157,10 @@ jobs:
           build_time=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
           go build -tags sonic -trimpath \
             -ldflags "-s -w \
-              -X ccLoad/internal/version.Version=$RELEASE_TAG \
-              -X ccLoad/internal/version.Commit=$commit \
-              -X 'ccLoad/internal/version.BuildTime=$build_time' \
-              -X ccLoad/internal/version.BuiltBy=github-actions" \
+              -X github.com/yzgolden86/PivotFlow/internal/version.Version=$RELEASE_TAG \
+              -X github.com/yzgolden86/PivotFlow/internal/version.Commit=$commit \
+              -X 'github.com/yzgolden86/PivotFlow/internal/version.BuildTime=$build_time' \
+              -X github.com/yzgolden86/PivotFlow/internal/version.BuiltBy=github-actions" \
             -o "dist/$OUTPUT" .
 
       - name: Upload binary

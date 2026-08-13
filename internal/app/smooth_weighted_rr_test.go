@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	modelpkg "ccLoad/internal/model"
+	modelpkg "github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 var benchmarkBalancedChannelsSink []*modelpkg.Config

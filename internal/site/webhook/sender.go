@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/site/provider"
+	"github.com/yzgolden86/PivotFlow/internal/site/provider"
 )
 
 const maxWebhookResponseBytes int64 = 64 << 10

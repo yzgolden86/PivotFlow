@@ -29,15 +29,15 @@ func TestNewUUIDv4Unique(t *testing.T) {
 }
 
 func TestNewUUIDv5Deterministic(t *testing.T) {
-	a := NewUUIDv5(NameSpaceOID, "ccload:test:foo")
-	b := NewUUIDv5(NameSpaceOID, "ccload:test:foo")
+	a := NewUUIDv5(NameSpaceOID, "pivotflow:test:foo")
+	b := NewUUIDv5(NameSpaceOID, "pivotflow:test:foo")
 	if a != b {
 		t.Fatalf("UUIDv5 must be deterministic, got %q vs %q", a, b)
 	}
 	if !uuidV5Pattern.MatchString(a) {
 		t.Fatalf("invalid UUIDv5 format: %q", a)
 	}
-	c := NewUUIDv5(NameSpaceOID, "ccload:test:bar")
+	c := NewUUIDv5(NameSpaceOID, "pivotflow:test:bar")
 	if a == c {
 		t.Fatalf("different name must produce different UUIDv5")
 	}

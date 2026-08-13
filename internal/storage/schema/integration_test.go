@@ -55,7 +55,7 @@ func setupIntegrationTest(t *testing.T) *TestSuiteIntegration {
 	suite.dbSQLite = sqliteDB
 
 	// 2. 设置MySQL数据库（可选）
-	suite.mysqlDSN = os.Getenv("CCLOAD_TEST_MYSQL_DSN")
+	suite.mysqlDSN = os.Getenv("PIVOTFLOW_TEST_MYSQL_DSN")
 	if suite.mysqlDSN == "" {
 		t.Logf("MySQL DSN not set, skipping MySQL tests")
 		suite.skipMySQL = true

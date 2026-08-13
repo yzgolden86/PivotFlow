@@ -6,7 +6,7 @@
 
 PivotFlow 是面向个人使用的 AI API 站点管理与智能路由控制台。
 
-它把多家上游站点的账号、余额、签到、公告和模型清单集中到一个界面，同时保留 ccLoad 已验证的路由核心：多 Key、多 URL、优先级、协议转换、冷却和故障切换。PivotFlow 是产品名称，ccLoad 是路由数据面的基础，不再作为前端品牌。
+它把多家上游站点的账号、余额、签到、公告和模型清单集中到一个界面，同时保留已验证的路由核心：多 Key、多 URL、优先级、协议转换、冷却和故障切换。PivotFlow 将站点控制面与路由基础整合在同一个应用中。
 
 ![PivotFlow 首页概览](docs/assets/dashboard.png)
 
@@ -23,7 +23,7 @@ PivotFlow 是面向个人使用的 AI API 站点管理与智能路由控制台�
 - 低余额、签到失败等事件的通用 Webhook。
 - 将站点账号幂等投影为路由渠道。
 
-### ccLoad 路由数据面
+### PivotFlow 路由数据面
 
 - OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini 和 Codex 入口。
 - 按模型选择渠道，按优先级、Key 策略和 URL 状态调度。
@@ -49,7 +49,7 @@ PivotFlow 是面向个人使用的 AI API 站点管理与智能路由控制台�
 | --- | --- | --- |
 | 站点 | 上游地址、平台、时区和代理 | 标识一个上游服务 |
 | 账号 | 站点下的一组登录凭证及状态 | 余额、签到、模型和公告 |
-| 渠道 | URL、Key、模型和路由策略 | 承接下游请求并执行 ccLoad 路由 |
+| 渠道 | URL、Key、模型和路由策略 | 承接下游请求并执行 PivotFlow 路由 |
 | 下游密钥 | PivotFlow 发放的令牌及限制 | 让 Claude Code、Codex、Gemini 或 OpenAI 客户端调用 PivotFlow |
 
 账号和渠道不是两套必须重复维护的配置。先在站点下添加账号，再在“渠道与分发”执行“同步站点渠道”。PivotFlow 会发现路由 Key 和模型，创建或更新带来源绑定的渠道。只有无法纳入站点管理的特殊上游才使用手工渠道。
@@ -74,11 +74,11 @@ PivotFlow 是面向个人使用的 AI API 站点管理与智能路由控制台�
 
 ```powershell
 Copy-Item .env.docker.example .env
-# 编辑 .env，至少设置 CCLOAD_PASS
+# 编辑 .env，至少设置 PIVOTFLOW_PASS
 docker compose -f docker-compose.build.yml up -d --build
 ```
 
-Linux/macOS 使用 `cp .env.docker.example .env`。该命令从当前源码构建，不依赖已发布镜像。打开 `http://127.0.0.1:8080/web/login.html`，使用 `CCLOAD_PASS` 登录。
+Linux/macOS 使用 `cp .env.docker.example .env`。该命令从当前源码构建，不依赖已发布镜像。打开 `http://127.0.0.1:8080/web/login.html`，使用 `PIVOTFLOW_PASS` 登录。
 
 ### 源码构建
 
@@ -119,7 +119,7 @@ Codex                    http://127.0.0.1:8080/v1/responses
 - 设置强管理密码，不要提交 `.env`、数据库、主密钥、Cookie、OAuth 凭证或 API Key。
 - 站点凭证和 Webhook URL 会加密保存。个人 SQLite 未显式配置密钥时，会在数据库旁生成 `fusion-master.key`；备份时数据库和该文件必须成对保存。
 - `FUSION_MASTER_KEY` 与 `FUSION_MASTER_KEY_FILE` 二选一，生产密钥应放在仓库之外。
-- `CCLOAD_ALLOW_INSECURE_TLS=1` 只用于临时排障。
+- `PIVOTFLOW_ALLOW_INSECURE_TLS=1` 只用于临时排障。
 - 管理 API 使用登录会话；代理 API 使用下游密钥。
 
 迁移或恢复数据前请阅读 [安全与备份](docs/security.md)。
@@ -135,12 +135,12 @@ Codex                    http://127.0.0.1:8080/v1/responses
 - [系统配置](docs/configuration.md)
 - [部署](docs/deployment.md)
 - [安全与备份](docs/security.md)
-- [维护与 ccLoad 同步](docs/maintenance.md)
+- [维护与 PivotFlow 同步](docs/maintenance.md)
 - [故障排查](docs/troubleshooting.md)
 
 ## 架构与来源
 
-PivotFlow 维护站点控制面、管理 API、存储和控制台。ccLoad 的选择器、冷却、Key/URL 调度和代理链路仍是路由基础。`internal/protocol/cliproxy` 是固定提交的纯协议转换快照，来源见 [UPSTREAM.md](internal/protocol/cliproxy/UPSTREAM.md)。
+PivotFlow 维护站点控制面、管理 API、存储和控制台。PivotFlow 的选择器、冷却、Key/URL 调度和代理链路仍是路由基础。`internal/protocol/cliproxy` 是固定提交的纯协议转换快照，来源见 [UPSTREAM.md](internal/protocol/cliproxy/UPSTREAM.md)。
 
 上游发布不会自动覆盖 PivotFlow，而是按 [维护说明](docs/maintenance.md) 人工审计、移植和验证。
 
@@ -168,7 +168,7 @@ MIT，见 [LICENSE](LICENSE)。第三方代码的来源和保留声明与对应�
 
 PivotFlow 的实现离不开开源社区已有的积累与启发，特别感谢：
 
-- [ccLoad](https://github.com/caidaoli/ccLoad)：为 PivotFlow 提供并保留了路由选择、调度、冷却、故障切换与协议转换基础。
+- 感谢贡献路由选择、调度、冷却、故障切换与协议转换基础的上游开源项目。
 - [Metapi](https://github.com/cita-777/metapi)：站点聚合、账号管理流程与首页看板设计的重要参考。
 - [All API Hub](https://github.com/qixing-jk/all-api-hub)：多站点资产管理、Provider 兼容和交互设计的重要参考。
 - [Octopus](https://github.com/Hureru/octopus)：个人网关、渠道管理和简洁控制台设计的重要参考。

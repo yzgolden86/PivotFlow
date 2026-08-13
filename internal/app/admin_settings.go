@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/version"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/version"
 
 	"github.com/gin-gonic/gin"
 )

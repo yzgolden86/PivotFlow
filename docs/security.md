@@ -9,7 +9,7 @@
 ## 建议的备份集合
 
 ```text
-data/ccload.db
+data/pivotflow.db
 data/fusion-master.key
 .env                # 放在受控的密码库，不要提交 Git
 ```
@@ -18,14 +18,14 @@ data/fusion-master.key
 
 ## OAuth 和 API 密钥
 
-- Antigravity OAuth 客户端信息只从 `CCLOAD_ANTIGRAVITY_CLIENT_ID/SECRET` 读取。
+- Antigravity OAuth 客户端信息只从 `PIVOTFLOW_ANTIGRAVITY_CLIENT_ID/SECRET` 读取。
 - Codex/Antigravity 凭证导入后仅保存加密后的必要字段。
 - 下游密钥支持重新显示/复制，但管理 API 不会默认明文返回。
 - 生产日志、文档截图和问题报告必须脱敏 URL、余额、Cookie、Key 和用户 ID。
 
 ## 网络安全
 
-默认拒绝不可信的上游目标和跨主机跳转；仅在受控内网临时启用私有地址访问。不要使用 `CCLOAD_ALLOW_INSECURE_TLS=1` 绕过证书错误来“修复”生产连接。
+默认拒绝不可信的上游目标和跨主机跳转；仅在受控内网临时启用私有地址访问。不要使用 `PIVOTFLOW_ALLOW_INSECURE_TLS=1` 绕过证书错误来“修复”生产连接。
 
 ## 事件响应
 

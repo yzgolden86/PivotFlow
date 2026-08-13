@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // ListModelFingerprints 查询全部指纹基线，按 created_at DESC 排序。

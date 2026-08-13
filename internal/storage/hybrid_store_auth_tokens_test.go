@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestHybridStore_EnsureAuthToken_SyncsExistingIDToSQLite(t *testing.T) {

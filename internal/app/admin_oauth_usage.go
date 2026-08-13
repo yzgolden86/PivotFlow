@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/antigravityauth"
-	"ccLoad/internal/codexauth"
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/antigravityauth"
+	"github.com/yzgolden86/PivotFlow/internal/codexauth"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 
 	"github.com/gin-gonic/gin"
 )

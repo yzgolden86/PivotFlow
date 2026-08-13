@@ -7,7 +7,7 @@
 
 This directory contains the four-protocol conversion core only. Authentication,
 configuration, routing, caches, plugins, dynamic registries, network refreshers,
-Antigravity, and Interactions are intentionally excluded. ccLoad-specific wire
+Antigravity, and Interactions are intentionally excluded. PivotFlow-specific wire
 adaptation lives in `internal/protocol/builtin`, not in this directory.
 
 ## Synchronized tests
@@ -44,13 +44,13 @@ runtime thinking application (`apply.go`, `strip.go`, `summary.go`,
 `validate.go`, `errors.go`, `provider/`) and its tests stay excluded, as does
 the upstream SDK translator Registry and its summary test. The OpenAI-to-OpenAI
 Chat Completions no-op converter and its post-`[DONE]` tests are excluded because
-ccLoad's Registry defines same-protocol traffic as byte-for-byte passthrough and
+PivotFlow's Registry defines same-protocol traffic as byte-for-byte passthrough and
 never registers same-protocol converters.
 
 ## Local contract fixes
 
-The snapshot is intentionally maintained in ccLoad instead of imported as a
-runtime module. ccLoad carries protocol fixes required by its Registry contract,
+The snapshot is intentionally maintained in PivotFlow instead of imported as a
+runtime module. PivotFlow carries protocol fixes required by its Registry contract,
 including canonical Anthropic JSON/SSE non-stream responses, terminal SSE
 events, cross-chunk tool arguments, reasoning/signature propagation, usage
 details, and mixed Chat Completions/Responses ingress handling.
@@ -58,10 +58,10 @@ details, and mixed Chat Completions/Responses ingress handling.
 The synchronized tests keep their upstream behavior coverage, with only these
 documented adaptations:
 
-- module imports point at `ccLoad/internal/protocol/cliproxy`;
+- module imports point at `github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy`;
 - the excluded upstream SDK Registry helper calls the exported core stream
   converter directly;
-- assertions follow ccLoad's public wire contract for native non-stream JSON,
+- assertions follow PivotFlow's public wire contract for native non-stream JSON,
   Gemini camelCase fields, Codex top-level `instructions`, system-only prompts
   preserved as the sole user content, terminal `[DONE]`, protocol-specific
   cache-creation usage, and unsigned Anthropic thinking preserved as OpenAI
@@ -79,14 +79,14 @@ documented adaptations:
 - OpenAI Chat Completions-to-Codex maps `web_search_options` to a Responses
   `web_search` tool while preserving its search context and user location.
 - Claude-to-Codex keeps top-level system text in `instructions`, supports the
-  broader ccLoad URL/file/redacted-thinking input shapes, and omits an empty
+  broader PivotFlow URL/file/redacted-thinking input shapes, and omits an empty
   `input` array for instructions-only requests.
 - Claude-to-Gemini preserves an absent adaptive effort and performs the
   excluded runtime `ApplyThinking` level normalization inline: exact target
   levels are retained, unsupported valid levels are clamped to the nearest
   declared level (lower wins ties), and Antigravity level-suffixed Gemini model
   names resolve capabilities through their base model.
-- Claude Responses native non-stream JSON keeps ccLoad request-field echoing,
+- Claude Responses native non-stream JSON keeps PivotFlow request-field echoing,
   cache-creation and reasoning usage details, and the same marked
   redacted-thinking carrier used by the synchronized SSE path.
 - Gemini Responses `[DONE]` finalization is upstream behavior as of
@@ -101,7 +101,7 @@ Run this procedure through the repository skill: use `$sync-cliproxy-core` in
 Codex or `/sync-cliproxy-core` in Claude Code. Both entry points resolve to the
 canonical skill under `.agents/skills/sync-cliproxy-core`.
 
-1. Fetch the ccLoad CLIProxyAPI fork and choose one immutable commit or tag.
+1. Fetch the PivotFlow CLIProxyAPI fork and choose one immutable commit or tag.
 2. Diff both production sources and the synchronized test files listed above
    against the commit above. Source and tests must always come from the same commit.
 3. Copy the changed pure conversion files and matching tests only; do not add a
@@ -115,6 +115,6 @@ canonical skill under `.agents/skills/sync-cliproxy-core`.
    commands from `CLAUDE.md`.
 
 The upstream core tests prove the snapshot was synchronized without losing its
-conversion behavior. The Registry boundary tests remain ccLoad's compatibility
+conversion behavior. The Registry boundary tests remain PivotFlow's compatibility
 authority. A future upstream sync is incomplete if either layer fails or any of
 the 12 request, non-stream response, or stream response directions regress.

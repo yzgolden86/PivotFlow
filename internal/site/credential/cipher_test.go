@@ -45,7 +45,7 @@ func TestCipherRejectsWrongVersionAndKey(t *testing.T) {
 func TestNewFromEnvCreatesAndReusesDefaultSQLiteKeyFile(t *testing.T) {
 	t.Setenv(masterKeyEnv, "")
 	t.Setenv(masterKeyFileEnv, "")
-	dbPath := filepath.Join(t.TempDir(), "ccload.db")
+	dbPath := filepath.Join(t.TempDir(), "pivotflow.db")
 	t.Setenv("SQLITE_PATH", dbPath)
 
 	first, err := NewFromEnv()

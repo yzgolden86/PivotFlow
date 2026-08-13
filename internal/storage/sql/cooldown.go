@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 // ==================== 渠道级冷却方法（操作 channels 表内联字段）====================

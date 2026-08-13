@@ -10,10 +10,10 @@ import (
 	"testing/iotest"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/protocol"
-	"ccLoad/internal/protocol/builtin"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/builtin"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 
 	"github.com/tidwall/gjson"
 )

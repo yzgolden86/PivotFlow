@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
 )
 
 // 协议协商热路径基准：这些函数在每次请求的渠道选择/URL 尝试中执行，

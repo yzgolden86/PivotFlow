@@ -17,21 +17,21 @@ import (
 	"syscall"
 	"time"
 
-	"ccLoad/internal/antigravityauth"
-	"ccLoad/internal/codexauth"
-	"ccLoad/internal/config"
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/model"
-	"ccLoad/internal/protocol"
-	protocolbuiltin "ccLoad/internal/protocol/builtin"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/util"
-	"ccLoad/internal/version"
+	"github.com/yzgolden86/PivotFlow/internal/antigravityauth"
+	"github.com/yzgolden86/PivotFlow/internal/codexauth"
+	"github.com/yzgolden86/PivotFlow/internal/config"
+	"github.com/yzgolden86/PivotFlow/internal/cooldown"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	protocolbuiltin "github.com/yzgolden86/PivotFlow/internal/protocol/builtin"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
 
-// Server 是 ccLoad 的核心HTTP服务器，负责代理请求转发和管理API
+// Server 是 PivotFlow 的核心HTTP服务器，负责代理请求转发和管理API
 type Server struct {
 	// ============================================================================
 	// 服务层
@@ -128,9 +128,9 @@ func NewServer(store storage.Store) *Server {
 	log.Print("[INFO] ConfigService已加载系统配置（支持Web界面管理）")
 
 	// 管理员密码：仅从环境变量读取（安全考虑：密码不应存储在数据库中）
-	password := os.Getenv("CCLOAD_PASS")
+	password := os.Getenv("PIVOTFLOW_PASS")
 	if password == "" {
-		log.Print("[FATAL] 未设置 CCLOAD_PASS，出于安全原因程序将退出。请设置强管理员密码后重试。")
+		log.Print("[FATAL] 未设置 PIVOTFLOW_PASS，出于安全原因程序将退出。请设置强管理员密码后重试。")
 		os.Exit(1)
 	}
 
@@ -158,7 +158,7 @@ func NewServer(store storage.Store) *Server {
 
 	// TLS证书验证配置（仅环境变量）
 	// 这是一个危险开关：一旦关闭证书校验，上游 HTTPS 等同明文 + 任意中间人。
-	skipTLSVerify := os.Getenv("CCLOAD_ALLOW_INSECURE_TLS") == "1"
+	skipTLSVerify := os.Getenv("PIVOTFLOW_ALLOW_INSECURE_TLS") == "1"
 	if skipTLSVerify {
 		log.Print("[WARN] 已禁用上游 TLS 证书校验（InsecureSkipVerify=true）：仅用于临时排障/受控内网环境")
 	}
@@ -521,14 +521,14 @@ func loadProtocolTimeouts(cs *ConfigService) map[string]protocolTimeoutConfig {
 // migratedEnvSettings 已迁移到系统设置的旧环境变量 → 新配置项。
 // 保留告警而非静默忽略：老部署仍在 .env 里设着这些值，不提示会让人以为限额还生效。
 var migratedEnvSettings = map[string]string{
-	"CCLOAD_MAX_CONCURRENCY":         "max_concurrency",
-	"CCLOAD_MAX_BODY_BYTES":          "max_body_bytes / max_image_body_bytes",
-	"CCLOAD_COOLDOWN_AUTH_SEC":       "cooldown_auth_seconds",
-	"CCLOAD_COOLDOWN_SERVER_SEC":     "cooldown_server_seconds",
-	"CCLOAD_COOLDOWN_TIMEOUT_SEC":    "cooldown_timeout_seconds",
-	"CCLOAD_COOLDOWN_RATE_LIMIT_SEC": "cooldown_rate_limit_seconds",
-	"CCLOAD_COOLDOWN_MAX_SEC":        "cooldown_max_seconds",
-	"CCLOAD_COOLDOWN_MIN_SEC":        "cooldown_min_seconds",
+	"PIVOTFLOW_MAX_CONCURRENCY":         "max_concurrency",
+	"PIVOTFLOW_MAX_BODY_BYTES":          "max_body_bytes / max_image_body_bytes",
+	"PIVOTFLOW_COOLDOWN_AUTH_SEC":       "cooldown_auth_seconds",
+	"PIVOTFLOW_COOLDOWN_SERVER_SEC":     "cooldown_server_seconds",
+	"PIVOTFLOW_COOLDOWN_TIMEOUT_SEC":    "cooldown_timeout_seconds",
+	"PIVOTFLOW_COOLDOWN_RATE_LIMIT_SEC": "cooldown_rate_limit_seconds",
+	"PIVOTFLOW_COOLDOWN_MAX_SEC":        "cooldown_max_seconds",
+	"PIVOTFLOW_COOLDOWN_MIN_SEC":        "cooldown_min_seconds",
 }
 
 func warnMigratedEnvSettings() {
@@ -684,13 +684,13 @@ func readThroughChannelCache[T any](
 	return readStore()
 }
 
-// getHostOverrides 延迟解析域名→IP覆盖表（CCLOAD_HOST_OVERRIDES）。
+// getHostOverrides 延迟解析域名→IP覆盖表（PIVOTFLOW_HOST_OVERRIDES）。
 // 必须延迟到首次调用时求值：包级变量初始化早于 main() 中的 godotenv.Load()，
 // 此时 .env 尚未加载，os.Getenv 读到空值。sync.OnceValue 保证只解析一次且并发安全。
 var getHostOverrides = sync.OnceValue(func() map[string]string {
-	overrides, err := parseHostOverrides(os.Getenv("CCLOAD_HOST_OVERRIDES"))
+	overrides, err := parseHostOverrides(os.Getenv("PIVOTFLOW_HOST_OVERRIDES"))
 	if err != nil {
-		log.Fatalf("[FATAL] CCLOAD_HOST_OVERRIDES 配置错误: %v", err)
+		log.Fatalf("[FATAL] PIVOTFLOW_HOST_OVERRIDES 配置错误: %v", err)
 	}
 	return overrides
 })
@@ -728,7 +728,7 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
 			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: skipTLSVerify, //nolint:gosec // G402: 由环境变量CCLOAD_SKIP_TLS_VERIFY控制，用于开发测试
+			InsecureSkipVerify: skipTLSVerify, //nolint:gosec // G402: 由环境变量PIVOTFLOW_SKIP_TLS_VERIFY控制，用于开发测试
 		},
 	}
 

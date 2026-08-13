@@ -114,7 +114,7 @@ func NewUpdateManager(opts UpdateManagerOptions) (*UpdateManager, error) {
 	}
 	if len(opts.ReleaseSources) == 0 {
 		var err error
-		opts.ReleaseSources, err = releaseSources(os.Getenv("CCLOAD_RELEASE_BASE_URL"))
+		opts.ReleaseSources, err = releaseSources(os.Getenv("PIVOTFLOW_RELEASE_BASE_URL"))
 		if err != nil {
 			return nil, err
 		}
@@ -366,7 +366,7 @@ func (u *UpdateManager) downloadVerifyAndReplace(ctx context.Context, tag, asset
 	}
 
 	dir := filepath.Dir(u.executablePath)
-	tmp, err := os.CreateTemp(dir, ".ccload-update-*")
+	tmp, err := os.CreateTemp(dir, ".pivotflow-update-*")
 	if err != nil {
 		return fmt.Errorf("create temp binary: %w", err)
 	}
@@ -542,13 +542,13 @@ func (u *UpdateManager) callRestartOnce() {
 func releaseAssetName(goos, goarch string) (string, bool) {
 	switch goos + "/" + goarch {
 	case "darwin/amd64":
-		return "ccload-darwin-amd64", true
+		return "pivotflow-darwin-amd64", true
 	case "darwin/arm64":
-		return "ccload-darwin-arm64", true
+		return "pivotflow-darwin-arm64", true
 	case "linux/amd64":
-		return "ccload-linux-amd64", true
+		return "pivotflow-linux-amd64", true
 	case "linux/arm64":
-		return "ccload-linux-arm64", true
+		return "pivotflow-linux-arm64", true
 	default:
 		return "", false
 	}

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestAPIKey_CreateAndGet(t *testing.T) {

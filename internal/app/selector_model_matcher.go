@@ -1,7 +1,7 @@
 package app
 
 import (
-	modelpkg "ccLoad/internal/model"
+	modelpkg "github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // configSupportsModel 检查渠道是否支持指定模型

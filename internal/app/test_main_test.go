@@ -8,16 +8,16 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	originalPass, hadPass := os.LookupEnv("CCLOAD_PASS")
-	_ = os.Setenv("CCLOAD_PASS", "test_password_123")
+	originalPass, hadPass := os.LookupEnv("PIVOTFLOW_PASS")
+	_ = os.Setenv("PIVOTFLOW_PASS", "test_password_123")
 	gin.SetMode(gin.TestMode)
 
 	code := m.Run()
 
 	if hadPass {
-		_ = os.Setenv("CCLOAD_PASS", originalPass)
+		_ = os.Setenv("PIVOTFLOW_PASS", originalPass)
 	} else {
-		_ = os.Unsetenv("CCLOAD_PASS")
+		_ = os.Unsetenv("PIVOTFLOW_PASS")
 	}
 	os.Exit(code)
 }

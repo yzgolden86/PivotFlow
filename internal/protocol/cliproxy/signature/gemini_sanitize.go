@@ -3,7 +3,7 @@ package signature
 import (
 	"strings"
 
-	"ccLoad/internal/protocol/cliproxy/util"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/util"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"

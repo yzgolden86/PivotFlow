@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
@@ -4950,9 +4950,9 @@ func TestResponsesWebsocketPersistsUsageCostAndRedactedDebugContent(t *testing.T
 		t.Fatalf("debug transport method=%q url=%q, want WebSocket wire request", debugLog.ReqMethod, debugLog.ReqURL)
 	}
 	if debugLog.RespStatus != http.StatusSwitchingProtocols ||
-		!strings.Contains(debugLog.RespHeaders, "X-CCLoad-Upstream-Transport") ||
+		!strings.Contains(debugLog.RespHeaders, "X-PivotFlow-Upstream-Transport") ||
 		!strings.Contains(debugLog.RespHeaders, "native-codex") ||
-		gjson.Get(debugLog.RespHeaders, "X-CCLoad-WebSocket-Reconnects").Uint() != 1 {
+		gjson.Get(debugLog.RespHeaders, "X-PivotFlow-WebSocket-Reconnects").Uint() != 1 {
 		t.Fatalf("debug handshake status=%d headers=%s", debugLog.RespStatus, debugLog.RespHeaders)
 	}
 	if gjson.GetBytes(debugLog.ReqBody, "type").String() != "response.create" ||

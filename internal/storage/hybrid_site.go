@@ -3,7 +3,7 @@ package storage
 import (
 	"context"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // Site control-plane data is authoritative in the primary database in hybrid

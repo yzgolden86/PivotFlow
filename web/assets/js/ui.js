@@ -1,10 +1,10 @@
 // 保持公共 UI 在独立加载或旧缓存混用时可用；完整实现由 web-auth.js 覆盖。
 window.WebAuth = window.WebAuth || {
-  ROLE_KEY: 'ccload_web_role',
+  ROLE_KEY: 'pivotflow_web_role',
   clearWebSession(storage) {
-    storage.removeItem('ccload_token');
-    storage.removeItem('ccload_token_expiry');
-    storage.removeItem('ccload_web_role');
+    storage.removeItem('pivotflow_token');
+    storage.removeItem('pivotflow_token_expiry');
+    storage.removeItem('pivotflow_web_role');
   },
   getWebRole() { return 'admin'; },
   isAPITokenRole() { return false; },
@@ -38,8 +38,8 @@ window.WebAuth = window.WebAuth || {
    * @returns {Promise<Response>}
    */
   async function fetchWithAuth(url, options = {}) {
-    const token = localStorage.getItem('ccload_token');
-    const expiry = localStorage.getItem('ccload_token_expiry');
+    const token = localStorage.getItem('pivotflow_token');
+    const expiry = localStorage.getItem('pivotflow_token_expiry');
 
     // 检查Token过期（静默跳转，不显示错误提示）
     if (!token || (expiry && Date.now() > parseInt(expiry))) {
@@ -149,7 +149,7 @@ window.WebAuth = window.WebAuth || {
     { key: 'model-test', labelKey: 'nav.modelTest', href: '/web/model-test.html', icon: iconTest },
     { key: 'settings', labelKey: 'nav.settings', href: '/web/settings.html', icon: iconSettings },
   ];
-  const THEME_STORAGE_KEY = 'ccload_theme';
+  const THEME_STORAGE_KEY = 'pivotflow_theme';
   const THEME_MODES = ['system', 'light', 'dark'];
   let systemThemeQuery = null;
   let currentThemeMode = 'system';
@@ -277,7 +277,7 @@ window.WebAuth = window.WebAuth || {
     document.documentElement.style.colorScheme = resolvedTheme;
     setThemeMetaColor(resolvedTheme);
     refreshThemeSwitcher();
-    window.dispatchEvent(new CustomEvent('ccload:themechange', {
+    window.dispatchEvent(new CustomEvent('pivotflow:themechange', {
       detail: { mode: currentThemeMode, resolvedTheme }
     }));
   }
@@ -294,9 +294,9 @@ window.WebAuth = window.WebAuth || {
   function initTheme() {
     systemThemeQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
     applyStoredTheme();
-    if (systemThemeQuery && !systemThemeQuery._ccloadThemeBound) {
+    if (systemThemeQuery && !systemThemeQuery._pivotflowThemeBound) {
       systemThemeQuery.addEventListener('change', applyStoredTheme);
-      systemThemeQuery._ccloadThemeBound = true;
+      systemThemeQuery._pivotflowThemeBound = true;
     }
   }
 
@@ -318,8 +318,8 @@ window.WebAuth = window.WebAuth || {
   document.addEventListener('click', () => closeThemeSwitchers());
 
   function isLoggedIn() {
-    const token = localStorage.getItem('ccload_token');
-    const expiry = localStorage.getItem('ccload_token_expiry');
+    const token = localStorage.getItem('pivotflow_token');
+    const expiry = localStorage.getItem('pivotflow_token_expiry');
     return token && (!expiry || Date.now() <= parseInt(expiry));
   }
 
@@ -804,7 +804,7 @@ window.WebAuth = window.WebAuth || {
     if (!confirm(t('confirm.logout'))) return;
 
     // 先清理本地Token，避免后续请求触发token检查
-    const token = localStorage.getItem('ccload_token');
+    const token = localStorage.getItem('pivotflow_token');
     window.WebAuth.clearWebSession(localStorage);
 
     // 如果有token，尝试调用后端登出接口（使用普通fetch，不触发token检查）

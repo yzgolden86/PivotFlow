@@ -26,7 +26,7 @@ foreach ($file in $markdownFiles) {
     if ($file.Name -in @('README.md', 'README.zh-CN.md')) {
         $legacyCheckContent = $legacyCheckContent -replace '(?ms)^## (?:Acknowledgements|致谢)\s*$.*\z', ''
     }
-    if ($legacyCheckContent -match 'images/ccload|ccload-dashboard|ccload-logs|github\.com/caidaoli/ccLoad') {
+    if ($legacyCheckContent -match 'images/pivotflow|pivotflow-dashboard|pivotflow-logs') {
         $legacy.Add([IO.Path]::GetRelativePath($Root, $file.FullName))
     }
 }

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"ccLoad/internal/config"
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/config"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 
 	"github.com/bytedance/sonic"
 )
@@ -265,14 +265,14 @@ func annotateNativeWebsocketDebug(entry *model.DebugLogEntry, snapshot codexWebs
 			headers[name] = values[0]
 		}
 	}
-	headers["X-CCLoad-Upstream-Transport"] = "websocket"
-	headers["X-CCLoad-WebSocket-Handshake-Status"] = strconv.Itoa(entry.RespStatus)
-	headers["X-CCLoad-WebSocket-Reconnects"] = strconv.FormatUint(snapshot.Reconnects, 10)
+	headers["X-PivotFlow-Upstream-Transport"] = "websocket"
+	headers["X-PivotFlow-WebSocket-Handshake-Status"] = strconv.Itoa(entry.RespStatus)
+	headers["X-PivotFlow-WebSocket-Reconnects"] = strconv.FormatUint(snapshot.Reconnects, 10)
 	if snapshot.LastReconnectReason != "" {
-		headers["X-CCLoad-WebSocket-Last-Reconnect-Reason"] = snapshot.LastReconnectReason
+		headers["X-PivotFlow-WebSocket-Last-Reconnect-Reason"] = snapshot.LastReconnectReason
 	}
 	if snapshot.LastCloseReason != "" {
-		headers["X-CCLoad-WebSocket-Last-Close-Reason"] = snapshot.LastCloseReason
+		headers["X-PivotFlow-WebSocket-Last-Close-Reason"] = snapshot.LastCloseReason
 	}
 	headers = maskSensitiveHeaderMap(headers)
 	encoded, _ := sonic.Marshal(headers)

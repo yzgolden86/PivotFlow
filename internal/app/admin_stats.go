@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"ccLoad/internal/model"
-	"ccLoad/internal/protocol"
-	"ccLoad/internal/util"
-	"ccLoad/internal/version"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
@@ -268,7 +268,7 @@ func (s *Server) HandlePublicVersion(c *gin.Context) {
 	})
 }
 
-// HandleCheckForUpdates runs one explicit, check-only ccLoad release lookup.
+// HandleCheckForUpdates runs one explicit, check-only PivotFlow release lookup.
 // It never downloads or replaces the running executable.
 func (s *Server) HandleCheckForUpdates(c *gin.Context) {
 	manager := s.updateManager

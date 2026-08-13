@@ -5,16 +5,16 @@ import tempfile
 from playwright.sync_api import expect, sync_playwright
 
 
-BASE_URL = os.environ.get("CCLOAD_SMOKE_URL", "http://127.0.0.1:8089")
-PASSWORD = os.environ.get("CCLOAD_SMOKE_PASSWORD")
-RUN_SYNC = os.environ.get("CCLOAD_SMOKE_SYNC") == "1"
+BASE_URL = os.environ.get("PIVOTFLOW_SMOKE_URL", "http://127.0.0.1:8089")
+PASSWORD = os.environ.get("PIVOTFLOW_SMOKE_PASSWORD")
+RUN_SYNC = os.environ.get("PIVOTFLOW_SMOKE_SYNC") == "1"
 
 
 def main():
     if not PASSWORD:
-        raise SystemExit("CCLOAD_SMOKE_PASSWORD is required")
+        raise SystemExit("PIVOTFLOW_SMOKE_PASSWORD is required")
 
-    artifact_dir = os.path.join(tempfile.gettempdir(), "ccload-account-flow")
+    artifact_dir = os.path.join(tempfile.gettempdir(), "pivotflow-account-flow")
     os.makedirs(artifact_dir, exist_ok=True)
     desktop_screenshot = os.path.join(artifact_dir, "desktop.jpeg")
     mobile_screenshot = os.path.join(artifact_dir, "mobile.jpeg")
@@ -50,7 +50,7 @@ def main():
         navigation = page.get_by_role("navigation", name="主导航")
         expect(navigation.get_by_role("link", name="站点管理", exact=True)).to_be_visible()
         expect(navigation.get_by_role("link", name="账号管理", exact=True)).to_be_visible()
-        for removed_text in ["站点账号", "模型能力基线", "通知设置", "CCLoad Core", "路由数据面"]:
+        for removed_text in ["站点账号", "模型能力基线", "通知设置", "PivotFlow Core", "路由数据面"]:
             expect(navigation.get_by_text(removed_text, exact=True)).to_have_count(0)
 
         navigation.get_by_role("link", name="站点管理", exact=True).click()

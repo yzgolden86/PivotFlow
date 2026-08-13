@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 // logsClientProtocolBackfillCase 按模型名把历史日志分类到四种客户端协议。

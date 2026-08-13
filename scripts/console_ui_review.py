@@ -4,14 +4,14 @@ import tempfile
 from playwright.sync_api import expect, sync_playwright
 
 
-BASE_URL = os.environ.get("CCLOAD_SMOKE_URL", "http://127.0.0.1:8087")
-PASSWORD = os.environ.get("CCLOAD_SMOKE_PASSWORD", "")
-ARTIFACT_DIR = os.path.join(tempfile.gettempdir(), "ccload-console-ui")
+BASE_URL = os.environ.get("PIVOTFLOW_SMOKE_URL", "http://127.0.0.1:8087")
+PASSWORD = os.environ.get("PIVOTFLOW_SMOKE_PASSWORD", "")
+ARTIFACT_DIR = os.path.join(tempfile.gettempdir(), "pivotflow-console-ui")
 
 
 def main():
     if not PASSWORD:
-        raise RuntimeError("CCLOAD_SMOKE_PASSWORD must be set")
+        raise RuntimeError("PIVOTFLOW_SMOKE_PASSWORD must be set")
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)

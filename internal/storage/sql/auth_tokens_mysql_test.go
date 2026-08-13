@@ -12,11 +12,11 @@ import (
 
 	mysql "github.com/go-sql-driver/mysql"
 
-	"ccLoad/internal/model"
-	sqlstore "ccLoad/internal/storage/sql"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 )
 
-const foundRowsDriverName = "ccload_mysql_found_rows_test"
+const foundRowsDriverName = "pivotflow_mysql_found_rows_test"
 
 var (
 	registerFoundRowsDriverOnce sync.Once

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/util"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 // ErrAuthTokenNotFound distinguishes a missing token from a storage failure.

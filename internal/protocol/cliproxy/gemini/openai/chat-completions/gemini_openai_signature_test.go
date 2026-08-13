@@ -5,7 +5,7 @@ import (
 
 	"github.com/tidwall/gjson"
 
-	"ccLoad/internal/protocol/cliproxy/signature"
+	"github.com/yzgolden86/PivotFlow/internal/protocol/cliproxy/signature"
 )
 
 const capturedGeminiToolCallThoughtSignature = "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsA"

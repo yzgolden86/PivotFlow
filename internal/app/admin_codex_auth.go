@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"ccLoad/internal/antigravityauth"
-	"ccLoad/internal/codexauth"
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
+	"github.com/yzgolden86/PivotFlow/internal/antigravityauth"
+	"github.com/yzgolden86/PivotFlow/internal/codexauth"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -727,7 +727,7 @@ func (s *Server) HandleCancelCodexOAuth(c *gin.Context) {
 }
 
 // HandleSubmitCodexOAuthCallback accepts a loopback callback URL copied from
-// the browser when the ccLoad host cannot receive the localhost redirect.
+// the browser when the PivotFlow host cannot receive the localhost redirect.
 func (s *Server) HandleSubmitCodexOAuthCallback(c *gin.Context) {
 	var request codexOAuthCallbackRequest
 	if err := BindAndValidate(c, &request); err != nil {

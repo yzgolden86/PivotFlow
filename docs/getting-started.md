@@ -15,7 +15,7 @@ cp .env.docker.example .env
 编辑 `.env`，至少设置一个强密码：
 
 ```dotenv
-CCLOAD_PASS=replace-with-a-long-random-password
+PIVOTFLOW_PASS=replace-with-a-long-random-password
 TZ=Asia/Shanghai
 ```
 
