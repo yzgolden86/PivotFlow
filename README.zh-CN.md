@@ -168,7 +168,7 @@ MIT，见 [LICENSE](LICENSE)。第三方代码的来源和保留声明与对应�
 
 PivotFlow 的实现离不开开源社区已有的积累与启发，特别感谢：
 
-- 感谢贡献路由选择、调度、冷却、故障切换与协议转换基础的上游开源项目。
+- [ccLoad](https://github.com/caidaoli/ccLoad)：为 PivotFlow 提供并保留了路由选择、调度、冷却、故障切换与协议转换基础。
 - [Metapi](https://github.com/cita-777/metapi)：站点聚合、账号管理流程与首页看板设计的重要参考。
 - [All API Hub](https://github.com/qixing-jk/all-api-hub)：多站点资产管理、Provider 兼容和交互设计的重要参考。
 - [Octopus](https://github.com/Hureru/octopus)：个人网关、渠道管理和简洁控制台设计的重要参考。
