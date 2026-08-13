@@ -1,0 +1,127 @@
+package model
+
+import (
+	"strconv"
+	"strings"
+	"time"
+)
+
+// LogSource* constants define persisted log sources plus special filter aliases.
+const (
+	LogSourceProxy          = "proxy"
+	LogSourceScheduledCheck = "scheduled_check"
+	LogSourceManualTest     = "manual_test"
+	LogSourceManualChat     = "manual_chat"
+
+	LogSourceDetection = "detection"
+	LogSourceAll       = "all"
+)
+
+// NormalizeStoredLogSource maps stored or legacy log sources to supported persisted values.
+func NormalizeStoredLogSource(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "", LogSourceProxy:
+		return LogSourceProxy
+	case LogSourceScheduledCheck:
+		return LogSourceScheduledCheck
+	case LogSourceManualTest:
+		return LogSourceManualTest
+	case LogSourceManualChat:
+		return LogSourceManualChat
+	default:
+		return LogSourceProxy
+	}
+}
+
+// JSONTime 自定义时间类型，使用Unix时间戳进行JSON序列化
+// 设计原则：与数据库格式统一，减少转换复杂度（KISS原则）
+type JSONTime struct {
+	time.Time
+}
+
+// MarshalJSON 实现JSON序列化
+func (jt JSONTime) MarshalJSON() ([]byte, error) {
+	if jt.IsZero() {
+		return []byte("0"), nil
+	}
+	return []byte(strconv.FormatInt(jt.Unix(), 10)), nil
+}
+
+// UnmarshalJSON 实现JSON反序列化
+func (jt *JSONTime) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" || string(data) == "0" {
+		jt.Time = time.Time{}
+		return nil
+	}
+	ts, err := strconv.ParseInt(string(data), 10, 64)
+	if err != nil {
+		return err
+	}
+	jt.Time = time.Unix(ts, 0)
+	return nil
+}
+
+// LogEntry 请求日志条目
+type LogEntry struct {
+	ID                   int64    `json:"id"`
+	Time                 JSONTime `json:"time"`
+	Model                string   `json:"model"`
+	ActualModel          string   `json:"actual_model,omitempty"` // 实际转发的模型（空表示未重定向）
+	LogSource            string   `json:"log_source,omitempty"`
+	ChannelID            int64    `json:"channel_id"`
+	ChannelName          string   `json:"channel_name,omitempty"`
+	StatusCode           int      `json:"status_code"`
+	Message              string   `json:"message"`
+	Duration             float64  `json:"duration"`                     // 总耗时（秒）
+	IsStreaming          bool     `json:"is_streaming"`                 // 是否为流式请求
+	UpstreamWebsocket    bool     `json:"upstream_websocket,omitempty"` // 实际上游请求是否使用WebSocket
+	FirstByteTime        float64  `json:"first_byte_time"`              // 上游首字节响应时间（秒）
+	APIKeyUsed           string   `json:"api_key_used"`                 // 使用的API Key（写入时强制脱敏为 abc.xyz 格式，数据库不存明文）
+	APIKeyHash           string   `json:"api_key_hash,omitempty"`       // API Key 的 SHA256（仅用于后台精确定位 key_index，不泄露明文）
+	AuthTokenID          int64    `json:"auth_token_id"`                // 客户端使用的API令牌ID（新增2025-12，0表示未使用token）
+	AuthTokenDescription string   `json:"auth_token_description"`       // API令牌描述（查询时从auth_tokens表JOIN获取）
+	ClientProtocol       string   `json:"client_protocol,omitempty"`    // 客户端入口协议（anthropic/openai/gemini/codex）
+	UpstreamProtocol     string   `json:"upstream_protocol,omitempty"`  // 当前尝试实际使用的上游协议
+	ClientIP             string   `json:"client_ip"`                    // 客户端IP地址（新增2025-12）
+	BaseURL              string   `json:"base_url,omitempty"`           // 请求使用的上游URL（多URL场景）
+	ServiceTier          string   `json:"service_tier,omitempty"`       // OpenAI service_tier；Codex priority 按模型计 Fast 倍率
+	ThinkingEffort       string   `json:"thinking_effort,omitempty"`
+
+	// Token统计（2025-11新增，支持Claude API usage字段）
+	InputTokens              int     `json:"input_tokens"`
+	OutputTokens             int     `json:"output_tokens"`
+	ReasoningTokens          int     `json:"reasoning_tokens,omitempty"`
+	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"` // 5m+1h缓存总和（兼容字段）
+	Cache5mInputTokens       int     `json:"cache_5m_input_tokens"`       // 5分钟缓存写入Token数（新增2025-12）
+	Cache1hInputTokens       int     `json:"cache_1h_input_tokens"`       // 1小时缓存写入Token数（新增2025-12）
+	Cost                     float64 `json:"cost"`                        // 请求成本（美元，标准成本）
+	CostMultiplier           float64 `json:"cost_multiplier"`             // 写日志时快照的渠道倍率，默认1
+
+	// 瞬态字段：不持久化到 logs 表，仅用于传递 debug 数据到写入管道
+	DebugData *DebugLogEntry `json:"-"`
+}
+
+// LogFilter 日志查询过滤条件
+type LogFilter struct {
+	ChannelID        *int64
+	ChannelName      string
+	ChannelNameLike  string
+	Model            string
+	ModelLike        string
+	StatusCode       *int
+	UpstreamProtocol string // 实际上游协议过滤
+	AuthTokenID      *int64 // API令牌ID过滤
+	LogSource        string
+}
+
+// ChannelURLLogStat 是基于持久化日志聚合出的 URL 启动快照。
+// 用途：程序启动时从 logs.base_url 回填 URLSelector 的当日成功/失败计数与延迟。
+type ChannelURLLogStat struct {
+	ChannelID int64
+	BaseURL   string
+	Requests  int64
+	Failures  int64
+	LatencyMs float64
+	LastSeen  time.Time
+}

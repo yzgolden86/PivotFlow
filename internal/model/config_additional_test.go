@@ -1,0 +1,258 @@
+package model
+
+import (
+	"testing"
+	"time"
+)
+
+func TestModelEntry_Validate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("trim_and_accept", func(t *testing.T) {
+		entry := &ModelEntry{Model: "  gpt-4  ", RedirectModel: "  "}
+		if err := entry.Validate(); err != nil {
+			t.Fatalf("Validate() unexpected error: %v", err)
+		}
+		if entry.Model != "gpt-4" {
+			t.Fatalf("Model not trimmed: %q", entry.Model)
+		}
+		if entry.RedirectModel != "" {
+			t.Fatalf("RedirectModel not trimmed: %q", entry.RedirectModel)
+		}
+	})
+
+	t.Run("reject_empty", func(t *testing.T) {
+		entry := &ModelEntry{Model: "   "}
+		if err := entry.Validate(); err == nil {
+			t.Fatal("expected error for empty model")
+		}
+	})
+
+	t.Run("reject_illegal_model_chars", func(t *testing.T) {
+		entry := &ModelEntry{Model: "gpt-4\nx"}
+		if err := entry.Validate(); err == nil {
+			t.Fatal("expected error for illegal chars in model")
+		}
+	})
+
+	t.Run("reject_illegal_redirect_chars", func(t *testing.T) {
+		entry := &ModelEntry{Model: "gpt-4", RedirectModel: "x\ry"}
+		if err := entry.Validate(); err == nil {
+			t.Fatal("expected error for illegal chars in redirect_model")
+		}
+	})
+}
+
+func TestConfig_SupportsModel(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		ModelEntries: []ModelEntry{
+			{Model: "m1", RedirectModel: "upstream-m1", Disabled: true},
+			{Model: "m2"},
+		},
+	}
+
+	if !cfg.SupportsModel("m2") {
+		t.Fatal("expected SupportsModel(m2)=true")
+	}
+	if cfg.SupportsModel("none") {
+		t.Fatal("expected SupportsModel(none)=false")
+	}
+	if cfg.SupportsModel("m1") {
+		t.Fatal("disabled model must not be supported")
+	}
+	if redirect, ok := cfg.GetRedirectModel("m1"); ok || redirect != "" {
+		t.Fatalf("disabled model redirect must not resolve, got (%q, %v)", redirect, ok)
+	}
+	if models := cfg.GetModels(); len(models) != 1 || models[0] != "m2" {
+		t.Fatalf("GetModels()=%v, want only enabled model m2", models)
+	}
+}
+
+func TestConfig_WildcardModelSupportsAnyModelWithoutRedirect(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{ModelEntries: []ModelEntry{{Model: "*"}}}
+	if !cfg.SupportsModel("gpt-5.4") || !cfg.SupportsModel("future-codex-model") {
+		t.Fatal("wildcard channel must support arbitrary models")
+	}
+	if redirect, ok := cfg.GetRedirectModel("gpt-5.4"); ok || redirect != "" {
+		t.Fatalf("wildcard must not rewrite model, got (%q, %v)", redirect, ok)
+	}
+}
+
+func TestConfig_AuthTypeIsIndependentFromProtocol(t *testing.T) {
+	t.Parallel()
+	legacy := &Config{}
+	if got := legacy.GetAuthType(); got != AuthTypeAPIKey {
+		t.Fatalf("legacy GetAuthType()=%q, want %q", got, AuthTypeAPIKey)
+	}
+	codex := &Config{AuthType: " CODEX_OAUTH ", OAuthCredential: "secret"}
+	if !codex.UsesCodexOAuth() {
+		t.Fatal("expected Codex OAuth auth type")
+	}
+	clone := codex.Clone()
+	if clone.AuthType != codex.AuthType || clone.OAuthCredential != "secret" {
+		t.Fatalf("Clone() lost private auth state: %#v", clone)
+	}
+	if got := NormalizeAuthType("codex"); got != "" {
+		t.Fatalf("historical protocol value normalized as auth type: %q", got)
+	}
+	antigravity := &Config{
+		AuthType: AuthTypeAntigravityOAuth, OAuthCredential: "gravity-secret",
+		AntigravityAccessToken: "gravity-at", AntigravityProjectID: "gravity-project",
+	}
+	if !antigravity.UsesAntigravityOAuth() || !antigravity.UsesOAuth() {
+		t.Fatal("expected Antigravity OAuth auth type")
+	}
+	gravityClone := antigravity.Clone()
+	if gravityClone.OAuthCredential != "gravity-secret" || gravityClone.AntigravityAccessToken != "gravity-at" || gravityClone.AntigravityProjectID != "gravity-project" {
+		t.Fatalf("Clone() lost Antigravity auth state: %#v", gravityClone)
+	}
+}
+
+func TestConfig_ProtocolTransformMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		mode     string
+		wantMode string
+	}{
+		{name: "default auto", wantMode: ProtocolTransformModeAuto},
+		{name: "explicit auto", mode: "AUTO", wantMode: ProtocolTransformModeAuto},
+		{name: "upstream", mode: ProtocolTransformModeUpstream, wantMode: ProtocolTransformModeUpstream},
+		{name: "local", mode: ProtocolTransformModeLocal, wantMode: ProtocolTransformModeLocal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{ProtocolTransformMode: tt.mode}
+			if got := cfg.GetProtocolTransformMode(); got != tt.wantMode {
+				t.Fatalf("GetProtocolTransformMode()=%q, want %q", got, tt.wantMode)
+			}
+			if got := cfg.Clone().GetProtocolTransformMode(); got != tt.wantMode {
+				t.Fatalf("Clone mode=%q, want %q", got, tt.wantMode)
+			}
+		})
+	}
+
+	if got := NormalizeProtocolTransformMode("invalid"); got != "" {
+		t.Fatalf("NormalizeProtocolTransformMode(invalid)=%q, want empty", got)
+	}
+}
+
+func TestConfig_IsCoolingDown(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000, 0)
+	cfg := &Config{CooldownUntil: 1001}
+	if !cfg.IsCoolingDown(now) {
+		t.Fatal("expected cooling down when cooldown_until is in the future")
+	}
+
+	cfg.CooldownUntil = 1000
+	if cfg.IsCoolingDown(now) {
+		t.Fatal("expected not cooling down when cooldown_until equals now")
+	}
+}
+
+func TestIsValidKeyStrategy(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{in: "", want: true},
+		{in: KeyStrategySequential, want: true},
+		{in: KeyStrategyRoundRobin, want: true},
+		{in: "random", want: false},
+	} {
+		if got := IsValidKeyStrategy(tc.in); got != tc.want {
+			t.Fatalf("IsValidKeyStrategy(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestAPIKey_IsCoolingDown(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000, 0)
+	key := &APIKey{CooldownUntil: 1001}
+	if !key.IsCoolingDown(now) {
+		t.Fatal("expected cooling down for APIKey")
+	}
+	key.CooldownUntil = 1000
+	if key.IsCoolingDown(now) {
+		t.Fatal("expected not cooling down when equals now")
+	}
+}
+
+func TestDefaultHealthScoreConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultHealthScoreConfig()
+	if cfg.Enabled {
+		t.Fatal("default health score config should be disabled")
+	}
+	if cfg.SuccessRatePenaltyWeight <= 0 || cfg.WindowMinutes <= 0 || cfg.UpdateIntervalSeconds <= 0 || cfg.MinConfidentSample <= 0 {
+		t.Fatalf("unexpected default config: %+v", cfg)
+	}
+	if cfg.EnableTTFBScore {
+		t.Fatal("default ttfb score should be disabled")
+	}
+	if cfg.TTFBPenaltyWeight <= 0 || cfg.TTFBMaxSlowRatio <= 0 || cfg.TTFBMinConfidentSample <= 0 {
+		t.Fatalf("unexpected ttfb defaults: %+v", cfg)
+	}
+}
+
+func TestConfig_ChannelURLs(t *testing.T) {
+	t.Parallel()
+
+	c := &Config{URLs: ChannelURLs{
+		{URL: "https://api.openai.com", Protocols: []string{"CODEX", "openai", "codex"}},
+		{URL: "https://api.example.com/v1/messages", Exact: true},
+	}}
+	if err := c.URLs.Normalize(); err != nil {
+		t.Fatalf("Normalize() unexpected error: %v", err)
+	}
+
+	if got := c.URLs[0].Protocols; len(got) != 2 || got[0] != "codex" || got[1] != "openai" {
+		t.Fatalf("normalized protocols = %v, want configured order [codex openai]", got)
+	}
+	if got := c.GetURLs(); len(got) != 2 || got[0] != "https://api.openai.com" || got[1] != "https://api.example.com/v1/messages#" {
+		t.Fatalf("GetURLs() = %v", got)
+	}
+	if !c.URLs[0].SupportsProtocol("openai") || c.URLs[0].SupportsProtocol("anthropic") {
+		t.Fatalf("explicit protocol capability not enforced: %+v", c.URLs[0])
+	}
+	if !c.URLs[1].SupportsProtocol("anthropic") || !c.URLs[1].UsesAutomaticProtocolDetection() {
+		t.Fatalf("empty protocols must mean automatic detection: %+v", c.URLs[1])
+	}
+
+	clone := c.Clone()
+	clone.URLs[0].Protocols[0] = "anthropic"
+	if c.URLs[0].Protocols[0] != "codex" {
+		t.Fatal("Clone() shares URL protocol storage")
+	}
+}
+
+func TestChannelURLs_NormalizeRejectsInvalidData(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		urls ChannelURLs
+	}{
+		{name: "empty URL set", urls: ChannelURLs{}},
+		{name: "empty URL", urls: ChannelURLs{{URL: "  "}}},
+		{name: "unsupported protocol", urls: ChannelURLs{{URL: "https://api.example.com", Protocols: []string{"grpc"}}}},
+		{name: "duplicate runtime URL", urls: ChannelURLs{{URL: "https://api.example.com"}, {URL: " https://api.example.com "}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.urls.Normalize(); err == nil {
+				t.Fatal("Normalize() expected error")
+			}
+		})
+	}
+}

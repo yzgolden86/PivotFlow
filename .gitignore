@@ -1,0 +1,80 @@
+# IDE and editor files
+.gocache
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Data and database files
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Build artifacts
+node_modules/
+*.tsbuildinfo
+ccLoad
+ccload
+/tmp/ccload*
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*.test
+*.out
+test*.sh
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+/.tmp-*/
+*.key
+__pycache__/
+*.py[cod]
+
+# Log files
+*.log
+
+# Playwright MCP
+.playwright-mcp
+
+# Claude Code local state; keep the shared repository skill entry
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/sync-cliproxy-core
+!.claude/skills/ccload-release
+com.ccload.service.plist
+.dataX
+.serena
+.gocache
+.gomodcache
+.codegraph/
+AGENTS.md
+dist
+*.bak
+docs
+.worktrees/
+# 步骤1：忽略所有目录下的 claude.md
+**/claude.md
+# 步骤2：通过 "!" 取消对根目录下该文件的忽略
+!/claude.md
+.omx/
+/.superpowers/
+/superpowers/
+.omc
+.qoder

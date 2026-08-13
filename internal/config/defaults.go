@@ -1,0 +1,151 @@
+// Package config 定义应用配置常量和默认值
+package config
+
+import "time"
+
+// HTTP服务器配置常量
+const (
+	// DefaultMaxConcurrency 默认最大并发请求数
+	DefaultMaxConcurrency = 1000
+
+	// DefaultMaxKeyRetries 单个渠道内最大Key重试次数
+	DefaultMaxKeyRetries = 3
+
+	// DefaultMaxBodyBytes 默认最大请求体字节数（用于代理入口的解析）
+	DefaultMaxBodyBytes = 10 * 1024 * 1024 // 10MB
+
+	// DefaultMaxImageBodyBytes Images API 默认最大请求体字节数（支持图片上传）
+	DefaultMaxImageBodyBytes = 20 * 1024 * 1024 // 20MB
+
+	// DefaultCooldownAuthSeconds 认证错误（401/402/403）初始冷却秒数
+	DefaultCooldownAuthSeconds = 300
+
+	// DefaultCooldownServerSeconds 服务器错误（5xx）初始冷却秒数
+	DefaultCooldownServerSeconds = 120
+
+	// DefaultCooldownTimeoutSeconds 超时错误（597/598）初始冷却秒数
+	DefaultCooldownTimeoutSeconds = 60
+
+	// DefaultCooldownRateLimitSeconds 限流错误（429）初始冷却秒数
+	DefaultCooldownRateLimitSeconds = 60
+
+	// DefaultCooldownMaxSeconds 指数退避冷却上限秒数
+	DefaultCooldownMaxSeconds = 1800
+
+	// DefaultCooldownMinSeconds 指数退避冷却下限秒数
+	DefaultCooldownMinSeconds = 10
+)
+
+// HTTP客户端配置常量
+const (
+	// HTTPDialTimeout DNS解析+TCP连接建立超时
+	// 10秒：更快失败，减少请求卡住时间（代价：慢网络更容易超时）
+	HTTPDialTimeout = 10 * time.Second
+
+	// HTTPKeepAliveInterval TCP keepalive间隔
+	// 15秒：快速检测僵死连接（上游进程崩溃、网络中断）
+	// 配合Linux默认重试(9次×3s)，总检测时间42秒
+	HTTPKeepAliveInterval = 15 * time.Second
+
+	// HTTPTLSHandshakeTimeout TLS握手超时
+	// 10秒：更快失败，上游TLS异常时尽快返回/切换（代价：握手慢时更容易超时）
+	HTTPTLSHandshakeTimeout = 10 * time.Second
+
+	// HTTPMaxIdleConns 全局空闲连接池大小
+	HTTPMaxIdleConns = 200
+
+	// HTTPMaxIdleConnsPerHost 单host空闲连接数
+	// 20：允许更多连接复用，减少连接建立延迟
+	HTTPMaxIdleConnsPerHost = 20
+
+	// HTTPMaxConnsPerHost 单host最大连接数
+	HTTPMaxConnsPerHost = 50
+
+	// TLSSessionCacheSize TLS会话缓存大小
+	TLSSessionCacheSize = 1024
+)
+
+// 日志系统配置常量
+const (
+	// DefaultLogBufferSize 默认日志缓冲区大小（条数）
+	DefaultLogBufferSize = 1000
+
+	// DefaultLogWorkers 默认日志Worker协程数
+	// 改为1以保证日志写入顺序(FIFO)
+	// 多worker会导致竞争消费logChan,打乱日志顺序
+	// 性能影响: 单worker仍支持批量写入,性能足够(1000条/秒+)
+	DefaultLogWorkers = 1
+
+	// LogBatchSize 批量写入日志的大小（条数）
+	LogBatchSize = 100
+
+	// LogBatchTimeout 批量写入超时时间
+	LogBatchTimeout = 1 * time.Second
+
+	// LogFlushTimeoutMs 单次日志刷盘的超时时间（毫秒）
+	// 纯 MySQL 场景下 300ms 过于激进，轻微网络抖动会导致日志写入失败。
+	// SQLite 场景下该超时通常不会触发（本地写入<10ms），但会影响最坏情况的关停耗时。
+	LogFlushTimeoutMs = 3000
+
+	// LogFlushMaxRetries 单批日志写入最大重试次数（含首次尝试）
+	LogFlushMaxRetries = 2
+
+	// LogFlushRetryBackoff 重试退避基准时间
+	LogFlushRetryBackoff = 100 * time.Millisecond
+)
+
+// Token认证配置常量
+const (
+	// TokenRandomBytes Token随机字节数（生成64字符十六进制）
+	TokenRandomBytes = 32
+
+	// TokenExpiry Token有效期
+	TokenExpiry = 24 * time.Hour
+
+	// TokenCleanupInterval Token清理间隔
+	TokenCleanupInterval = 1 * time.Hour
+)
+
+// Token统计配置常量
+const (
+	// DefaultTokenStatsBufferSize 默认Token统计更新队列大小（条数）
+	// 设计原则：有界队列，避免每请求起goroutine导致资源失控
+	DefaultTokenStatsBufferSize = 1000
+)
+
+// SQLite连接池配置常量
+const (
+	// SQLiteMaxOpenConnsFile 文件模式最大连接数（WAL写并发瓶颈）
+	// 保持5：1写 + 4读 = 充分利用WAL模式并发能力
+	SQLiteMaxOpenConnsFile = 5
+
+	// SQLiteMaxIdleConnsFile 文件模式最大空闲连接数
+	// [INFO] 从2提升到5：避免高并发时频繁创建/销毁连接
+	// 设计原则：空闲连接数 = 最大连接数，减少连接重建开销
+	SQLiteMaxIdleConnsFile = 5
+
+	// SQLiteConnMaxLifetime 连接最大生命周期
+	// [INFO] 从1分钟提升到5分钟：降低连接过期频率
+	// 权衡：更长的生命周期 vs 更低的连接重建开销
+	SQLiteConnMaxLifetime = 5 * time.Minute
+)
+
+// 性能优化配置常量
+const (
+	// LogCleanupInterval 日志清理间隔
+	LogCleanupInterval = 1 * time.Hour
+	// DebugLogCleanupInterval 调试日志固定清理间隔
+	DebugLogCleanupInterval = 2 * time.Minute
+)
+
+// 启动超时配置（Fail-Fast：启动阶段网络问题应快速失败，避免卡死）
+const (
+	// StartupDBPingTimeout 数据库连接测试超时
+	// 远端数据库冷启动、DNS 和 TLS 建连可能超过 10 秒；30 秒仍能在不可达时快速失败。
+	StartupDBPingTimeout = 30 * time.Second
+	// StartupMigrationTimeout 数据库迁移超时
+	// 5min 选取理由：跨版本升级时，多次 ALTER TABLE ADD COLUMN（每次远程 RTT 可达数秒）
+	// 加上 CREATE INDEX 会轻易耗尽 60s。正常重启路径因 loadAllExistingIndexes 跳过
+	// 已存在索引仍 < 1s，5min 只是安全上限，覆盖首次部署 + 跨版本升级 + 网络抖动。
+	StartupMigrationTimeout = 5 * time.Minute
+)

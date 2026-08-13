@@ -1,0 +1,1491 @@
+package util
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"testing"
+	"time"
+)
+
+func assertClassifyError(t *testing.T, err error, wantStatus int, wantLevel ErrorLevel, wantRetry bool, reason string) {
+	t.Helper()
+
+	statusCode, errorLevel, shouldRetry := ClassifyError(err)
+	if statusCode != wantStatus {
+		t.Errorf("状态码错误: 期望 %d, 实际 %d (%s)", wantStatus, statusCode, reason)
+	}
+	if errorLevel != wantLevel {
+		t.Errorf("错误级别错误: 期望 %v, 实际 %v (%s)", wantLevel, errorLevel, reason)
+	}
+	if shouldRetry != wantRetry {
+		t.Errorf("重试标志错误: 期望 %v, 实际 %v (%s)", wantRetry, shouldRetry, reason)
+	}
+
+}
+
+func TestClassifyHTTPResponse(t *testing.T) {
+	tests := []struct {
+		name         string
+		statusCode   int
+		responseBody []byte
+		expected     ErrorLevel
+		reason       string
+	}{
+		// 401错误 - Key级场景（新设计：额度用尽先尝试其他Key）
+		{
+			name:         "401_quota_exhausted_chinese",
+			statusCode:   401,
+			responseBody: []byte(`{"error":{"message":"该令牌额度已用尽"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "额度用尽可能只是单个Key问题，应先尝试其他Key",
+		},
+		{
+			name:         "401_insufficient_quota",
+			statusCode:   401,
+			responseBody: []byte(`{"error":"insufficient_quota"}`),
+			expected:     ErrorLevelKey,
+			reason:       "insufficient_quota可能只是单个Key问题，应先尝试其他Key",
+		},
+		{
+			name:         "401_balance_insufficient",
+			statusCode:   401,
+			responseBody: []byte(`{"error":"balance insufficient"}`),
+			expected:     ErrorLevelKey,
+			reason:       "余额不足可能只是单个Key问题，应先尝试其他Key",
+		},
+
+		// 401错误 - 渠道级场景（仅限账户级不可逆错误）
+		{
+			name:         "401_account_suspended",
+			statusCode:   401,
+			responseBody: []byte(`{"error":"account suspended"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "账户暂停是账户级不可逆错误，应冷却整个渠道",
+		},
+		{
+			name:         "401_account_disabled",
+			statusCode:   401,
+			responseBody: []byte(`{"error":"account disabled"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "账户禁用是账户级不可逆错误，应冷却整个渠道",
+		},
+
+		// 401错误 - Key级场景
+		{
+			name:         "401_invalid_authentication",
+			statusCode:   401,
+			responseBody: []byte(`{"error":"invalid_authentication"}`),
+			expected:     ErrorLevelKey,
+			reason:       "认证失败应该仅冷却当前Key",
+		},
+		{
+			name:         "401_token_expired",
+			statusCode:   401,
+			responseBody: []byte(`{"error":"token expired"}`),
+			expected:     ErrorLevelKey,
+			reason:       "Token过期应该仅冷却当前Key（与account expired区分）",
+		},
+		{
+			name:         "401_unauthorized",
+			statusCode:   401,
+			responseBody: []byte(`{"error":"unauthorized"}`),
+			expected:     ErrorLevelKey,
+			reason:       "未授权应该仅冷却当前Key",
+		},
+		{
+			name:         "401_empty_body",
+			statusCode:   401,
+			responseBody: []byte{},
+			expected:     ErrorLevelKey,
+			reason:       "无响应体默认为Key级错误",
+		},
+
+		// 403错误 - Key级场景（新设计：额度/限额类错误先尝试其他Key）
+		{
+			name:         "403_quota_exceeded_openai_style",
+			statusCode:   403,
+			responseBody: []byte(`{"error":{"type":"quota_exceeded","message":"Daily cost limit reached ($1)"},"details":{"dailyLimit":1,"currentUsage":1.09655195,"remaining":0}}`),
+			expected:     ErrorLevelKey,
+			reason:       "quota_exceeded可能只是单个Key问题，应先尝试其他Key",
+		},
+		{
+			name:         "403_daily_limit_reached",
+			statusCode:   403,
+			responseBody: []byte(`{"error":"Daily cost limit reached ($10)"}`),
+			expected:     ErrorLevelKey,
+			reason:       "Daily limit可能只是单个Key问题，应先尝试其他Key",
+		},
+		{
+			name:         "403_remaining_zero",
+			statusCode:   403,
+			responseBody: []byte(`{"details":{"remaining":0}}`),
+			expected:     ErrorLevelKey,
+			reason:       "remaining:0可能只是单个Key问题，应先尝试其他Key",
+		},
+		{
+			name:         "403_quota_chinese",
+			statusCode:   403,
+			responseBody: []byte(`{"error":"余额不足，请充值"}`),
+			expected:     ErrorLevelKey,
+			reason:       "余额不足可能只是单个Key问题，应先尝试其他Key",
+		},
+
+		// 403错误 - 渠道级场景（仅限账户级不可逆错误）
+		{
+			name:         "403_service_disabled",
+			statusCode:   403,
+			responseBody: []byte(`{"error":"service disabled"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "服务禁用是账户级不可逆错误，应冷却整个渠道",
+		},
+
+		// 403错误 - Key级场景
+		{
+			name:         "403_permission_denied",
+			statusCode:   403,
+			responseBody: []byte(`{"error":"permission denied"}`),
+			expected:     ErrorLevelKey,
+			reason:       "403 + permission denied应该仅冷却当前Key",
+		},
+		{
+			name:         "403_forbidden",
+			statusCode:   403,
+			responseBody: []byte(`{"error":"forbidden"}`),
+			expected:     ErrorLevelKey,
+			reason:       "403 + forbidden应该仅冷却当前Key",
+		},
+		{
+			name:         "403_empty_body",
+			statusCode:   403,
+			responseBody: []byte{},
+			expected:     ErrorLevelKey,
+			reason:       "403无响应体默认为Key级错误",
+		},
+
+		// 其他状态码（确保不影响现有逻辑）
+		{
+			name:         "404_not_found",
+			statusCode:   404,
+			responseBody: []byte(`{"error":"not found"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "404非model_not_found应返回渠道级错误以触发切换",
+		},
+		{
+			name:         "404_deployment_not_found",
+			statusCode:   404,
+			responseBody: []byte("404: Not Found (DEPLOYMENT_NOT_FOUND)\n\nThe requested deployment does not exist."),
+			expected:     ErrorLevelChannel,
+			reason:       "已下线部署不是模型错误，应切换URL或渠道",
+		},
+		{
+			name:         "500_internal_error",
+			statusCode:   500,
+			responseBody: []byte(`{"error":"internal server error"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "500应该冷却渠道",
+		},
+		{
+			name:         "429_rate_limit",
+			statusCode:   429,
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelKey,
+			reason:       "429应该冷却Key",
+		},
+
+		// 边界情况
+		{
+			name:         "401_case_insensitive",
+			statusCode:   401,
+			responseBody: []byte(`{"error":"Account SUSPENDED"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "大小写不敏感匹配（account suspended）",
+		},
+		{
+			name:         "401_mixed_case",
+			statusCode:   401,
+			responseBody: []byte(`{"error":"Account Disabled"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "混合大小写应该正确识别（account disabled）",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ClassifyHTTPResponseWithMeta(tt.statusCode, nil, tt.responseBody).Level
+			if result != tt.expected {
+				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
+					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPStatus(t *testing.T) {
+	tests := []struct {
+		statusCode int
+		expected   ErrorLevel
+		reason     string
+	}{
+		{200, ErrorLevelNone, "2xx成功"},
+		{201, ErrorLevelNone, "2xx成功"},
+		{402, ErrorLevelKey, "402 应视为Key级（额度/余额/配额）"},
+		{401, ErrorLevelKey, "Key级错误（默认）"},
+		{403, ErrorLevelKey, "Key级错误"},
+		{429, ErrorLevelKey, "Key级限流"},
+		// 499 HTTP响应应触发渠道级重试
+		{499, ErrorLevelChannel, "499来自HTTP响应时，说明上游API返回，应重试其他渠道"},
+		// nginx 非标准状态码
+		{444, ErrorLevelChannel, "444 nginx No Response - 服务器主动关闭连接，渠道级错误"},
+		{500, ErrorLevelChannel, "渠道级错误"},
+		{502, ErrorLevelChannel, "渠道级错误"},
+		{503, ErrorLevelChannel, "渠道级错误"},
+		{504, ErrorLevelChannel, "渠道级错误"},
+		{520, ErrorLevelChannel, "520 Web Server Returned an Unknown Error - 渠道级错误"},
+		{521, ErrorLevelChannel, "521 Web Server Is Down - 渠道级错误"},
+		{524, ErrorLevelChannel, "524 A Timeout Occurred - 渠道级错误"},
+		// 兜底策略测试
+		{418, ErrorLevelKey, "418 未知4xx - 兜底策略应为Key级冷却"},
+		{451, ErrorLevelKey, "451 未知4xx - 兜底策略应为Key级冷却"},
+		{599, ErrorLevelChannel, "599 未知5xx - 兜底策略应为Channel级冷却"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(rune(tt.statusCode)), func(t *testing.T) {
+			result := ClassifyHTTPStatus(tt.statusCode)
+			if result != tt.expected {
+				t.Errorf("状态码 %d: 期望 %v, 实际 %v (%s)", tt.statusCode, tt.expected, result, tt.reason)
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPResponse_Upstream499IsModelScoped(t *testing.T) {
+	classification := ClassifyHTTPResponseWithMeta(499, nil, []byte(`{"error":"client closed request"}`))
+	if classification.Level != ErrorLevelChannel {
+		t.Fatalf("Level=%v, want ErrorLevelChannel", classification.Level)
+	}
+	if !classification.ModelScoped {
+		t.Fatal("upstream HTTP 499 must be model-scoped")
+	}
+}
+
+func TestClassifyHTTPResponse_HTTP410ModelEOLIsModelScoped(t *testing.T) {
+	classification := ClassifyHTTPResponseWithMeta(http.StatusGone, nil, []byte(`{
+		"error": {
+			"type": "bad_response_status_code",
+			"message": "The model 'deepseek-ai/deepseek-v4-flash' has reached its end of life and is no longer available."
+		}
+	}`))
+	if classification.Level != ErrorLevelChannel {
+		t.Fatalf("Level=%v, want ErrorLevelChannel", classification.Level)
+	}
+	if !classification.ModelScoped {
+		t.Fatal("HTTP 410 model EOL must be model-scoped")
+	}
+
+	generic := ClassifyHTTPResponseWithMeta(http.StatusGone, nil, []byte(`{"error":"resource is gone"}`))
+	if generic.Level != ErrorLevelClient || generic.ModelScoped {
+		t.Fatalf("generic HTTP 410 classification=%+v, want client-scoped", generic)
+	}
+}
+
+// 测试context.Canceled与HTTP 499的区分
+func TestClassifyError_ContextCanceled(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		expectedStatus int
+		expectedLevel  ErrorLevel
+		expectedRetry  bool
+		reason         string
+	}{
+		{
+			name:           "context_canceled_from_client",
+			err:            context.Canceled,
+			expectedStatus: 499,
+			expectedLevel:  ErrorLevelClient,
+			expectedRetry:  false,
+			reason:         "下游客户端取消请求（context.Canceled）应返回499+ErrorLevelClient，不重试",
+		},
+		{
+			name:           "context_deadline_exceeded",
+			err:            context.DeadlineExceeded,
+			expectedStatus: 504,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "上游超时（context.DeadlineExceeded）应返回504+ErrorLevelChannel，可重试其他渠道",
+		},
+		{
+			name:           "upstream_stream_timeout",
+			err:            fmt.Errorf("stream canceled: %w", ErrUpstreamStreamTimeout),
+			expectedStatus: StatusStreamIncomplete,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "上游流式总超时应记为599并允许切换渠道，不能误判为客户端取消",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertClassifyError(t, tt.err, tt.expectedStatus, tt.expectedLevel, tt.expectedRetry, tt.reason)
+		})
+	}
+}
+
+// 测试空响应错误分类
+func TestClassifyError_EmptyResponse(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		expectedStatus int
+		expectedLevel  ErrorLevel
+		expectedRetry  bool
+		reason         string
+	}{
+		{
+			name:           "empty_response_200_with_content_length_0",
+			err:            errors.New("upstream returned empty response (200 OK with Content-Length: 0)"),
+			expectedStatus: 502,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "200状态码但Content-Length=0应视为上游故障，触发渠道级重试",
+		},
+		{
+			name:           "empty_response_uppercase",
+			err:            errors.New("Upstream Returned Empty Response (200 OK with Content-Length: 0)"),
+			expectedStatus: 502,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "大小写不敏感匹配",
+		},
+		{
+			name:           "empty_response_sentinel_without_content_length",
+			err:            fmt.Errorf("response probe failed: %w", ErrUpstreamEmptyResponse),
+			expectedStatus: 502,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "无Content-Length的200空体也应视为上游故障，不能依赖错误文案",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertClassifyError(t, tt.err, tt.expectedStatus, tt.expectedLevel, tt.expectedRetry, tt.reason)
+		})
+	}
+}
+
+func TestClassifyError_InvalidUpstreamResponse(t *testing.T) {
+	t.Parallel()
+
+	assertClassifyError(
+		t,
+		fmt.Errorf("response validation failed: %w", ErrUpstreamInvalidResponse),
+		http.StatusBadGateway,
+		ErrorLevelChannel,
+		true,
+		"HTTP 2xx HTML 响应不是 API 成功，应按渠道故障重试",
+	)
+}
+
+// 测试HTTP/2流错误分类
+func TestClassifyError_HTTP2StreamErrors(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		expectedStatus int
+		expectedLevel  ErrorLevel
+		expectedRetry  bool
+		reason         string
+	}{
+		{
+			name:           "http2_response_body_closed",
+			err:            fmt.Errorf("http2: response body closed"),
+			expectedStatus: 502, // Bad Gateway
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "上游服务器主动关闭HTTP/2流，应触发渠道级重试",
+		},
+		{
+			name:           "http2_stream_error_internal",
+			err:            fmt.Errorf("stream error: stream ID 7; INTERNAL_ERROR"),
+			expectedStatus: 502, // Bad Gateway
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "HTTP/2 RST_STREAM INTERNAL_ERROR，上游服务异常",
+		},
+		{
+			name:           "http2_stream_error_protocol",
+			err:            fmt.Errorf("stream error: stream ID 3; PROTOCOL_ERROR"),
+			expectedStatus: 502, // Bad Gateway
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "HTTP/2协议错误，应切换渠道重试",
+		},
+		{
+			name:           "http2_error_wrapped",
+			err:            fmt.Errorf("failed to read response: http2: response body closed"),
+			expectedStatus: 502, // Bad Gateway
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "包装后的HTTP/2错误也应正确识别",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertClassifyError(t, tt.err, tt.expectedStatus, tt.expectedLevel, tt.expectedRetry, tt.reason)
+		})
+	}
+}
+
+func TestClassifyError_ConnectionResetAndBrokenPipe(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		expectedStatus int
+		expectedLevel  ErrorLevel
+		expectedRetry  bool
+		reason         string
+	}{
+		{
+			name:           "broken_pipe_client_closed",
+			err:            errors.New("write: broken pipe"),
+			expectedStatus: 499,
+			expectedLevel:  ErrorLevelClient,
+			expectedRetry:  false,
+			reason:         "broken pipe 基本是客户端断开，不应重试",
+		},
+		{
+			name:           "connection_reset_by_peer_upstream",
+			err:            errors.New("read: connection reset by peer"),
+			expectedStatus: 502,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "connection reset by peer 通常是上游断开，应按 502 进入健康度统计并允许切换渠道重试",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertClassifyError(t, tt.err, tt.expectedStatus, tt.expectedLevel, tt.expectedRetry, tt.reason)
+		})
+	}
+}
+
+func TestIsModelScopedNetworkError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "first byte timeout", err: ErrUpstreamFirstByteTimeout, want: true},
+		{name: "stream timeout", err: ErrUpstreamStreamTimeout, want: true},
+		{name: "empty response", err: ErrUpstreamEmptyResponse, want: true},
+		{name: "deadline exceeded", err: context.DeadlineExceeded, want: true},
+		{name: "connection reset", err: errors.New("read: connection reset by peer"), want: true},
+		{name: "http2 body closed", err: errors.New("http2: response body closed"), want: true},
+		{name: "http2 stream error", err: errors.New("stream error: stream ID 7; INTERNAL_ERROR"), want: true},
+		{name: "connection timeout", err: errors.New("upstream connection timeout"), want: true},
+		{name: "connection refused", err: errors.New("connect: connection refused"), want: false},
+		{name: "dns failure", err: errors.New("dial: no such host"), want: false},
+		{name: "client canceled", err: context.Canceled, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsModelScopedNetworkError(tt.err); got != tt.want {
+				t.Fatalf("IsModelScopedNetworkError(%v)=%v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// 测试429错误的智能分类
+func TestClassifyRateLimitError(t *testing.T) {
+	tests := []struct {
+		name         string
+		headers      map[string][]string
+		responseBody []byte
+		expected     ErrorLevel
+		reason       string
+	}{
+		// Retry-After头测试
+		{
+			name: "retry_after_120_seconds",
+			headers: map[string][]string{
+				"Retry-After": {"120"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "Retry-After > 60秒表示账户级或IP级限流，应冷却渠道",
+		},
+		{
+			name: "retry_after_30_seconds",
+			headers: map[string][]string{
+				"Retry-After": {"30"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelKey,
+			reason:       "Retry-After ≤ 60秒表示Key级限流，应冷却Key",
+		},
+		{
+			name: "retry_after_60_seconds_boundary",
+			headers: map[string][]string{
+				"Retry-After": {"60"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelKey,
+			reason:       "Retry-After = 60秒边界值，保守策略为Key级",
+		},
+		{
+			name: "retry_after_http_date",
+			headers: map[string][]string{
+				"Retry-After": {"Wed, 29 Oct 2025 12:00:00 GMT"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "HTTP日期格式通常表示长时间限流，应冷却渠道",
+		},
+		{
+			name: "retry_after_invalid_format",
+			headers: map[string][]string{
+				"Retry-After": {"invalid"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelKey,
+			reason:       "无效的Retry-After格式应默认为Key级",
+		},
+
+		// X-RateLimit-Scope头测试
+		{
+			name: "scope_global",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"global"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "global scope表示全局限流，应冷却渠道",
+		},
+		{
+			name: "scope_ip",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"ip"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "IP scope表示IP级限流，应冷却渠道",
+		},
+		{
+			name: "scope_account",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"account"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "account scope表示账户级限流，应冷却渠道",
+		},
+		{
+			name: "scope_user",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"user"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelKey,
+			reason:       "user scope（非global/ip/account）应默认为Key级",
+		},
+		{
+			name: "scope_case_insensitive",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"GLOBAL"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "scope匹配应不区分大小写",
+		},
+
+		// 响应体错误描述测试
+		{
+			name:    "body_ip_rate_limit",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": {
+					"message": "IP rate limit exceeded",
+					"type": "rate_limit_error"
+				}
+			}`),
+			expected: ErrorLevelChannel,
+			reason:   "响应体包含'ip rate limit'应冷却渠道",
+		},
+		{
+			name:    "body_account_rate_limit",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": {
+					"message": "Account rate limit exceeded for organization"
+				}
+			}`),
+			expected: ErrorLevelChannel,
+			reason:   "响应体包含'account rate limit'应冷却渠道",
+		},
+		{
+			name:    "body_global_rate_limit",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": "Global rate limit has been exceeded"
+			}`),
+			expected: ErrorLevelChannel,
+			reason:   "响应体包含'global rate limit'应冷却渠道",
+		},
+		{
+			name:    "body_organization_limit",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": "Organization limit reached"
+			}`),
+			expected: ErrorLevelChannel,
+			reason:   "响应体包含'organization limit'应冷却渠道",
+		},
+		{
+			name:    "body_case_insensitive",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": "IP Rate Limit Exceeded"
+			}`),
+			expected: ErrorLevelChannel,
+			reason:   "响应体匹配应不区分大小写",
+		},
+
+		// 默认Key级限流测试
+		{
+			name:    "default_key_level_no_special_indicators",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": "Too many requests"
+			}`),
+			expected: ErrorLevelKey,
+			reason:   "无特殊指示器时应默认为Key级",
+		},
+		{
+			name:         "nil_headers",
+			headers:      nil,
+			responseBody: []byte(`{"error":"rate limit"}`),
+			expected:     ErrorLevelKey,
+			reason:       "nil headers应默认为Key级",
+		},
+		{
+			name:         "empty_headers",
+			headers:      map[string][]string{},
+			responseBody: []byte(`{"error":"rate limit"}`),
+			expected:     ErrorLevelKey,
+			reason:       "空headers应默认为Key级",
+		},
+		{
+			name:         "empty_response_body",
+			headers:      map[string][]string{},
+			responseBody: []byte{},
+			expected:     ErrorLevelKey,
+			reason:       "空响应体应默认为Key级",
+		},
+		{
+			name:         "nil_response_body",
+			headers:      map[string][]string{},
+			responseBody: nil,
+			expected:     ErrorLevelKey,
+			reason:       "nil响应体应默认为Key级",
+		},
+
+		// 组合场景测试
+		{
+			name: "combined_retry_after_and_scope",
+			headers: map[string][]string{
+				"Retry-After":       {"30"}, // Key级指示器
+				"X-Ratelimit-Scope": {"ip"}, // 渠道级指示器
+			},
+			responseBody: []byte(`{"error":"rate limit"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "Retry-After检查优先于Scope，但>60秒判断优先",
+		},
+		{
+			name: "combined_scope_and_body",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"user"}, // Key级指示器
+			},
+			responseBody: []byte(`{"error":"IP rate limit exceeded"}`), // 渠道级指示器
+			expected:     ErrorLevelChannel,
+			reason:       "响应体中的渠道级指示器应被识别",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(429, tt.headers, tt.responseBody)
+			if classification.Level != tt.expected {
+				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s",
+					tt.name, tt.expected, classification.Level, tt.reason)
+			}
+			if !classification.ModelScoped {
+				t.Errorf("%s: 429 must be model-scoped, classification=%+v", tt.name, classification)
+			}
+		})
+	}
+}
+
+// TestClassifySSEError 测试SSE error事件分类
+func TestParseRetryAfterSecondsCooldownUntil(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name            string
+		message         string
+		wantOK          bool
+		wantDurationSec int
+	}{
+		{
+			name:            "codex_rolling_spend_limit",
+			message:         "Codex rolling spend limit exceeded. Used $20.03 in the last 3 hours, limit is $20.00. Please retry after 2196 seconds.",
+			wantOK:          true,
+			wantDurationSec: 2196,
+		},
+		{
+			name:            "retry_after_60",
+			message:         "Rate limited. Please retry after 60 seconds.",
+			wantOK:          true,
+			wantDurationSec: 60,
+		},
+		{
+			name:            "retry_after_singular",
+			message:         "Please retry after 1 second",
+			wantOK:          true,
+			wantDurationSec: 1,
+		},
+		{
+			name:    "retry_in_not_matched",
+			message: "Please retry in 59.4s",
+			wantOK:  false,
+		},
+		{
+			name:    "no_retry_keyword",
+			message: "Rate limit exceeded",
+			wantOK:  false,
+		},
+		{
+			name:    "retry_after_zero",
+			message: "Please retry after 0 seconds",
+			wantOK:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			until, ok := parseRetryAfterSecondsCooldownUntil(tt.message, now)
+			if ok != tt.wantOK {
+				t.Fatalf("ok: 期望 %v, 实际 %v", tt.wantOK, ok)
+			}
+			if !ok {
+				return
+			}
+			gotSec := int(until.Sub(now).Seconds())
+			if gotSec != tt.wantDurationSec {
+				t.Errorf("冷却秒数: 期望 %d, 实际 %d", tt.wantDurationSec, gotSec)
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_CodexRollingSpendLimit(t *testing.T) {
+	body := []byte(`{"error":{"message":"Codex rolling spend limit exceeded. Used $20.03 in the last 3 hours, limit is $20.00. Please retry after 2196 seconds.","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}`)
+
+	result := ClassifyHTTPResponseWithMeta(429, nil, body)
+
+	if result.Level != ErrorLevelKey {
+		t.Errorf("错误级别: 期望 Key, 实际 %v", result.Level)
+	}
+	if !result.HasKeyCooldownUntil {
+		t.Fatal("应该包含精确冷却截止时间")
+	}
+	if result.KeyCooldownReason != "RATE_LIMIT_RETRY_AFTER" {
+		t.Errorf("冷却原因: 期望 RATE_LIMIT_RETRY_AFTER, 实际 %s", result.KeyCooldownReason)
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_429NoRetryAfterInBody(t *testing.T) {
+	body := []byte(`{"error":{"message":"Rate limit exceeded","type":"rate_limit_error","code":"rate_limit_exceeded"}}`)
+
+	result := ClassifyHTTPResponseWithMeta(429, nil, body)
+
+	if result.HasKeyCooldownUntil {
+		t.Error("无 retry after 文案时不应返回精确冷却时间")
+	}
+	if result.Level != ErrorLevelKey {
+		t.Errorf("错误级别: 期望 Key, 实际 %v", result.Level)
+	}
+}
+
+func TestClassifySSEError(t *testing.T) {
+	tests := []struct {
+		name         string
+		responseBody []byte
+		expected     ErrorLevel
+		reason       string
+	}{
+		{
+			name:         "api_error_500",
+			responseBody: []byte(`{"type":"error","error":{"type":"api_error","message":"上游API返回错误: 500"}}`),
+			expected:     ErrorLevelChannel,
+			reason:       "api_error表示上游服务错误，应触发渠道级冷却",
+		},
+		{
+			name:         "overloaded_error",
+			responseBody: []byte(`{"type":"error","error":{"type":"overloaded_error","message":"服务过载"}}`),
+			expected:     ErrorLevelChannel,
+			reason:       "overloaded_error表示上游过载，应触发渠道级冷却",
+		},
+		{
+			name:         "service_unavailable_error_server_is_overloaded",
+			responseBody: []byte(`{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","param":null},"sequence_number":2}`),
+			expected:     ErrorLevelChannel,
+			reason:       "service_unavailable_error/server_is_overloaded 表示上游服务过载，应触发渠道级冷却",
+		},
+		{
+			name:         "rate_limit_error",
+			responseBody: []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"请求过于频繁"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "rate_limit_error可能只是单个Key限流，应触发Key级冷却",
+		},
+		{
+			name:         "authentication_error",
+			responseBody: []byte(`{"type":"error","error":{"type":"authentication_error","message":"认证失败"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "authentication_error是Key级问题，应触发Key级冷却",
+		},
+		{
+			name:         "invalid_request_error",
+			responseBody: []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"请求无效"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "invalid_request_error是Key级问题，应触发Key级冷却",
+		},
+		{
+			name:         "1308_error",
+			responseBody: []byte(`{"type":"error","error":{"type":"1308","message":"已达到使用上限"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "1308错误是Key配额问题，应触发Key级冷却",
+		},
+		{
+			name:         "1308_error_with_code_field",
+			responseBody: []byte(`{"error":{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-21 15:00:05 重置。"},"request_id":"202512211335142b05cc4f9bbb4e6c"}`),
+			expected:     ErrorLevelKey,
+			reason:       "使用code字段的1308错误（非Anthropic格式）应触发Key级冷却",
+		},
+		{
+			name:         "1305_overloaded",
+			responseBody: []byte(`{"error":{"code":"1305","message":"The service may be temporarily overloaded"},"request_id":"..."}`),
+			expected:     ErrorLevelChannel,
+			reason:       "1305错误表示上游过载，应触发渠道级冷却",
+		},
+		{
+			name:         "1310_limit_exhausted",
+			responseBody: []byte(`{"error":{"code":"1310","message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-04-20 15:24:20"},"request_id":"..."}`),
+			expected:     ErrorLevelKey,
+			reason:       "1310错误是Key配额问题，应触发Key级冷却",
+		},
+		{
+			name:         "unknown_error_type",
+			responseBody: []byte(`{"type":"error","error":{"type":"unknown_type","message":"未知错误"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "未知错误类型应保守处理为Key级",
+		},
+		{
+			name:         "empty_body",
+			responseBody: []byte{},
+			expected:     ErrorLevelKey,
+			reason:       "空响应体应保守处理为Key级",
+		},
+		{
+			name:         "invalid_json",
+			responseBody: []byte(`not valid json`),
+			expected:     ErrorLevelKey,
+			reason:       "无效JSON应保守处理为Key级",
+		},
+		{
+			name:         "nil_body",
+			responseBody: nil,
+			expected:     ErrorLevelKey,
+			reason:       "nil响应体应保守处理为Key级",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 使用 ClassifyHTTPResponseWithMeta 测试 597 状态码
+			classification := ClassifyHTTPResponseWithMeta(StatusSSEError, nil, tt.responseBody)
+			if classification.Level != tt.expected {
+				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s",
+					tt.name, tt.expected, classification.Level, tt.reason)
+			}
+			wantModelScoped := tt.expected == ErrorLevelChannel
+			if classification.ModelScoped != wantModelScoped {
+				t.Errorf("%s: ModelScoped=%v, want %v", tt.name, classification.ModelScoped, wantModelScoped)
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPResponse400IsModelScoped(t *testing.T) {
+	tests := []struct {
+		name         string
+		responseBody []byte
+	}{
+		{
+			name:         "empty_body",
+			responseBody: []byte{},
+		},
+		{
+			name:         "nil_body",
+			responseBody: nil,
+		},
+		{
+			name:         "invalid_api_key",
+			responseBody: []byte(`{"error": {"message": "Invalid API Key provided"}}`),
+		},
+		{
+			name:         "api_key_error",
+			responseBody: []byte(`{"error": {"message": "The API key you provided is malformed"}}`),
+		},
+		{
+			name:         "gemini_api_key_not_valid",
+			responseBody: []byte(`{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}`),
+		},
+		{
+			name:         "generic_message_mentions_api_key",
+			responseBody: []byte(`{"error": {"message": "Gateway rejected request; check API key configuration in dashboard"}}`),
+		},
+		{
+			name:         "bad_request_params",
+			responseBody: []byte(`{"error": {"message": "Missing required parameter: 'model'"}}`),
+		},
+		{
+			name:         "invalid_json_format",
+			responseBody: []byte(`{"error": {"message": "Invalid JSON format in request body"}}`),
+		},
+		{
+			name:         "validation_error",
+			responseBody: []byte(`{"error": {"message": "Validation failed: max_tokens must be positive"}}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(400, nil, tt.responseBody)
+			if !classification.ModelScoped {
+				t.Fatalf("400 must be model-scoped, classification=%+v, body=%s", classification, tt.responseBody)
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPResponseContextLengthExceededIsClientError(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{
+			name: "error_code_context_length_exceeded",
+			body: []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}`),
+		},
+		{
+			name: "response_failed_code_context_too_large",
+			body: []byte(`{"type":"response.failed","response":{"error":{"code":"context_too_large","message":"Your input exceeds the context window of this model."}}}`),
+		},
+		{
+			name: "invalid_request_message_fallback",
+			body: []byte(`{"error":{"type":"invalid_request_error","message":"Maximum context length exceeded."}}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(http.StatusBadRequest, nil, tt.body)
+			if classification.Level != ErrorLevelClient || classification.ModelScoped {
+				t.Fatalf("classification=%+v, want client-level without model scope", classification)
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPResponseContextLengthMessageDoesNotHideServerError(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{
+			name: "nested_server_error",
+			body: []byte(`{"error":{"type":"server_error","code":"billing_config_error","message":"Documentation mentions too many tokens, but billing configuration failed."}}`),
+		},
+		{
+			name: "top_level_explicit_non_context_code",
+			body: []byte(`{"type":"error","code":"billing_config_error","message":"Documentation mentions too many tokens, but billing configuration failed."}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(http.StatusBadRequest, nil, tt.body)
+			if classification.Level == ErrorLevelClient || !classification.ModelScoped {
+				t.Fatalf("classification=%+v, want existing model-scoped handling", classification)
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPResponseStreamFailuresAreModelScoped(t *testing.T) {
+	for _, status := range []int{StatusFirstByteTimeout, StatusStreamIncomplete} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(status, nil, nil)
+			if classification.Level != ErrorLevelChannel {
+				t.Fatalf("status %d level=%v, want ErrorLevelChannel", status, classification.Level)
+			}
+			if !classification.ModelScoped {
+				t.Fatalf("status %d must be model-scoped", status)
+			}
+		})
+	}
+}
+
+func TestShouldFallbackProtocol(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       bool
+	}{
+		{
+			name:       "protocol conversion not implemented",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"message":"not implemented (request id: req_test)","type":"new_api_error","param":"","code":"convert_request_failed"}}`,
+			want:       true,
+		},
+		{
+			name:       "ordinary server error",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"message":"upstream failed"}}`,
+		},
+		{
+			name:       "conversion code without unsupported message",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"message":"conversion failed","code":"convert_request_failed"}}`,
+		},
+		{
+			name:       "unsupported message without conversion code",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"message":"not implemented","code":"server_error"}}`,
+		},
+		{
+			name:       "malformed server error",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":`,
+		},
+		{
+			name:       "non-model endpoint 404",
+			statusCode: http.StatusNotFound,
+			body:       `{"error":{"message":"endpoint not found"}}`,
+			want:       true,
+		},
+		{
+			name:       "model 404",
+			statusCode: http.StatusNotFound,
+			body:       `{"error":{"message":"model gpt-test not found","code":"model_not_found"}}`,
+		},
+		{
+			name:       "method not allowed",
+			statusCode: http.StatusMethodNotAllowed,
+			want:       true,
+		},
+		{
+			name:       "cloudflare block page before origin",
+			statusCode: http.StatusForbidden,
+			body:       `<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head><body><h1>Sorry, you have been blocked</h1><p>Cloudflare Ray ID: test</p></body></html>`,
+			want:       true,
+		},
+		{
+			name:       "ordinary api forbidden",
+			statusCode: http.StatusForbidden,
+			body:       `{"error":{"message":"forbidden"}}`,
+		},
+		{
+			name:       "unsupported anthropic beta",
+			statusCode: http.StatusBadRequest,
+			body:       `{"type":"error","error":{"type":"invalid_request_error","message":"尚未验证或不支持的 anthropic-beta：claude-code-20250219"}}`,
+			want:       true,
+		},
+		{
+			name:       "responses model not supported",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"message":"当前模型不支持 Responses API：deepseek-v4-flash","type":"invalid_request_error","param":null,"code":"RESPONSES_MODEL_NOT_SUPPORTED"}}`,
+			want:       true,
+		},
+		{
+			name:       "ordinary responses validation error",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"message":"input is required","type":"invalid_request_error","code":"invalid_request_error"}}`,
+			want:       true,
+		},
+		{
+			name:       "ordinary anthropic beta validation error",
+			statusCode: http.StatusBadRequest,
+			body:       `{"type":"error","error":{"type":"invalid_request_error","message":"anthropic-beta must be a string"}}`,
+			want:       true,
+		},
+		{
+			name:       "malformed bad request",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":`,
+			want:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ShouldFallbackProtocol(tt.statusCode, []byte(tt.body)); got != tt.want {
+				t.Fatalf("ShouldFallbackProtocol(%d, %q)=%v, want %v", tt.statusCode, tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassify404Error(t *testing.T) {
+	tests := []struct {
+		name         string
+		responseBody []byte
+		expected     ErrorLevel
+		reason       string
+	}{
+		{
+			name:         "empty_body",
+			responseBody: []byte{},
+			expected:     ErrorLevelChannel,
+			reason:       "空响应体应判定为渠道配置错误（路径不存在）",
+		},
+		{
+			name:         "nil_body",
+			responseBody: nil,
+			expected:     ErrorLevelChannel,
+			reason:       "nil响应体应判定为渠道配置错误（路径不存在）",
+		},
+		{
+			name:         "model_not_found",
+			responseBody: []byte(`{"error": {"message": "The model 'gpt-5' could not be found", "type": "model_not_found"}}`),
+			expected:     ErrorLevelClient,
+			reason:       "模型不存在应判定为客户端级错误",
+		},
+		{
+			name:         "resource_not_exist",
+			responseBody: []byte(`{"error": {"message": "The requested resource does not exist"}}`),
+			expected:     ErrorLevelChannel,
+			reason:       "未明确指向模型的资源404应判定为渠道级错误",
+		},
+		{
+			name: "html_error_page",
+			responseBody: []byte(`<!DOCTYPE html>
+<html>
+<head><title>404 Not Found</title></head>
+<body><h1>404 Not Found</h1></body>
+</html>`),
+			expected: ErrorLevelChannel,
+			reason:   "HTML错误页面应判定为渠道级错误（BaseURL配置错误）",
+		},
+		{
+			name:         "html_lowercase",
+			responseBody: []byte(`<html><head><title>Not Found</title></head><body>404</body></html>`),
+			expected:     ErrorLevelChannel,
+			reason:       "HTML错误页面（小写）应判定为渠道级错误",
+		},
+		{
+			name:         "endpoint_not_found",
+			responseBody: []byte(`{"error": {"message": "Endpoint /v1/completions not found"}}`),
+			expected:     ErrorLevelChannel,
+			reason:       "端点不存在应判定为渠道级错误（标准路径返回404更可能是渠道配置问题）",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classify404Error(tt.responseBody)
+			if result != tt.expected {
+				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
+					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
+			}
+		})
+	}
+}
+
+func TestGetStatusCodeMeta(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status      int
+		wantLevel   ErrorLevel
+		description string
+	}{
+		// Key级错误
+		{401, ErrorLevelKey, "401 -> Key级"},
+		{402, ErrorLevelKey, "402 -> Key级"},
+		{403, ErrorLevelKey, "403 -> Key级"},
+		{429, ErrorLevelKey, "429 -> Key级"},
+
+		// 渠道级错误
+		{499, ErrorLevelChannel, "499 -> 渠道级"},
+		{500, ErrorLevelChannel, "500 -> 渠道级"},
+		{502, ErrorLevelChannel, "502 -> 渠道级"},
+		{503, ErrorLevelChannel, "503 -> 渠道级"},
+		{504, ErrorLevelChannel, "504 -> 渠道级"},
+		{408, ErrorLevelClient, "408 -> 客户端级 (RFC7231: 客户端发送请求慢)"},
+		{405, ErrorLevelChannel, "405 -> 渠道级 (上游endpoint/方法不支持)"},
+
+		// 自定义状态码
+		{StatusQuotaExceeded, ErrorLevelKey, "596 -> Key级"},
+		{StatusSSEError, ErrorLevelKey, "597 -> Key级"},
+		{StatusFirstByteTimeout, ErrorLevelChannel, "598 -> 渠道级"},
+		{StatusStreamIncomplete, ErrorLevelChannel, "599 -> 渠道级"},
+
+		// 客户端错误
+		{406, ErrorLevelClient, "406 -> 客户端级"},
+		{413, ErrorLevelClient, "413 -> 客户端级"},
+
+		// 默认行为
+		{599, ErrorLevelChannel, "599 -> 渠道级(自定义)"},
+		{418, ErrorLevelKey, "418 -> Key级(兜底策略:未知4xx)"},
+		{511, ErrorLevelChannel, "511 -> 渠道级(默认5xx)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			meta := GetStatusCodeMeta(tt.status)
+			if meta.Level != tt.wantLevel {
+				t.Errorf("Level: got %v, want %v", meta.Level, tt.wantLevel)
+			}
+		})
+	}
+}
+
+func TestIsModelScopedHTTPStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status int
+		want   bool
+	}{
+		{500, true},
+		{520, true},
+		{524, true},
+		{595, true},
+		{StatusQuotaExceeded, false},
+		{StatusSSEError, false},
+		{StatusFirstByteTimeout, false},
+		{StatusStreamIncomplete, false},
+		{499, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(strconv.Itoa(tt.status), func(t *testing.T) {
+			if got := IsModelScopedHTTPStatus(tt.status); got != tt.want {
+				t.Fatalf("IsModelScopedHTTPStatus(%d)=%v, want %v", tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClientStatusFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status   int
+		expected int
+		desc     string
+	}{
+		{-1, 502, "负值 -> 502"},
+		{0, 502, "零值 -> 502"},
+		{StatusQuotaExceeded, 429, "596 -> 429"},
+		{StatusSSEError, 502, "597 -> 502"},
+		{StatusFirstByteTimeout, 504, "598 -> 504"},
+		{StatusStreamIncomplete, 502, "599 -> 502"},
+		{429, 429, "429 -> 透传"},
+		{401, 401, "401 -> 401 (透明代理)"},
+		{405, 405, "405 -> 405 (透明代理)"},
+		{404, 404, "404 -> 404 (透明代理)"},
+		{499, 499, "499 -> 499（语义由上层决定）"},
+		{502, 502, "502 -> 502"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			if got := ClientStatusFor(tt.status); got != tt.expected {
+				t.Fatalf("ClientStatusFor(%d)=%d, expected %d", tt.status, got, tt.expected)
+			}
+		})
+	}
+}
+
+// IsRetryableStatus 已移除：重试决策不应依赖静态状态码表，而应依赖 errorLevel/shouldRetry 等语义信息。
+
+func TestClassifyHTTPResponseWithMeta_UsageLimitReached(t *testing.T) {
+	t.Parallel()
+
+	t.Run("resets_in_seconds in error object", func(t *testing.T) {
+		body := []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7260}}`)
+		result := ClassifyHTTPResponseWithMeta(429, nil, body)
+		if result.Level != ErrorLevelKey {
+			t.Fatalf("Level: got %v, want ErrorLevelKey", result.Level)
+		}
+		if !result.HasKeyCooldownUntil {
+			t.Fatal("expected HasKeyCooldownUntil")
+		}
+		if result.KeyCooldownReason != "USAGE_LIMIT_REACHED" {
+			t.Fatalf("reason: got %q, want USAGE_LIMIT_REACHED", result.KeyCooldownReason)
+		}
+		duration := time.Until(result.KeyCooldownUntil)
+		if duration < 7250*time.Second || duration > 7270*time.Second {
+			t.Fatalf("cooldown duration=%v, want about 7260s", duration)
+		}
+	})
+
+	t.Run("resets_at unix timestamp in error object", func(t *testing.T) {
+		resetsAt := time.Now().Add(2 * time.Hour).Unix()
+		body := []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_at":` +
+			fmt.Sprintf("%d", resetsAt) + `}}`)
+		result := ClassifyHTTPResponseWithMeta(429, nil, body)
+		if result.Level != ErrorLevelKey {
+			t.Fatalf("Level: got %v, want ErrorLevelKey", result.Level)
+		}
+		if !result.HasKeyCooldownUntil {
+			t.Fatal("expected HasKeyCooldownUntil")
+		}
+		cooldownDiff := result.KeyCooldownUntil.Unix() - resetsAt
+		if cooldownDiff < -2 || cooldownDiff > 2 {
+			t.Fatalf("cooldownUntil=%d, want resets_at=%d", result.KeyCooldownUntil.Unix(), resetsAt)
+		}
+	})
+
+	t.Run("resets_in_seconds takes priority over resets_at", func(t *testing.T) {
+		body := []byte(`{"error":{"type":"usage_limit_reached","message":"limit","resets_in_seconds":600,"resets_at":9999999999}}`)
+		result := ClassifyHTTPResponseWithMeta(429, nil, body)
+		if !result.HasKeyCooldownUntil {
+			t.Fatal("expected HasKeyCooldownUntil")
+		}
+		duration := time.Until(result.KeyCooldownUntil)
+		if duration < 590*time.Second || duration > 610*time.Second {
+			t.Fatalf("cooldown duration=%v, want about 600s (resets_in_seconds should win)", duration)
+		}
+	})
+
+	t.Run("no reset info falls back to 30 minutes", func(t *testing.T) {
+		body := []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}`)
+		before := time.Now()
+		result := ClassifyHTTPResponseWithMeta(429, nil, body)
+		if !result.HasKeyCooldownUntil {
+			t.Fatal("expected HasKeyCooldownUntil")
+		}
+		duration := result.KeyCooldownUntil.Sub(before)
+		if duration < 29*time.Minute+55*time.Second || duration > 30*time.Minute+5*time.Second {
+			t.Fatalf("cooldown duration=%v, want about 30m", duration)
+		}
+	})
+}
+
+// 上游 WebSocket 连接槽耗尽是瞬时资源竞争：必须切渠道，但不能让健康的 Key
+// 或整个模型背上指数退避冷却。
+func TestClassifyWebsocketConnectionLimitIsShortChannelCooldown(t *testing.T) {
+	now := time.Date(2026, 7, 25, 6, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name         string
+		statusCode   int
+		responseBody []byte
+	}{
+		{
+			name:         "error type",
+			statusCode:   429,
+			responseBody: []byte(`{"type":"error","error":{"type":"websocket_connection_limit_reached","message":"too many concurrent connections"}}`),
+		},
+		{
+			name:         "error code",
+			statusCode:   429,
+			responseBody: []byte(`{"error":{"code":"websocket_connection_limit_reached"}}`),
+		},
+		{
+			name:         "top level code",
+			statusCode:   StatusSSEError,
+			responseBody: []byte(`{"code":"websocket_connection_limit_reached"}`),
+		},
+		{
+			name:         "error as string",
+			statusCode:   StatusSSEError,
+			responseBody: []byte(`{"error":"websocket_connection_limit_reached"}`),
+		},
+		{
+			name:         "upstream 503 wrapper",
+			statusCode:   503,
+			responseBody: []byte(`{"status":503,"error":{"type":"WEBSOCKET_CONNECTION_LIMIT_REACHED"}}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyHTTPResponseWithMetaAt(tt.statusCode, nil, tt.responseBody, now)
+
+			if got.Level != ErrorLevelChannel {
+				t.Errorf("Level=%v, want ErrorLevelChannel", got.Level)
+			}
+			if !got.HasChannelCooldownUntil {
+				t.Fatal("expected HasChannelCooldownUntil")
+			}
+			if want := now.Add(WebsocketConnectionLimitCooldown); !got.ChannelCooldownUntil.Equal(want) {
+				t.Errorf("ChannelCooldownUntil=%v, want %v", got.ChannelCooldownUntil, want)
+			}
+			if got.ChannelCooldownReason != "websocket_connection_limit" {
+				t.Errorf("ChannelCooldownReason=%q, want websocket_connection_limit", got.ChannelCooldownReason)
+			}
+			if got.ModelScoped {
+				t.Error("connection slot exhaustion must not cool down the model")
+			}
+			if got.HasKeyCooldownUntil {
+				t.Error("connection slot exhaustion must not cool down the key")
+			}
+		})
+	}
+}
+
+// 回归保护：普通限流仍然只冷却当前模型，不被连接槽分支吞掉。
+func TestClassifyOrdinaryRateLimitStillModelScoped(t *testing.T) {
+	now := time.Date(2026, 7, 25, 6, 30, 0, 0, time.UTC)
+	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+
+	got := classifyHTTPResponseWithMetaAt(429, nil, body, now)
+
+	if got.HasChannelCooldownUntil {
+		t.Fatal("ordinary rate limit must not take the websocket connection limit path")
+	}
+	if !got.ModelScoped {
+		t.Error("ordinary 429 should stay model scoped")
+	}
+}
+
+func TestIsWebsocketConnectionLimitErrorRejectsUnrelatedBodies(t *testing.T) {
+	bodies := []string{
+		``,
+		`not json`,
+		`{"error":{"type":"rate_limit_error"}}`,
+		`{"error":{"code":1308}}`,
+		`{"code":"websocket_connection_limit"}`,
+		`{"message":"websocket_connection_limit_reached"}`,
+	}
+
+	for _, body := range bodies {
+		if IsWebsocketConnectionLimitError([]byte(body)) {
+			t.Errorf("body %q must not be treated as websocket connection limit", body)
+		}
+	}
+}

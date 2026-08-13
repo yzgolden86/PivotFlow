@@ -1,0 +1,358 @@
+package app
+
+import (
+	"errors"
+	"fmt"
+	"log"
+	"math"
+	"net/http"
+	"strconv"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/version"
+
+	"github.com/gin-gonic/gin"
+)
+
+// 配置验证常量
+const (
+	LogRetentionDaysMin      = 1
+	LogRetentionDaysMax      = 365
+	LogRetentionDaysDisabled = -1 // 永久保留
+)
+
+type adminSystemSetting struct {
+	*model.SystemSetting
+	Editable       bool   `json:"editable"`
+	DisabledReason string `json:"disabled_reason,omitempty"`
+}
+
+const containerImageManagedDisabledReason = "container_image_managed"
+
+func isContainerManagedUpdateSetting(key string) bool {
+	if !runningInContainer() {
+		return false
+	}
+	return key == autoUpdateIntervalSettingKey || key == autoUpdateChannelSettingKey
+}
+
+func systemSettingForAdmin(setting *model.SystemSetting) adminSystemSetting {
+	view := adminSystemSetting{
+		SystemSetting: setting,
+		Editable:      true,
+	}
+	if isContainerManagedUpdateSetting(setting.Key) {
+		view.Editable = false
+		view.DisabledReason = containerImageManagedDisabledReason
+	}
+	return view
+}
+
+func rejectContainerManagedUpdateSetting(c *gin.Context, key string) bool {
+	if !isContainerManagedUpdateSetting(key) {
+		return false
+	}
+	RespondErrorMsg(c, http.StatusConflict, "container image updates are managed by image tags; use latest for stable or beta for preview")
+	return true
+}
+
+// AdminListSettings 获取所有配置项
+// GET /admin/settings
+func (s *Server) AdminListSettings(c *gin.Context) {
+	settings, err := s.configService.ListAllSettings(c.Request.Context())
+	if err != nil {
+		log.Printf("[ERROR] AdminListSettings 失败: %v", err)
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	if settings == nil {
+		settings = make([]*model.SystemSetting, 0)
+	}
+	views := make([]adminSystemSetting, 0, len(settings))
+	for _, setting := range settings {
+		views = append(views, systemSettingForAdmin(setting))
+	}
+	RespondJSON(c, http.StatusOK, views)
+}
+
+// AdminGetSetting 获取单个配置项
+// GET /admin/settings/:key
+func (s *Server) AdminGetSetting(c *gin.Context) {
+	key := c.Param("key")
+	if key == "" {
+		RespondErrorMsg(c, http.StatusBadRequest, "missing setting key")
+		return
+	}
+
+	// 管理接口必须返回持久化后的最新值，不能复用等待重启的运行时缓存。
+	setting, err := s.configService.GetSettingFresh(c.Request.Context(), key)
+	if errors.Is(err, model.ErrSettingNotFound) {
+		RespondErrorMsg(c, http.StatusNotFound, fmt.Sprintf("setting not found: %s", key))
+		return
+	}
+	if err != nil {
+		log.Printf("[ERROR] AdminGetSetting key=%s 失败: %v", key, err)
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 配置项变更频率极低，允许浏览器缓存 5 分钟
+	c.Header("Cache-Control", "private, max-age=300")
+	RespondJSON(c, http.StatusOK, systemSettingForAdmin(setting))
+}
+
+// AdminUpdateSetting 更新配置项
+// PUT /admin/settings/:key
+func (s *Server) AdminUpdateSetting(c *gin.Context) {
+	key := c.Param("key")
+	if key == "" {
+		RespondErrorMsg(c, http.StatusBadRequest, "missing setting key")
+		return
+	}
+	if rejectContainerManagedUpdateSetting(c, key) {
+		return
+	}
+	var req SettingUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+
+	// 验证值的合法性
+	setting := s.configService.GetSetting(key)
+	if setting == nil {
+		RespondErrorMsg(c, http.StatusNotFound, fmt.Sprintf("setting not found: %s", key))
+		return
+	}
+
+	if err := validateSettingValue(key, setting.ValueType, req.Value); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("invalid value for type %s: %v", setting.ValueType, err))
+		return
+	}
+
+	// 更新配置
+	if err := s.configService.UpdateSetting(c.Request.Context(), key, req.Value); err != nil {
+		log.Printf("[ERROR] AdminUpdateSetting key=%s 失败: %v", key, err)
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// log.Printf("[INFO] Setting updated: %s = %s (restart required)", key, req.Value)
+
+	// 返回成功响应，告知需要重启
+	RespondJSON(c, http.StatusOK, gin.H{
+		"message": "配置已保存，程序将在2秒后重启",
+		"key":     key,
+		"value":   req.Value,
+	})
+
+	// 异步触发重启
+	go triggerRestart()
+}
+
+// AdminResetSetting 重置配置为默认值
+// POST /admin/settings/:key/reset
+func (s *Server) AdminResetSetting(c *gin.Context) {
+	key := c.Param("key")
+	if key == "" {
+		RespondErrorMsg(c, http.StatusBadRequest, "missing setting key")
+		return
+	}
+	if rejectContainerManagedUpdateSetting(c, key) {
+		return
+	}
+	// 获取默认值
+	setting := s.configService.GetSetting(key)
+	if setting == nil {
+		RespondErrorMsg(c, http.StatusNotFound, fmt.Sprintf("setting not found: %s", key))
+		return
+	}
+
+	// 重置为默认值
+	if err := s.configService.UpdateSetting(c.Request.Context(), key, setting.DefaultValue); err != nil {
+		log.Printf("[ERROR] AdminResetSetting key=%s 失败: %v", key, err)
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// log.Printf("[INFO] Setting reset to default: %s = %s (restart required)", key, setting.DefaultValue)
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"message": "配置已重置为默认值，程序将在2秒后重启",
+		"key":     key,
+		"value":   setting.DefaultValue,
+	})
+
+	// 异步触发重启
+	go triggerRestart()
+}
+
+// AdminBatchUpdateSettings 批量更新配置(事务保护)
+// POST /admin/settings/batch
+func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
+	var req map[string]string
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+
+	if len(req) == 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "no settings to update")
+		return
+	}
+
+	// 验证所有配置
+	for key, value := range req {
+		if rejectContainerManagedUpdateSetting(c, key) {
+			return
+		}
+		setting := s.configService.GetSetting(key)
+		if setting == nil {
+			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("unknown setting: %s", key))
+			return
+		}
+
+		if err := validateSettingValue(key, setting.ValueType, value); err != nil {
+			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("invalid value for %s: %v", key, err))
+			return
+		}
+	}
+
+	// 批量更新(事务保护)
+	if err := s.configService.BatchUpdateSettings(c.Request.Context(), req); err != nil {
+		log.Printf("[ERROR] AdminBatchUpdateSettings 失败: %v", err)
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	log.Printf("[INFO] 已批量更新 %d 项配置（需重启）", len(req))
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"message": fmt.Sprintf("已保存 %d 项配置，程序将在2秒后重启", len(req)),
+	})
+
+	// 异步触发重启
+	go triggerRestart()
+}
+
+// validateSettingValue 验证配置值的合法性
+func validateSettingValue(key, valueType, value string) error {
+	if key == globalCooldownDetectionRulesSettingKey {
+		_, err := parseGlobalCooldownDetectionRules(value)
+		return err
+	}
+
+	switch valueType {
+	case "int":
+		intVal, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("not a valid integer")
+		}
+		// 按配置项定义具体约束
+		switch key {
+		case "max_key_retries":
+			if intVal < 1 {
+				return fmt.Errorf("max_key_retries must be >= 1")
+			}
+		case "log_retention_days":
+			if intVal != LogRetentionDaysDisabled && (intVal < LogRetentionDaysMin || intVal > LogRetentionDaysMax) {
+				return fmt.Errorf("log_retention_days must be %d (永久) or %d-%d", LogRetentionDaysDisabled, LogRetentionDaysMin, LogRetentionDaysMax)
+			}
+		case "auto_update_interval_hours":
+			if intVal != 0 && intVal < 1 {
+				return fmt.Errorf("auto_update_interval_hours must be 0 or >= 1")
+			}
+		case "responses_ws_max_sessions",
+			"responses_ws_max_connections",
+			"responses_ws_max_connections_per_token":
+			if intVal < 0 {
+				return fmt.Errorf("%s must be >= 0", key)
+			}
+		case "responses_ws_session_ttl_minutes":
+			if intVal < 1 {
+				return fmt.Errorf("responses_ws_session_ttl_minutes must be >= 1")
+			}
+		case "responses_ws_max_transcript_bytes":
+			if intVal < 1 {
+				return fmt.Errorf("responses_ws_max_transcript_bytes must be >= 1")
+			}
+		case "max_concurrency",
+			"max_body_bytes",
+			"max_image_body_bytes",
+			"cooldown_auth_seconds",
+			"cooldown_server_seconds",
+			"cooldown_timeout_seconds",
+			"cooldown_rate_limit_seconds",
+			"cooldown_max_seconds",
+			"cooldown_min_seconds":
+			if intVal < 1 {
+				return fmt.Errorf("%s must be >= 1", key)
+			}
+		default:
+			if intVal < -1 {
+				return fmt.Errorf("value must be >= -1")
+			}
+		}
+
+	case "float":
+		floatVal, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return fmt.Errorf("not a valid number")
+		}
+		if math.IsNaN(floatVal) || math.IsInf(floatVal, 0) {
+			return fmt.Errorf("must be a finite number")
+		}
+		switch key {
+		case "channel_check_interval_hours", "model_catalog_sync_interval_hours":
+			if floatVal < 0 {
+				return fmt.Errorf("%s must be >= 0", key)
+			}
+		}
+
+	case "bool":
+		if value != "true" && value != "false" && value != "1" && value != "0" {
+			return fmt.Errorf("must be true/false or 1/0")
+		}
+
+	case "duration":
+		intVal, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("duration must be an integer (seconds)")
+		}
+		if intVal < 0 {
+			return fmt.Errorf("duration must be >= 0 (0 = disabled)")
+		}
+
+	case "string":
+		switch key {
+		case "log_channel_click_action":
+			if value != "edit" && value != "navigate" {
+				return fmt.Errorf("log_channel_click_action must be edit or navigate")
+			}
+		case "auto_update_channel":
+			_, err := version.ParseReleaseChannel(value)
+			return err
+		}
+
+	default:
+		return fmt.Errorf("unknown value type: %s", valueType)
+	}
+
+	return nil
+}
+
+// RestartFunc 重启函数（由 main 包注入，避免循环依赖）
+var RestartFunc func()
+
+// triggerRestart 触发程序重启
+// 依赖优雅关闭语义：触发 SIGTERM 后，HTTP 服务器应完成当前请求再退出。
+func triggerRestart() {
+	log.Print("[INFO] 配置变更触发重启...")
+
+	if RestartFunc == nil {
+		log.Printf("[ERROR] RestartFunc 为空，重启已跳过")
+		return
+	}
+	RestartFunc()
+}

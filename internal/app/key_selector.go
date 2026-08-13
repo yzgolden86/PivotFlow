@@ -1,0 +1,236 @@
+package app
+
+import (
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"ccLoad/internal/model"
+)
+
+// KeySelector 负责从渠道的多个API Key中选择可用的Key
+// 移除store依赖，避免重复查询数据库
+//
+// 说明：使用 RWMutex + map 取代 sync.Map，原因是读多写少且保持类型安全。
+type KeySelector struct {
+	// 轮询计数器：channelID -> *rrCounter
+	// 渠道删除时需要清理对应计数器，避免rrCounters无界增长。
+	rrCounters map[int64]*rrCounter
+	rrMutex    sync.RWMutex
+}
+
+// rrCounter 轮询计数器（简化版）
+type rrCounter struct {
+	counter    atomic.Uint32
+	lastAccess atomic.Int64 // UnixNano: 最后一次访问时间，用于后台清理
+}
+
+// NewKeySelector 创建Key选择器
+func NewKeySelector() *KeySelector {
+	return &KeySelector{
+		rrCounters: make(map[int64]*rrCounter),
+	}
+}
+
+// SelectAvailableKey 返回 (keyIndex, apiKey, error)
+// 策略: sequential顺序尝试 | round_robin轮询选择
+// excludeKeys: 避免同一请求内重复尝试
+// 移除store依赖，apiKeys由调用方传入，避免重复查询
+func (ks *KeySelector) SelectAvailableKey(channelID int64, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
+	if len(apiKeys) == 0 {
+		return -1, "", fmt.Errorf("no API keys configured for channel %d", channelID)
+	}
+
+	// 单Key场景:检查排除和冷却状态
+	if len(apiKeys) == 1 {
+		keyIndex := apiKeys[0].KeyIndex
+		if apiKeys[0].Disabled {
+			return -1, "", fmt.Errorf("single key (index=%d) is disabled", keyIndex)
+		}
+		// [FIX] 使用真实 KeyIndex 检查排除集合，而非硬编码0
+		if excludeKeys != nil && excludeKeys[keyIndex] {
+			return -1, "", fmt.Errorf("single key (index=%d) already tried in this request", keyIndex)
+		}
+		// [INFO] 修复(2025-12-09): 检查冷却状态,防止单Key渠道冷却后仍被请求
+		// 原逻辑"不使用Key级别冷却(YAGNI原则)"是错误的,会导致冷却Key持续触发上游错误
+		if apiKeys[0].IsCoolingDown(time.Now()) {
+			return -1, "", fmt.Errorf("single key (index=%d) is in cooldown until %s",
+				keyIndex,
+				time.Unix(apiKeys[0].CooldownUntil, 0).Format("2006-01-02 15:04:05"))
+		}
+		return keyIndex, apiKeys[0].APIKey, nil
+	}
+
+	// 多Key场景:根据策略选择
+	strategy := apiKeys[0].KeyStrategy
+	if strategy == "" {
+		strategy = model.KeyStrategySequential
+	}
+
+	switch strategy {
+	case model.KeyStrategyRoundRobin:
+		return ks.selectRoundRobin(channelID, apiKeys, excludeKeys)
+	case model.KeyStrategySequential:
+		return ks.selectSequential(apiKeys, excludeKeys)
+	default:
+		return ks.selectSequential(apiKeys, excludeKeys)
+	}
+}
+
+// SelectCooldownFallbackKey 在“全冷却兜底”路径中选择最早恢复的冷却Key。
+// 只给兜底候选使用；普通请求仍必须走 SelectAvailableKey 的严格冷却过滤。
+func (ks *KeySelector) SelectCooldownFallbackKey(channelID int64, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
+	if len(apiKeys) == 0 {
+		return -1, "", fmt.Errorf("no API keys configured for channel %d", channelID)
+	}
+
+	now := time.Now()
+	var best *model.APIKey
+	for _, apiKey := range apiKeys {
+		if apiKey == nil {
+			continue
+		}
+		if apiKey.Disabled {
+			continue
+		}
+		keyIndex := apiKey.KeyIndex
+		if excludeKeys != nil && excludeKeys[keyIndex] {
+			continue
+		}
+		if !apiKey.IsCoolingDown(now) {
+			return keyIndex, apiKey.APIKey, nil
+		}
+		if best == nil ||
+			apiKey.CooldownUntil < best.CooldownUntil ||
+			(apiKey.CooldownUntil == best.CooldownUntil && keyIndex < best.KeyIndex) {
+			best = apiKey
+		}
+	}
+
+	if best != nil {
+		return best.KeyIndex, best.APIKey, nil
+	}
+	return -1, "", fmt.Errorf("all API keys are already tried")
+}
+
+func (ks *KeySelector) selectSequential(apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
+	now := time.Now()
+
+	for _, apiKey := range apiKeys {
+		keyIndex := apiKey.KeyIndex
+
+		if apiKey.Disabled {
+			continue
+		}
+
+		if excludeKeys != nil && excludeKeys[keyIndex] {
+			continue
+		}
+
+		if apiKey.IsCoolingDown(now) {
+			continue
+		}
+
+		return keyIndex, apiKey.APIKey, nil
+	}
+
+	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
+}
+
+// getOrCreateCounter 获取或创建渠道的轮询计数器（双重检查锁定）
+func (ks *KeySelector) getOrCreateCounter(channelID int64) *rrCounter {
+	ks.rrMutex.RLock()
+	counter, ok := ks.rrCounters[channelID]
+	ks.rrMutex.RUnlock()
+
+	if ok {
+		return counter
+	}
+
+	ks.rrMutex.Lock()
+	defer ks.rrMutex.Unlock()
+
+	// 再次检查，避免多个goroutine同时创建
+	if counter, ok = ks.rrCounters[channelID]; !ok {
+		counter = &rrCounter{}
+		counter.lastAccess.Store(time.Now().UnixNano())
+		ks.rrCounters[channelID] = counter
+	}
+	return counter
+}
+
+// RemoveChannelCounter 删除指定渠道的轮询计数器。
+// 在渠道被删除时调用，避免rrCounters长期积累。
+func (ks *KeySelector) RemoveChannelCounter(channelID int64) {
+	ks.rrMutex.Lock()
+	delete(ks.rrCounters, channelID)
+	ks.rrMutex.Unlock()
+}
+
+// CleanupInactiveCounters 清理长时间未使用的轮询计数器
+// [FIX] P1: 自动清理过期计数器，防止内存泄漏（渠道删除后未手动调用RemoveChannelCounter）
+// maxIdleTime: 最大空闲时间，超过此时间未使用的计数器将被清理
+func (ks *KeySelector) CleanupInactiveCounters(maxIdleTime time.Duration) {
+	if maxIdleTime <= 0 {
+		return
+	}
+
+	cutoff := time.Now().Add(-maxIdleTime).UnixNano()
+
+	ks.rrMutex.Lock()
+	for channelID, counter := range ks.rrCounters {
+		if counter == nil {
+			delete(ks.rrCounters, channelID)
+			continue
+		}
+		if counter.lastAccess.Load() < cutoff {
+			delete(ks.rrCounters, channelID)
+		}
+	}
+	ks.rrMutex.Unlock()
+}
+
+// selectRoundRobin 轮询选择可用Key
+// [FIX] 按 slice 索引轮询，返回真实 KeyIndex，不再假设 KeyIndex 连续
+func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
+	keyCount := len(apiKeys)
+	now := time.Now()
+
+	counter := ks.getOrCreateCounter(channelID)
+	counter.lastAccess.Store(now.UnixNano())
+	startIdx := int(counter.counter.Add(1) % uint32(keyCount)) //nolint:gosec // G115: keyCount 来自 API Keys 切片长度，不可能溢出
+
+	// 从startIdx开始轮询，最多尝试keyCount次
+	for i := range keyCount {
+		sliceIdx := (startIdx + i) % keyCount
+		selectedKey := apiKeys[sliceIdx]
+		if selectedKey == nil {
+			continue
+		}
+
+		if selectedKey.Disabled {
+			continue
+		}
+
+		keyIndex := selectedKey.KeyIndex // 真实 KeyIndex，可能不连续
+
+		// 检查排除集合（使用真实 KeyIndex）
+		if excludeKeys != nil && excludeKeys[keyIndex] {
+			continue
+		}
+
+		if selectedKey.IsCoolingDown(now) {
+			continue
+		}
+
+		// 返回真实 KeyIndex，而非 slice 索引
+		return keyIndex, selectedKey.APIKey, nil
+	}
+
+	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
+}
+
+// KeySelector 专注于Key选择逻辑，冷却管理已移至 cooldownManager
+// 移除的方法: MarkKeyError, MarkKeySuccess, GetKeyCooldownInfo
+// 原因: 违反SRP原则，冷却管理应由专门的 cooldownManager 负责

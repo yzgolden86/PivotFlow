@@ -1,0 +1,1133 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	neturl "net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"ccLoad/internal/cooldown"
+	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
+
+	"github.com/bytedance/sonic"
+)
+
+const anthropicBillingHeaderPrefix = "x-anthropic-billing-header:"
+
+// ============================================================================
+// 常量定义
+// ============================================================================
+
+// 常量定义（HTTP状态码统一引用 util 包）
+const (
+	// HTTP状态码（引用 util 包统一定义）
+	StatusClientClosedRequest = util.StatusClientClosedRequest // 499 客户端取消请求
+
+	// 缓冲区大小
+	StreamBufferSize = 32 * 1024 // 流式传输缓冲区（32KB，大文件传输）
+	SSEBufferSize    = 4 * 1024  // SSE流式传输缓冲区（4KB，优化实时响应）
+)
+
+func writeResponseWithHeaders(w http.ResponseWriter, status int, hdr http.Header, body []byte) {
+	disableResponseWriteTimeout(w, "最终响应")
+
+	if hdr != nil {
+		filterAndWriteResponseHeaders(w, hdr)
+	} else if len(body) > 0 {
+		// [FIX] 网络/内部错误场景：failure 可能没有 header，设置默认 Content-Type
+		// - body 看起来像 JSON：按 JSON 返回
+		// - 否则：按纯文本返回
+		if looksLikeJSON(body) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		} else {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		}
+	}
+	w.WriteHeader(status)
+	if len(body) > 0 {
+		_, _ = w.Write(body)
+	}
+}
+
+// looksLikeJSON 仅扫描首部空白后的第一个非空字符判定 JSON 形状，
+// 避免 bytes.TrimSpace 对长 body 的全量扫描+切片分配。
+func looksLikeJSON(body []byte) bool {
+	for i := range body {
+		switch body[i] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{', '[':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// ============================================================================
+// 类型定义
+// ============================================================================
+
+// fwResult 转发结果
+type fwResult struct {
+	Status         int
+	UpstreamStatus int // 原始上游 HTTP 状态码；Status 可被改写为 596-599 等内部分类码
+	Header         http.Header
+	Body           []byte  // filled for non-2xx or when needed
+	FirstByteTime  float64 // 首字节响应时间（秒）
+
+	// Token统计（2025-11新增，从SSE响应中提取）
+	InputTokens              int
+	OutputTokens             int
+	ReasoningTokens          int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int // 5m+1h缓存总和（兼容字段）
+	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
+	Cache1hInputTokens       int // 1小时缓存写入Token数（新增2025-12）
+	ToolCostUSD              float64
+
+	// 转发诊断信息（2025-12新增）
+	StreamDiagMsg string // 诊断消息（例如：流中断/不完整、上游响应体读取失败），合并到日志的 Message 字段
+
+	// 重试策略（例如 Codex 400 后剥离 reasoning/thinking 再成功）
+	RetryStrategy string
+
+	// 上游响应字节数（2026-02新增）
+	// 用于499场景诊断：区分客户端在首字节前取消还是接收部分数据后取消
+	BytesReceived int64
+
+	// [INFO] SSE错误事件（2025-12新增）
+	// 用于捕获SSE流中的error事件（如1308错误），在流结束后触发冷却逻辑
+	// 虽然HTTP状态码是200，但error事件表示实际上发生了错误
+	SSEErrorEvent []byte // SSE流中检测到的最后一个error事件的完整JSON
+
+	// 响应是否已经提交给客户端（头或正文已发送）
+	// false 表示本次尝试仍可在同一请求内切换到其他Key/渠道
+	ResponseCommitted bool
+	// UpstreamWebsocket 只表示本次实际上游请求采用了WebSocket，不表示下游协议或渠道配置。
+	UpstreamWebsocket bool
+
+	// OpenAI service_tier（2026-03新增）。Codex 请求中的 priority 是 Fast 模式标记；
+	// 其他情况由上游响应中的 service_tier 决定。
+	ServiceTier string
+
+	// ThinkingEffort 记录请求或上游响应声明的思考等级；上游响应非空时覆盖请求值。
+	ThinkingEffort string
+
+	// Debug日志数据（debug开启时填充，传递到日志写入管道）
+	DebugData *model.DebugLogEntry
+
+	ResponsesTurnResult    responsesWebsocketTurnResult
+	HasResponsesTurnResult bool
+}
+
+// ForwardObserver 封装转发过程中的观测回调（遵循SRP，避免函数签名膨胀）
+type ForwardObserver struct {
+	OnBytesRead         func(int64) // 字节读取回调（可选）
+	OnFirstByteRead     func()      // 首字节读取回调（可选）
+	OnUpstreamWebsocket func(bool)  // 实际上游传输变化回调（可选）
+	OnDebugCapture      func(*debugCapture)
+}
+
+// proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
+type proxyRequestContext struct {
+	originalModel    string
+	clientProtocol   protocol.Protocol
+	upstreamProtocol protocol.Protocol
+	requestMethod    string
+	requestPath      string
+	rawQuery         string
+	body             []byte
+	translatedBody   []byte
+	header           http.Header
+	isStreaming      bool
+	tokenHash        string               // Token哈希值（用于统计）
+	tokenID          int64                // Token ID（用于日志记录，0表示未使用token）
+	clientIP         string               // 客户端IP地址（用于日志记录）
+	activeReqID      int64                // 活跃请求ID（用于更新渠道信息）
+	observer         *ForwardObserver     // 转发观测回调（可选）
+	startTime        time.Time            // 请求开始时间（用于统计）
+	channelStartTime time.Time            // 当前渠道尝试开始时间（每次切换渠道时重置）
+	attemptStartTime time.Time            // 渠道内单次 Key/URL 尝试开始时间
+	baseURL          string               // 当前尝试使用的上游URL（多URL场景）
+	debugData        *model.DebugLogEntry // Debug日志数据（debug开启时填充）
+	thinkingEffort   string
+	routingSession   *responsesExecutionSession // 当前 Responses execution session 的首选渠道
+	nativeCodexWS    *codexUpstreamWebsocketSession
+	nativeCodexBody  []byte
+}
+
+// proxyResult 代理请求结果
+type proxyResult struct {
+	status                    int
+	header                    http.Header
+	body                      []byte
+	channelID                 *int64
+	duration                  float64
+	firstByteTime             float64
+	succeeded                 bool
+	isClientCanceled          bool            // 客户端主动取消请求（context.Canceled）
+	nextAction                cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
+	deferredCooldown          *cooldown.ErrorInput
+	protocolCapabilityMissing bool
+	responsesTurn             responsesWebsocketTurnResult
+	hasResponsesTurn          bool
+}
+
+// ErrorAction 已迁移到 cooldown.Action (internal/cooldown/manager.go)
+// 统一使用 cooldown.Action 类型，遵循DRY原则
+
+// ============================================================================
+// 请求检测工具函数
+// ============================================================================
+
+// isStreamingRequest 检测是否为流式请求
+// 支持多种API的流式标识方式：
+// - Gemini: 路径包含 :streamGenerateContent
+// - Claude/OpenAI: 请求体中 stream=true
+func isStreamingRequest(path string, body []byte) bool {
+	// Gemini流式请求特征：路径包含 :streamGenerateContent
+	if strings.Contains(path, ":streamGenerateContent") {
+		return true
+	}
+
+	// 快速短路：body 不含 "stream" 字段时直接返回 false，
+	// 避免 Gemini :generateContent 等非 chat 请求的全量 Unmarshal。
+	// 误判（user content 含 "stream" 子串）只会进入慢路径，最终结果仍正确。
+	if !bytes.Contains(body, []byte(`"stream"`)) {
+		return false
+	}
+
+	// Claude/OpenAI流式请求特征：请求体中 stream=true
+	var reqModel struct {
+		Stream util.FlexibleBool `json:"stream"`
+	}
+	_ = sonic.Unmarshal(body, &reqModel)
+	return reqModel.Stream.Bool()
+}
+
+// ============================================================================
+// URL和请求构建工具函数
+// ============================================================================
+
+// buildUpstreamURL 构建上游完整URL（KISS）
+func buildUpstreamURL(baseURL string, requestPath, rawQuery string) string {
+	upstreamURL := model.StripExactUpstreamURLMarker(baseURL)
+	if !model.HasExactUpstreamURLMarker(baseURL) {
+		upstreamURL = strings.TrimRight(upstreamURL, "/") + requestPath
+	}
+
+	// 移除 key 参数（Gemini API 认证格式），避免泄露到上游
+	if rawQuery != "" {
+		if values, err := neturl.ParseQuery(rawQuery); err == nil {
+			values.Del("key")
+			rawQuery = values.Encode()
+		}
+	}
+
+	if rawQuery != "" {
+		upstreamURL += "?" + rawQuery
+	}
+	return upstreamURL
+}
+
+// buildUpstreamRequest 创建带上下文的HTTP请求
+func buildUpstreamRequest(ctx context.Context, method, upstreamURL string, body []byte) (*http.Request, error) {
+	var bodyReader io.Reader
+	if len(body) > 0 {
+		bodyReader = bytes.NewReader(body)
+	}
+	u, err := neturl.Parse(upstreamURL)
+	if err != nil {
+		return nil, err
+	}
+	return http.NewRequestWithContext(ctx, method, u.String(), bodyReader)
+}
+
+// hop-by-hop headers 不应被代理透传（RFC 7230）
+// 注意：Connection 头中声明的字段也必须视为 hop-by-hop，一并剥离。
+var hopByHopHeaders = map[string]struct{}{
+	"connection":          {},
+	"proxy-connection":    {}, // 非标准但常见
+	"keep-alive":          {},
+	"proxy-authenticate":  {},
+	"proxy-authorization": {},
+	"te":                  {},
+	"trailer":             {},
+	"transfer-encoding":   {},
+	"upgrade":             {},
+}
+
+func connectionHeaderTokens(h http.Header) map[string]struct{} {
+	var tokens map[string]struct{}
+	for _, v := range h.Values("Connection") {
+		for _, t := range strings.Split(v, ",") {
+			t = strings.ToLower(strings.TrimSpace(t))
+			if t == "" {
+				continue
+			}
+			if tokens == nil {
+				tokens = make(map[string]struct{})
+			}
+			tokens[t] = struct{}{}
+		}
+	}
+	return tokens
+}
+
+// shouldSkipHopByHopHeader 检查头是否为 hop-by-hop 头（RFC 7230）
+// 包括静态 hop-by-hop 头和 Connection 头中声明的动态字段
+func shouldSkipHopByHopHeader(headerName string, connTokens map[string]struct{}) bool {
+	lk := strings.ToLower(headerName)
+
+	// 检查静态 hop-by-hop 头
+	if _, ok := hopByHopHeaders[lk]; ok {
+		return true
+	}
+
+	// 检查 Connection 头中声明的动态 hop-by-hop 字段
+	if connTokens != nil {
+		if _, ok := connTokens[lk]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// copyRequestHeaders 复制请求头，跳过认证相关（DRY）
+func copyRequestHeaders(dst *http.Request, src http.Header) {
+	connTokens := connectionHeaderTokens(src)
+	for k, vs := range src {
+		// 剥离 hop-by-hop headers（以及 Connection 显式声明的 hop-by-hop 字段）
+		if shouldSkipHopByHopHeader(k, connTokens) {
+			continue
+		}
+
+		// 不透传认证头（由上游注入）
+		if strings.EqualFold(k, "Authorization") ||
+			strings.EqualFold(k, "X-Api-Key") ||
+			strings.EqualFold(k, "x-goog-api-key") {
+			continue
+		}
+		// 不透传 Accept-Encoding，避免上游返回 br/gzip 压缩导致错误体乱码
+		// 让 Go Transport 自动设置并透明解压 gzip（DisableCompression=false）
+		if strings.EqualFold(k, "Accept-Encoding") {
+			continue
+		}
+		for _, v := range vs {
+			dst.Header.Add(k, v)
+		}
+	}
+	if dst.Header.Get("Accept") == "" {
+		dst.Header.Set("Accept", "application/json")
+	}
+}
+
+// injectAPIKeyHeaders 按运行时上游协议注入 API Key 头。
+// 参数简化：直接接受API Key字符串，由调用方从KeySelector获取
+func injectAPIKeyHeaders(req *http.Request, apiKey string, upstreamProtocol string) {
+	switch strings.TrimSpace(strings.ToLower(upstreamProtocol)) {
+	case util.ProtocolGemini:
+		// Gemini API: 仅使用 x-goog-api-key
+		req.Header.Set("x-goog-api-key", apiKey)
+	default:
+		// OpenAI/Claude/Anthropic/Codex API: 同时设置两个头
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
+	}
+}
+
+// anthropicProtocolHeaders 是 Anthropic 协议独有的请求头，
+// 转发到非 Anthropic 上游（OpenAI/Gemini/Codex）时必须移除。
+var anthropicProtocolHeaders = []string{
+	"anthropic-version",
+	"anthropic-beta",
+	"anthropic-dangerous-direct-browser-access",
+}
+
+// stripAnthropicProtocolHeaders 当上游非 Anthropic 时，移除客户端携带的 Anthropic 专属头。
+func stripAnthropicProtocolHeaders(req *http.Request, upstreamType string) {
+	if upstreamType == util.ProtocolAnthropic {
+		return
+	}
+	for _, h := range anthropicProtocolHeaders {
+		req.Header.Del(h)
+	}
+}
+
+// injectAnthropicBetaFlag 确保 anthropic-beta 头包含指定 flag
+func injectAnthropicBetaFlag(req *http.Request, flag string) {
+	existing := req.Header.Get("anthropic-beta")
+	if existing == "" {
+		req.Header.Set("anthropic-beta", flag)
+		return
+	}
+	if strings.Contains(existing, flag) {
+		return
+	}
+	req.Header.Set("anthropic-beta", existing+","+flag)
+}
+
+func ensureAnthropicVersionHeader(req *http.Request, upstreamType string) {
+	if upstreamType != util.ProtocolAnthropic {
+		return
+	}
+	if req.Header.Get("anthropic-version") == "" {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+}
+
+// normalizeAnyrouterAdaptiveThinking 为 anyrouter 的 Anthropic /v1/messages 请求补齐 adaptive thinking。
+// 自动注入只针对 anyrouter；普通 Anthropic 渠道不做兜底改写。
+func normalizeAnyrouterAdaptiveThinking(cfg *model.Config, upstreamProtocol, requestPath string, body []byte) []byte {
+	if len(body) == 0 || cfg == nil {
+		return body
+	}
+	if upstreamProtocol != util.ProtocolAnthropic {
+		return body
+	}
+	if !isAnyrouterChannel(cfg) {
+		return body
+	}
+	if requestPath != "/v1/messages" {
+		return body
+	}
+	var obj map[string]any
+	if err := sonic.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	thinking, hasThinking := obj["thinking"]
+	if hasThinking {
+		thinkMap, ok := thinking.(map[string]any)
+		if !ok {
+			return body
+		}
+		typ, _ := thinkMap["type"].(string)
+		if typ != "enabled" {
+			return body
+		}
+		effort := "high"
+		if budget, ok := thinkMap["budget_tokens"].(float64); ok && budget > 0 {
+			effort = anthropicBudgetToEffort(int(budget))
+		}
+		obj["thinking"] = map[string]string{"type": "adaptive"}
+		setAnthropicOutputEffort(obj, effort)
+	} else {
+		obj["thinking"] = map[string]string{"type": "adaptive"}
+		setAnthropicOutputEffort(obj, "high")
+	}
+	newBody, err := sonic.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return newBody
+}
+
+func isAnyrouterChannel(cfg *model.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	haystack := strings.ToLower(cfg.Name + "\n" + strings.Join(cfg.GetURLs(), "\n"))
+	return strings.Contains(haystack, "anyrouter")
+}
+
+func setAnthropicOutputEffort(obj map[string]any, effort string) {
+	if effort == "" {
+		return
+	}
+	outputConfig, _ := obj["output_config"].(map[string]any)
+	if outputConfig == nil {
+		outputConfig = map[string]any{}
+		obj["output_config"] = outputConfig
+	}
+	if _, exists := outputConfig["effort"]; !exists {
+		outputConfig["effort"] = effort
+	}
+}
+
+// anthropicBudgetToEffort 把旧 Anthropic budget_tokens 映射成 output_config.effort 档位。
+func anthropicBudgetToEffort(budget int) string {
+	switch {
+	case budget >= 16384:
+		return "high"
+	case budget >= 4096:
+		return "medium"
+	case budget > 0:
+		return "low"
+	default:
+		return "medium"
+	}
+}
+
+// filterAndWriteResponseHeaders 过滤并写回响应头（DRY）
+// Go Transport 仅自动解压 gzip（当 DisableCompression=false 且请求无 Accept-Encoding 时）
+// 对于 br/deflate 等其他编码，必须保留 Content-Encoding 让客户端自行解压
+func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
+	contentEncoding := hdr.Get("Content-Encoding")
+	// 仅当 Transport 已自动解压 gzip 时才移除编码头（此时 hdr 中已无 Content-Encoding）
+	// 若存在非 gzip 编码，必须透传让客户端处理
+	skipContentEncoding := contentEncoding == "" || strings.EqualFold(contentEncoding, "gzip")
+
+	connTokens := connectionHeaderTokens(hdr)
+	for k, vs := range hdr {
+		// hop-by-hop headers 一律不透传（以及 Connection 显式声明的 hop-by-hop 字段）
+		if shouldSkipHopByHopHeader(k, connTokens) {
+			continue
+		}
+
+		// message framing 相关头不应手工透传
+		if strings.EqualFold(k, "Content-Length") {
+			continue
+		}
+		if strings.EqualFold(k, "Content-Encoding") && skipContentEncoding {
+			continue
+		}
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+}
+
+// ============================================================================
+// 模型和路径解析工具函数
+// ============================================================================
+
+// extractModelFromPath 从URL路径中提取模型名称
+// 支持格式：/models/{model}:method 或 /models/{model}
+func extractModelFromPath(path string) string {
+	// 查找 "/models/" 子串
+	modelsPrefix := "/models/"
+	idx := strings.Index(path, modelsPrefix)
+	if idx == -1 {
+		return ""
+	}
+
+	// 提取 "/models/" 之后的部分
+	start := idx + len(modelsPrefix)
+	remaining := path[start:]
+
+	// 查找模型名称的结束位置（遇到 : 或 / 或字符串结尾）
+	end := len(remaining)
+	for i, ch := range remaining {
+		if ch == ':' || ch == '/' {
+			end = i
+			break
+		}
+	}
+
+	return remaining[:end]
+}
+
+func replaceModelInPath(path string, originalModel string, actualModel string) string {
+	if originalModel == "" || actualModel == "" || originalModel == actualModel {
+		return path
+	}
+	modelPrefix := "/models/"
+	needle := modelPrefix + originalModel
+	idx := strings.Index(path, needle)
+	if idx == -1 {
+		return path
+	}
+	end := idx + len(needle)
+	if end < len(path) && path[end] != ':' && path[end] != '/' {
+		return path
+	}
+	return path[:idx+len(modelPrefix)] + actualModel + path[end:]
+}
+
+func buildGeminiGeneratePath(model string, isStreaming bool) string {
+	if isStreaming {
+		return "/v1beta/models/" + model + ":streamGenerateContent"
+	}
+	return "/v1beta/models/" + model + ":generateContent"
+}
+
+func buildAnthropicMessagesPath() string {
+	return "/v1/messages"
+}
+
+func buildOpenAIChatPath() string {
+	return "/v1/chat/completions"
+}
+
+func buildCodexResponsesPath() string {
+	return "/v1/responses"
+}
+
+// prepareRequestBody 准备请求体（处理模型重定向和模糊匹配）
+// 遵循SRP原则：单一职责 - 负责模型名解析和请求体准备
+//
+// 模型名解析优先级：
+// 1. 精确匹配的重定向（redirect_model 配置）
+// 2. 模糊匹配（启用 model_fuzzy_match 时）
+// 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
+func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) string {
+	actualModel := originalModel
+	// 1. 检查模型重定向（精确匹配优先）
+	if redirectModel, ok := cfg.GetRedirectModel(originalModel); ok && redirectModel != "" {
+		actualModel = redirectModel
+	}
+
+	// 2. 模糊匹配回退（仅当未触发重定向时）
+	if actualModel == originalModel && s.modelFuzzyMatch {
+		// 先检查精确匹配，避免不必要的模糊匹配
+		if !cfg.SupportsModel(originalModel) {
+			if matched, ok := cfg.FuzzyMatchModel(originalModel); ok {
+				actualModel = matched
+			}
+		}
+	}
+
+	// 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
+	// 场景：请求 gemini-3-flash → 模糊匹配 gemini-3-flash-preview → 重定向 gemini-3-flash-preview-0719
+	// 仅当模型已变更且变更后的模型有重定向配置时触发
+	if actualModel != originalModel {
+		if redirectModel, ok := cfg.GetRedirectModel(actualModel); ok && redirectModel != "" {
+			actualModel = redirectModel
+		}
+	}
+	return actualModel
+}
+
+// resolveFinalUpstreamModel 返回真正发送给上游的模型身份。
+// 协议转换使用 resolved model 构造上游 body，随后 custom_request_rules 可能再次覆盖 body.model。
+// Gemini 的模型位于 URL 路径，body 规则不改变其路由模型。
+func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, originalModel string, upstreamProtocol string) string {
+	actualModel := s.resolveActualModel(cfg, originalModel)
+	if protocol.Protocol(util.NormalizeProtocol(upstreamProtocol)) == protocol.Gemini {
+		return actualModel
+	}
+	return resolveModelAfterBodyRules(actualModel, cfg.BodyRules())
+}
+
+func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext, upstreamProtocol protocol.Protocol) (actualModel string, bodyToSend []byte) {
+	actualModel = s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(upstreamProtocol))
+
+	bodyToSend = reqCtx.body
+	bodyToSend = replaceJSONRequestModel(bodyToSend, reqCtx.originalModel, actualModel)
+
+	return actualModel, bodyToSend
+}
+
+func replaceJSONRequestModel(body []byte, originalModel, actualModel string) []byte {
+	if len(body) == 0 || actualModel == "" || actualModel == originalModel {
+		return body
+	}
+	var reqData map[string]json.RawMessage
+	if err := sonic.Unmarshal(body, &reqData); err != nil {
+		return body
+	}
+	modelRaw, err := sonic.Marshal(actualModel)
+	if err != nil {
+		return body
+	}
+	reqData["model"] = modelRaw
+	modifiedBody, err := sonic.Marshal(reqData)
+	if err != nil {
+		return body
+	}
+	return modifiedBody
+}
+
+// stripAnthropicBillingHeaders 从 Anthropic /v1/messages 请求体的 system 数组中
+// 移除固定注入格式的 x-anthropic-billing-header 条目（上游计费元数据，不应转发）
+// 注意：仅解析/重建 system 字段，其他字段保留 RawMessage，避免大整数精度丢失。
+func stripAnthropicBillingHeaders(body []byte) []byte {
+	// 快速路径：不含特征前缀则直接返回，避免 JSON 解析
+	if !bytes.Contains(body, []byte(anthropicBillingHeaderPrefix)) {
+		return body
+	}
+
+	var reqData map[string]json.RawMessage
+	if err := sonic.Unmarshal(body, &reqData); err != nil {
+		return body
+	}
+
+	systemRaw, ok := reqData["system"]
+	if !ok {
+		return body
+	}
+
+	var systemArr []json.RawMessage
+	if err := sonic.Unmarshal(systemRaw, &systemArr); err != nil {
+		return body // system 是 string，不处理
+	}
+
+	filtered := make([]json.RawMessage, 0, len(systemArr))
+	changed := false
+	for _, item := range systemArr {
+		if isAnthropicBillingHeaderSystemBlock(item) {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+
+	if !changed {
+		return body
+	}
+
+	if len(filtered) == 0 {
+		delete(reqData, "system")
+	} else {
+		filteredSystemRaw, err := sonic.Marshal(filtered)
+		if err != nil {
+			return body
+		}
+		reqData["system"] = filteredSystemRaw
+	}
+
+	result, err := sonic.Marshal(reqData)
+	if err != nil {
+		return body
+	}
+	return result
+}
+
+func isAnthropicBillingHeaderSystemBlock(raw json.RawMessage) bool {
+	var block struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := sonic.Unmarshal(raw, &block); err != nil {
+		return false
+	}
+	if block.Type != "text" {
+		return false
+	}
+
+	text := strings.TrimSpace(block.Text)
+	if !strings.HasPrefix(text, anthropicBillingHeaderPrefix) {
+		return false
+	}
+
+	payload := strings.TrimSpace(text[len(anthropicBillingHeaderPrefix):])
+	if payload == "" {
+		return false
+	}
+
+	parts := strings.Split(payload, ";")
+	hasKnownKey := false
+	hasAnyPair := false
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		key, _, ok := strings.Cut(part, "=")
+		if !ok {
+			return false
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return false
+		}
+
+		hasAnyPair = true
+		switch key {
+		case "cc_version", "cc_entrypoint", "cch": // cch = client config hash
+			hasKnownKey = true
+		}
+	}
+
+	return hasAnyPair && hasKnownKey
+}
+
+// ============================================================================
+// 日志和字符串处理工具函数
+// ============================================================================
+
+func normalizeThinkingEffort(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func extractThinkingEffortFromJSON(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	return extractThinkingEffortFromPayload(payload)
+}
+
+func extractThinkingEffortFromPayload(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+
+	if response, ok := payload["response"].(map[string]any); ok {
+		if effort := extractThinkingEffortFromPayload(response); effort != "" {
+			return effort
+		}
+	}
+	if message, ok := payload["message"].(map[string]any); ok {
+		if effort := extractThinkingEffortFromPayload(message); effort != "" {
+			return effort
+		}
+	}
+
+	for _, key := range []string{"reasoning_effort", "thinking_effort", "thinkingLevel", "thinking_level"} {
+		if effort := stringMapValue(payload, key); effort != "" {
+			return normalizeThinkingEffort(effort)
+		}
+	}
+
+	if reasoning, ok := payload["reasoning"].(map[string]any); ok {
+		if effort := firstStringMapValue(reasoning, "effort", "level", "thinkingLevel", "thinking_level", "type"); effort != "" {
+			return normalizeThinkingEffort(effort)
+		}
+	}
+
+	if outputConfig, ok := payload["output_config"].(map[string]any); ok {
+		if effort := firstStringMapValue(outputConfig, "effort", "level", "thinkingLevel", "thinking_level", "type"); effort != "" {
+			return normalizeThinkingEffort(effort)
+		}
+	}
+
+	if thinkingConfig, ok := payload["thinkingConfig"].(map[string]any); ok {
+		if effort := firstStringMapValue(thinkingConfig, "thinkingLevel", "thinking_level", "effort", "level"); effort != "" {
+			return normalizeThinkingEffort(effort)
+		}
+	}
+	if generationConfig, ok := payload["generationConfig"].(map[string]any); ok {
+		if effort := extractThinkingEffortFromPayload(generationConfig); effort != "" {
+			return effort
+		}
+	}
+
+	if thinking, ok := payload["thinking"].(map[string]any); ok {
+		if effort := firstStringMapValue(thinking, "effort", "level", "thinkingLevel", "thinking_level"); effort != "" {
+			return normalizeThinkingEffort(effort)
+		}
+		if budget, ok := thinking["budget_tokens"].(float64); ok && budget > 0 {
+			return anthropicBudgetToEffort(int(budget))
+		}
+	}
+
+	return ""
+}
+
+func firstStringMapValue(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := stringMapValue(values, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func stringMapValue(values map[string]any, key string) string {
+	value, ok := values[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+// logEntryParams 日志条目构建参数（避免多个 string 参数顺序混淆）
+type logEntryParams struct {
+	RequestModel     string // 客户端请求的原始模型名称
+	ActualModel      string // 实际转发到上游的模型名称（可能经过重定向）
+	RequestPath      string // 客户端请求路径（用于识别按次计费的特殊端点）
+	ChannelID        int64
+	StatusCode       int
+	Duration         float64
+	IsStreaming      bool
+	APIKeyUsed       string
+	AuthTokenID      int64
+	ClientProtocol   protocol.Protocol
+	UpstreamProtocol protocol.Protocol
+	ClientIP         string
+	BaseURL          string // 请求使用的上游URL
+	Result           *fwResult
+	ErrMsg           string
+	StartTime        time.Time            // 渠道尝试开始时间（用于日志记录）
+	DebugData        *model.DebugLogEntry // Debug日志数据
+	CostMultiplier   float64              // 渠道成本倍率快照（0=免费，<0 视为 1）
+	ThinkingEffort   string
+}
+
+// resolveProxyBillingModel 选择代理请求的计费模型。
+// /v1/alpha/search 无 model/token，固定按 search_call 计费。
+func resolveProxyBillingModel(requestPath, actualModel, requestModel string) string {
+	if protocol.DetectRequestFamily(requestPath) == protocol.RequestFamilyAlphaSearch {
+		return util.BillingModelSearchCall
+	}
+	return util.ResolveBillingModel(actualModel, requestModel)
+}
+
+// buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
+func buildLogEntry(p logEntryParams) *model.LogEntry {
+	logTime := p.StartTime
+	if logTime.IsZero() {
+		logTime = time.Now() // 兜底：未传入开始时间时使用当前时间
+	}
+	billingModel := resolveProxyBillingModel(p.RequestPath, p.ActualModel, p.RequestModel)
+	modelName := p.RequestModel
+	if modelName == "" {
+		// alpha/search 等无 model 请求：用计费标识落库，避免日志/统计模型列空白
+		modelName = billingModel
+	}
+	entry := &model.LogEntry{
+		Time:              model.JSONTime{Time: logTime},
+		Model:             modelName,
+		LogSource:         model.LogSourceProxy,
+		ChannelID:         p.ChannelID,
+		StatusCode:        p.StatusCode,
+		Duration:          p.Duration,
+		IsStreaming:       p.IsStreaming,
+		UpstreamWebsocket: p.Result != nil && p.Result.UpstreamWebsocket,
+		APIKeyUsed:        p.APIKeyUsed,
+		AuthTokenID:       p.AuthTokenID,
+		ClientProtocol:    string(p.ClientProtocol),
+		UpstreamProtocol:  string(p.UpstreamProtocol),
+		ClientIP:          p.ClientIP,
+		BaseURL:           p.BaseURL,
+	}
+	entry.ThinkingEffort = normalizeThinkingEffort(p.ThinkingEffort)
+
+	// 成本倍率快照：0 表示免费渠道；负数兜底为 1（保护存量数据）
+	if p.CostMultiplier >= 0 {
+		entry.CostMultiplier = p.CostMultiplier
+	} else {
+		entry.CostMultiplier = 1
+	}
+
+	// 记录实际转发的模型（仅当发生重定向时）
+	if p.ActualModel != "" && p.ActualModel != p.RequestModel {
+		entry.ActualModel = p.ActualModel
+	}
+
+	if p.ErrMsg != "" {
+		// [FIX] 2026-02: 错误场景下也保留诊断信息（特别是499客户端取消）
+		// 场景：流式请求中途取消，此时已有 FirstByteTime 和 BytesReceived
+		// 将字节数追加到 message 中便于诊断
+		msg := truncateErr(p.ErrMsg)
+		if p.Result != nil && p.IsStreaming {
+			if p.Result.FirstByteTime > 0 {
+				entry.FirstByteTime = p.Result.FirstByteTime
+			}
+			if p.Result.BytesReceived > 0 {
+				msg = fmt.Sprintf("%s (received %s)", msg, formatBytes(p.Result.BytesReceived))
+			}
+		}
+		entry.Message = msg
+	} else if p.Result != nil {
+		res := p.Result
+		if p.StatusCode >= 200 && p.StatusCode < 300 {
+			// [INFO] 2025-12: 流传输诊断信息优先于 "ok"
+			if res.StreamDiagMsg != "" {
+				entry.Message = res.StreamDiagMsg
+			} else {
+				entry.Message = "ok"
+			}
+			entry.Message = appendRetryStrategyToMessage(entry.Message, res.RetryStrategy)
+		} else {
+			msg := fmt.Sprintf("upstream status %d", p.StatusCode)
+			// 诊断信息优先：body 已存于 fwResult.Body 可随时查阅，但 diag 仅记录在 Message
+			if res.StreamDiagMsg != "" {
+				msg = fmt.Sprintf("%s [%s]", msg, truncateErr(res.StreamDiagMsg))
+			}
+			if len(res.Body) > 0 {
+				msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
+			}
+			entry.Message = truncateErr(msg)
+		}
+
+		// 流式请求记录首字节响应时间
+		if p.IsStreaming && res.FirstByteTime > 0 {
+			entry.FirstByteTime = res.FirstByteTime
+		}
+
+		// Token统计（2025-11新增，从SSE响应中提取）
+		entry.InputTokens = res.InputTokens
+		entry.OutputTokens = res.OutputTokens
+		entry.ReasoningTokens = res.ReasoningTokens
+		entry.CacheReadInputTokens = res.CacheReadInputTokens
+		entry.CacheCreationInputTokens = res.CacheCreationInputTokens
+		entry.Cache5mInputTokens = res.Cache5mInputTokens
+		entry.Cache1hInputTokens = res.Cache1hInputTokens
+		entry.ServiceTier = res.ServiceTier
+
+		if p.StatusCode >= http.StatusOK && p.StatusCode < http.StatusMultipleChoices {
+			// 使用实际转发的模型计算成本（重定向时价格可能不同）；
+			// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
+			// 优先 actual（重定向可能换价）；无定价时回退 request（渠道第一列作定价别名）
+			// alpha/search 固定按 search_call 计费。
+			entry.Cost = computeRequestCost(billingModel, res.ServiceTier, res) + res.ToolCostUSD
+		}
+	} else {
+		entry.Message = "unknown"
+	}
+
+	if p.Result != nil {
+		if effort := normalizeThinkingEffort(p.Result.ThinkingEffort); effort != "" {
+			entry.ThinkingEffort = effort
+		}
+	}
+	entry.DebugData = p.DebugData
+	return entry
+}
+
+func appendRetryStrategyToMessage(message, strategy string) string {
+	strategy = strings.TrimSpace(strategy)
+	if strategy == "" {
+		return message
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "ok"
+	}
+	return truncateErr(fmt.Sprintf("%s [%s]", message, strategy))
+}
+
+// computeRequestCost 集中两处计费分支（buildLogEntry / logFailedAttempt 旁路）。
+// fast 模式专用模型走 CalculateFastModeCost（已含 fast 倍率）。
+// OpenAI service_tier 是价格倍率，不改变按 token 数选择的长上下文分档；
+// 非 OpenAI 白名单模型即使响应携带 service_tier 也不加倍率。
+func computeRequestCost(model string, serviceTier string, res *fwResult) float64 {
+	if res == nil {
+		return 0
+	}
+	return util.CalculateStandardCostBreakdown(
+		model,
+		serviceTier,
+		res.InputTokens,
+		res.OutputTokens,
+		res.CacheReadInputTokens,
+		res.Cache5mInputTokens,
+		res.Cache1hInputTokens,
+	).Total
+}
+
+// truncateErr 截断错误信息到512字符（防止日志过长）
+func truncateErr(s string) string {
+	const maxLen = 512
+	s = strings.TrimSpace(s)
+	if len(s) > maxLen {
+		return s[:maxLen]
+	}
+	return s
+}
+
+// formatBytes 格式化字节数为人类可读的格式（KB/MB）
+func formatBytes(b int64) string {
+	const (
+		kb = 1024
+		mb = 1024 * 1024
+	)
+	switch {
+	case b >= mb:
+		return fmt.Sprintf("%.1fMB", float64(b)/mb)
+	case b >= kb:
+		return fmt.Sprintf("%.1fKB", float64(b)/kb)
+	default:
+		return fmt.Sprintf("%dB", b)
+	}
+}
+
+// safeBodyToString 安全地将响应体转换为字符串，处理可能的gzip压缩
+func safeBodyToString(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	// Go Transport 已自动解压 gzip（DisableCompression=false 且无 Accept-Encoding 时）
+	// 只需检测二进制/压缩数据（上游强制返回 br/deflate 等非 gzip 编码时）
+	if !isLikelyText(data) {
+		return "[binary/compressed response]"
+	}
+	return string(data)
+}
+
+// isLikelyText 检测数据是否像文本（用于区分压缩/二进制数据）
+func isLikelyText(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	// 采样前512字节
+	sample := data
+	if len(sample) > 512 {
+		sample = sample[:512]
+	}
+	nonPrintable := 0
+	for _, b := range sample {
+		// 允许: 可打印ASCII + 常见控制字符(tab/newline/cr) + UTF-8高字节
+		if b < 0x20 && b != '\t' && b != '\n' && b != '\r' {
+			nonPrintable++
+		}
+	}
+	// 超过10%不可打印字符视为二进制/压缩
+	return nonPrintable*10 < len(sample)
+}
+
+// ============================================================================
+// 超时和参数解析工具函数
+// ============================================================================
+
+// parseTimeout 从query参数或header中解析超时时间
+func parseTimeout(q map[string][]string, h http.Header) time.Duration {
+	// 优先 query: timeout_ms / timeout_s
+	if vs, ok := q["timeout_ms"]; ok && len(vs) > 0 && vs[0] != "" {
+		if ms, err := strconv.Atoi(vs[0]); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	if vs, ok := q["timeout_s"]; ok && len(vs) > 0 && vs[0] != "" {
+		if sec, err := strconv.Atoi(vs[0]); err == nil && sec > 0 {
+			return time.Duration(sec) * time.Second
+		}
+	}
+	// header 兜底
+	if v := h.Get("x-timeout-ms"); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	if v := h.Get("x-timeout-s"); v != "" {
+		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
+			return time.Duration(sec) * time.Second
+		}
+	}
+	return 0
+}
+
+// ============================================================================
+// Gemini相关工具函数
+// ============================================================================
+
+// formatModelDisplayName 将模型ID转换为友好的显示名称
+func formatModelDisplayName(modelID string) string {
+	// 简单的格式化:移除日期后缀,首字母大写
+	// 例如:gemini-2.5-flash → Gemini 2.5 Flash
+	parts := strings.Split(modelID, "-")
+	var words []string
+	for _, part := range parts {
+		// 跳过日期格式(8位纯数字)
+		if len(part) == 8 {
+			if _, err := strconv.Atoi(part); err == nil {
+				continue
+			}
+		}
+		// 首字母大写
+		if len(part) > 0 {
+			words = append(words, strings.ToUpper(string(part[0]))+part[1:])
+		}
+	}
+	return strings.Join(words, " ")
+}

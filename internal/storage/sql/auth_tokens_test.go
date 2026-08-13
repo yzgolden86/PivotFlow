@@ -1,0 +1,497 @@
+package sql_test
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
+)
+
+func TestAuthToken_CreateAndGet(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "auth_tokens.db")
+
+	ctx := context.Background()
+
+	// 创建 Auth Token
+	token := &model.AuthToken{
+		Token:             "test-token-hash",
+		Description:       "Test Token",
+		IsActive:          true,
+		CostLimitMicroUSD: 1000000, // $1
+		AllowedModels:     []string{"gpt-4", "claude-3"},
+		AllowedChannelIDs: []int64{11, 22},
+		MaxConcurrency:    3,
+		CreatedAt:         time.Now(),
+	}
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("create auth token: %v", err)
+	}
+
+	// 通过 ID 获取
+	got, err := store.GetAuthToken(ctx, token.ID)
+	if err != nil {
+		t.Fatalf("get auth token by id: %v", err)
+	}
+	if got.Description != "Test Token" {
+		t.Errorf("description: got %q, want %q", got.Description, "Test Token")
+	}
+	if !got.IsActive {
+		t.Error("expected is_active=true")
+	}
+	if len(got.AllowedChannelIDs) != 2 || got.AllowedChannelIDs[0] != 11 || got.AllowedChannelIDs[1] != 22 {
+		t.Fatalf("allowed_channel_ids: got %+v, want [11 22]", got.AllowedChannelIDs)
+	}
+	if got.MaxConcurrency != 3 {
+		t.Fatalf("max_concurrency: got %d, want 3", got.MaxConcurrency)
+	}
+
+	// 通过 Token 值获取
+	gotByValue, err := store.GetAuthTokenByValue(ctx, "test-token-hash")
+	if err != nil {
+		t.Fatalf("get auth token by value: %v", err)
+	}
+	if gotByValue.ID != got.ID {
+		t.Errorf("id mismatch: by value=%d, by id=%d", gotByValue.ID, got.ID)
+	}
+
+	// 获取不存在的 token
+	_, err = store.GetAuthToken(ctx, 99999)
+	if !errors.Is(err, model.ErrAuthTokenNotFound) {
+		t.Fatalf("error=%v, want ErrAuthTokenNotFound", err)
+	}
+}
+
+func TestAuthToken_InvalidChannelRestrictionModeWriteReturnsError(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "invalid_channel_restriction_mode_write.db")
+	ctx := context.Background()
+
+	invalid := &model.AuthToken{
+		Token:                  "invalid-mode-create",
+		Description:            "invalid mode",
+		IsActive:               true,
+		ChannelRestrictionMode: "denyy",
+	}
+	if err := store.CreateAuthToken(ctx, invalid); err == nil {
+		t.Fatal("expected CreateAuthToken to reject invalid channel_restriction_mode")
+	}
+
+	valid := &model.AuthToken{
+		Token:       "invalid-mode-update",
+		Description: "valid mode",
+		IsActive:    true,
+	}
+	if err := store.CreateAuthToken(ctx, valid); err != nil {
+		t.Fatalf("create valid auth token: %v", err)
+	}
+	valid.ChannelRestrictionMode = "denyy"
+	if err := store.UpdateAuthToken(ctx, valid); err == nil {
+		t.Fatal("expected UpdateAuthToken to reject invalid channel_restriction_mode")
+	}
+}
+
+func TestAuthToken_InvalidChannelRestrictionModeReturnsError(t *testing.T) {
+	t.Parallel()
+
+	token := &model.AuthToken{
+		Token:                  "bad-channel-restriction-mode-token",
+		Description:            "Bad Channel Restriction Mode Token",
+		IsActive:               true,
+		AllowedChannelIDs:      []int64{1},
+		ChannelRestrictionMode: model.ChannelRestrictionModeDeny,
+		CreatedAt:              time.Now(),
+	}
+	assertInvalidAuthTokenColumnReturnsError(
+		t,
+		"invalid_channel_restriction_mode.db",
+		"channel_restriction_mode",
+		"denyy",
+		"channel_restriction_mode",
+		token,
+	)
+}
+
+func TestAuthToken_InvalidAllowedChannelIDsJSON_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	token := &model.AuthToken{
+		Token:             "bad-channel-json-token",
+		Description:       "Bad Channel JSON Token",
+		IsActive:          true,
+		AllowedChannelIDs: []int64{1},
+		CreatedAt:         time.Now(),
+	}
+	assertInvalidAuthTokenColumnReturnsError(
+		t,
+		"invalid_allowed_channel_ids.db",
+		"allowed_channel_ids",
+		`{not-json`,
+		"invalid json",
+		token,
+	)
+}
+
+func TestAuthToken_InvalidAllowedModelsJSON_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	token := &model.AuthToken{
+		Token:         "bad-json-token",
+		Description:   "Bad JSON Token",
+		IsActive:      true,
+		AllowedModels: []string{"gpt-4"},
+		CreatedAt:     time.Now(),
+	}
+	assertInvalidAuthTokenColumnReturnsError(
+		t,
+		"invalid_allowed_models.db",
+		"allowed_models",
+		`{not-json`,
+		"invalid json",
+		token,
+	)
+}
+
+func assertInvalidAuthTokenColumnReturnsError(
+	t *testing.T,
+	dbName, column, invalidValue, wantError string,
+	token *model.AuthToken,
+) {
+	t.Helper()
+
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, dbName)
+
+	store, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("create auth token: %v", err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	_, err = db.ExecContext(ctx, "UPDATE auth_tokens SET "+column+" = ? WHERE id = ?", invalidValue, token.ID)
+	_ = db.Close()
+	if err != nil {
+		t.Fatalf("tamper %s: %v", column, err)
+	}
+
+	store2, err := storage.CreateSQLiteStore(dbPath)
+	if err == nil {
+		_ = store2.Close()
+		t.Fatalf("expected reopen sqlite store to fail due to invalid %s", column)
+	}
+	if !strings.Contains(err.Error(), wantError) {
+		t.Fatalf("reopen error=%q, want substring %q", err, wantError)
+	}
+}
+
+func TestAuthToken_NegativeMaxConcurrency_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "negative_max_concurrency.db")
+
+	store, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	token := &model.AuthToken{
+		Token:          "negative-max-concurrency-token",
+		Description:    "Negative Max Concurrency Token",
+		IsActive:       true,
+		MaxConcurrency: 1,
+		CreatedAt:      time.Now(),
+	}
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("create auth token: %v", err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `UPDATE auth_tokens SET max_concurrency = ? WHERE id = ?`, -1, token.ID)
+	_ = db.Close()
+	if err != nil {
+		t.Fatalf("tamper max_concurrency: %v", err)
+	}
+
+	store2, err := storage.CreateSQLiteStore(dbPath)
+	if err == nil {
+		_ = store2.Close()
+		t.Fatal("expected reopen sqlite store to fail due to negative max_concurrency")
+	}
+}
+
+func TestAuthToken_ExistingCostLimitWithoutMaxConcurrencyBackfillsDefault(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "cost_limit_without_max_concurrency.db")
+
+	store, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	token := &model.AuthToken{
+		Token:          "legacy-limited-token",
+		Description:    "Legacy Limited Token",
+		IsActive:       true,
+		MaxConcurrency: 1,
+		CreatedAt:      time.Now(),
+	}
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("create auth token: %v", err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `UPDATE auth_tokens SET cost_limit_microusd = ?, max_concurrency = ? WHERE id = ?`, 1000, 0, token.ID)
+	_ = db.Close()
+	if err != nil {
+		t.Fatalf("tamper auth token limit: %v", err)
+	}
+
+	store2, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("expected reopen sqlite store to backfill max_concurrency, got %v", err)
+	}
+	defer func() { _ = store2.Close() }()
+
+	got, err := store2.GetAuthToken(ctx, token.ID)
+	if err != nil {
+		t.Fatalf("GetAuthToken after migration: %v", err)
+	}
+	if got.MaxConcurrency != 100 {
+		t.Fatalf("MaxConcurrency=%d, want default backfill 100", got.MaxConcurrency)
+	}
+}
+
+func TestAuthToken_CostLimitRequiresMaxConcurrency(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "cost_limit_requires_max_concurrency.db")
+	ctx := context.Background()
+
+	token := &model.AuthToken{
+		Token:             model.HashToken("limited-without-concurrency"),
+		Description:       "bad limit",
+		IsActive:          true,
+		CostLimitMicroUSD: 1000,
+		CreatedAt:         time.Now(),
+	}
+	if err := store.CreateAuthToken(ctx, token); err == nil {
+		t.Fatal("expected CreateAuthToken to reject cost limit without max_concurrency")
+	}
+
+	token.CostLimitMicroUSD = 0
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("CreateAuthToken without limit failed: %v", err)
+	}
+	token.CostLimitMicroUSD = 1000
+	if err := store.UpdateAuthToken(ctx, token); err == nil {
+		t.Fatal("expected UpdateAuthToken to reject cost limit without max_concurrency")
+	}
+}
+
+func TestAuthToken_List(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "list.db")
+
+	ctx := context.Background()
+
+	// 创建多个 Auth Tokens
+	for i := 0; i < 3; i++ {
+		token := &model.AuthToken{
+			Token:       "token-" + string(rune('A'+i)),
+			Description: "Token " + string(rune('A'+i)),
+			IsActive:    i%2 == 0, // A, C 是 active
+			CreatedAt:   time.Now(),
+		}
+		if err := store.CreateAuthToken(ctx, token); err != nil {
+			t.Fatalf("create token %d: %v", i, err)
+		}
+	}
+
+	// 列出所有 tokens
+	allTokens, err := store.ListAuthTokens(ctx)
+	if err != nil {
+		t.Fatalf("list auth tokens: %v", err)
+	}
+	if len(allTokens) != 3 {
+		t.Errorf("expected 3 tokens, got %d", len(allTokens))
+	}
+
+	// 列出活跃的 tokens
+	activeTokens, err := store.ListActiveAuthTokens(ctx)
+	if err != nil {
+		t.Fatalf("list active auth tokens: %v", err)
+	}
+	if len(activeTokens) != 2 {
+		t.Errorf("expected 2 active tokens, got %d", len(activeTokens))
+	}
+}
+
+func TestAuthToken_Update(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "update.db")
+
+	ctx := context.Background()
+
+	// 创建 token
+	expiresAt := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
+	lastUsedAt := time.Now().UnixMilli()
+	token := &model.AuthToken{
+		Token:       "update-test-token",
+		Description: "Original Description",
+		IsActive:    true,
+		ExpiresAt:   &expiresAt,
+		LastUsedAt:  &lastUsedAt,
+		CreatedAt:   time.Now(),
+	}
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("create auth token: %v", err)
+	}
+
+	// 更新 token
+	token.Description = "Updated Description"
+	token.IsActive = false
+	token.CostLimitMicroUSD = 5000000 // $5
+	token.AllowedChannelIDs = []int64{33}
+	token.MaxConcurrency = 2
+
+	if err := store.UpdateAuthToken(ctx, token); err != nil {
+		t.Fatalf("update auth token: %v", err)
+	}
+
+	// 验证更新
+	got, err := store.GetAuthToken(ctx, token.ID)
+	if err != nil {
+		t.Fatalf("get auth token: %v", err)
+	}
+	if got.Description != "Updated Description" {
+		t.Errorf("description: got %q, want %q", got.Description, "Updated Description")
+	}
+	if got.IsActive {
+		t.Error("expected is_active=false")
+	}
+	if got.CostLimitMicroUSD != 5000000 {
+		t.Errorf("cost limit: got %d, want %d", got.CostLimitMicroUSD, 5000000)
+	}
+	if len(got.AllowedChannelIDs) != 1 || got.AllowedChannelIDs[0] != 33 {
+		t.Fatalf("allowed_channel_ids: got %+v, want [33]", got.AllowedChannelIDs)
+	}
+	if got.MaxConcurrency != 2 {
+		t.Fatalf("max_concurrency: got %d, want 2", got.MaxConcurrency)
+	}
+}
+
+func TestAuthToken_Delete(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "delete.db")
+
+	ctx := context.Background()
+
+	// 创建 token
+	token := &model.AuthToken{
+		Token:       "delete-test-token",
+		Description: "To Delete",
+		IsActive:    true,
+		CreatedAt:   time.Now(),
+	}
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("create auth token: %v", err)
+	}
+
+	// 删除 token
+	if err := store.DeleteAuthToken(ctx, token.ID); err != nil {
+		t.Fatalf("delete auth token: %v", err)
+	}
+
+	// 验证已删除
+	_, err := store.GetAuthToken(ctx, token.ID)
+	if err == nil {
+		t.Error("expected error after delete")
+	}
+}
+
+func TestAuthToken_UpdateLastUsed(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "last_used.db")
+
+	ctx := context.Background()
+
+	// 创建 token
+	token := &model.AuthToken{
+		Token:       "last-used-test",
+		Description: "Last Used Test",
+		IsActive:    true,
+		CreatedAt:   time.Now(),
+	}
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("create auth token: %v", err)
+	}
+
+	// 初始时 last_used_at 在 DB 是 0，但 scan 会把 0 映射为 nil（omitempty 语义）
+	got, err := store.GetAuthToken(ctx, token.ID)
+	if err != nil {
+		t.Fatalf("get auth token: %v", err)
+	}
+	if got.LastUsedAt != nil {
+		t.Fatalf("expected last_used_at to be nil initially, got=%v", got.LastUsedAt)
+	}
+
+	// 更新 last_used_at
+	if err := store.UpdateTokenLastUsed(ctx, "last-used-test", time.Now()); err != nil {
+		t.Fatalf("update token last used: %v", err)
+	}
+
+	// 验证更新
+	got, err = store.GetAuthToken(ctx, token.ID)
+	if err != nil {
+		t.Fatalf("get auth token after update: %v", err)
+	}
+	if got.LastUsedAt == nil || *got.LastUsedAt <= 0 {
+		t.Fatalf("expected last_used_at to be set, got=%v", got.LastUsedAt)
+	}
+}

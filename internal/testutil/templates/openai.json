@@ -1,0 +1,12 @@
+{
+  "model": "{{MODEL}}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "{{CONTENT}}"
+    }
+  ],
+  "stream": "{{STREAM}}",
+  "prompt_cache_key": "{{SESSION_ID}}",
+  "user": "{{SESSION_ID}}"
+}

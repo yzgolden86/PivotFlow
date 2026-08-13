@@ -1,0 +1,1258 @@
+package util
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"ccLoad/internal/protocol"
+)
+
+// HTTP状态码错误分类器
+// 设计原则：区分Key级错误和渠道级错误，避免误判导致多Key功能失效
+
+// ErrUpstreamFirstByteTimeout 是上游首字节超时的统一错误标识，避免依赖具体报错文案。
+var ErrUpstreamFirstByteTimeout = errors.New("upstream first byte timeout")
+
+// ErrUpstreamStreamTimeout 是上游流式请求总超时的统一错误标识。
+var ErrUpstreamStreamTimeout = errors.New("upstream stream timeout")
+
+// ErrUpstreamEmptyResponse 是上游 200 但无响应体的统一错误标识。
+var ErrUpstreamEmptyResponse = errors.New("upstream returned empty response")
+
+// ErrUpstreamInvalidResponse 是上游返回 2xx 但正文不是 API 响应的统一错误标识。
+var ErrUpstreamInvalidResponse = errors.New("upstream returned invalid response")
+
+// resetTime1308Regex 匹配1308错误 message 中的重置时间（不依赖具体语言文案）
+// 格式示例: 2025-12-09 18:08:11
+var resetTime1308Regex = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`)
+
+// beijingTomorrowResetRegex 匹配类似“明天凌晨3点13分（北京时间）恢复”的相对重置时间。
+var beijingTomorrowResetRegex = regexp.MustCompile(`明天\s*(?:凌晨|早上|上午)?\s*(\d{1,2})\s*点\s*(?:(\d{1,2})\s*分)?`)
+
+// retryInDurationRegex 匹配 Gemini RESOURCE_EXHAUSTED 中的 “Please retry in 59.409754061s”。
+var retryInDurationRegex = regexp.MustCompile(`(?i)\bretry\s+in\s+([0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)(?:[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))*)`)
+
+// retryAfterSecondsRegex 匹配 Codex rolling spend limit 文案中的 “Please retry after 2196 seconds”。
+var retryAfterSecondsRegex = regexp.MustCompile(`(?i)\bretry\s+after\s+([0-9]+)\s*seconds?\b`)
+
+// globalFixedWindowRetryClockRegex 匹配“请在 今天 12:00 后再试”这类全站固定窗口限额文案。
+var globalFixedWindowRetryClockRegex = regexp.MustCompile(`(今天|明天)\s*(\d{1,2})\s*[:：]\s*(\d{1,2})`)
+
+// HTTP 状态码常量（统一定义，避免魔法数字）
+const (
+	// StatusClientClosedRequest 客户端取消请求（Nginx扩展状态码）
+	// 来源：(1) context.Canceled → 不重试  (2) 上游返回499 → 冷却当前模型并切换渠道
+	StatusClientClosedRequest = 499
+
+	// StatusQuotaExceeded 1308配额超限（自定义状态码）
+	// 即使HTTP状态码为200，但响应体为1308错误。需从成功率计算中排除
+	StatusQuotaExceeded = 596
+
+	// StatusSSEError SSE流中检测到error事件（自定义状态码）
+	// HTTP状态码200但流中包含错误，如其他类型的API错误
+	StatusSSEError = 597
+
+	// StatusFirstByteTimeout 上游首字节超时（自定义状态码，触发模型级冷却）
+	StatusFirstByteTimeout = 598
+
+	// StatusStreamIncomplete 流式响应不完整（自定义状态码）
+	// 触发条件：流正常结束但没有usage数据，或流传输中断；触发模型级冷却
+	StatusStreamIncomplete = 599
+)
+
+// Rate Limit 相关常量
+const (
+	// RetryAfterThresholdSeconds Retry-After超过此值视为渠道级限流
+	RetryAfterThresholdSeconds = 60
+	// WebsocketConnectionLimitCooldown 是上游 WebSocket 并发连接槽耗尽时的渠道冷却时长。
+	// 连接槽是瞬时资源：冷却只需覆盖“切走再回来”的窗口，绝不能走指数退避。
+	WebsocketConnectionLimitCooldown = 5 * time.Second
+	// RateLimitScope 常量
+	RateLimitScopeGlobal  = "global"
+	RateLimitScopeIP      = "ip"
+	RateLimitScopeAccount = "account"
+)
+
+// ErrorLevel 表示错误的严重级别。
+type ErrorLevel int
+
+const (
+	// ErrorLevelNone 无错误（2xx成功）
+	ErrorLevelNone ErrorLevel = iota
+	// ErrorLevelKey Key级错误：应该冷却当前Key，重试其他Key
+	ErrorLevelKey
+	// ErrorLevelChannel 渠道级错误：应该冷却整个渠道，切换到其他渠道
+	ErrorLevelChannel
+	// ErrorLevelClient 客户端错误：不应该冷却，直接返回给客户端
+	ErrorLevelClient
+)
+
+// StatusCodeMeta 状态码元数据（统一定义错误级别）
+// 设计原则：单一数据源，消除 proxy_handler.go / classifier.go 分散的状态码分类逻辑。
+//
+// 注意：对外状态码映射不应该掺进这个表里，否则很快就会变成另一份“半套规则”。
+type StatusCodeMeta struct {
+	Level ErrorLevel // 错误级别（Key/Channel/Client）
+}
+
+// HTTPResponseClassification 包含 HTTP 响应分类的结果。
+type HTTPResponseClassification struct {
+	Level                   ErrorLevel
+	Model                   string
+	ModelScoped             bool
+	ModelCooldownUntil      time.Time
+	HasModelCooldownUntil   bool
+	ModelCooldownReason     string
+	KeyCooldownUntil        time.Time
+	HasKeyCooldownUntil     bool
+	KeyCooldownReason       string
+	ChannelCooldownUntil    time.Time
+	HasChannelCooldownUntil bool
+	ChannelCooldownReason   string
+}
+
+// sseErrorResponse SSE error事件的通用JSON结构（兼容 error.type / error.code）
+// [FIX] 提取为公共结构体，消除 classifySSEError 和 ParseResetTimeFrom1308Error 的重复定义
+type sseErrorResponse struct {
+	Type     string         `json:"type"`
+	Code     string         `json:"code"`
+	Message  string         `json:"message"`
+	Error    sseErrorDetail `json:"error"`
+	Response struct {
+		Error sseErrorDetail `json:"error"`
+	} `json:"response"`
+}
+
+type sseErrorDetail struct {
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type structuredQuotaErrorResponse struct {
+	Code            any                          `json:"code"`
+	Message         string                       `json:"message"`
+	Model           string                       `json:"model"`
+	ResetSeconds    int64                        `json:"reset_seconds"`
+	ResetsInSeconds int64                        `json:"resets_in_seconds"` // 部分上游使用复数形式
+	ResetsAt        int64                        `json:"resets_at"`         // unix 时间戳
+	ResetTime       string                       `json:"reset_time"`
+	Status          string                       `json:"status"`
+	Details         []structuredQuotaErrorDetail `json:"details"`
+	Error           json.RawMessage              `json:"error"`
+}
+
+type structuredQuotaErrorObject struct {
+	Type            any                          `json:"type"`
+	Code            any                          `json:"code"`
+	Message         string                       `json:"message"`
+	Model           string                       `json:"model"`
+	ResetSeconds    int64                        `json:"reset_seconds"`
+	ResetsInSeconds int64                        `json:"resets_in_seconds"` // 部分上游使用复数形式
+	ResetsAt        int64                        `json:"resets_at"`         // unix 时间戳
+	ResetTime       string                       `json:"reset_time"`
+	Status          string                       `json:"status"`
+	Details         []structuredQuotaErrorDetail `json:"details"`
+}
+
+type structuredQuotaErrorDetail struct {
+	Reason   string `json:"reason"`
+	Metadata struct {
+		Model               string `json:"model"`
+		QuotaResetDelay     string `json:"quotaResetDelay"`
+		QuotaResetTimeStamp string `json:"quotaResetTimeStamp"`
+	} `json:"metadata"`
+}
+
+type structuredQuotaError struct {
+	code                string
+	message             string
+	model               string
+	resetSeconds        int64
+	resetsAt            int64 // unix 时间戳（秒）
+	resetTime           string
+	status              string
+	quotaResetDelay     string
+	quotaResetTimeStamp string
+}
+
+// ErrorType 返回错误类型（优先使用type字段，如果为空则使用code字段）
+// [FIX] 消除重复的errorType判断逻辑
+func (r *sseErrorResponse) ErrorType() string {
+	if r.Error.Type != "" {
+		return r.Error.Type
+	}
+	return r.Error.Code
+}
+
+// IsContextLengthExceededError reports whether an upstream error says that the
+// current request exceeds the model context window. Codex can emit the error as
+// error, response.error, or a top-level streaming error object.
+func IsContextLengthExceededError(responseBody []byte) bool {
+	if len(responseBody) == 0 {
+		return false
+	}
+
+	var payload sseErrorResponse
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
+		return false
+	}
+
+	details := [...]sseErrorDetail{
+		payload.Error,
+		payload.Response.Error,
+		{Type: payload.Type, Code: payload.Code, Message: payload.Message},
+	}
+	for _, detail := range details {
+		code := strings.ToLower(strings.TrimSpace(detail.Code))
+		if code == "context_length_exceeded" || code == "context_too_large" {
+			return true
+		}
+		if code != "" && code != "invalid_request_error" && code != "bad_request_error" {
+			continue
+		}
+
+		errorType := strings.ToLower(strings.TrimSpace(detail.Type))
+		if errorType != "" && errorType != "error" && errorType != "invalid_request_error" && errorType != "bad_request_error" {
+			continue
+		}
+		message := strings.ToLower(strings.TrimSpace(detail.Message))
+		if strings.Contains(message, "context window") ||
+			strings.Contains(message, "context length") ||
+			strings.Contains(message, "maximum context") ||
+			strings.Contains(message, "too many tokens") {
+			return true
+		}
+	}
+	return false
+}
+
+// statusCodeMetaMap 状态码元数据映射表
+// 设计原则：表驱动替代分散的 switch/map，提高可维护性
+var statusCodeMetaMap = map[int]StatusCodeMeta{
+	// === 客户端取消 ===
+	// 499: 上游返回的客户端关闭请求；基础级别为 Channel，HTTP 分类层收窄到模型作用域
+	// 注意：context.Canceled 在 ClassifyError 中单独处理
+	499: {ErrorLevelChannel},
+
+	// === Key级错误：API Key相关问题 ===
+	// 这些错误在本系统中属于"后端Key/渠道配置问题"，不应甩锅给客户端
+	401: {ErrorLevelKey}, // Unauthorized - Key invalid
+	402: {ErrorLevelKey}, // Payment Required - quota/balance
+	403: {ErrorLevelKey}, // Forbidden - Key permission
+	429: {ErrorLevelKey}, // Too Many Requests - rate limited
+
+	// === 渠道级错误：服务器端问题 ===
+	444: {ErrorLevelChannel}, // nginx: No Response (服务器主动关闭连接)
+	500: {ErrorLevelChannel}, // Internal Server Error
+	502: {ErrorLevelChannel}, // Bad Gateway
+	503: {ErrorLevelChannel}, // Service Unavailable
+	504: {ErrorLevelChannel}, // Gateway Timeout
+	520: {ErrorLevelChannel}, // Cloudflare: Unknown Error
+	521: {ErrorLevelChannel}, // Cloudflare: Web Server Is Down
+	524: {ErrorLevelChannel}, // Cloudflare: A Timeout Occurred
+
+	// === 自定义内部状态码 ===
+	StatusQuotaExceeded:    {ErrorLevelKey},     // 1308 quota exceeded
+	StatusSSEError:         {ErrorLevelKey},     // SSE error event
+	StatusFirstByteTimeout: {ErrorLevelChannel}, // First byte timeout
+	StatusStreamIncomplete: {ErrorLevelChannel}, // Stream incomplete
+
+	// === 客户端错误：不冷却，直接返回 ===
+	// 408 Request Timeout: RFC 7231 定义为"服务器等待客户端发送完整请求超时"（客户端慢）
+	408: {ErrorLevelClient}, // Request Timeout - client slow
+	// 405 Method Not Allowed: 在代理场景下，这更可能意味着上游 endpoint/路由配置错误（方法不被支持）
+	// 作为渠道级故障处理：触发渠道冷却。
+	405: {ErrorLevelChannel}, // Method Not Allowed
+	406: {ErrorLevelClient},  // Not Acceptable
+	410: {ErrorLevelClient},  // Gone（模型退役由响应语义收窄为模型级故障）
+	413: {ErrorLevelClient},  // Payload Too Large
+	414: {ErrorLevelClient},  // URI Too Long
+	415: {ErrorLevelClient},  // Unsupported Media Type
+	416: {ErrorLevelClient},  // Range Not Satisfiable
+	417: {ErrorLevelClient},  // Expectation Failed
+}
+
+// GetStatusCodeMeta 获取状态码元数据（统一入口）
+func GetStatusCodeMeta(status int) StatusCodeMeta {
+	if meta, ok := statusCodeMetaMap[status]; ok {
+		return meta
+	}
+	// 默认行为（兜底策略）
+	if status >= 500 {
+		return StatusCodeMeta{ErrorLevelChannel}
+	}
+	if status >= 400 {
+		// [FIX] 未知 4xx 状态码默认 Key 级冷却（保守策略）
+		// 设计理念：未知错误应保守处理，避免持续请求故障 Key
+		// 如果所有 Key 都冷却了，会自动升级为渠道级冷却
+		return StatusCodeMeta{ErrorLevelKey}
+	}
+	return StatusCodeMeta{ErrorLevelClient}
+}
+
+// IsModelScopedHTTPStatus 判断上游 HTTP 响应是否应先按模型级故障处理。
+// 596-599 是 ccLoad 内部状态码，必须保留各自明确语义。
+func IsModelScopedHTTPStatus(status int) bool {
+	return status >= 500 && status < StatusQuotaExceeded
+}
+
+// IsModelScopedStreamFailure 判断内部流故障是否只应冷却当前实际模型。
+func IsModelScopedStreamFailure(status int) bool {
+	return status == StatusFirstByteTimeout || status == StatusStreamIncomplete
+}
+
+// ClientStatusFor 将 status 映射为对外暴露的状态码。
+//
+// 设计目标：
+// - 对外语义一致：不把后端 Key/渠道故障伪装成“客户端错误”
+// - 单一映射入口：避免在 app 层再堆一份 if/switch（那就是第二套规则）
+func ClientStatusFor(status int) int {
+	if status <= 0 {
+		return http.StatusBadGateway
+	}
+
+	// 内部状态码：无条件映射为标准 HTTP 语义值
+	switch status {
+	case StatusQuotaExceeded:
+		return http.StatusTooManyRequests
+	case StatusSSEError:
+		return http.StatusBadGateway
+	case StatusFirstByteTimeout:
+		return http.StatusGatewayTimeout
+	case StatusStreamIncomplete:
+		return http.StatusBadGateway
+	}
+
+	// 透明代理原则：透传所有上游状态码，不篡改HTTP语义
+	return status
+}
+
+// ClassifyHTTPStatus 分类HTTP状态码，返回错误级别
+// 注意：401/403/429 需要结合响应体/headers进一步判断（通过ClassifyHTTPResponse）
+func ClassifyHTTPStatus(statusCode int) ErrorLevel {
+	if statusCode >= 200 && statusCode < 300 {
+		return ErrorLevelNone
+	}
+	return GetStatusCodeMeta(statusCode).Level
+}
+
+// ClassifyHTTPResponseWithMeta 基于状态码 + headers + 响应体智能分类错误级别
+// 返回 HTTPResponseClassification，包含错误级别和固定Key冷却截止时间（如果存在）
+//
+// 分类策略：
+//   - 401/403 做语义分析：默认 Key 级，只在明确账户级不可逆错误时升级为 Channel 级
+//   - 400 固定按模型级处理，避免一个模型的请求约束误伤整个渠道
+//   - 429 做限流范围分析：默认 Key 级，只有明确长时间/全局限流特征才升级为 Channel 级
+//   - 1308 错误优先：无论 HTTP 状态码，检测到就按 Key 级处理（用于精确冷却时间）
+//   - 其他状态码：走表驱动分类（statusCodeMetaMap）
+func ClassifyHTTPResponseWithMeta(statusCode int, headers map[string][]string, responseBody []byte) HTTPResponseClassification {
+	return classifyHTTPResponseWithMetaAt(statusCode, headers, responseBody, time.Now())
+}
+
+func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string, responseBody []byte, now time.Time) HTTPResponseClassification {
+	// 上游 HTTP 499 与本地 context.Canceled 不同：切换渠道，但只冷却当前实际模型。
+	if statusCode == StatusClientClosedRequest {
+		return HTTPResponseClassification{
+			Level:       ErrorLevelChannel,
+			ModelScoped: true,
+		}
+	}
+
+	// [INFO] 特殊处理：检测1308错误（可能以SSE error事件形式出现，HTTP状态码是200）
+	// 1308错误表示达到使用上限，应该触发Key级冷却
+	if resetTime, has1308 := ParseResetTimeFrom1308Error(responseBody); has1308 {
+		return HTTPResponseClassification{
+			Level:               ErrorLevelKey,
+			KeyCooldownUntil:    resetTime,
+			HasKeyCooldownUntil: true,
+			KeyCooldownReason:   "1308",
+		}
+	}
+
+	// 上游 WebSocket 连接槽耗尽：切渠道重试，只给一个极短的渠道冷却。
+	// 优先于 597/429 的常规分类，避免健康 Key 被指数退避冷却。
+	if IsWebsocketConnectionLimitError(responseBody) {
+		return HTTPResponseClassification{
+			Level:                   ErrorLevelChannel,
+			ChannelCooldownUntil:    now.Add(WebsocketConnectionLimitCooldown),
+			HasChannelCooldownUntil: true,
+			ChannelCooldownReason:   "websocket_connection_limit",
+		}
+	}
+
+	if cooldownUntil, reason, level, ok := parseStructuredQuotaCooldown(responseBody, now); ok {
+		classification := HTTPResponseClassification{Level: level}
+		if reason == "model_cooldown" {
+			if quotaErr, parsed := parseStructuredQuotaError(responseBody); parsed {
+				classification.Model = strings.TrimSpace(quotaErr.model)
+			}
+			classification.ModelScoped = true
+			classification.ModelCooldownReason = reason
+			if cooldownUntil.After(now) {
+				classification.ModelCooldownUntil = cooldownUntil
+				classification.HasModelCooldownUntil = true
+			}
+			return classification
+		}
+		if statusCode == 429 && level == ErrorLevelChannel {
+			classification.ModelScoped = true
+			classification.ModelCooldownUntil = cooldownUntil
+			classification.HasModelCooldownUntil = true
+			classification.ModelCooldownReason = reason
+			return classification
+		}
+		switch level {
+		case ErrorLevelChannel:
+			classification.ChannelCooldownUntil = cooldownUntil
+			classification.HasChannelCooldownUntil = true
+			classification.ChannelCooldownReason = reason
+		default:
+			classification.KeyCooldownUntil = cooldownUntil
+			classification.HasKeyCooldownUntil = true
+			classification.KeyCooldownReason = reason
+		}
+		return classification
+	}
+
+	// 上下文超限由当前请求体决定，切换 Key、模型或渠道都不会改变结果。
+	// SSE 路径使用 597 承载 HTTP 200 中的错误事件；普通 Codex 错误使用 400/413。
+	if (statusCode == StatusSSEError || statusCode == http.StatusBadRequest || statusCode == http.StatusRequestEntityTooLarge) &&
+		IsContextLengthExceededError(responseBody) {
+		return HTTPResponseClassification{Level: ErrorLevelClient}
+	}
+
+	// [INFO] 597 SSE error事件：解析实际错误类型动态判断级别
+	// SSE error JSON格式: {"type":"error","error":{"type":"api_error","message":"上游API返回错误: 500"}}
+	// 服务类错误切换渠道但只冷却当前模型；认证/限流类错误仍冷却 Key。
+	if statusCode == StatusSSEError {
+		level := classifySSEError(responseBody)
+		return HTTPResponseClassification{
+			Level:       level,
+			ModelScoped: level == ErrorLevelChannel,
+		}
+	}
+
+	if IsModelScopedStreamFailure(statusCode) {
+		return HTTPResponseClassification{
+			Level:       ErrorLevelChannel,
+			ModelScoped: true,
+		}
+	}
+
+	// 429 无论限流范围如何，都只冷却当前实际模型。
+	if statusCode == 429 {
+		level := ErrorLevelKey
+		if headers != nil {
+			level = classifyRateLimitError(headers, responseBody)
+		}
+		return HTTPResponseClassification{
+			Level:       level,
+			ModelScoped: true,
+		}
+	}
+
+	// 400 表示当前模型无法接受该请求。切换渠道，但只冷却实际请求的模型。
+	if statusCode == 400 {
+		return HTTPResponseClassification{
+			Level:       ErrorLevelKey,
+			ModelScoped: true,
+		}
+	}
+
+	// 410 Gone 通常表示资源已永久移除。只有响应明确指向模型退役时才切换渠道并
+	// 冷却当前实际模型；其他资源的 410 仍由客户端处理，避免盲目重放请求。
+	if statusCode == http.StatusGone && isModelUnavailableResponse(responseBody) {
+		return HTTPResponseClassification{
+			Level:       ErrorLevelChannel,
+			ModelScoped: true,
+		}
+	}
+
+	// 404错误：根据响应体智能分类
+	if statusCode == 404 {
+		return HTTPResponseClassification{
+			Level:       classify404Error(responseBody),
+			ModelScoped: isModelUnavailableResponse(responseBody),
+		}
+	}
+
+	// 仅分析401和403错误,其他状态码使用标准分类器
+	if statusCode != 401 && statusCode != 403 {
+		return HTTPResponseClassification{Level: ClassifyHTTPStatus(statusCode)}
+	}
+
+	// 401/403错误:分析响应体内容
+	if len(responseBody) == 0 {
+		return HTTPResponseClassification{Level: ErrorLevelKey} // 无响应体,默认Key级错误
+	}
+
+	bodyLower := strings.ToLower(string(responseBody))
+
+	// 渠道级错误特征:**仅限账户级不可逆错误**
+	// 设计原则:保守策略,只有明确是渠道级错误时才返回ErrorLevelChannel
+	channelErrorPatterns := []string{
+		// 账户状态(不可逆)
+		"account suspended", // 账户暂停
+		"account disabled",  // 账户禁用
+		"account banned",    // 账户封禁
+		"service disabled",  // 服务禁用
+
+		// 注意:以下错误已移除(改为Key级,让系统先尝试其他Key):
+		// - "额度已用尽", "quota_exceeded" → 可能只是单个Key额度用尽
+		// - "余额不足", "balance" → 可能只是单个Key余额不足
+		// - "limit reached" → 可能只是单个Key限额到达
+	}
+
+	for _, pattern := range channelErrorPatterns {
+		if strings.Contains(bodyLower, pattern) {
+			return HTTPResponseClassification{Level: ErrorLevelChannel} // 明确的渠道级错误
+		}
+	}
+
+	// 默认:Key级错误
+	// 包括:认证失败、权限不足、额度用尽、余额不足等
+	// 让handleProxyError根据渠道Key数量决定是否升级为渠道级
+	return HTTPResponseClassification{Level: ErrorLevelKey}
+}
+
+// classifyRateLimitError 分析 429 的限流范围。
+// ErrorLevelChannel 仅表示限流信号覆盖 IP/账户/组织；429 的冷却作用域始终由调用方固定为模型级。
+//
+// 判断逻辑:
+//  1. 检查Retry-After头: 如果>60秒,标记为广域限流
+//  2. 检查X-RateLimit-Scope: 如果是"global"或"ip",标记为广域限流
+//  3. 检查响应体中的错误描述
+//  4. 默认: Key级(保守策略)
+//
+// 参数:
+//   - headers: HTTP响应头
+//   - responseBody: 响应体内容
+func classifyRateLimitError(headers map[string][]string, responseBody []byte) ErrorLevel {
+	// 1. 解析Retry-After头
+	if retryAfterValues, ok := headers["Retry-After"]; ok && len(retryAfterValues) > 0 {
+		retryAfter := retryAfterValues[0]
+
+		// Retry-After可能是秒数或HTTP日期
+		// 尝试解析为秒数
+		if seconds, err := strconv.Atoi(retryAfter); err == nil {
+			// [INFO] 如果Retry-After > 阈值,可能是账户级或IP级限流
+			// 这种长时间限流通常影响整个渠道
+			if seconds > RetryAfterThresholdSeconds {
+				return ErrorLevelChannel
+			}
+		}
+		// 如果是HTTP日期格式,通常表示长时间广域限流
+		if _, err := time.Parse(time.RFC1123, retryAfter); err == nil {
+			return ErrorLevelChannel
+		}
+	}
+
+	// 2. 检查X-RateLimit-Scope头(某些API使用)
+	if scopeValues, ok := headers["X-Ratelimit-Scope"]; ok && len(scopeValues) > 0 {
+		scope := strings.ToLower(scopeValues[0])
+		// global/ip/account 表示广域限流，但冷却仍只作用于当前模型
+		if scope == RateLimitScopeGlobal || scope == RateLimitScopeIP || scope == RateLimitScopeAccount {
+			return ErrorLevelChannel
+		}
+	}
+
+	// 3. 分析响应体中的错误描述
+	if len(responseBody) > 0 {
+		bodyLower := strings.ToLower(string(responseBody))
+
+		// 广域限流特征
+		channelPatterns := []string{
+			"ip rate limit",      // IP级别限流
+			"account rate limit", // 账户级别限流
+			"global rate limit",  // 全局限流
+			"organization limit", // 组织级别限流
+		}
+
+		for _, pattern := range channelPatterns {
+			if strings.Contains(bodyLower, pattern) {
+				return ErrorLevelChannel
+			}
+		}
+	}
+
+	// 4. 默认标记为窄域限流；冷却仍只作用于当前模型
+	return ErrorLevelKey
+}
+
+// classifySSEError 分析SSE error事件的具体类型
+// SSE error JSON格式: {"type":"error","error":{"type":"api_error","message":"上游API返回错误: 500"}}
+//
+// 判断逻辑:
+//   - api_error: 上游服务错误（通常是5xx）→ 渠道级
+//   - overloaded_error: 上游过载 → 渠道级
+//   - rate_limit_error: 限流错误 → Key级（可能只是单个Key限流）
+//   - authentication_error: 认证错误 → Key级
+//   - invalid_request_error: 请求错误 → Key级
+//   - 其他/解析失败: 默认Key级（保守策略）
+func classifySSEError(responseBody []byte) ErrorLevel {
+	if len(responseBody) == 0 {
+		return ErrorLevelKey
+	}
+
+	// 解析SSE error JSON
+	// [FIX] 支持两种格式：
+	//   1. Anthropic格式: {"type":"error", "error":{"type":"1308", ...}}
+	//   2. 其他渠道格式: {"error":{"code":"1308", ...}}
+	var errResp sseErrorResponse
+
+	if err := json.Unmarshal(responseBody, &errResp); err != nil {
+		return ErrorLevelKey // 解析失败，保守处理
+	}
+
+	// 根据error.type/code判断错误级别
+	switch errResp.ErrorType() {
+	case "api_error", "overloaded_error", "service_unavailable_error", "server_is_overloaded", "1305":
+		// 上游服务错误或过载 → 渠道级冷却
+		return ErrorLevelChannel
+	case "rate_limit_error", "authentication_error", "invalid_request_error", "1308", "1310":
+		// 限流/认证/请求错误 → Key级冷却
+		return ErrorLevelKey
+	default:
+		// 未知错误类型，保守处理为Key级
+		return ErrorLevelKey
+	}
+}
+
+// WebsocketConnectionLimitCode 是上游 WebSocket 并发连接数超限的错误码。
+const WebsocketConnectionLimitCode = "websocket_connection_limit_reached"
+
+// websocketErrorProbe 只解析判定连接数超限所需的字段。
+// error 既可能是对象也可能是字符串，用 RawMessage 兜住两种形态。
+type websocketErrorProbe struct {
+	Code  any             `json:"code"`
+	Error json.RawMessage `json:"error"`
+}
+
+// IsWebsocketConnectionLimitError 判断响应体是否为上游 WebSocket 并发连接槽耗尽。
+//
+// 这不是渠道/Key/模型故障，而是瞬时资源竞争：既有 Key 完全健康，
+// 落到默认分类会被误判成 Key 级错误并触发指数退避冷却。
+func IsWebsocketConnectionLimitError(responseBody []byte) bool {
+	if len(responseBody) == 0 {
+		return false
+	}
+
+	var probe websocketErrorProbe
+	if err := json.Unmarshal(responseBody, &probe); err != nil {
+		return false
+	}
+	if isWebsocketConnectionLimitValue(structuredScalarString(probe.Code)) {
+		return true
+	}
+	if len(probe.Error) == 0 {
+		return false
+	}
+
+	var errText string
+	if err := json.Unmarshal(probe.Error, &errText); err == nil {
+		return isWebsocketConnectionLimitValue(errText)
+	}
+
+	var errObj struct {
+		Type any `json:"type"`
+		Code any `json:"code"`
+	}
+	if err := json.Unmarshal(probe.Error, &errObj); err != nil {
+		return false
+	}
+	return isWebsocketConnectionLimitValue(structuredScalarString(errObj.Type)) ||
+		isWebsocketConnectionLimitValue(structuredScalarString(errObj.Code))
+}
+
+func isWebsocketConnectionLimitValue(value string) bool {
+	return strings.EqualFold(strings.TrimSpace(value), WebsocketConnectionLimitCode)
+}
+
+func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time, string, ErrorLevel, bool) {
+	if len(responseBody) == 0 {
+		return time.Time{}, "", ErrorLevelNone, false
+	}
+
+	quotaErr, ok := parseStructuredQuotaError(responseBody)
+	if !ok {
+		return time.Time{}, "", ErrorLevelNone, false
+	}
+
+	code := quotaErr.code
+	message := quotaErr.message
+	messageUpper := strings.ToUpper(message)
+
+	switch {
+	case code == "MODEL_COOLDOWN":
+		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
+			return until, "model_cooldown", ErrorLevelKey, true
+		}
+		return time.Time{}, "model_cooldown", ErrorLevelKey, true
+	case quotaErr.status == "RESOURCE_EXHAUSTED" || strings.Contains(messageUpper, "RESOURCE_EXHAUSTED"):
+		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
+			return until, "RESOURCE_EXHAUSTED", ErrorLevelKey, true
+		}
+		if until, ok := parseRetryInCooldownUntil(message, now); ok {
+			return until, "RESOURCE_EXHAUSTED_RETRY_IN", ErrorLevelKey, true
+		}
+		return time.Time{}, "", ErrorLevelNone, false
+	case code == "API_KEY_QUOTA_EXHAUSTED":
+		return now.Add(30 * time.Minute), "API_KEY_QUOTA_EXHAUSTED", ErrorLevelKey, true
+	case code == "FREE_TIER_BUDGET_EXCEEDED" || strings.Contains(messageUpper, "FREE_TIER_BUDGET_EXCEEDED"):
+		return now.Add(30 * time.Minute), "FREE_TIER_BUDGET_EXCEEDED", ErrorLevelKey, true
+	case code == "DAILY_LIMIT_EXCEEDED" ||
+		(code == "USAGE_LIMIT_EXCEEDED" && strings.Contains(messageUpper, "DAILY_LIMIT_EXCEEDED")):
+		return nextLocalMidnight(now), "DAILY_LIMIT_EXCEEDED", ErrorLevelKey, true
+	case code == "GLOBAL_FIXED_WINDOW_QUOTA_EXHAUSTED":
+		if until, ok := parseGlobalFixedWindowQuotaCooldownUntil(message, now); ok {
+			return until, "GLOBAL_FIXED_WINDOW_QUOTA_EXHAUSTED", ErrorLevelChannel, true
+		}
+		return time.Time{}, "", ErrorLevelNone, false
+	case strings.Contains(message, "用量上限"):
+		if until, ok := parseBeijingTomorrowResetTime(message, now); ok {
+			return until, "BEIJING_RELATIVE_QUOTA_RESET", ErrorLevelKey, true
+		}
+		return time.Time{}, "", ErrorLevelNone, false
+	case code == "RATE_LIMIT_EXCEEDED":
+		if until, ok := parseRetryAfterSecondsCooldownUntil(message, now); ok {
+			return until, "RATE_LIMIT_RETRY_AFTER", ErrorLevelKey, true
+		}
+		return time.Time{}, "", ErrorLevelNone, false
+	case code == "USAGE_LIMIT_REACHED":
+		// 上游 usage limit（如 Claude Plus 计划限额），优先用 resets_in_seconds / resets_at
+		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
+			return until, "USAGE_LIMIT_REACHED", ErrorLevelKey, true
+		}
+		// 没有精确重置时间，默认30分钟
+		return now.Add(30 * time.Minute), "USAGE_LIMIT_REACHED", ErrorLevelKey, true
+	default:
+		return time.Time{}, "", ErrorLevelNone, false
+	}
+}
+
+func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool) {
+	var errResp structuredQuotaErrorResponse
+	if err := json.Unmarshal(responseBody, &errResp); err != nil {
+		return structuredQuotaError{}, false
+	}
+
+	parsed := structuredQuotaError{
+		code:         normalizeStructuredScalar(errResp.Code),
+		message:      errResp.Message,
+		model:        strings.TrimSpace(errResp.Model),
+		resetSeconds: coalesceInt64(errResp.ResetSeconds, errResp.ResetsInSeconds),
+		resetsAt:     errResp.ResetsAt,
+		resetTime:    errResp.ResetTime,
+		status:       strings.ToUpper(strings.TrimSpace(errResp.Status)),
+	}
+	mergeStructuredQuotaDetails(&parsed, errResp.Details)
+
+	if len(errResp.Error) > 0 {
+		var errorText string
+		if err := json.Unmarshal(errResp.Error, &errorText); err == nil {
+			if parsed.message == "" {
+				parsed.message = errorText
+			}
+		} else {
+			var errorObj structuredQuotaErrorObject
+			if err := json.Unmarshal(errResp.Error, &errorObj); err == nil {
+				if parsed.code == "" {
+					parsed.code = normalizeStructuredScalar(errorObj.Code)
+				}
+				if parsed.code == "" {
+					parsed.code = normalizeStructuredScalar(errorObj.Type)
+				}
+				if parsed.message == "" {
+					parsed.message = errorObj.Message
+				}
+				if parsed.model == "" {
+					parsed.model = strings.TrimSpace(errorObj.Model)
+				}
+				if parsed.resetSeconds == 0 {
+					parsed.resetSeconds = coalesceInt64(errorObj.ResetSeconds, errorObj.ResetsInSeconds)
+				}
+				if parsed.resetsAt == 0 {
+					parsed.resetsAt = errorObj.ResetsAt
+				}
+				if parsed.resetTime == "" {
+					parsed.resetTime = errorObj.ResetTime
+				}
+				if parsed.status == "" {
+					parsed.status = strings.ToUpper(strings.TrimSpace(errorObj.Status))
+				}
+				mergeStructuredQuotaDetails(&parsed, errorObj.Details)
+			}
+		}
+	}
+
+	return parsed, parsed.code != "" || parsed.message != "" || parsed.status != ""
+}
+
+func mergeStructuredQuotaDetails(parsed *structuredQuotaError, details []structuredQuotaErrorDetail) {
+	if parsed == nil {
+		return
+	}
+	for _, detail := range details {
+		if parsed.model == "" {
+			parsed.model = strings.TrimSpace(detail.Metadata.Model)
+		}
+		if parsed.quotaResetTimeStamp == "" {
+			parsed.quotaResetTimeStamp = strings.TrimSpace(detail.Metadata.QuotaResetTimeStamp)
+		}
+		if parsed.quotaResetDelay == "" {
+			parsed.quotaResetDelay = strings.TrimSpace(detail.Metadata.QuotaResetDelay)
+		}
+		if parsed.quotaResetTimeStamp != "" && parsed.quotaResetDelay != "" && parsed.model != "" {
+			return
+		}
+	}
+}
+
+// ExtractUpstreamErrorCodeAndMessage returns the canonical error code and message
+// from the JSON shapes accepted by the built-in upstream classifier. It is used by
+// configurable cooldown detection so configured rules and built-in handling see
+// the same normalized fields.
+func ExtractUpstreamErrorCodeAndMessage(responseBody []byte) (string, string) {
+	parsed, ok := parseStructuredQuotaError(responseBody)
+	if !ok {
+		return "", ""
+	}
+	return parsed.code, parsed.message
+}
+
+func coalesceInt64(values ...int64) int64 {
+	for _, v := range values {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func normalizeStructuredScalar(value any) string {
+	return strings.ToUpper(strings.TrimSpace(structuredScalarString(value)))
+}
+
+func structuredScalarString(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case json.Number:
+		return v.String()
+	case bool:
+		return strconv.FormatBool(v)
+	default:
+		return ""
+	}
+}
+
+func parseStructuredCooldownUntil(quotaErr structuredQuotaError, now time.Time) (time.Time, bool) {
+	if quotaErr.resetSeconds > 0 {
+		return now.Add(time.Duration(quotaErr.resetSeconds) * time.Second), true
+	}
+
+	// resets_at: unix 时间戳（秒），必须在当前时刻之后
+	if quotaErr.resetsAt > 0 {
+		until := time.Unix(quotaErr.resetsAt, 0)
+		if until.After(now) {
+			return until, true
+		}
+	}
+
+	if quotaErr.quotaResetTimeStamp != "" {
+		until, err := time.Parse(time.RFC3339, quotaErr.quotaResetTimeStamp)
+		if err == nil && until.After(now) {
+			return until, true
+		}
+	}
+
+	if quotaErr.resetTime != "" {
+		duration, err := time.ParseDuration(quotaErr.resetTime)
+		if err == nil && duration > 0 {
+			return now.Add(duration), true
+		}
+	}
+
+	if quotaErr.quotaResetDelay != "" {
+		duration, err := time.ParseDuration(quotaErr.quotaResetDelay)
+		if err == nil && duration > 0 {
+			return now.Add(duration), true
+		}
+	}
+
+	return time.Time{}, false
+}
+
+func parseRetryInCooldownUntil(message string, now time.Time) (time.Time, bool) {
+	matches := retryInDurationRegex.FindStringSubmatch(message)
+	if matches == nil {
+		return time.Time{}, false
+	}
+
+	duration, err := time.ParseDuration(matches[1])
+	if err != nil || duration <= 0 {
+		return time.Time{}, false
+	}
+	return now.Add(duration), true
+}
+
+func parseRetryAfterSecondsCooldownUntil(message string, now time.Time) (time.Time, bool) {
+	matches := retryAfterSecondsRegex.FindStringSubmatch(message)
+	if matches == nil {
+		return time.Time{}, false
+	}
+
+	seconds, err := strconv.Atoi(matches[1])
+	if err != nil || seconds <= 0 {
+		return time.Time{}, false
+	}
+	return now.Add(time.Duration(seconds) * time.Second), true
+}
+
+func parseGlobalFixedWindowQuotaCooldownUntil(message string, now time.Time) (time.Time, bool) {
+	matches := globalFixedWindowRetryClockRegex.FindStringSubmatch(message)
+	if matches == nil {
+		return time.Time{}, false
+	}
+
+	hour, err := strconv.Atoi(matches[2])
+	if err != nil || hour < 0 || hour > 23 {
+		return time.Time{}, false
+	}
+
+	minute, err := strconv.Atoi(matches[3])
+	if err != nil || minute < 0 || minute > 59 {
+		return time.Time{}, false
+	}
+
+	dayOffset := 0
+	if matches[1] == "明天" {
+		dayOffset = 1
+	}
+
+	// 刻意硬编码东八区：此分支只解析中文公益站文案（"明天 12:00"），
+	// 其重置时刻是站点北京时间，与部署机器的 time.Local 无关。
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	localNow := now.In(loc)
+	y, mon, d := localNow.Date()
+	until := time.Date(y, mon, d+dayOffset, hour, minute, 0, 0, loc)
+	if !until.After(localNow) {
+		return time.Time{}, false
+	}
+
+	return until, true
+}
+
+func nextLocalMidnight(now time.Time) time.Time {
+	local := now.In(time.Local)
+	y, m, d := local.Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
+}
+
+func parseBeijingTomorrowResetTime(message string, now time.Time) (time.Time, bool) {
+	if !strings.Contains(message, "北京时间") {
+		return time.Time{}, false
+	}
+
+	matches := beijingTomorrowResetRegex.FindStringSubmatch(message)
+	if matches == nil {
+		return time.Time{}, false
+	}
+
+	hour, err := strconv.Atoi(matches[1])
+	if err != nil || hour < 0 || hour > 23 {
+		return time.Time{}, false
+	}
+
+	minute := 0
+	if len(matches) > 2 && matches[2] != "" {
+		minute, err = strconv.Atoi(matches[2])
+		if err != nil || minute < 0 || minute > 59 {
+			return time.Time{}, false
+		}
+	}
+
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	local := now.In(loc)
+	y, mon, d := local.Date()
+	return time.Date(y, mon, d+1, hour, minute, 0, 0, loc), true
+}
+
+// classify404Error 根据响应体内容智能分类 404 错误
+// 设计原则：404 本身是异常情况，只有明确的客户端错误才不切换
+//   - 模型不存在（客户端级）：明确的 model_not_found，或文案同时指向 model 与不可用状态
+//   - 其他情况（渠道级）：空响应、HTML、异常 JSON 等都应切换渠道
+func classify404Error(responseBody []byte) ErrorLevel {
+	// 仅当明确是"模型不存在"时才视为客户端错误
+	if isModelUnavailableResponse(responseBody) {
+		return ErrorLevelClient
+	}
+
+	// 其他 404 一律视为渠道问题（HTML/JSON/其他）
+	// 例如：BaseURL 配错、上游服务异常、路由不存在等
+	return ErrorLevelChannel
+}
+
+// isModelUnavailableResponse 只识别明确的模型不可用语义。
+// 普通 endpoint/BaseURL 错误必须继续按资源自身的故障级别处理，不能因为请求里带了模型名就误伤模型。
+func isModelUnavailableResponse(responseBody []byte) bool {
+	if len(responseBody) == 0 {
+		return false
+	}
+	bodyLower := strings.ToLower(string(responseBody))
+	if strings.Contains(bodyLower, "model_not_found") {
+		return true
+	}
+	if strings.Contains(bodyLower, "模型") {
+		return strings.Contains(bodyLower, "不支持") ||
+			strings.Contains(bodyLower, "不存在") ||
+			strings.Contains(bodyLower, "未找到") ||
+			strings.Contains(bodyLower, "找不到") ||
+			strings.Contains(bodyLower, "不可用") ||
+			strings.Contains(bodyLower, "已下线") ||
+			strings.Contains(bodyLower, "停止服务")
+	}
+	if !strings.Contains(bodyLower, "model") {
+		return false
+	}
+	return strings.Contains(bodyLower, "unsupported") ||
+		strings.Contains(bodyLower, "not supported") ||
+		strings.Contains(bodyLower, "not found") ||
+		strings.Contains(bodyLower, "does not exist") ||
+		strings.Contains(bodyLower, "not available") ||
+		strings.Contains(bodyLower, "no longer available") ||
+		strings.Contains(bodyLower, "end of life")
+}
+
+// ShouldFallbackProtocol reports whether automatic protocol negotiation may
+// retry the same request using the channel protocol. This decision is separate
+// from cooldown classification: a non-model 404 can be a broken base URL or
+// deployment and still means the native protocol probe did not succeed. Some
+// compatible gateways report an unsupported native request shape as a
+// structured 500 instead of an endpoint status. An uncommitted 400 or a
+// Cloudflare block page is also safe to replay through another protocol because
+// the request was rejected before model execution.
+func ShouldFallbackProtocol(statusCode int, responseBody []byte) bool {
+	switch statusCode {
+	case http.StatusBadRequest:
+		return true
+	case http.StatusForbidden:
+		return isCloudflareBlockPage(responseBody)
+	case 405:
+		return true
+	case 404:
+		return !isModelUnavailableResponse(responseBody)
+	case 500:
+		return isProtocolConversionNotImplemented(responseBody)
+	default:
+		return false
+	}
+}
+
+func isCloudflareBlockPage(responseBody []byte) bool {
+	body := strings.ToLower(string(responseBody))
+	return strings.Contains(body, "<title>attention required! | cloudflare</title>") &&
+		strings.Contains(body, "sorry, you have been blocked")
+}
+
+func isProtocolConversionNotImplemented(responseBody []byte) bool {
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(payload.Error.Code), "convert_request_failed") &&
+		strings.Contains(strings.ToLower(payload.Error.Message), "not implemented")
+}
+
+// ParseResetTimeFrom1308Error 从1308错误响应中提取重置时间
+// 错误格式: {"type":"error","error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-09 18:08:11 重置。"},"request_id":"..."}
+//
+// [FIX] 使用正则匹配时间格式，不再依赖中文文案（如"将在"/"重置"）
+// 这样即使上游修改错误消息措辞或切换语言，只要包含 YYYY-MM-DD HH:MM:SS 格式的时间就能正确解析
+//
+// 参数:
+//   - responseBody: JSON格式的错误响应体
+//
+// 返回:
+//   - time.Time: 解析出的重置时间（如果成功）
+//   - bool: 是否成功解析（true表示是1308错误且成功提取时间）
+func ParseResetTimeFrom1308Error(responseBody []byte) (time.Time, bool) {
+	// 1. 解析JSON结构
+	// [FIX] 支持两种格式：
+	//   1. Anthropic格式: {"type":"error", "error":{"type":"1308", ...}}
+	//   2. 其他渠道格式: {"error":{"code":"1308", ...}}
+	var errResp sseErrorResponse
+
+	if err := json.Unmarshal(responseBody, &errResp); err != nil {
+		return time.Time{}, false
+	}
+
+	// 2. 检查是否为1308或1310错误（优先使用type，如果为空则使用code）
+	errorType := errResp.ErrorType()
+	if errorType != "1308" && errorType != "1310" {
+		return time.Time{}, false
+	}
+
+	// 3. 使用正则从message中提取时间字符串（不依赖具体语言文案）
+	// 匹配格式: YYYY-MM-DD HH:MM:SS
+	timeStr := resetTime1308Regex.FindString(errResp.Error.Message)
+	if timeStr == "" {
+		return time.Time{}, false
+	}
+
+	// 4. 解析时间字符串
+	resetTime, err := time.ParseInLocation("2006-01-02 15:04:05", timeStr, time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	return resetTime, true
+}
+
+// ClassifyError 统一错误分类器（网络错误+HTTP错误）
+// 将proxy_util.go中的classifyError和classifyErrorByString整合到此处
+//
+// 参数:
+//   - err: 错误对象（可能是context错误、网络错误、或其他错误）
+//
+// 返回:
+//   - statusCode: HTTP状态码（或内部错误码）
+//   - errorLevel: 错误级别（Key级/渠道级/客户端级）
+//   - shouldRetry: 是否应该重试
+//
+// 设计原则（DRY+SRP）:
+//   - 统一入口处理所有错误分类
+//   - 消除proxy_util.go中的重复逻辑
+//   - 分层设计：快速路径（context错误）→ 网络错误 → 字符串匹配
+func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetry bool) {
+	if err == nil {
+		return 200, ErrorLevelNone, false
+	}
+
+	// 快速路径1：专门识别上游首字节超时，优先切换渠道
+	if errors.Is(err, ErrUpstreamFirstByteTimeout) {
+		return StatusFirstByteTimeout, ErrorLevelChannel, true
+	}
+	if errors.Is(err, ErrUpstreamStreamTimeout) {
+		return StatusStreamIncomplete, ErrorLevelChannel, true
+	}
+
+	// 快速路径1.2：上游 200 空体是坏网关，不是成功响应。
+	if errors.Is(err, ErrUpstreamEmptyResponse) {
+		return http.StatusBadGateway, ErrorLevelChannel, true
+	}
+	if errors.Is(err, ErrUpstreamInvalidResponse) {
+		return http.StatusBadGateway, ErrorLevelChannel, true
+	}
+
+	// 快速路径1.5：协议转换明确声明为客户端请求结构不支持
+	if errors.Is(err, protocol.ErrUnsupportedRequestShape) {
+		return http.StatusBadRequest, ErrorLevelClient, false
+	}
+
+	// 快速路径2：处理客户端主动取消
+	if errors.Is(err, context.Canceled) {
+		return 499, ErrorLevelClient, false // StatusClientClosedRequest
+	}
+
+	// 快速路径3：统一处理其它 DeadlineExceeded，默认视为上游超时
+	if errors.Is(err, context.DeadlineExceeded) {
+		return 504, ErrorLevelChannel, true // Gateway Timeout，触发渠道切换
+	}
+
+	// 快速路径4：检测net.Error的超时场景
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return 504, ErrorLevelChannel, true // Gateway Timeout，可重试
+		}
+	}
+
+	// 慢速路径：回退到字符串匹配
+	return classifyErrorByString(err.Error())
+}
+
+// IsModelScopedNetworkError 判断网络错误是否只应冷却当前实际模型。
+// DNS、连接拒绝、路由不可达等基础设施错误仍属于渠道级。
+func IsModelScopedNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrUpstreamStreamTimeout) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, ErrUpstreamFirstByteTimeout) ||
+		errors.Is(err, ErrUpstreamEmptyResponse) ||
+		errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	return isModelScopedNetworkErrorText(strings.ToLower(err.Error()))
+}
+
+func isModelScopedNetworkErrorText(errLower string) bool {
+	return strings.Contains(errLower, "connection reset by peer") ||
+		strings.Contains(errLower, "http2: response body closed") ||
+		strings.Contains(errLower, "stream error:") ||
+		strings.Contains(errLower, "empty response") ||
+		strings.Contains(errLower, "connection timeout")
+}
+
+// classifyErrorByString 通过字符串匹配分类网络错误
+// 从proxy_util.go迁移，作为ClassifyError的私有辅助函数
+func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
+	errLower := strings.ToLower(errStr)
+
+	// broken pipe - 客户端主动断开连接，完全不重试
+	if strings.Contains(errLower, "broken pipe") {
+		return 499, ErrorLevelClient, false
+	}
+
+	// 模型生成链路故障：状态仍记为 502/504，但冷却作用域由调用方收窄到模型。
+	if isModelScopedNetworkErrorText(errLower) {
+		return 502, ErrorLevelChannel, true
+	}
+
+	// Connection refused - 应该重试其他渠道
+	if strings.Contains(errLower, "connection refused") {
+		return 502, ErrorLevelChannel, true
+	}
+
+	// 其他常见的网络连接错误也应该重试
+	if strings.Contains(errLower, "no such host") ||
+		strings.Contains(errLower, "host unreachable") ||
+		strings.Contains(errLower, "network unreachable") ||
+		strings.Contains(errLower, "no route to host") {
+		return 502, ErrorLevelChannel, true
+	}
+
+	// 使用负值错误码，避免与HTTP状态码混淆
+	// 其他网络错误 - 可以重试
+	// 对外/日志统一使用标准HTTP语义：502 Bad Gateway
+	return 502, ErrorLevelChannel, true
+}

@@ -1,0 +1,608 @@
+package app
+
+import (
+	"context"
+	"log"
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
+	"ccLoad/internal/version"
+
+	"github.com/gin-gonic/gin"
+)
+
+// ==================== 统计和监控 ====================
+// 从admin.go拆分统计监控,遵循SRP原则
+
+// HandleErrors 获取日志列表
+// GET /admin/logs?range=today&limit=100&offset=0
+func (s *Server) HandleErrors(c *gin.Context) {
+	params := ParsePaginationParams(c)
+	lf := BuildLogFilter(c)
+	since, until := params.GetTimeRange()
+
+	logs, total, err := s.store.ListLogsRangeWithCount(c.Request.Context(), since, until, params.Limit, params.Offset, &lf)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	if isAPITokenWebRequest(c) {
+		channels, err := s.tokenLogChannels(c.Request.Context(), logs)
+		if err != nil {
+			log.Printf("[ERROR] 加载 API Token 日志脱敏元数据失败: %v", err)
+			RespondErrorMsg(c, http.StatusInternalServerError, "读取日志脱敏元数据失败")
+			return
+		}
+		RespondJSONWithCount(c, http.StatusOK, projectTokenLogs(logs, channels), total)
+		return
+	}
+	RespondJSONWithCount(c, http.StatusOK, projectDashboardLogs(logs), total)
+}
+
+func (s *Server) tokenLogChannels(ctx context.Context, logs []*model.LogEntry) (map[int64]tokenLogChannelMetadata, error) {
+	needed := make(map[int64]struct{})
+	for _, entry := range logs {
+		if entry != nil && entry.ChannelID > 0 {
+			needed[entry.ChannelID] = struct{}{}
+		}
+	}
+	channels := make(map[int64]tokenLogChannelMetadata, len(needed))
+	if len(needed) == 0 {
+		return channels, nil
+	}
+	configs, err := s.store.ListConfigs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	apiKeysByChannel, err := s.store.GetAllAPIKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, cfg := range configs {
+		if _, ok := needed[cfg.ID]; !ok {
+			continue
+		}
+		metadata := tokenLogChannelMetadata{
+			APIKeyHashes: make(map[string]struct{}, len(apiKeysByChannel[cfg.ID])),
+		}
+		for _, apiKey := range apiKeysByChannel[cfg.ID] {
+			if apiKey != nil && apiKey.APIKey != "" {
+				metadata.APIKeys = append(metadata.APIKeys, apiKey.APIKey)
+				metadata.APIKeyHashes[util.HashAPIKey(apiKey.APIKey)] = struct{}{}
+			}
+		}
+		channels[cfg.ID] = metadata
+	}
+	return channels, nil
+}
+
+// HandleMetrics 获取聚合指标数据
+// GET /admin/metrics?range=today&bucket_min=5&upstream_protocol=anthropic&model=claude-3-5-sonnet-20241022&channel_id=1&channel_name_like=xxx
+func (s *Server) HandleMetrics(c *gin.Context) {
+	params := ParsePaginationParams(c)
+	bucketMin, _ := strconv.Atoi(c.DefaultQuery("bucket_min", "5"))
+	if bucketMin <= 0 {
+		bucketMin = 5
+	}
+
+	// 使用统一的筛选参数构建器。
+	lf := BuildLogFilter(c)
+	lf.LogSource = model.LogSourceProxy
+
+	since, until := params.GetTimeRange()
+	pts, err := s.store.AggregateRangeWithFilter(c.Request.Context(), since, until, time.Duration(bucketMin)*time.Minute, &lf)
+
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	RespondJSON(c, http.StatusOK, pts)
+}
+
+// HandleStats 获取渠道和模型统计
+// GET /admin/stats?range=today&channel_name_like=xxx&model_like=xxx
+func (s *Server) HandleStats(c *gin.Context) {
+	params := ParsePaginationParams(c)
+	lf := BuildLogFilter(c)
+	lf.LogSource = model.LogSourceProxy
+
+	startTime, endTime := params.GetTimeRange()
+
+	// 判断是否为本日（本日才计算最近一分钟）
+	isToday := params.Range == "today" || params.Range == ""
+
+	stats, err := s.statsCache.GetStats(c.Request.Context(), startTime, endTime, &lf, isToday)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if isAPITokenWebRequest(c) {
+		stats = projectTokenStats(stats)
+	}
+
+	// 计算时间跨度（秒），用于前端计算RPM和QPS
+	durationSeconds := endTime.Sub(startTime).Seconds()
+	if durationSeconds < 1 {
+		durationSeconds = 1 // 防止除零
+	}
+
+	// 获取RPM统计（峰值、平均、最近一分钟）
+	rpmStats, err := s.statsCache.GetRPMStats(c.Request.Context(), startTime, endTime, &lf, isToday)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	channelHealth := s.fillHealthTimeline(c.Request.Context(), stats, startTime, endTime, &lf, isToday)
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"stats":            stats,
+		"channel_health":   channelHealth,
+		"duration_seconds": durationSeconds,
+		"rpm_stats":        rpmStats,
+		"is_today":         isToday,
+	})
+}
+
+func projectTokenStats(stats []model.StatsEntry) []model.StatsEntry {
+	projected := make([]model.StatsEntry, len(stats))
+	copy(projected, stats)
+	for i := range projected {
+		projected[i].LastRequestMessage = ""
+	}
+	return projected
+}
+
+// HandlePublicSummary 获取基础统计摘要(公开端点,无需认证)
+// GET /public/summary?range=today
+// 按客户端入口协议分组统计。
+//
+// [SECURITY NOTE] 该端点故意设计为公开访问，用于首页仪表盘展示。
+// 认证仪表盘使用 /dashboard/summary，并由 Web 身份强制作用域。
+func (s *Server) HandlePublicSummary(c *gin.Context) {
+	params := ParsePaginationParams(c)
+	startTime, endTime := params.GetTimeRange()
+
+	// 判断是否为本日（本日才计算最近一分钟）
+	isToday := params.Range == "today" || params.Range == ""
+	ctx := c.Request.Context()
+	logFilter := &model.LogFilter{LogSource: model.LogSourceProxy}
+	if _, ok := WebIdentityFromContext(c); ok {
+		filter := BuildLogFilter(c)
+		filter.LogSource = model.LogSourceProxy
+		logFilter = &filter
+	}
+
+	// 协议摘要与 RPM 相互独立，并行查询。
+	var (
+		stats    []model.ClientProtocolStats
+		rpmStats *model.RPMStats
+		statsErr error
+		rpmErr   error
+		wg       sync.WaitGroup
+	)
+
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		stats, statsErr = s.statsCache.GetClientProtocolStats(ctx, startTime, endTime, logFilter)
+	}()
+
+	go func() {
+		defer wg.Done()
+		rpmStats, rpmErr = s.statsCache.GetRPMStats(ctx, startTime, endTime, logFilter, isToday)
+	}()
+
+	wg.Wait()
+
+	if statsErr != nil {
+		RespondError(c, http.StatusInternalServerError, statsErr)
+		return
+	}
+	if rpmErr != nil {
+		RespondError(c, http.StatusInternalServerError, rpmErr)
+		return
+	}
+	// 计算时间跨度（秒），用于前端计算RPM和QPS
+	durationSeconds := endTime.Sub(startTime).Seconds()
+	if durationSeconds < 1 {
+		durationSeconds = 1 // 防止除零
+	}
+
+	byClientProtocol := make(map[string]model.ClientProtocolStats)
+	totalSuccess := 0
+	totalError := 0
+
+	for _, stat := range stats {
+		totalSuccess += stat.SuccessRequests
+		totalError += stat.ErrorRequests
+
+		if protocol.IsValid(protocol.Protocol(stat.ClientProtocol)) {
+			byClientProtocol[stat.ClientProtocol] = stat
+		}
+	}
+
+	response := gin.H{
+		"total_requests":     totalSuccess + totalError,
+		"success_requests":   totalSuccess,
+		"error_requests":     totalError,
+		"range":              params.Range,
+		"duration_seconds":   durationSeconds,
+		"rpm_stats":          rpmStats,
+		"is_today":           isToday,
+		"by_client_protocol": byClientProtocol,
+	}
+
+	RespondJSON(c, http.StatusOK, response)
+}
+
+// HandleGetProtocols 获取支持的协议列表(公开端点,前端动态加载)
+// GET /public/protocols
+// 编译时常量，浏览器缓存24小时减少HF Spaces等高延迟环境的网络往返
+func (s *Server) HandleGetProtocols(c *gin.Context) {
+	c.Header("Cache-Control", "public, max-age=86400")
+	RespondJSON(c, http.StatusOK, protocol.AllProtocols())
+}
+
+// HandlePublicVersion 获取当前版本信息(公开端点,前端显示版本)
+// GET /public/version
+// 版本信息变化频率极低，缓存5分钟。
+func (s *Server) HandlePublicVersion(c *gin.Context) {
+	c.Header("Cache-Control", "public, max-age=300")
+	state := version.UpdateState{}
+	if s.updateManager != nil {
+		state = s.updateManager.State()
+	}
+	RespondJSON(c, http.StatusOK, gin.H{
+		"version":        version.Version,
+		"has_update":     state.HasUpdate,
+		"latest_version": state.LatestVersion,
+		"release_url":    state.ReleaseURL,
+	})
+}
+
+// HandleCheckForUpdates runs one explicit, check-only ccLoad release lookup.
+// It never downloads or replaces the running executable.
+func (s *Server) HandleCheckForUpdates(c *gin.Context) {
+	manager := s.updateManager
+	if manager == nil {
+		// Development builds do not start the background updater, but the
+		// console still needs a safe, read-only way to inspect upstream releases.
+		// ApplyUpdates remains disabled so this path can never replace the binary
+		// or trigger a restart.
+		var err error
+		manager, err = version.NewUpdateManager(version.UpdateManagerOptions{
+			Interval:     time.Hour,
+			Channel:      s.configuredReleaseChannel(),
+			ApplyUpdates: false,
+		})
+		if err != nil {
+			RespondJSON(c, http.StatusOK, gin.H{
+				"version": version.Version,
+				"error":   err.Error(),
+				"message": "上游版本检查器初始化失败",
+			})
+			return
+		}
+	}
+	if err := manager.CheckNow(c.Request.Context()); err != nil {
+		state := manager.State()
+		RespondJSON(c, http.StatusOK, gin.H{
+			"version":        version.Version,
+			"has_update":     state.HasUpdate,
+			"latest_version": state.LatestVersion,
+			"release_url":    state.ReleaseURL,
+			"last_check":     state.LastCheck,
+			"error":          err.Error(),
+			"message":        "上游版本检查失败",
+		})
+		return
+	}
+	state := manager.State()
+	RespondJSON(c, http.StatusOK, gin.H{
+		"version":        version.Version,
+		"has_update":     state.HasUpdate,
+		"latest_version": state.LatestVersion,
+		"release_url":    state.ReleaseURL,
+		"last_check":     state.LastCheck,
+		"message":        "已完成上游版本检查",
+	})
+}
+
+// ModelsChannelsResponse 日志筛选所需的模型、渠道和状态码列表响应。
+type ModelsChannelsResponse struct {
+	Models      []string              `json:"models"`
+	Channels    []model.ChannelNameID `json:"channels"`
+	StatusCodes []int                 `json:"status_codes"`
+}
+
+// HandleGetModels 获取数据库中有日志的模型、渠道和状态码列表（去重）。
+// GET /admin/models
+// 支持参数：range（时间范围）、upstream_protocol（实际上游协议筛选）
+func (s *Server) HandleGetModels(c *gin.Context) {
+	rangeParam := c.DefaultQuery("range", "this_month")
+	params := ParsePaginationParams(c)
+	params.Range = rangeParam
+	since, until := params.GetTimeRange()
+
+	logFilter := BuildLogFilter(c)
+	logFilter.LogSource = model.LogSourceProxy
+
+	var (
+		models                              []string
+		channels                            []model.ChannelNameID
+		statusCodes                         []int
+		wg                                  sync.WaitGroup
+		modelsErr, channelsErr, statusesErr error
+	)
+
+	wg.Go(func() {
+		models, modelsErr = s.store.GetDistinctModels(c.Request.Context(), since, until, &logFilter)
+	})
+	wg.Go(func() {
+		channels, channelsErr = s.store.GetDistinctChannels(c.Request.Context(), since, until, &logFilter)
+	})
+	wg.Go(func() {
+		statusCodes, statusesErr = s.store.GetDistinctStatusCodes(c.Request.Context(), since, until, &logFilter)
+	})
+	wg.Wait()
+
+	if modelsErr != nil {
+		RespondError(c, http.StatusInternalServerError, modelsErr)
+		return
+	}
+	if channelsErr != nil {
+		RespondError(c, http.StatusInternalServerError, channelsErr)
+		return
+	}
+	if statusesErr != nil {
+		RespondError(c, http.StatusInternalServerError, statusesErr)
+		return
+	}
+	if models == nil {
+		models = make([]string, 0)
+	}
+	if channels == nil {
+		channels = make([]model.ChannelNameID, 0)
+	}
+	if statusCodes == nil {
+		statusCodes = make([]int, 0)
+	}
+
+	RespondJSON(c, http.StatusOK, ModelsChannelsResponse{Models: models, Channels: channels, StatusCodes: statusCodes})
+}
+
+// HandleHealth 健康检查端点(公开访问,无需认证)
+// GET /health
+// 仅检查数据库连接是否活跃（适用于K8s liveness/readiness probe）
+func (s *Server) HandleHealth(c *gin.Context) {
+	// 设置100ms超时，避免慢查询阻塞healthcheck
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := s.store.Ping(ctx); err != nil {
+		RespondError(c, http.StatusServiceUnavailable, err)
+		return
+	}
+
+	RespondJSON(c, http.StatusOK, gin.H{"status": "ok"})
+}
+
+// fillHealthTimeline 为每个统计条目填充健康时间线
+// isToday=true: 显示最近4小时，每5分钟一个状态（48个）
+// isToday=false: 按总时间跨度/48计算时间桶
+func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntry, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) map[int][]model.HealthPoint {
+	if len(stats) == 0 {
+		return nil
+	}
+
+	const numBuckets = 48
+
+	// 计算健康指示器的时间范围和桶大小
+	var healthStart time.Time
+	var bucketSeconds int64
+
+	if isToday {
+		// 当日：最近4小时，每5分钟一个桶
+		bucketSeconds = 5 * 60 // 5分钟
+		healthStart = endTime.Add(-4 * time.Hour)
+		// 确保不早于查询开始时间
+		if healthStart.Before(startTime) {
+			healthStart = startTime
+		}
+	} else {
+		// 其他时间范围：按总时长/48计算
+		duration := endTime.Sub(startTime)
+		bucketSeconds = int64(duration.Seconds() / numBuckets)
+		if bucketSeconds < 1 {
+			bucketSeconds = 1
+		}
+		healthStart = startTime
+	}
+
+	// 转换为毫秒，直接与 logs.time 比较，避免索引失效
+	sinceMs := healthStart.UnixMilli()
+	untilMs := endTime.UnixMilli()
+	bucketMs := bucketSeconds * 1000
+
+	// 构建结构化查询参数（SQL 构建已下沉到存储层）
+	params := model.HealthTimelineParams{
+		SinceMs:  sinceMs,
+		UntilMs:  untilMs,
+		BucketMs: bucketMs,
+		Filter:   filter,
+	}
+
+	rows, err := s.store.GetHealthTimeline(ctx, params)
+	if err != nil {
+		// 静默失败，不影响主流程
+		return nil
+	}
+
+	// 构建映射：(channel_id, model) -> StatsEntry索引
+	type channelModelKey struct {
+		channelID int
+		model     string
+	}
+	statsMap := make(map[channelModelKey]int)
+	for i := range stats {
+		if stats[i].ChannelID != nil {
+			key := channelModelKey{
+				channelID: *stats[i].ChannelID,
+				model:     stats[i].Model,
+			}
+			statsMap[key] = i
+		}
+	}
+
+	// 解析查询结果 - 按时间桶索引位置填充
+	timeline := make(map[channelModelKey][]model.HealthPoint)
+
+	sinceUnix := healthStart.Unix()
+
+	// 为每个渠道初始化48个空时间点
+	for key := range statsMap {
+		points := make([]model.HealthPoint, numBuckets)
+		for i := 0; i < numBuckets; i++ {
+			points[i] = model.HealthPoint{
+				Ts:          time.Unix(sinceUnix+int64(i)*bucketSeconds, 0),
+				SuccessRate: -1, // -1 表示无数据
+			}
+		}
+		timeline[key] = points
+	}
+
+	for _, row := range rows {
+		key := channelModelKey{channelID: row.ChannelID, model: row.Model}
+
+		// 只处理 stats 中存在的组合
+		if _, exists := statsMap[key]; !exists {
+			continue
+		}
+
+		// 计算该时间桶对应的索引位置（BucketTs 是毫秒，需转换为秒再计算）
+		bucketIndex := int((row.BucketTs/1000 - sinceUnix) / bucketSeconds)
+		if bucketIndex < 0 || bucketIndex >= numBuckets {
+			continue
+		}
+
+		total := row.Success + row.ErrorCount
+		successRate := 0.0
+		if total > 0 {
+			successRate = float64(row.Success) / float64(total)
+		}
+
+		// 更新数据字段，保留初始化时的 Ts（Go 计算的桶起始时间）
+		// 不能用 SQL 的 FLOOR 桶边界覆盖 Ts，否则同一桶索引在不同模型间
+		// 产生不同时间戳，导致前端按 ts 合并时出现幽灵条目
+		p := &timeline[key][bucketIndex]
+		p.SuccessRate = successRate
+		p.SuccessCount = row.Success
+		p.ErrorCount = row.ErrorCount
+		p.RateLimitedCount = row.RateLimitedCount
+		p.AvgFirstByteTime = row.AvgFirstByteTime
+		p.AvgDuration = row.AvgDuration
+		p.TotalInputTokens = row.InputTokens
+		p.TotalOutputTokens = row.OutputTokens
+		p.TotalCacheReadTokens = row.CacheReadTokens
+		p.TotalCacheCreationTokens = row.CacheCreationTokens
+		p.TotalCost = row.TotalCost
+		p.EffectiveCost = row.EffectiveCost
+	}
+
+	// 填充到 stats 中（per-model，供 stats 页面使用）
+	for key, idx := range statsMap {
+		if points, exists := timeline[key]; exists {
+			stats[idx].HealthTimeline = points
+		}
+	}
+
+	// 按渠道聚合健康时间线（供渠道管理页面使用）
+	// 用桶索引合并，不依赖时间戳字符串，彻底避免前端 merge 的对齐问题
+	channelHealth := make(map[int][]model.HealthPoint)
+	for key, points := range timeline {
+		ch, exists := channelHealth[key.channelID]
+		if !exists {
+			ch = make([]model.HealthPoint, numBuckets)
+			for i := range ch {
+				ch[i] = model.HealthPoint{
+					Ts:          points[i].Ts,
+					SuccessRate: -1,
+				}
+			}
+			channelHealth[key.channelID] = ch
+		}
+		for i, pt := range points {
+			if pt.SuccessRate < 0 {
+				continue
+			}
+			if ch[i].SuccessRate < 0 {
+				ch[i] = pt
+				continue
+			}
+			// 加权合并平均值（用 SuccessCount 做权重，比前端用 total 更准确）
+			oldSucc := ch[i].SuccessCount
+			newSucc := pt.SuccessCount
+			if totalSucc := oldSucc + newSucc; totalSucc > 0 {
+				w := float64(totalSucc)
+				ch[i].AvgFirstByteTime = (ch[i].AvgFirstByteTime*float64(oldSucc) + pt.AvgFirstByteTime*float64(newSucc)) / w
+				ch[i].AvgDuration = (ch[i].AvgDuration*float64(oldSucc) + pt.AvgDuration*float64(newSucc)) / w
+			}
+			ch[i].SuccessCount += pt.SuccessCount
+			ch[i].ErrorCount += pt.ErrorCount
+			ch[i].RateLimitedCount += pt.RateLimitedCount
+			if total := ch[i].SuccessCount + ch[i].ErrorCount; total > 0 {
+				ch[i].SuccessRate = float64(ch[i].SuccessCount) / float64(total)
+			}
+			ch[i].TotalInputTokens += pt.TotalInputTokens
+			ch[i].TotalOutputTokens += pt.TotalOutputTokens
+			ch[i].TotalCacheReadTokens += pt.TotalCacheReadTokens
+			ch[i].TotalCacheCreationTokens += pt.TotalCacheCreationTokens
+			ch[i].TotalCost += pt.TotalCost
+			ch[i].EffectiveCost += pt.EffectiveCost
+		}
+	}
+	return channelHealth
+}
+
+// HandleStatsFilterOptions 返回统计页筛选下拉的全集（渠道名/模型），
+// 从指定时间范围内的日志记录中提取，与表格数据解耦。
+// GET /admin/stats/filter-options?range=today&upstream_protocol=
+func (s *Server) HandleStatsFilterOptions(c *gin.Context) {
+	params := ParsePaginationParams(c)
+	startTime, endTime := params.GetTimeRange()
+
+	lf := BuildLogFilter(c)
+	lf.LogSource = model.LogSourceProxy
+
+	channels, err := s.store.GetDistinctChannels(c.Request.Context(), startTime, endTime, &lf)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	models, err := s.store.GetDistinctModels(c.Request.Context(), startTime, endTime, &lf)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	channelNames := make([]string, 0, len(channels))
+	for _, ch := range channels {
+		if ch.Name != "" {
+			channelNames = append(channelNames, ch.Name)
+		}
+	}
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"channel_names": channelNames,
+		"models":        models,
+	})
+}

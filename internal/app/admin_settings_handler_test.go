@@ -1,0 +1,458 @@
+package app
+
+import (
+	"context"
+	"net/http"
+	"testing"
+	"time"
+
+	"ccLoad/internal/model"
+
+	"github.com/gin-gonic/gin"
+)
+
+func findAdminSetting(t *testing.T, settings []map[string]any, key string) map[string]any {
+	t.Helper()
+	for _, setting := range settings {
+		if setting["key"] == key {
+			return setting
+		}
+	}
+	t.Fatalf("setting %q not found", key)
+	return nil
+}
+
+func TestAdminContainerUpdateSettingsDisabled(t *testing.T) {
+	t.Setenv("CCLOAD_CONTAINER", "1")
+
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.configService = NewConfigService(store)
+	if err := server.configService.LoadDefaults(context.Background()); err != nil {
+		t.Fatalf("LoadDefaults failed: %v", err)
+	}
+
+	const disabledReason = "container_image_managed"
+	updateKeys := []string{autoUpdateIntervalSettingKey, autoUpdateChannelSettingKey}
+
+	t.Run("list and get expose disabled state", func(t *testing.T) {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings", nil))
+		server.AdminListSettings(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		resp := mustParseAPIResponse[[]map[string]any](t, w.Body.Bytes())
+		for _, key := range updateKeys {
+			setting := findAdminSetting(t, resp.Data, key)
+			if editable, ok := setting["editable"].(bool); !ok || editable {
+				t.Fatalf("setting %q editable=%v, want false", key, setting["editable"])
+			}
+			if reason := setting["disabled_reason"]; reason != disabledReason {
+				t.Fatalf("setting %q disabled_reason=%v, want %q", key, reason, disabledReason)
+			}
+
+			c, w = newTestContext(t, newRequest(http.MethodGet, "/admin/settings/"+key, nil))
+			c.Params = gin.Params{{Key: "key", Value: key}}
+			server.AdminGetSetting(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("get %q status=%d, want %d body=%s", key, w.Code, http.StatusOK, w.Body.String())
+			}
+			view := mustParseAPIResponse[map[string]any](t, w.Body.Bytes()).Data
+			if view["editable"] != false || view["disabled_reason"] != disabledReason {
+				t.Fatalf("get %q view=%v, want disabled container view", key, view)
+			}
+		}
+	})
+
+	oldRestartFunc := RestartFunc
+	t.Cleanup(func() { RestartFunc = oldRestartFunc })
+	restarted := make(chan struct{}, 1)
+	RestartFunc = func() { restarted <- struct{}{} }
+
+	t.Run("all write paths reject container-managed settings", func(t *testing.T) {
+		for _, key := range updateKeys {
+			before, err := store.GetSetting(context.Background(), key)
+			if err != nil {
+				t.Fatalf("GetSetting %q before write: %v", key, err)
+			}
+
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/settings/"+key, map[string]string{"value": before.DefaultValue}))
+			c.Params = gin.Params{{Key: "key", Value: key}}
+			server.AdminUpdateSetting(c)
+			if w.Code != http.StatusConflict {
+				t.Fatalf("update %q status=%d, want %d body=%s", key, w.Code, http.StatusConflict, w.Body.String())
+			}
+
+			c, w = newTestContext(t, newRequest(http.MethodPost, "/admin/settings/"+key+"/reset", nil))
+			c.Params = gin.Params{{Key: "key", Value: key}}
+			server.AdminResetSetting(c)
+			if w.Code != http.StatusConflict {
+				t.Fatalf("reset %q status=%d, want %d body=%s", key, w.Code, http.StatusConflict, w.Body.String())
+			}
+
+			after, err := store.GetSetting(context.Background(), key)
+			if err != nil {
+				t.Fatalf("GetSetting %q after writes: %v", key, err)
+			}
+			if after.Value != before.Value {
+				t.Fatalf("setting %q changed from %q to %q", key, before.Value, after.Value)
+			}
+		}
+
+		beforeLogRetention, err := store.GetSetting(context.Background(), "log_retention_days")
+		if err != nil {
+			t.Fatalf("GetSetting log_retention_days before batch: %v", err)
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/settings/batch", map[string]string{
+			"log_retention_days":        "30",
+			autoUpdateChannelSettingKey: "preview",
+		}))
+		server.AdminBatchUpdateSettings(c)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("batch status=%d, want %d body=%s", w.Code, http.StatusConflict, w.Body.String())
+		}
+		afterLogRetention, err := store.GetSetting(context.Background(), "log_retention_days")
+		if err != nil {
+			t.Fatalf("GetSetting log_retention_days after batch: %v", err)
+		}
+		if afterLogRetention.Value != beforeLogRetention.Value {
+			t.Fatalf("batch partially changed log_retention_days from %q to %q", beforeLogRetention.Value, afterLogRetention.Value)
+		}
+
+		select {
+		case <-restarted:
+			t.Fatal("rejected container setting write triggered restart")
+		default:
+		}
+	})
+}
+
+func TestAdminUpdateModelCatalogSyncIntervalSetting(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.configService = NewConfigService(store)
+	if err := server.configService.LoadDefaults(context.Background()); err != nil {
+		t.Fatalf("LoadDefaults failed: %v", err)
+	}
+
+	oldRestartFunc := RestartFunc
+	t.Cleanup(func() { RestartFunc = oldRestartFunc })
+	restartCh := make(chan struct{}, 3)
+	RestartFunc = func() { restartCh <- struct{}{} }
+
+	const key = "model_catalog_sync_interval_hours"
+	tests := []struct {
+		name     string
+		value    string
+		wantCode int
+	}{
+		{name: "disabled", value: "0", wantCode: http.StatusOK},
+		{name: "fractional interval", value: "0.5", wantCode: http.StatusOK},
+		{name: "default interval", value: "6", wantCode: http.StatusOK},
+		{name: "negative interval", value: "-0.1", wantCode: http.StatusBadRequest},
+		{name: "not a number", value: "NaN", wantCode: http.StatusBadRequest},
+		{name: "positive infinity", value: "+Inf", wantCode: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before, err := store.GetSetting(context.Background(), key)
+			if err != nil {
+				t.Fatalf("GetSetting before update failed: %v", err)
+			}
+
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/settings/"+key, map[string]string{"value": tt.value}))
+			c.Params = gin.Params{{Key: "key", Value: key}}
+			server.AdminUpdateSetting(c)
+
+			if w.Code != tt.wantCode {
+				t.Fatalf("status=%d, want %d, body=%s", w.Code, tt.wantCode, w.Body.String())
+			}
+
+			after, err := store.GetSetting(context.Background(), key)
+			if err != nil {
+				t.Fatalf("GetSetting after update failed: %v", err)
+			}
+			if tt.wantCode == http.StatusOK {
+				if after.Value != tt.value {
+					t.Fatalf("persisted value=%q, want %q", after.Value, tt.value)
+				}
+				select {
+				case <-restartCh:
+				case <-time.After(time.Second):
+					t.Fatal("expected restart triggered")
+				}
+				return
+			}
+			if after.Value != before.Value {
+				t.Fatalf("persisted value=%q, want unchanged %q", after.Value, before.Value)
+			}
+		})
+	}
+}
+
+func TestAdminSettingsHandlers(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	server.configService = NewConfigService(store)
+	if err := server.configService.LoadDefaults(context.Background()); err != nil {
+		t.Fatalf("LoadDefaults failed: %v", err)
+	}
+
+	origRestartFunc := RestartFunc
+	defer func() {
+		RestartFunc = origRestartFunc
+	}()
+
+	restartCh := make(chan struct{}, 10)
+	RestartFunc = func() { restartCh <- struct{}{} }
+
+	t.Run("AdminGetSetting_missing_key", func(t *testing.T) {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings/", nil))
+
+		server.AdminGetSetting(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("AdminGetSetting_not_found", func(t *testing.T) {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings/no_such_key", nil))
+		c.Params = gin.Params{{Key: "key", Value: "no_such_key"}}
+
+		server.AdminGetSetting(c)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusNotFound)
+		}
+	})
+
+	t.Run("AdminGetSetting_ok", func(t *testing.T) {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings/log_retention_days", nil))
+		c.Params = gin.Params{{Key: "key", Value: "log_retention_days"}}
+
+		server.AdminGetSetting(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusOK)
+		}
+
+		resp := mustParseAPIResponse[*model.SystemSetting](t, w.Body.Bytes())
+		if !resp.Success {
+			t.Fatalf("success=false, error=%q", resp.Error)
+		}
+		if resp.Data == nil {
+			t.Fatalf("data is nil, want SystemSetting")
+		}
+		if resp.Data.Key != "log_retention_days" {
+			t.Fatalf("data.key=%v, want log_retention_days", resp.Data.Key)
+		}
+	})
+
+	t.Run("AdminUpdateSetting_invalid_json", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/settings/log_retention_days", []byte("{")))
+		c.Params = gin.Params{{Key: "key", Value: "log_retention_days"}}
+
+		server.AdminUpdateSetting(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("AdminUpdateSetting_not_found", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/settings/no_such_key", []byte(`{"value":"1"}`)))
+		c.Params = gin.Params{{Key: "key", Value: "no_such_key"}}
+
+		server.AdminUpdateSetting(c)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusNotFound)
+		}
+	})
+
+	t.Run("AdminUpdateSetting_invalid_value", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/settings/log_retention_days", []byte(`{"value":"0"}`)))
+		c.Params = gin.Params{{Key: "key", Value: "log_retention_days"}}
+
+		server.AdminUpdateSetting(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("AdminUpdateSetting_ok_triggers_restart", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/settings/log_retention_days", []byte(`{"value":"30"}`)))
+		c.Params = gin.Params{{Key: "key", Value: "log_retention_days"}}
+
+		server.AdminUpdateSetting(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		select {
+		case <-restartCh:
+		case <-time.After(1 * time.Second):
+			t.Fatal("expected restart triggered")
+		}
+	})
+
+	t.Run("AdminGetSetting_returns_latest_db_value_before_restart", func(t *testing.T) {
+		if err := store.UpdateSetting(context.Background(), "channel_check_interval_hours", "1"); err != nil {
+			t.Fatalf("failed to seed setting in db: %v", err)
+		}
+
+		seed, err := store.GetSetting(context.Background(), "channel_check_interval_hours")
+		if err != nil {
+			t.Fatalf("failed to read seeded setting: %v", err)
+		}
+		seed.Value = "1"
+
+		server.configService.mu.Lock()
+		server.configService.cache["channel_check_interval_hours"] = seed
+		server.configService.mu.Unlock()
+
+		updateCtx, updateW := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/settings/channel_check_interval_hours", []byte(`{"value":"0"}`)))
+		updateCtx.Params = gin.Params{{Key: "key", Value: "channel_check_interval_hours"}}
+
+		server.AdminUpdateSetting(updateCtx)
+
+		if updateW.Code != http.StatusOK {
+			t.Fatalf("update status=%d, want %d body=%s", updateW.Code, http.StatusOK, updateW.Body.String())
+		}
+
+		select {
+		case <-restartCh:
+		case <-time.After(1 * time.Second):
+			t.Fatal("expected restart triggered")
+		}
+
+		getCtx, getW := newTestContext(t, newRequest(http.MethodGet, "/admin/settings/channel_check_interval_hours", nil))
+		getCtx.Params = gin.Params{{Key: "key", Value: "channel_check_interval_hours"}}
+
+		server.AdminGetSetting(getCtx)
+
+		if getW.Code != http.StatusOK {
+			t.Fatalf("get status=%d, want %d body=%s", getW.Code, http.StatusOK, getW.Body.String())
+		}
+
+		resp := mustParseAPIResponse[*model.SystemSetting](t, getW.Body.Bytes())
+		if !resp.Success {
+			t.Fatalf("success=false, error=%q", resp.Error)
+		}
+		if resp.Data == nil {
+			t.Fatal("data is nil, want SystemSetting")
+		}
+		if resp.Data.Value != "0" {
+			t.Fatalf("data.value=%q, want 0", resp.Data.Value)
+		}
+	})
+
+	t.Run("AdminResetSetting_ok_triggers_restart", func(t *testing.T) {
+		// 先更新为一个不同值，再reset，最后验证数据库里变回默认值。
+		if err := store.UpdateSetting(context.Background(), "log_retention_days", "30"); err != nil {
+			t.Fatalf("UpdateSetting failed: %v", err)
+		}
+
+		defaultValue := server.configService.GetSetting("log_retention_days").DefaultValue
+
+		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/settings/log_retention_days/reset", nil))
+		c.Params = gin.Params{{Key: "key", Value: "log_retention_days"}}
+
+		server.AdminResetSetting(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		select {
+		case <-restartCh:
+		case <-time.After(1 * time.Second):
+			t.Fatal("expected restart triggered")
+		}
+
+		s, err := store.GetSetting(context.Background(), "log_retention_days")
+		if err != nil {
+			t.Fatalf("GetSetting failed: %v", err)
+		}
+		if s.Value != defaultValue {
+			t.Fatalf("value after reset=%q, want default=%q", s.Value, defaultValue)
+		}
+	})
+
+	t.Run("AdminBatchUpdateSettings_empty_body_reject", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/settings/batch", []byte(`{}`)))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("AdminBatchUpdateSettings_unknown_key_reject", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/settings/batch", []byte(`{"no_such_key":"1"}`)))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("AdminBatchUpdateSettings_invalid_value_reject", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/settings/batch", []byte(`{"log_retention_days":"0"}`)))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("AdminBatchUpdateSettings_invalid_global_cooldown_rules_reject", func(t *testing.T) {
+		before, err := store.GetSetting(context.Background(), globalCooldownDetectionRulesSettingKey)
+		if err != nil {
+			t.Fatalf("GetSetting before update failed: %v", err)
+		}
+		invalidRules := `{"rules":[{"enabled":true,"name":"Broken","priority":0,"status_codes":[429],"scope":"channel","mode":"fixed","cooldown_seconds":0}]}`
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/settings/batch", map[string]string{
+			globalCooldownDetectionRulesSettingKey: invalidRules,
+		}))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		after, err := store.GetSetting(context.Background(), globalCooldownDetectionRulesSettingKey)
+		if err != nil {
+			t.Fatalf("GetSetting after update failed: %v", err)
+		}
+		if after.Value != before.Value {
+			t.Fatalf("persisted value=%q, want unchanged %q", after.Value, before.Value)
+		}
+	})
+
+	t.Run("AdminBatchUpdateSettings_ok_triggers_restart", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/settings/batch", []byte(`{"log_retention_days":"14","max_key_retries":"5"}`)))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		select {
+		case <-restartCh:
+		case <-time.After(1 * time.Second):
+			t.Fatal("expected restart triggered")
+		}
+	})
+}

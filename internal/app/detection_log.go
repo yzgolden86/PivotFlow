@@ -1,0 +1,240 @@
+package app
+
+import (
+	"context"
+	"log"
+	"strings"
+	"time"
+
+	"ccLoad/internal/model"
+)
+
+func selectScheduledCheckModel(cfg *model.Config) (string, string) {
+	if cfg == nil || len(cfg.ModelEntries) == 0 {
+		return "", "未配置模型"
+	}
+	if cfg.ScheduledCheckModel == "" {
+		models := cfg.GetModels()
+		if len(models) == 0 {
+			return "", "未配置已启用模型"
+		}
+		return models[0], ""
+	}
+	if cfg.SupportsModel(cfg.ScheduledCheckModel) {
+		return cfg.ScheduledCheckModel, ""
+	}
+	return "", "scheduled_check_model 不在渠道模型列表中"
+}
+
+func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualModel, apiKeyUsed, clientIP, requestThinkingEffort string, result map[string]any) *model.LogEntry {
+	entry := &model.LogEntry{
+		Time:             model.JSONTime{Time: time.Now()},
+		LogSource:        logSource,
+		Model:            requestModel,
+		ClientIP:         clientIP,
+		APIKeyUsed:       apiKeyUsed,
+		BaseURL:          getResultString(result, "base_url"),
+		ClientProtocol:   getResultString(result, "client_protocol"),
+		UpstreamProtocol: getResultString(result, "upstream_protocol"),
+		StatusCode:       getResultIntOrDefault(result, "status_code", 0),
+		Duration:         float64(getResultInt64OrDefault(result, "duration_ms", 0)) / 1000,
+		FirstByteTime:    float64(getResultInt64OrDefault(result, "first_byte_duration_ms", 0)) / 1000,
+		Cost:             getResultFloat64OrDefault(result, "cost_usd", 0),
+		IsStreaming:      getResultBoolOrDefault(result, "is_streaming", false),
+		ThinkingEffort:   detectionThinkingEffort(requestThinkingEffort, result),
+	}
+	if cfg != nil {
+		entry.ChannelID = cfg.ID
+	}
+	if actualModel != "" && actualModel != requestModel {
+		entry.ActualModel = actualModel
+	}
+	populateDetectionUsage(entry, result, entry.UpstreamProtocol)
+	entry.Message = detectionMessage(result)
+	if debugData, ok := getResultDebugData(result, "debug_data"); ok {
+		entry.DebugData = debugData
+	}
+	return entry
+}
+
+func detectionThinkingEffort(requestThinkingEffort string, result map[string]any) string {
+	effort := normalizeThinkingEffort(requestThinkingEffort)
+	if upstream := extractThinkingEffortFromPayload(result); upstream != "" {
+		effort = upstream
+	}
+	if apiResponse, ok := getResultMap(result, "api_response"); ok {
+		if upstream := extractThinkingEffortFromPayload(apiResponse); upstream != "" {
+			effort = upstream
+		}
+	}
+	return effort
+}
+
+func detectionSkipLog(cfg *model.Config, logSource, modelName, reason string) *model.LogEntry {
+	return &model.LogEntry{
+		Time:       model.JSONTime{Time: time.Now()},
+		LogSource:  logSource,
+		ChannelID:  cfg.ID,
+		Model:      modelName,
+		StatusCode: 0,
+		Message:    strings.TrimSpace(reason),
+	}
+}
+
+func (s *Server) persistDetectionLog(ctx context.Context, entry *model.LogEntry) {
+	if s == nil || s.store == nil || entry == nil {
+		return
+	}
+	if err := s.store.AddLog(ctx, entry); err != nil {
+		log.Printf("[WARN] 检测日志写入失败: %v", err)
+		return
+	}
+	s.recordURLRequestFromLog(entry)
+}
+
+func populateDetectionUsage(entry *model.LogEntry, result map[string]any, upstreamProtocol string) {
+	if usage, ok := getResultMap(result, "usage"); ok {
+		populateLogEntryUsage(entry, usage)
+		return
+	}
+
+	usage, ok := getNestedMap(result, "api_response", "usage")
+	if !ok {
+		return
+	}
+	if normalized, ok := normalizeDetectionUsage(usage, upstreamProtocol); ok {
+		populateLogEntryUsage(entry, normalized)
+		return
+	}
+	populateLogEntryUsage(entry, usage)
+}
+
+func normalizeDetectionUsage(usage map[string]any, upstreamProtocol string) (map[string]any, bool) {
+	var accumulator usageAccumulator
+	accumulator.applyUsage(usage, upstreamProtocol)
+	if accumulator.usageVersion == 0 {
+		return nil, false
+	}
+
+	input, output, cacheRead, cacheCreation := accumulator.normalizedUsage(upstreamProtocol)
+	return map[string]any{
+		"input_tokens":                input,
+		"output_tokens":               output,
+		"reasoning_tokens":            accumulator.ReasoningTokens,
+		"cache_read_input_tokens":     cacheRead,
+		"cache_creation_input_tokens": cacheCreation,
+		"cache_5m_input_tokens":       accumulator.Cache5mInputTokens,
+		"cache_1h_input_tokens":       accumulator.Cache1hInputTokens,
+	}, true
+}
+
+func populateLogEntryUsage(entry *model.LogEntry, usage map[string]any) {
+	entry.InputTokens = getMapIntOrDefault(usage, "input_tokens", 0)
+	entry.OutputTokens = getMapIntOrDefault(usage, "output_tokens", 0)
+	entry.ReasoningTokens = getMapIntOrDefault(usage, "reasoning_tokens", 0)
+	entry.CacheReadInputTokens = getMapIntOrDefault(usage, "cache_read_input_tokens", 0)
+	entry.Cache5mInputTokens = getMapIntOrDefault(usage, "cache_5m_input_tokens", 0)
+	entry.Cache1hInputTokens = getMapIntOrDefault(usage, "cache_1h_input_tokens", 0)
+	entry.CacheCreationInputTokens = getMapIntOrDefault(usage, "cache_creation_input_tokens", entry.Cache5mInputTokens+entry.Cache1hInputTokens)
+	if entry.CacheCreationInputTokens == 0 {
+		entry.CacheCreationInputTokens = entry.Cache5mInputTokens + entry.Cache1hInputTokens
+	}
+}
+
+func detectionMessage(result map[string]any) string {
+	if msg := getResultString(result, "message"); strings.TrimSpace(msg) != "" {
+		return msg
+	}
+	if msg := getResultString(result, "error"); strings.TrimSpace(msg) != "" {
+		return msg
+	}
+	return "unknown"
+}
+
+func getResultString(result map[string]any, key string) string {
+	if result == nil {
+		return ""
+	}
+	if value, ok := result[key].(string); ok {
+		return value
+	}
+	return ""
+}
+
+func getResultIntOrDefault(result map[string]any, key string, fallback int) int {
+	if result == nil {
+		return fallback
+	}
+	if value, ok := getResultInt(result[key]); ok {
+		return value
+	}
+	return fallback
+}
+
+func getResultInt64OrDefault(result map[string]any, key string, fallback int64) int64 {
+	if result == nil {
+		return fallback
+	}
+	if value, ok := getResultInt64(result[key]); ok {
+		return value
+	}
+	return fallback
+}
+
+func getResultFloat64OrDefault(result map[string]any, key string, fallback float64) float64 {
+	if result == nil {
+		return fallback
+	}
+	switch value := result[key].(type) {
+	case float64:
+		return value
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	default:
+		return fallback
+	}
+}
+
+func getResultBoolOrDefault(result map[string]any, key string, fallback bool) bool {
+	if result == nil {
+		return fallback
+	}
+	if value, ok := result[key].(bool); ok {
+		return value
+	}
+	return fallback
+}
+
+func getResultDebugData(result map[string]any, key string) (*model.DebugLogEntry, bool) {
+	if result == nil {
+		return nil, false
+	}
+	value, ok := result[key].(*model.DebugLogEntry)
+	return value, ok && value != nil
+}
+
+func getNestedMap(result map[string]any, outerKey, innerKey string) (map[string]any, bool) {
+	outer, ok := result[outerKey].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	inner, ok := outer[innerKey].(map[string]any)
+	return inner, ok
+}
+
+func getResultMap(result map[string]any, key string) (map[string]any, bool) {
+	if result == nil {
+		return nil, false
+	}
+	value, ok := result[key].(map[string]any)
+	return value, ok
+}
+
+func getMapIntOrDefault(m map[string]any, key string, fallback int) int {
+	if value, ok := getResultInt(m[key]); ok {
+		return value
+	}
+	return fallback
+}

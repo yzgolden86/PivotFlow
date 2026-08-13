@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  ccload:
+    image: ghcr.io/caidaoli/ccload:latest
+    container_name: ccload
+    user: root
+    restart: unless-stopped
+    ports:
+      # 宿主机端口:容器端口。只改左边即可对外换端口，不要改右边
+      - "8080:8080"
+    # 所有配置统一写在 .env 里（从 .env.docker.example 复制）。
+    # 文件不存在时 Compose 直接报错拒绝启动，不会用弱默认密码跑起来。
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+

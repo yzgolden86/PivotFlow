@@ -1,0 +1,216 @@
+package util
+
+import (
+	"testing"
+	"time"
+)
+
+func TestParseResetTimeFrom1308Error(t *testing.T) {
+	tests := []struct {
+		name          string
+		responseBody  string
+		expectSuccess bool
+		expectTime    string // 格式: "2006-01-02 15:04:05"
+	}{
+		{
+			name:          "标准1308错误",
+			responseBody:  `{"type":"error","error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-09 18:08:11 重置。"},"request_id":"20251209155304a15e2cfd9ae44ae8"}`,
+			expectSuccess: true,
+			expectTime:    "2025-12-09 18:08:11",
+		},
+		{
+			name:          "非1308错误",
+			responseBody:  `{"type":"error","error":{"type":"1307","message":"其他错误"},"request_id":"xxx"}`,
+			expectSuccess: false,
+		},
+		{
+			name:          "格式错误的JSON",
+			responseBody:  `{invalid json}`,
+			expectSuccess: false,
+		},
+		{
+			name:          "缺少时间信息",
+			responseBody:  `{"type":"error","error":{"type":"1308","message":"错误信息但没有时间"},"request_id":"xxx"}`,
+			expectSuccess: false,
+		},
+		{
+			name:          "时间格式错误",
+			responseBody:  `{"type":"error","error":{"type":"1308","message":"您的限额将在 2025/12/09 重置。"},"request_id":"xxx"}`,
+			expectSuccess: false,
+		},
+		{
+			name:          "使用code字段的1308错误（非Anthropic格式）",
+			responseBody:  `{"error":{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-21 15:00:05 重置。"},"request_id":"202512211335142b05cc4f9bbb4e6c"}`,
+			expectSuccess: true,
+			expectTime:    "2025-12-21 15:00:05",
+		},
+		{
+			name:          "1310周/月度限额耗尽",
+			responseBody:  `{"error":{"code":"1310","message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-04-20 15:24:20"},"request_id":"..."}`,
+			expectSuccess: true,
+			expectTime:    "2026-04-20 15:24:20",
+		},
+		{
+			name:          "1310错误无时间",
+			responseBody:  `{"error":{"code":"1310","message":"Weekly/Monthly Limit Exhausted"}}`,
+			expectSuccess: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetTime, ok := ParseResetTimeFrom1308Error([]byte(tt.responseBody))
+
+			if ok != tt.expectSuccess {
+				t.Errorf("ParseResetTimeFrom1308Error() ok = %v, want %v", ok, tt.expectSuccess)
+				return
+			}
+
+			if tt.expectSuccess {
+				expectedTime, err := time.ParseInLocation("2006-01-02 15:04:05", tt.expectTime, time.Local)
+				if err != nil {
+					t.Fatalf("测试用例时间格式错误: %v", err)
+				}
+
+				if !resetTime.Equal(expectedTime) {
+					t.Errorf("ParseResetTimeFrom1308Error() 解析的时间 = %v, 期望 = %v",
+						resetTime.Format("2006-01-02 15:04:05"),
+						expectedTime.Format("2006-01-02 15:04:05"))
+				}
+			}
+		})
+	}
+}
+
+// 测试时区处理
+func TestParseResetTimeFrom1308Error_Timezone(t *testing.T) {
+	responseBody := `{"type":"error","error":{"type":"1308","message":"您的限额将在 2025-12-09 18:08:11 重置。"},"request_id":"xxx"}`
+
+	resetTime, ok := ParseResetTimeFrom1308Error([]byte(responseBody))
+	if !ok {
+		t.Fatal("解析失败")
+	}
+
+	// 验证使用的是本地时区
+	if resetTime.Location() != time.Local {
+		t.Errorf("时区不是Local: %v", resetTime.Location())
+	}
+}
+
+// 测试边界情况: message中包含多个"将在"
+func TestParseResetTimeFrom1308Error_MultipleOccurrences(t *testing.T) {
+	responseBody := `{"type":"error","error":{"type":"1308","message":"您之前将在某时，现在的限额将在 2025-12-09 18:08:11 重置。"},"request_id":"xxx"}`
+
+	resetTime, ok := ParseResetTimeFrom1308Error([]byte(responseBody))
+	if !ok {
+		t.Fatal("解析失败")
+	}
+
+	// 应该匹配第一个"将在"
+	expectedTime, _ := time.ParseInLocation("2006-01-02 15:04:05", "2025-12-09 18:08:11", time.Local)
+	if !resetTime.Equal(expectedTime) {
+		t.Errorf("时间匹配错误: got %v, want %v", resetTime, expectedTime)
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_ModelCooldownUsesResetSeconds(t *testing.T) {
+	body := []byte(`{"error":{"code":"model_cooldown","message":"All credentials for model gpt-5.5 are cooling down via provider codex","model":"gpt-5.5","provider":"codex","reset_seconds":13792,"reset_time":"3h49m51s"}}`)
+
+	before := time.Now()
+	got := ClassifyHTTPResponseWithMeta(429, nil, body)
+	after := time.Now()
+
+	if got.Level != ErrorLevelKey {
+		t.Fatalf("Level=%v, want ErrorLevelKey", got.Level)
+	}
+	if !got.ModelScoped || !got.HasModelCooldownUntil {
+		t.Fatal("expected fixed model cooldown until")
+	}
+	if got.ModelCooldownReason != "model_cooldown" {
+		t.Fatalf("ModelCooldownReason=%q, want model_cooldown", got.ModelCooldownReason)
+	}
+	if got.Model != "gpt-5.5" {
+		t.Fatalf("Model=%q, want gpt-5.5", got.Model)
+	}
+
+	minUntil := before.Add(13792*time.Second - 2*time.Second)
+	maxUntil := after.Add(13792*time.Second + 2*time.Second)
+	if got.ModelCooldownUntil.Before(minUntil) || got.ModelCooldownUntil.After(maxUntil) {
+		t.Fatalf("ModelCooldownUntil=%s, want between %s and %s",
+			got.ModelCooldownUntil.Format(time.RFC3339),
+			minUntil.Format(time.RFC3339),
+			maxUntil.Format(time.RFC3339))
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_ModelCooldownWithoutResetUsesBackoff(t *testing.T) {
+	body := []byte(`{"error":{"code":"model_cooldown","message":"model temporarily unavailable","model":"gpt-5.5"}}`)
+
+	got := ClassifyHTTPResponseWithMeta(429, nil, body)
+
+	if got.ModelCooldownReason != "model_cooldown" || !got.ModelScoped {
+		t.Fatalf("classification=%+v, want model-scoped cooldown", got)
+	}
+	if got.Model != "gpt-5.5" {
+		t.Fatalf("Model=%q, want gpt-5.5", got.Model)
+	}
+	if got.HasModelCooldownUntil {
+		t.Fatalf("ModelCooldownUntil=%s, want storage backoff without fixed deadline", got.ModelCooldownUntil.Format(time.RFC3339))
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_GeminiResourceExhaustedUsesRetryIn(t *testing.T) {
+	body := []byte(`{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.5-flash\nPlease retry in 59.409754061s.","status":"RESOURCE_EXHAUSTED"}}`)
+
+	before := time.Now()
+	got := ClassifyHTTPResponseWithMeta(429, nil, body)
+	after := time.Now()
+
+	if got.Level != ErrorLevelKey {
+		t.Fatalf("Level=%v, want ErrorLevelKey", got.Level)
+	}
+	if !got.HasKeyCooldownUntil {
+		t.Fatal("expected fixed key cooldown until")
+	}
+	if got.KeyCooldownReason != "RESOURCE_EXHAUSTED_RETRY_IN" {
+		t.Fatalf("KeyCooldownReason=%q, want RESOURCE_EXHAUSTED_RETRY_IN", got.KeyCooldownReason)
+	}
+
+	retryAfter := 59*time.Second + 409754061*time.Nanosecond
+	minUntil := before.Add(retryAfter - 2*time.Second)
+	maxUntil := after.Add(retryAfter + 2*time.Second)
+	if got.KeyCooldownUntil.Before(minUntil) || got.KeyCooldownUntil.After(maxUntil) {
+		t.Fatalf("KeyCooldownUntil=%s, want between %s and %s",
+			got.KeyCooldownUntil.Format(time.RFC3339Nano),
+			minUntil.Format(time.RFC3339Nano),
+			maxUntil.Format(time.RFC3339Nano))
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_GlobalFixedWindowQuotaCoolsModelUntilRetryClock(t *testing.T) {
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	now := time.Date(2026, 6, 17, 11, 30, 0, 0, loc)
+	body := []byte(`{"error":{"message":"当前公益站使用人数较多，本时段全站额度已用完，请在 今天 12:00 后再试。（traceid: 29038189-54e3-472e-b821-e7a5ebef3795）","type":"rate_limit_error","param":null,"code":"global_fixed_window_quota_exhausted","trace_id":"29038189-54e3-472e-b821-e7a5ebef3795"}}`)
+
+	got := classifyHTTPResponseWithMetaAt(429, nil, body, now)
+
+	if got.Level != ErrorLevelChannel {
+		t.Fatalf("Level=%v, want ErrorLevelChannel", got.Level)
+	}
+	if !got.ModelScoped {
+		t.Fatal("global fixed-window quota must be model-scoped")
+	}
+	if !got.HasModelCooldownUntil {
+		t.Fatal("expected fixed model cooldown until")
+	}
+	if got.ModelCooldownReason != "GLOBAL_FIXED_WINDOW_QUOTA_EXHAUSTED" {
+		t.Fatalf("ModelCooldownReason=%q, want GLOBAL_FIXED_WINDOW_QUOTA_EXHAUSTED", got.ModelCooldownReason)
+	}
+
+	want := time.Date(2026, 6, 17, 12, 0, 0, 0, loc)
+	if !got.ModelCooldownUntil.Equal(want) {
+		t.Fatalf("ModelCooldownUntil=%s, want %s",
+			got.ModelCooldownUntil.Format(time.RFC3339),
+			want.Format(time.RFC3339))
+	}
+}

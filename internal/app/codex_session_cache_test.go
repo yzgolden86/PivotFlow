@@ -1,0 +1,364 @@
+package app
+
+import (
+	"context"
+	"net/http"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+)
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func assertFieldOrder(t *testing.T, body string, fields ...string) {
+	t.Helper()
+	prev := -1
+	for _, field := range fields {
+		idx := strings.Index(body, field)
+		if idx < 0 {
+			t.Fatalf("field %s missing in %s", field, body)
+		}
+		if idx <= prev {
+			t.Fatalf("field order broken at %s in %s", field, body)
+		}
+		prev = idx
+	}
+}
+
+func resetCodexSessionCache() {
+	codexSessionMu.Lock()
+	codexSessionMap = make(map[string]codexSessionEntry)
+	codexSessionMu.Unlock()
+}
+
+func TestResolveCodexSessionHint_AnthropicWithUserID(t *testing.T) {
+	resetCodexSessionCache()
+
+	rc := &requestContext{
+		clientProtocol:   protocol.Anthropic,
+		upstreamProtocol: protocol.Codex,
+		originalModel:    "gpt-5-codex",
+		originalBody:     []byte(`{"metadata":{"user_id":"abc123"}}`),
+	}
+	id1 := resolveCodexSessionHint(rc, nil, "", nil)
+	if !uuidPattern.MatchString(id1) {
+		t.Fatalf("expected UUID, got %q", id1)
+	}
+	// 相同 user_id 再次调用应返回同一 UUID（命中缓存）
+	id2 := resolveCodexSessionHint(rc, nil, "", nil)
+	if id1 != id2 {
+		t.Fatalf("expected cached session id, got %q vs %q", id1, id2)
+	}
+}
+
+func TestResolveCodexSessionHint_AnthropicDifferentModelsOrUsers(t *testing.T) {
+	resetCodexSessionCache()
+
+	mkCtx := func(model, userID string) *requestContext {
+		return &requestContext{
+			clientProtocol:   protocol.Anthropic,
+			upstreamProtocol: protocol.Codex,
+			originalModel:    model,
+			originalBody:     []byte(`{"metadata":{"user_id":"` + userID + `"}}`),
+		}
+	}
+	idA := resolveCodexSessionHint(mkCtx("m1", "u1"), nil, "", nil)
+	idB := resolveCodexSessionHint(mkCtx("m1", "u2"), nil, "", nil)
+	idC := resolveCodexSessionHint(mkCtx("m2", "u1"), nil, "", nil)
+	if idA == idB || idA == idC || idB == idC {
+		t.Fatalf("expected distinct UUIDs for distinct buckets; got %s %s %s", idA, idB, idC)
+	}
+}
+
+func TestResolveCodexSessionHint_AnthropicMissingUserID(t *testing.T) {
+	resetCodexSessionCache()
+
+	rc := &requestContext{
+		clientProtocol:   protocol.Anthropic,
+		upstreamProtocol: protocol.Codex,
+		originalBody:     []byte(`{}`),
+	}
+	if got := resolveCodexSessionHint(rc, nil, "", nil); got != "" {
+		t.Fatalf("expected empty when metadata.user_id, session header and apiKey all missing, got %q", got)
+	}
+
+	// 头 X-Claude-Code-Session-Id 存在时优先于 apiKey
+	h := http.Header{}
+	h.Set("X-Claude-Code-Session-Id", "sid-1")
+	s1 := resolveCodexSessionHint(rc, nil, "sk-abc", h)
+	s2 := resolveCodexSessionHint(rc, nil, "sk-xyz", h)
+	s3 := resolveCodexSessionHint(rc, nil, "sk-abc", nil)
+	if !uuidPattern.MatchString(s1) {
+		t.Fatalf("expected UUID from session header, got %q", s1)
+	}
+	if s1 != s2 {
+		t.Fatalf("expected session-id to dominate apiKey, got %q vs %q", s1, s2)
+	}
+	if s1 == s3 {
+		t.Fatalf("session-id UUID should differ from apiKey UUID")
+	}
+
+	// Claude Code 客户端无 user_id 且无 session 头时 fallback 到 apiKey 稳定 UUID
+	a1 := resolveCodexSessionHint(rc, nil, "sk-abc", nil)
+	a2 := resolveCodexSessionHint(rc, nil, "sk-abc", nil)
+	b := resolveCodexSessionHint(rc, nil, "sk-xyz", nil)
+	if !uuidPattern.MatchString(a1) {
+		t.Fatalf("expected UUID fallback, got %q", a1)
+	}
+	if a1 != a2 {
+		t.Fatalf("expected deterministic fallback UUID, got %q vs %q", a1, a2)
+	}
+	if a1 == b {
+		t.Fatalf("expected different UUIDs for different apiKeys")
+	}
+}
+
+func TestResolveCodexSessionHint_CodexPassthrough(t *testing.T) {
+	rc := &requestContext{
+		clientProtocol:   protocol.Codex,
+		upstreamProtocol: protocol.Codex,
+	}
+	body := []byte(`{"prompt_cache_key":"existing-uuid","model":"gpt-5-codex"}`)
+	if got := resolveCodexSessionHint(rc, body, "", nil); got != "existing-uuid" {
+		t.Fatalf("expected passthrough prompt_cache_key, got %q", got)
+	}
+
+	if got := resolveCodexSessionHint(rc, []byte(`{"model":"x"}`), "", nil); got != "" {
+		t.Fatalf("expected empty when codex body has no prompt_cache_key, got %q", got)
+	}
+}
+
+func TestResolveCodexSessionHint_OpenAIDeterministic(t *testing.T) {
+	rc := &requestContext{
+		clientProtocol:   protocol.OpenAI,
+		upstreamProtocol: protocol.Codex,
+	}
+	a1 := resolveCodexSessionHint(rc, nil, "sk-abc", nil)
+	a2 := resolveCodexSessionHint(rc, nil, "sk-abc", nil)
+	b := resolveCodexSessionHint(rc, nil, "sk-xyz", nil)
+	if a1 == "" || !uuidPattern.MatchString(a1) {
+		t.Fatalf("expected UUID for openai key, got %q", a1)
+	}
+	if a1 != a2 {
+		t.Fatalf("expected deterministic UUID for same key, got %q vs %q", a1, a2)
+	}
+	if a1 == b {
+		t.Fatalf("expected different UUIDs for different keys")
+	}
+	if got := resolveCodexSessionHint(rc, nil, "", nil); got != "" {
+		t.Fatalf("expected empty for empty apiKey, got %q", got)
+	}
+}
+
+func TestResolveCodexSessionHint_NonCodexUpstream(t *testing.T) {
+	rc := &requestContext{
+		clientProtocol:   protocol.Anthropic,
+		upstreamProtocol: protocol.Anthropic,
+		originalBody:     []byte(`{"metadata":{"user_id":"abc"}}`),
+	}
+	if got := resolveCodexSessionHint(rc, nil, "", nil); got != "" {
+		t.Fatalf("expected empty when upstream is not Codex, got %q", got)
+	}
+}
+
+func TestInjectCodexPromptCacheKey(t *testing.T) {
+	body := []byte(`{"model":"gpt-5-codex","input":[]}`)
+	out := injectCodexPromptCacheKey(body, "deadbeef")
+	if readCodexPromptCacheKey(out) != "deadbeef" {
+		t.Fatalf("expected prompt_cache_key injected, got %s", out)
+	}
+
+	// 已存在非空值时不覆盖
+	preset := []byte(`{"prompt_cache_key":"kept","model":"x"}`)
+	out2 := injectCodexPromptCacheKey(preset, "new")
+	if readCodexPromptCacheKey(out2) != "kept" {
+		t.Fatalf("expected existing prompt_cache_key preserved, got %s", out2)
+	}
+
+	// 空 body / 空 id / 非 JSON 原样返回
+	if got := injectCodexPromptCacheKey(nil, "x"); got != nil {
+		t.Fatalf("expected nil body preserved, got %s", got)
+	}
+	if got := injectCodexPromptCacheKey(body, ""); string(got) != string(body) {
+		t.Fatalf("expected body unchanged for empty id")
+	}
+	raw := []byte(`not json`)
+	if got := injectCodexPromptCacheKey(raw, "x"); string(got) != string(raw) {
+		t.Fatalf("expected non-json body unchanged")
+	}
+}
+
+func TestInjectCodexPromptCacheKey_PreservesExistingFieldOrder(t *testing.T) {
+	body := []byte(`{"model":"gpt-5-codex","instructions":"keep this prefix","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`)
+
+	out := injectCodexPromptCacheKey(body, "stable-session")
+	got := string(out)
+
+	for _, want := range []string{`"model"`, `"instructions"`, `"input"`, `"stream"`, `"prompt_cache_key"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %s in injected body: %s", want, got)
+		}
+	}
+	assertFieldOrder(t, got, `"model"`, `"instructions"`, `"input"`, `"stream"`, `"prompt_cache_key"`)
+	if !strings.HasPrefix(got, `{"model":"gpt-5-codex","instructions":"keep this prefix","input":`) {
+		t.Fatalf("prompt_cache_key injection reordered cache-sensitive prefix: %s", got)
+	}
+}
+
+func TestExtractAnthropicUserID(t *testing.T) {
+	cases := []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{"happy", []byte(`{"metadata":{"user_id":"  abc123  "}}`), "abc123"},
+		{"missing metadata", []byte(`{"model":"x"}`), ""},
+		{"missing user_id", []byte(`{"metadata":{}}`), ""},
+		{"empty body", nil, ""},
+		{"invalid json", []byte(`not json`), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractAnthropicUserID(tc.body); got != tc.want {
+				t.Fatalf("want %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestBuildProxyRequest_CodexSessionInjection_Anthropic(t *testing.T) {
+	resetCodexSessionCache()
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:   1,
+		Name: "codex-ch",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
+	}
+
+	originalBody := []byte(`{"metadata":{"user_id":"claude-code-user-42"}}`)
+	translatedBody := []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`)
+
+	reqCtx := &requestContext{
+		ctx:              context.Background(),
+		startTime:        time.Now(),
+		clientProtocol:   protocol.Anthropic,
+		upstreamProtocol: protocol.Codex,
+		originalModel:    "gpt-5-codex",
+		originalBody:     originalBody,
+		translatedBody:   translatedBody,
+	}
+
+	req, err := srv.buildProxyRequest(
+		reqCtx,
+		cfg,
+		"sk-test",
+		http.MethodPost,
+		translatedBody,
+		http.Header{"Content-Type": []string{"application/json"}},
+		"",
+		"/v1/responses",
+		cfg.GetURLs()[0],
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	sid := req.Header.Get("Session_id")
+	if !uuidPattern.MatchString(sid) {
+		t.Fatalf("Session_id header missing or invalid: %q", sid)
+	}
+
+	bodyReader, _ := req.GetBody()
+	defer func() { _ = bodyReader.Close() }()
+	buf := make([]byte, 4096)
+	n, _ := bodyReader.Read(buf)
+	if key := readCodexPromptCacheKey(buf[:n]); key != sid {
+		t.Fatalf("expected body prompt_cache_key == Session_id header, got body=%q header=%q", key, sid)
+	}
+}
+
+func TestBuildProxyRequest_CodexSessionInjection_NonCodexUpstreamSkipped(t *testing.T) {
+	resetCodexSessionCache()
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:   1,
+		Name: "anthropic-ch",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
+	}
+
+	reqCtx := &requestContext{
+		ctx:              context.Background(),
+		startTime:        time.Now(),
+		clientProtocol:   protocol.Anthropic,
+		upstreamProtocol: protocol.Anthropic,
+		originalModel:    "claude-3",
+		originalBody:     []byte(`{"metadata":{"user_id":"u1"}}`),
+	}
+
+	req, err := srv.buildProxyRequest(
+		reqCtx,
+		cfg,
+		"sk-test",
+		http.MethodPost,
+		[]byte(`{"model":"claude-3"}`),
+		http.Header{"Content-Type": []string{"application/json"}},
+		"",
+		"/v1/messages",
+		cfg.GetURLs()[0],
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.Header.Get("Session_id"); got != "" {
+		t.Fatalf("expected no Session_id for non-Codex upstream, got %q", got)
+	}
+}
+
+func TestBuildProxyRequest_CodexSessionInjection_ClientHeaderNotOverwritten(t *testing.T) {
+	resetCodexSessionCache()
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:   1,
+		Name: "codex-ch",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
+	}
+
+	reqCtx := &requestContext{
+		ctx:              context.Background(),
+		startTime:        time.Now(),
+		clientProtocol:   protocol.Codex,
+		upstreamProtocol: protocol.Codex,
+		originalModel:    "gpt-5-codex",
+		originalBody:     []byte(`{"prompt_cache_key":"client-supplied","model":"gpt-5-codex"}`),
+	}
+
+	req, err := srv.buildProxyRequest(
+		reqCtx,
+		cfg,
+		"sk-test",
+		http.MethodPost,
+		[]byte(`{"prompt_cache_key":"client-supplied","model":"gpt-5-codex"}`),
+		http.Header{
+			"Content-Type": []string{"application/json"},
+			"Session_id":   []string{"client-session"},
+		},
+		"",
+		"/v1/responses",
+		cfg.GetURLs()[0],
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.Header.Get("Session_id"); got != "client-session" {
+		t.Fatalf("expected client Session_id preserved, got %q", got)
+	}
+}

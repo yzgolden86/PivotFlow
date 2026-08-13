@@ -1,0 +1,496 @@
+package schema
+
+// DefineChannelsTable 定义channels表结构
+func DefineChannelsTable() *TableBuilder {
+	return NewTable("channels").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("name VARCHAR(191) NOT NULL UNIQUE").
+		Column("url TEXT NOT NULL").
+		Column("priority INT NOT NULL DEFAULT 0").
+		Column("rpm_limit INT NOT NULL DEFAULT 0").
+		Column("max_concurrency INT NOT NULL DEFAULT 0").
+		Column("channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic'").
+		Column("auth_type VARCHAR(32) NOT NULL DEFAULT 'api_key'").
+		Column("oauth_credential TEXT").
+		Column("websockets TINYINT NOT NULL DEFAULT 0").
+		Column("protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'auto'").
+		Column("enabled TINYINT NOT NULL DEFAULT 1").
+		Column("scheduled_check_enabled TINYINT NOT NULL DEFAULT 0").
+		Column("scheduled_check_model VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
+		Column("cooldown_duration_ms BIGINT NOT NULL DEFAULT 0").
+		Column("daily_cost_limit DOUBLE NOT NULL DEFAULT 0").
+		Column("cost_multiplier DOUBLE NOT NULL DEFAULT 1").
+		Column("custom_request_rules TEXT").
+		Column("cooldown_detection_rules TEXT").
+		Column("proxy_url VARCHAR(255) NOT NULL DEFAULT ''").
+		Column("retry_other_keys_on_failure TINYINT NOT NULL DEFAULT 0").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Index("idx_channels_enabled", "enabled").
+		Index("idx_channels_priority", "priority DESC").
+		Index("idx_channels_cooldown", "cooldown_until")
+}
+
+// DefineAPIKeysTable 定义api_keys表结构
+func DefineAPIKeysTable() *TableBuilder {
+	return NewTable("api_keys").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("channel_id INT NOT NULL").
+		Column("key_index INT NOT NULL").
+		Column("api_key VARCHAR(255) NOT NULL").
+		Column("note VARCHAR(512) NOT NULL DEFAULT ''").
+		Column("key_strategy VARCHAR(32) NOT NULL DEFAULT 'sequential'").
+		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
+		Column("cooldown_duration_ms BIGINT NOT NULL DEFAULT 0").
+		Column("disabled TINYINT NOT NULL DEFAULT 0").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Column("UNIQUE KEY uk_channel_key (channel_id, key_index)").
+		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
+		Index("idx_api_keys_cooldown", "cooldown_until").
+		Index("idx_api_keys_channel_cooldown", "channel_id, cooldown_until")
+}
+
+// DefineChannelModelsTable 定义channel_models表结构
+func DefineChannelModelsTable() *TableBuilder {
+	return NewTable("channel_models").
+		Column("channel_id INT NOT NULL").
+		Column("model VARCHAR(191) NOT NULL").
+		Column("redirect_model VARCHAR(191) NOT NULL DEFAULT ''"). // 重定向目标模型（空表示不重定向）
+		Column("disabled TINYINT NOT NULL DEFAULT 0").
+		Column("created_at BIGINT NOT NULL DEFAULT 0").
+		Column("PRIMARY KEY (channel_id, model)").
+		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
+		Index("idx_channel_models_model", "model")
+}
+
+// DefineChannelModelCooldownsTable 定义渠道模型运行时冷却状态。
+// 独立于 channel_models：冷却键是实际上游模型，可能是 redirect_model，不一定是对外暴露的模型名。
+func DefineChannelModelCooldownsTable() *TableBuilder {
+	return NewTable("channel_model_cooldowns").
+		Column("channel_id INT NOT NULL").
+		Column("model VARCHAR(191) NOT NULL").
+		Column("cooldown_until BIGINT NOT NULL").
+		Column("cooldown_duration_ms BIGINT NOT NULL DEFAULT 0").
+		Column("updated_at BIGINT NOT NULL").
+		Column("PRIMARY KEY (channel_id, model)").
+		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
+		Index("idx_channel_model_cooldowns_until", "cooldown_until")
+}
+
+// DefineChannelURLStatesTable 定义渠道URL运行状态持久化表（当前仅记录手动禁用URL）
+// 注意：url_hash 为 url 的 SHA-256 十六进制摘要（CHAR(64)），用作主键以规避 MySQL utf8mb4
+// InnoDB 索引列 767 字节上限（VARCHAR(500) × 4 = 2000 字节 > 767）。
+func DefineChannelURLStatesTable() *TableBuilder {
+	return NewTable("channel_url_states").
+		Column("channel_id INT NOT NULL").
+		Column("url_hash CHAR(64) NOT NULL").
+		Column("url VARCHAR(500) NOT NULL").
+		Column("disabled TINYINT NOT NULL DEFAULT 0").
+		Column("updated_at BIGINT NOT NULL").
+		Column("PRIMARY KEY (channel_id, url_hash)").
+		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE")
+}
+
+// DefineAuthTokensTable 定义auth_tokens表结构
+func DefineAuthTokensTable() *TableBuilder {
+	return NewTable("auth_tokens").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("token VARCHAR(100) NOT NULL UNIQUE").
+		Column("token_ciphertext TEXT").
+		Column("token_hint VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("description VARCHAR(512) NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Column("expires_at BIGINT NOT NULL DEFAULT 0").
+		Column("last_used_at BIGINT NOT NULL DEFAULT 0").
+		Column("is_active TINYINT NOT NULL DEFAULT 1").
+		Column("success_count INT NOT NULL DEFAULT 0").
+		Column("failure_count INT NOT NULL DEFAULT 0").
+		Column("stream_avg_ttfb DOUBLE NOT NULL DEFAULT 0.0").
+		Column("non_stream_avg_rt DOUBLE NOT NULL DEFAULT 0.0").
+		Column("stream_count INT NOT NULL DEFAULT 0").
+		Column("non_stream_count INT NOT NULL DEFAULT 0").
+		Column("prompt_tokens_total BIGINT NOT NULL DEFAULT 0").
+		Column("completion_tokens_total BIGINT NOT NULL DEFAULT 0").
+		Column("cache_read_tokens_total BIGINT NOT NULL DEFAULT 0").
+		Column("cache_creation_tokens_total BIGINT NOT NULL DEFAULT 0").
+		Column("total_cost_usd DOUBLE NOT NULL DEFAULT 0.0").
+		Column("effective_cost_usd DOUBLE NOT NULL DEFAULT 0.0").
+		Column("cost_used_microusd BIGINT NOT NULL DEFAULT 0").
+		Column("cost_limit_microusd BIGINT NOT NULL DEFAULT 0").
+		Column("allowed_models VARCHAR(2000) NOT NULL DEFAULT ''").
+		Column("allowed_channel_ids VARCHAR(2000) NOT NULL DEFAULT ''").
+		Column("channel_restriction_mode VARCHAR(16) NOT NULL DEFAULT 'allow'").
+		Column("max_concurrency INT NOT NULL DEFAULT 0").
+		Index("idx_auth_tokens_active", "is_active").
+		Index("idx_auth_tokens_expires", "expires_at")
+}
+
+// DefineSystemSettingsTable 定义system_settings表结构
+func DefineSystemSettingsTable() *TableBuilder {
+	return NewTable("system_settings").
+		Column("`key` VARCHAR(128) PRIMARY KEY").
+		Column("value TEXT NOT NULL").
+		Column("value_type VARCHAR(32) NOT NULL").
+		Column("description VARCHAR(512) NOT NULL").
+		Column("default_value VARCHAR(512) NOT NULL").
+		Column("updated_at BIGINT NOT NULL")
+}
+
+// DefineWebSessionsTable defines role-aware browser sessions.
+func DefineWebSessionsTable() *TableBuilder {
+	return NewTable("web_sessions").
+		Column("token_hash VARCHAR(64) PRIMARY KEY").
+		Column("role VARCHAR(16) NOT NULL").
+		Column("auth_token_id BIGINT NOT NULL DEFAULT 0").
+		Column("expires_at BIGINT NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Index("idx_web_sessions_expires", "expires_at")
+}
+
+// DefineSitesTable defines normalized upstream sites managed by the control plane.
+func DefineSitesTable() *TableBuilder {
+	return NewTable("sites").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("name VARCHAR(191) NOT NULL UNIQUE").
+		Column("platform VARCHAR(64) NOT NULL").
+		Column("base_url VARCHAR(500) NOT NULL").
+		Column("enabled TINYINT NOT NULL DEFAULT 1").
+		Column("timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai'").
+		Column("proxy_url VARCHAR(500)").
+		Column("external_checkin_url VARCHAR(500)").
+		Column("tags_json TEXT NOT NULL").
+		Column("last_probe_status VARCHAR(32) NOT NULL DEFAULT 'unknown'").
+		Column("last_error TEXT NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Column("deleted_at BIGINT NOT NULL DEFAULT 0").
+		Index("idx_sites_enabled", "enabled").
+		Index("idx_sites_platform", "platform").
+		Index("idx_sites_updated_at", "updated_at").
+		Index("idx_sites_deleted_at", "deleted_at")
+}
+
+// DefineSiteAccountsTable defines credentials and last-known account state.
+func DefineSiteAccountsTable() *TableBuilder {
+	return NewTable("site_accounts").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("site_id INT NOT NULL").
+		Column("label VARCHAR(191) NOT NULL").
+		Column("credential_type VARCHAR(32) NOT NULL").
+		Column("credential_ciphertext TEXT NOT NULL").
+		Column("credential_key_version VARCHAR(32) NOT NULL").
+		Column("enabled TINYINT NOT NULL DEFAULT 1").
+		Column("auto_checkin TINYINT NOT NULL DEFAULT 1").
+		Column("auto_refresh TINYINT NOT NULL DEFAULT 1").
+		Column("timezone VARCHAR(64)").
+		Column("status VARCHAR(32) NOT NULL DEFAULT 'unknown'").
+		Column("balance DOUBLE").
+		Column("balance_currency VARCHAR(16) NOT NULL DEFAULT 'CNY'").
+		Column("balance_updated_at BIGINT NOT NULL DEFAULT 0").
+		Column("last_refresh_at BIGINT NOT NULL DEFAULT 0").
+		Column("last_refresh_status VARCHAR(32) NOT NULL DEFAULT 'unknown'").
+		Column("consecutive_failures INT NOT NULL DEFAULT 0").
+		Column("last_checkin_at BIGINT NOT NULL DEFAULT 0").
+		Column("last_checkin_status VARCHAR(32) NOT NULL DEFAULT 'unknown'").
+		Column("last_error TEXT NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Column("deleted_at BIGINT NOT NULL DEFAULT 0").
+		Column("FOREIGN KEY (site_id) REFERENCES sites(id)").
+		Index("idx_site_accounts_site", "site_id").
+		Index("idx_site_accounts_enabled", "enabled").
+		Index("idx_site_accounts_deleted_at", "deleted_at")
+}
+
+// DefineSiteAccountModelsTable defines last-known account model facts.
+func DefineSiteAccountModelsTable() *TableBuilder {
+	return NewTable("site_account_models").
+		Column("site_account_id INT NOT NULL").
+		Column("model VARCHAR(191) NOT NULL").
+		Column("route_type VARCHAR(32) NOT NULL DEFAULT 'openai_chat'").
+		Column("source VARCHAR(32) NOT NULL").
+		Column("disabled TINYINT NOT NULL DEFAULT 0").
+		Column("stale TINYINT NOT NULL DEFAULT 0").
+		Column("last_seen_at BIGINT NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Column("PRIMARY KEY (site_account_id, model)").
+		Column("FOREIGN KEY (site_account_id) REFERENCES site_accounts(id) ON DELETE CASCADE").
+		Index("idx_site_account_models_model", "model")
+}
+
+// DefineSiteAnnouncementsTable defines sanitized and deduplicated announcements.
+func DefineSiteAnnouncementsTable() *TableBuilder {
+	return NewTable("site_announcements").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("site_id INT NOT NULL").
+		Column("source_key VARCHAR(255) NOT NULL").
+		Column("title VARCHAR(500) NOT NULL").
+		Column("content_markdown TEXT NOT NULL").
+		Column("level VARCHAR(16) NOT NULL DEFAULT 'info'").
+		Column("source_url VARCHAR(500)").
+		Column("upstream_created_at BIGINT NOT NULL DEFAULT 0").
+		Column("upstream_updated_at BIGINT NOT NULL DEFAULT 0").
+		Column("first_seen_at BIGINT NOT NULL").
+		Column("last_seen_at BIGINT NOT NULL").
+		Column("read_at BIGINT NOT NULL DEFAULT 0").
+		Column("content_hash CHAR(64) NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Column("UNIQUE KEY uk_site_announcement (site_id, source_key)").
+		Column("FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE").
+		Index("idx_site_announcements_seen", "last_seen_at").
+		Index("idx_site_announcements_read", "read_at")
+}
+
+// DefineCheckinRunsTable defines aggregate check-in jobs.
+func DefineCheckinRunsTable() *TableBuilder {
+	return NewTable("checkin_runs").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("trigger_type VARCHAR(16) NOT NULL").
+		Column("local_day VARCHAR(10) NOT NULL").
+		Column("timezone VARCHAR(64) NOT NULL").
+		Column("status VARCHAR(32) NOT NULL").
+		Column("total INT NOT NULL DEFAULT 0").
+		Column("success_count INT NOT NULL DEFAULT 0").
+		Column("already_count INT NOT NULL DEFAULT 0").
+		Column("browser_required_count INT NOT NULL DEFAULT 0").
+		Column("unsupported_count INT NOT NULL DEFAULT 0").
+		Column("failed_count INT NOT NULL DEFAULT 0").
+		Column("started_at BIGINT NOT NULL DEFAULT 0").
+		Column("finished_at BIGINT NOT NULL DEFAULT 0").
+		Column("last_error TEXT NOT NULL").
+		Index("idx_checkin_runs_day", "local_day").
+		Index("idx_checkin_runs_status", "status")
+}
+
+// DefineCheckinAttemptsTable defines account-level check-in results.
+func DefineCheckinAttemptsTable() *TableBuilder {
+	return NewTable("checkin_attempts").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("run_id INT NOT NULL").
+		Column("site_account_id INT NOT NULL").
+		Column("provider_id VARCHAR(64) NOT NULL").
+		Column("local_day VARCHAR(10) NOT NULL").
+		Column("trigger_scope VARCHAR(32) NOT NULL").
+		Column("status VARCHAR(32) NOT NULL").
+		Column("reward_text VARCHAR(500) NOT NULL DEFAULT ''").
+		Column("balance_before DOUBLE").
+		Column("balance_after DOUBLE").
+		Column("balance_delta DOUBLE").
+		Column("balance_currency VARCHAR(16) NOT NULL DEFAULT ''").
+		Column("message TEXT NOT NULL").
+		Column("error_code VARCHAR(64) NOT NULL DEFAULT ''").
+		Column("retry_after_at BIGINT NOT NULL DEFAULT 0").
+		Column("started_at BIGINT NOT NULL DEFAULT 0").
+		Column("finished_at BIGINT NOT NULL DEFAULT 0").
+		Column("attempt_no INT NOT NULL DEFAULT 1").
+		Column("UNIQUE KEY uk_checkin_attempt (site_account_id, local_day, trigger_scope)").
+		Column("FOREIGN KEY (run_id) REFERENCES checkin_runs(id) ON DELETE CASCADE").
+		Column("FOREIGN KEY (site_account_id) REFERENCES site_accounts(id)").
+		Index("idx_checkin_attempts_run", "run_id").
+		Index("idx_checkin_attempts_status", "status")
+}
+
+// DefineSiteChannelBindingsTable links site accounts to projected channels.
+func DefineSiteChannelBindingsTable() *TableBuilder {
+	return NewTable("site_channel_bindings").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("site_account_id INT NOT NULL").
+		Column("projection_key VARCHAR(191) NOT NULL").
+		Column("channel_id INT").
+		Column("ownership VARCHAR(16) NOT NULL").
+		Column("status VARCHAR(32) NOT NULL DEFAULT 'active'").
+		Column("last_projected_hash CHAR(64) NOT NULL DEFAULT ''").
+		Column("last_sync_status VARCHAR(32) NOT NULL DEFAULT 'unknown'").
+		Column("last_sync_error TEXT NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Column("UNIQUE KEY uk_site_channel_binding (site_account_id, projection_key)").
+		Column("FOREIGN KEY (site_account_id) REFERENCES site_accounts(id)").
+		Index("idx_site_channel_bindings_channel", "channel_id")
+}
+
+// DefineSiteTasksTable defines durable asynchronous task status.
+func DefineSiteTasksTable() *TableBuilder {
+	return NewTable("site_tasks").
+		Column("id VARCHAR(64) PRIMARY KEY").
+		Column("kind VARCHAR(32) NOT NULL").
+		Column("status VARCHAR(32) NOT NULL").
+		Column("site_id INT").
+		Column("site_account_id INT").
+		Column("progress_json TEXT NOT NULL").
+		Column("result_ref VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("error TEXT NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Column("started_at BIGINT NOT NULL DEFAULT 0").
+		Column("finished_at BIGINT NOT NULL DEFAULT 0").
+		Column("cancelled_at BIGINT NOT NULL DEFAULT 0").
+		Index("idx_site_tasks_status", "status").
+		Index("idx_site_tasks_account", "site_account_id")
+}
+
+// DefineSiteTaskLeasesTable prevents task re-entry across triggers.
+func DefineSiteTaskLeasesTable() *TableBuilder {
+	return NewTable("site_task_leases").
+		Column("task_key VARCHAR(191) PRIMARY KEY").
+		Column("owner_id VARCHAR(128) NOT NULL").
+		Column("lease_until BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Index("idx_site_task_leases_until", "lease_until")
+}
+
+// DefineWebhookEndpointsTable stores the single encrypted webhook endpoint.
+func DefineWebhookEndpointsTable() *TableBuilder {
+	return NewTable("webhook_endpoints").
+		Column("id INT PRIMARY KEY").
+		Column("enabled TINYINT NOT NULL DEFAULT 0").
+		Column("url_ciphertext TEXT NOT NULL").
+		Column("url_key_version VARCHAR(32) NOT NULL").
+		Column("low_balance_enabled TINYINT NOT NULL DEFAULT 1").
+		Column("low_balance_threshold DOUBLE NOT NULL DEFAULT 10").
+		Column("checkin_failure_enabled TINYINT NOT NULL DEFAULT 1").
+		Column("cooldown_minutes INT NOT NULL DEFAULT 360").
+		Column("last_delivery_status VARCHAR(32) NOT NULL DEFAULT 'never'").
+		Column("last_delivery_at BIGINT NOT NULL DEFAULT 0").
+		Column("last_error TEXT NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL")
+}
+
+// DefineWebhookEventStatesTable stores only deduplication and delivery status.
+func DefineWebhookEventStatesTable() *TableBuilder {
+	return NewTable("webhook_event_states").
+		Column("event_key VARCHAR(255) PRIMARY KEY").
+		Column("event_type VARCHAR(32) NOT NULL").
+		Column("site_account_id INT NOT NULL DEFAULT 0").
+		Column("status VARCHAR(32) NOT NULL").
+		Column("attempts INT NOT NULL DEFAULT 0").
+		Column("last_attempt_at BIGINT NOT NULL DEFAULT 0").
+		Column("delivered_at BIGINT NOT NULL DEFAULT 0").
+		Column("last_error TEXT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Index("idx_webhook_event_states_updated", "updated_at").
+		Index("idx_webhook_event_states_account", "site_account_id")
+}
+
+// DefineSchemaMigrationsTable 定义schema_migrations表结构（迁移版本控制）
+func DefineSchemaMigrationsTable() *TableBuilder {
+	return NewTable("schema_migrations").
+		Column("version VARCHAR(64) PRIMARY KEY"). // 迁移版本标识
+		Column("applied_at BIGINT NOT NULL")       // 应用时间（Unix秒）
+}
+
+// DefineLogsTable 定义logs表结构
+func DefineLogsTable() *TableBuilder {
+	return NewTable("logs").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("time BIGINT NOT NULL").
+		Column("minute_bucket BIGINT NOT NULL DEFAULT 0"). // time/60000，用于RPM类聚合避免运行时FLOOR
+		Column("model VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("actual_model VARCHAR(191) NOT NULL DEFAULT ''"). // 实际转发的模型（空表示未重定向）
+		Column("log_source VARCHAR(32) NOT NULL DEFAULT 'proxy'").
+		Column("channel_id INT NOT NULL DEFAULT 0").
+		Column("status_code INT NOT NULL").
+		Column("message TEXT NOT NULL").
+		Column("duration DOUBLE NOT NULL DEFAULT 0.0").
+		Column("is_streaming TINYINT NOT NULL DEFAULT 0").
+		Column("upstream_websocket TINYINT NOT NULL DEFAULT 0").
+		Column("first_byte_time DOUBLE NOT NULL DEFAULT 0.0").
+		Column("api_key_used VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("api_key_hash VARCHAR(64) NOT NULL DEFAULT ''"). // API Key SHA256（用于精确定位 key_index）
+		Column("auth_token_id BIGINT NOT NULL DEFAULT 0").      // 客户端使用的API令牌ID（新增2025-12）
+		Column("client_protocol VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("upstream_protocol VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("client_ip VARCHAR(45) NOT NULL DEFAULT ''").    // 客户端IP地址（新增2025-12）
+		Column("base_url VARCHAR(500) NOT NULL DEFAULT ''").    // 请求使用的上游URL（多URL场景）
+		Column("service_tier VARCHAR(20) NOT NULL DEFAULT ''"). // OpenAI service_tier: priority/flex
+		Column("thinking_effort VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("input_tokens INT NOT NULL DEFAULT 0").
+		Column("output_tokens INT NOT NULL DEFAULT 0").
+		Column("reasoning_tokens INT NOT NULL DEFAULT 0").
+		Column("cache_read_input_tokens INT NOT NULL DEFAULT 0").
+		Column("cache_creation_input_tokens INT NOT NULL DEFAULT 0"). // 5m+1h缓存总和（兼容字段）
+		Column("cache_5m_input_tokens INT NOT NULL DEFAULT 0").       // 5分钟缓存写入Token数（新增2025-12）
+		Column("cache_1h_input_tokens INT NOT NULL DEFAULT 0").       // 1小时缓存写入Token数（新增2025-12）
+		Column("cost DOUBLE NOT NULL DEFAULT 0.0").
+		Column("cost_multiplier DOUBLE NOT NULL DEFAULT 1").
+		Index("idx_logs_time_model", "time, model").
+		Index("idx_logs_time_status", "time, status_code").
+		Index("idx_logs_time_channel_model", "time, channel_id, model").
+		Index("idx_logs_minute_channel_model", "minute_bucket, channel_id, model").
+		Index("idx_logs_minute_auth_token_status", "minute_bucket, auth_token_id, status_code").
+		Index("idx_logs_channel_time_id", "channel_id, time, id").
+		Index("idx_logs_channel_model_time_id", "channel_id, model, time, id").
+		Index("idx_logs_time_auth_token", "time, auth_token_id").  // 按时间+令牌查询
+		Index("idx_logs_time_actual_model", "time, actual_model"). // 按时间+实际模型查询
+		Index("idx_logs_source_time", "log_source, time").
+		Index("idx_logs_source_minute", "log_source, minute_bucket")
+}
+
+// DefineModelFingerprintsTable 定义model_fingerprints表结构（模型指纹基线）
+// channel_id 不设置 FK CASCADE：渠道删除后基线数据保留，仅由应用层 ClearFingerprintChannelID 置空。
+func DefineModelFingerprintsTable() *TableBuilder {
+	return NewTable("model_fingerprints").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("name VARCHAR(191) NOT NULL").
+		Column("channel_id INT").
+		Column("channel_name VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("model VARCHAR(191) NOT NULL").
+		Column("actual_model VARCHAR(191) NOT NULL DEFAULT ''").
+		// 保留 channel_type 物理列，旧版本回滚时仍可读取原数据；新代码不读写它。
+		Column("channel_type VARCHAR(64) NOT NULL DEFAULT ''").
+		Column("client_protocol VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("sample_count INT NOT NULL DEFAULT 0").
+		Column("distribution LONGTEXT NOT NULL").
+		Column("stats TEXT NOT NULL").
+		Column("raw_data LONGTEXT NOT NULL").
+		Column("prompt_version VARCHAR(32) NOT NULL DEFAULT 'v1'").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		UniqueIndex("uk_model_fingerprints_name", "name").
+		Index("idx_model_fingerprints_model", "model").
+		Index("idx_model_fingerprints_channel", "channel_id").
+		Index("idx_model_fingerprints_created", "created_at DESC")
+}
+
+// DefineFingerprintTestResultsTable 定义指纹对比结果历史表。
+func DefineFingerprintTestResultsTable() *TableBuilder {
+	return NewTable("fingerprint_test_results").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("channel_id INT").
+		Column("channel_name VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("model VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("sample_count INT NOT NULL DEFAULT 0").
+		Column("best_score DOUBLE NOT NULL DEFAULT 0").
+		Column("distribution LONGTEXT NOT NULL").
+		Column("matches_json LONGTEXT NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Index("idx_fp_test_results_model", "model").
+		Index("idx_fp_test_results_created", "created_at DESC")
+}
+
+// DefineDebugLogsTable 定义debug_logs表结构
+// log_id 与 logs.id 1:1 对应，直接作为主键，无需独立自增ID
+func DefineDebugLogsTable() *TableBuilder {
+	return NewTable("debug_logs").
+		Column("log_id BIGINT PRIMARY KEY").
+		Column("created_at BIGINT NOT NULL").
+		Column("req_method VARCHAR(10) NOT NULL DEFAULT ''").
+		Column("req_url TEXT NOT NULL").
+		Column("req_headers TEXT NOT NULL").
+		Column("req_body LONGBLOB NOT NULL").
+		Column("resp_status INT NOT NULL DEFAULT 0").
+		Column("resp_headers TEXT NOT NULL").
+		Column("resp_body LONGBLOB").
+		Column("protocol_transformed TINYINT NOT NULL DEFAULT 0").
+		Column("original_req_url TEXT").
+		Column("original_req_headers TEXT").
+		Column("original_req_body LONGBLOB").
+		Column("translated_resp_status INT NOT NULL DEFAULT 0").
+		Column("translated_resp_headers TEXT").
+		Column("translated_resp_body LONGBLOB").
+		Index("idx_debug_logs_created_at", "created_at")
+}

@@ -1,0 +1,378 @@
+package app
+
+import (
+	"strings"
+	"testing"
+
+	"ccLoad/internal/model"
+)
+
+type channelRequestFieldCase struct {
+	name           string
+	input          string
+	wantErr        bool
+	wantNormalized string
+}
+
+func newValidChannelRequest() *ChannelRequest {
+	return &ChannelRequest{
+		Name:   "test-channel",
+		APIKey: "test-key",
+		URLs:   model.ChannelURLs{{URL: "https://example.com"}},
+		Models: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+	}
+}
+
+func runChannelRequestFieldValidation(
+	t *testing.T,
+	cases []channelRequestFieldCase,
+	setField func(*ChannelRequest, string),
+	getField func(*ChannelRequest) string,
+	invalidErrContains string,
+) {
+	t.Helper()
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newValidChannelRequest()
+			setField(req, tt.input)
+
+			err := req.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr && getField(req) != tt.wantNormalized {
+				t.Errorf("字段标准化失败: got %q, want %q", getField(req), tt.wantNormalized)
+			}
+
+			if tt.wantErr && err != nil && invalidErrContains != "" {
+				if !strings.Contains(err.Error(), invalidErrContains) {
+					t.Errorf("错误信息应该包含 %q, got: %v", invalidErrContains, err)
+				}
+			}
+		})
+	}
+}
+
+func runChannelRequestNonNegativeLimitValidation(t *testing.T, fieldName string, positive int, setField func(*ChannelRequest, int)) {
+	t.Helper()
+
+	t.Run("zero means unlimited", func(t *testing.T) {
+		req := newValidChannelRequest()
+		setField(req, 0)
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("positive limit allowed", func(t *testing.T) {
+		req := newValidChannelRequest()
+		setField(req, positive)
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("negative limit rejected", func(t *testing.T) {
+		req := newValidChannelRequest()
+		setField(req, -1)
+
+		err := req.Validate()
+		if err == nil {
+			t.Fatal("Validate() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), fieldName) {
+			t.Fatalf("expected %s error, got %v", fieldName, err)
+		}
+	})
+}
+
+// TestChannelRequestValidation_KeyStrategy 测试 key_strategy 白名单校验
+func TestChannelRequestValidation_KeyStrategy(t *testing.T) {
+	tests := []channelRequestFieldCase{
+		{
+			name:           "空值应该通过（使用默认值）",
+			input:          "",
+			wantErr:        false,
+			wantNormalized: "",
+		},
+		{
+			name:           "sequential 小写应该通过",
+			input:          "sequential",
+			wantErr:        false,
+			wantNormalized: "sequential",
+		},
+		{
+			name:           "Sequential 大写应该标准化为小写",
+			input:          "Sequential",
+			wantErr:        false,
+			wantNormalized: "sequential",
+		},
+		{
+			name:           "round_robin 应该通过",
+			input:          "round_robin",
+			wantErr:        false,
+			wantNormalized: "round_robin",
+		},
+		{
+			name:           "ROUND_ROBIN 大写应该标准化为小写",
+			input:          "ROUND_ROBIN",
+			wantErr:        false,
+			wantNormalized: "round_robin",
+		},
+		{
+			name:           "带空格的 sequential 应该 trim 并通过",
+			input:          "  sequential  ",
+			wantErr:        false,
+			wantNormalized: "sequential",
+		},
+		{
+			name:    "非法值应该拒绝",
+			input:   "invalid_strategy",
+			wantErr: true,
+		},
+		{
+			name:    "垃圾值应该拒绝",
+			input:   "random",
+			wantErr: true,
+		},
+	}
+
+	runChannelRequestFieldValidation(
+		t,
+		tests,
+		func(req *ChannelRequest, v string) { req.KeyStrategy = v },
+		func(req *ChannelRequest) string { return req.KeyStrategy },
+		"invalid key_strategy",
+	)
+}
+
+// TestChannelRequestValidation_Combined 测试组合场景
+func TestChannelRequestValidation_Combined(t *testing.T) {
+	tests := []struct {
+		name        string
+		req         ChannelRequest
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "完全合法的请求",
+			req: ChannelRequest{
+				Name:        "test-channel",
+				APIKey:      "test-key",
+				URLs:        model.ChannelURLs{{URL: "https://example.com"}},
+				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+				KeyStrategy: "round_robin",
+			},
+			wantErr: false,
+		},
+		{
+			name: "非法 key_strategy 应该被拦截",
+			req: ChannelRequest{
+				Name:        "test-channel",
+				APIKey:      "test-key",
+				URLs:        model.ChannelURLs{{URL: "https://example.com"}},
+				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+				KeyStrategy: "invalid",
+			},
+			wantErr:     true,
+			errContains: "invalid key_strategy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr && err != nil {
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("错误信息应该包含 %q, got: %v", tt.errContains, err)
+				}
+			}
+		})
+	}
+}
+
+func TestChannelRequestValidation_ScheduledCheckModel(t *testing.T) {
+	t.Run("empty allowed", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.ScheduledCheckModel = ""
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("model declared in models allowed", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.Models = []model.ModelEntry{{Model: "model-1"}, {Model: "model-2"}}
+		req.ScheduledCheckModel = "model-2"
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("unknown model rejected", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.Models = []model.ModelEntry{{Model: "model-1"}}
+		req.ScheduledCheckModel = "model-x"
+
+		err := req.Validate()
+		if err == nil {
+			t.Fatal("Validate() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "scheduled_check_model") {
+			t.Fatalf("expected scheduled_check_model error, got %v", err)
+		}
+	})
+}
+
+func TestChannelRequest_ToConfigCopiesScheduledCheckModel(t *testing.T) {
+	req := newValidChannelRequest()
+	req.ScheduledCheckEnabled = true
+	req.ScheduledCheckModel = "model-1"
+	req.RPMLimit = 60
+	req.MaxConcurrency = 3
+
+	got := req.ToConfig()
+	if got.ScheduledCheckModel != "model-1" {
+		t.Fatalf("ScheduledCheckModel = %q, want %q", got.ScheduledCheckModel, "model-1")
+	}
+	if got.RPMLimit != 60 {
+		t.Fatalf("RPMLimit = %d, want 60", got.RPMLimit)
+	}
+	if got.MaxConcurrency != 3 {
+		t.Fatalf("MaxConcurrency = %d, want 3", got.MaxConcurrency)
+	}
+}
+
+func TestChannelRequestValidation_RPMLimit(t *testing.T) {
+	runChannelRequestNonNegativeLimitValidation(t, "rpm_limit", 120, func(req *ChannelRequest, value int) {
+		req.RPMLimit = value
+	})
+}
+
+func TestChannelRequestValidation_MaxConcurrency(t *testing.T) {
+	runChannelRequestNonNegativeLimitValidation(t, "max_concurrency", 2, func(req *ChannelRequest, value int) {
+		req.MaxConcurrency = value
+	})
+}
+
+// TestChannelRequestValidation_DuplicateModels 测试重复模型校验（对应 channel_models 主键约束）
+func TestChannelRequestValidation_DuplicateModels(t *testing.T) {
+	tests := []struct {
+		name   string
+		models []model.ModelEntry
+	}{
+		{
+			name: "完全重复模型应该拒绝",
+			models: []model.ModelEntry{
+				{Model: "gpt-5.2"},
+				{Model: "gpt-5.2"},
+			},
+		},
+		{
+			name: "大小写差异模型应视为重复并拒绝",
+			models: []model.ModelEntry{
+				{Model: "GPT-5.2"},
+				{Model: "gpt-5.2"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newValidChannelRequest()
+			req.Models = tt.models
+
+			err := req.Validate()
+			if err == nil {
+				t.Fatal("expected duplicate model validation error, got nil")
+			}
+			if !strings.Contains(err.Error(), "duplicate model") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestChannelRequestValidation_RejectsDuplicateURLs(t *testing.T) {
+	req := newValidChannelRequest()
+	req.URLs = model.ChannelURLs{
+		{URL: " https://a.example.com/"},
+		{URL: "https://b.example.com"},
+		{URL: "https://a.example.com "},
+	}
+
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "duplicates") {
+		t.Fatalf("Validate() error=%v, want duplicate URL error", err)
+	}
+}
+
+func TestChannelRequestValidation_CooldownDetectionRules(t *testing.T) {
+	t.Run("sorts rules and copies them into config", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.CooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{
+			{
+				Enabled: true, Name: "Key rate limit", Priority: 7, StatusCodes: []int{503, 429}, MessagePattern: "rate_limit",
+				Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+			},
+			{
+				Enabled: true, Name: "Reset time", Priority: 2, MessagePattern: `reset at (?P<until>\d{4}-\d{2}-\d{2})`,
+				Scope: model.CooldownScopeChannel, Mode: model.CooldownModeResetTime,
+				TimeCapture: "until", TimeLayout: "2006-01-02", Timezone: "UTC",
+			},
+		}}
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+		if req.CooldownDetectionRules.Rules[0].Priority != 0 || req.CooldownDetectionRules.Rules[1].Priority != 1 {
+			t.Fatalf("priorities were not normalized: %#v", req.CooldownDetectionRules.Rules)
+		}
+		if req.CooldownDetectionRules.Rules[0].Scope != model.CooldownScopeChannel || req.CooldownDetectionRules.Rules[0].StatusCodes != nil {
+			t.Fatalf("rules were not sorted by submitted priority: %#v", req.CooldownDetectionRules.Rules)
+		}
+
+		cfg := req.ToConfig()
+		req.CooldownDetectionRules.Rules[0].Scope = model.CooldownScopeKey
+		req.CooldownDetectionRules.Rules[0].Name = "mutated"
+		if cfg.CooldownDetectionRules.Rules[0].Scope != model.CooldownScopeChannel || cfg.CooldownDetectionRules.Rules[0].Name != "Reset time" {
+			t.Fatalf("ToConfig() shared mutable cooldown detection rules")
+		}
+	})
+
+	t.Run("rejects reset time rule without referenced capture", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.CooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "Missing capture", Priority: 0, MessagePattern: `reset at \d+`,
+			Scope: model.CooldownScopeChannel, Mode: model.CooldownModeResetTime,
+			TimeCapture: "until", TimeLayout: "2006-01-02", Timezone: "UTC",
+		}}}
+
+		if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "time_capture") {
+			t.Fatalf("Validate() error = %v, want missing time_capture error", err)
+		}
+	})
+
+	t.Run("rejects rule without a name", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.CooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Priority: 0, StatusCodes: []int{200},
+			Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 60,
+		}}}
+
+		if err := req.Validate(); err == nil || !strings.Contains(err.Error(), ".name: required") {
+			t.Fatalf("Validate() error = %v, want required name error", err)
+		}
+	})
+}

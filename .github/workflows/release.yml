@@ -1,0 +1,299 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to publish (vX.Y.Z or vX.Y.Z-beta.N)
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  metadata:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      channel: ${{ steps.release.outputs.channel }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      make_latest: ${{ steps.release.outputs.make_latest }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          fetch-depth: 0
+
+      - name: Classify release
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            channel=stable
+            prerelease=false
+            make_latest=true
+          elif [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[1-9][0-9]*$ ]]; then
+            channel=beta
+            prerelease=true
+            make_latest=false
+          else
+            echo "Unsupported release tag: $RELEASE_TAG" >&2
+            echo "Expected vX.Y.Z or vX.Y.Z-beta.N" >&2
+            exit 1
+          fi
+          tag_ref="refs/tags/$RELEASE_TAG"
+          if ! git show-ref --verify --quiet "$tag_ref"; then
+            echo "Release tag does not exist: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          tag_commit=$(git rev-list -n 1 "$tag_ref")
+          checkout_commit=$(git rev-parse HEAD)
+          if [[ "$checkout_commit" != "$tag_commit" ]]; then
+            echo "Checked out commit $checkout_commit does not match $RELEASE_TAG ($tag_commit)" >&2
+            exit 1
+          fi
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "channel=$channel"
+            echo "prerelease=$prerelease"
+            echo "make_latest=$make_latest"
+          } >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Full verification
+    needs: metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.metadata.outputs.tag }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Test backend
+        run: go test -tags sonic ./internal/...
+
+      - name: Verify web assets
+        run: make verify-web
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          args: --timeout=10m
+
+  build:
+    name: Build ${{ matrix.output }}
+    needs: metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+            output: ccload-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            output: ccload-darwin-arm64
+          - goos: linux
+            goarch: amd64
+            output: ccload-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output: ccload-linux-arm64
+          - goos: windows
+            goarch: amd64
+            output: ccload-windows-amd64.exe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.metadata.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build binary
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+          OUTPUT: ${{ matrix.output }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          commit=$(git rev-parse --short HEAD)
+          build_time=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          go build -tags sonic -trimpath \
+            -ldflags "-s -w \
+              -X ccLoad/internal/version.Version=$RELEASE_TAG \
+              -X ccLoad/internal/version.Commit=$commit \
+              -X 'ccLoad/internal/version.BuildTime=$build_time' \
+              -X ccLoad/internal/version.BuiltBy=github-actions" \
+            -o "dist/$OUTPUT" .
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.output }}
+          path: dist/${{ matrix.output }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish ${{ needs.metadata.outputs.channel }} release
+    needs: [metadata, verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.metadata.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum ccload-* | sort -k2 > checksums.txt
+          cat checksums.txt
+
+      - name: Generate release notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: bash .github/scripts/generate-release-notes.sh "$RELEASE_TAG" "$RUNNER_TEMP/release-notes.md"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          name: Release ${{ needs.metadata.outputs.tag }}
+          draft: false
+          prerelease: ${{ needs.metadata.outputs.prerelease }}
+          make_latest: ${{ needs.metadata.outputs.make_latest }}
+          body_path: ${{ runner.temp }}/release-notes.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/ccload-*
+            dist/checksums.txt
+
+  docker:
+    name: Publish ${{ needs.metadata.outputs.channel }} container image
+    needs: [metadata, build, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.metadata.outputs.tag }}
+
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Set image name
+        id: image
+        shell: bash
+        run: echo "name=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=${{ needs.metadata.outputs.tag }}
+            type=raw,value=latest,enable=${{ needs.metadata.outputs.channel == 'stable' }}
+            type=raw,value=beta,enable=${{ needs.metadata.outputs.channel == 'beta' }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: true
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=release-container
+          cache-to: type=gha,scope=release-container,mode=max
+
+      - name: Verify published image aliases
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+          RELEASE_CHANNEL: ${{ needs.metadata.outputs.channel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_CHANNEL" == beta ]]; then
+            alias_tag=beta
+          else
+            alias_tag=latest
+          fi
+          release_digest=$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{.Manifest.Digest}}')
+          alias_digest=$(docker buildx imagetools inspect "$IMAGE:$alias_tag" --format '{{.Manifest.Digest}}')
+          if [[ -z "$release_digest" || "$release_digest" != "$alias_digest" ]]; then
+            echo "Container tags do not reference the same image: $RELEASE_TAG=$release_digest, $alias_tag=$alias_digest" >&2
+            exit 1
+          fi
+          echo "Published $IMAGE:$RELEASE_TAG and $IMAGE:$alias_tag at $release_digest"

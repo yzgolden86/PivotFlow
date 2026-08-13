@@ -1,0 +1,607 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"math"
+	"net/http"
+	"strconv"
+	"testing"
+	"time"
+
+	"ccLoad/internal/model"
+)
+
+func TestAuthToken_MaskToken(t *testing.T) {
+	tests := []struct {
+		name     string
+		token    string
+		expected string
+	}{
+		{
+			name:     "Long token",
+			token:    "test-token-admin-auth-1234567890",
+			expected: "sk-a****mnop",
+		},
+		{
+			name:     "Short token",
+			token:    "short",
+			expected: "****",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			masked := model.MaskToken(tt.token)
+			if masked != tt.expected {
+				t.Errorf("Expected '%s', got '%s'", tt.expected, masked)
+			}
+		})
+	}
+}
+
+func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
+	server := newInMemoryServer(t)
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
+		"description":              "Test Token",
+		"allowed_channel_ids":      []int64{3, 5},
+		"channel_restriction_mode": model.ChannelRestrictionModeDeny,
+		"max_concurrency":          4,
+	}))
+
+	server.HandleCreateAuthToken(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			ID                     int64   `json:"id"`
+			Token                  string  `json:"token"`
+			AllowedChannelIDs      []int64 `json:"allowed_channel_ids"`
+			ChannelRestrictionMode string  `json:"channel_restriction_mode"`
+			MaxConcurrency         int     `json:"max_concurrency"`
+		} `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &response)
+
+	if !response.Success || len(response.Data.Token) == 0 {
+		t.Error("Token creation failed")
+	}
+	if len(response.Data.AllowedChannelIDs) != 2 || response.Data.AllowedChannelIDs[0] != 3 || response.Data.AllowedChannelIDs[1] != 5 {
+		t.Fatalf("allowed_channel_ids=%v, want [3 5]", response.Data.AllowedChannelIDs)
+	}
+	if response.Data.ChannelRestrictionMode != model.ChannelRestrictionModeDeny {
+		t.Fatalf("channel_restriction_mode=%q, want deny", response.Data.ChannelRestrictionMode)
+	}
+	if response.Data.MaxConcurrency != 4 {
+		t.Fatalf("max_concurrency=%d, want 4", response.Data.MaxConcurrency)
+	}
+
+	ctx := context.Background()
+	stored, err := server.store.GetAuthToken(ctx, response.Data.ID)
+	if err != nil {
+		t.Fatalf("DB error: %v", err)
+	}
+
+	expectedHash := model.HashToken(response.Data.Token)
+	if stored.Token != expectedHash {
+		t.Error("Hash mismatch")
+	}
+	if len(stored.AllowedChannelIDs) != 2 || stored.AllowedChannelIDs[0] != 3 || stored.AllowedChannelIDs[1] != 5 {
+		t.Fatalf("stored allowed_channel_ids=%v, want [3 5]", stored.AllowedChannelIDs)
+	}
+	if stored.ChannelRestrictionMode != model.ChannelRestrictionModeDeny {
+		t.Fatalf("stored channel_restriction_mode=%q, want deny", stored.ChannelRestrictionMode)
+	}
+	if stored.MaxConcurrency != 4 {
+		t.Fatalf("stored max_concurrency=%d, want 4", stored.MaxConcurrency)
+	}
+	if server.authService.IsChannelAllowed(expectedHash, 3) {
+		t.Fatal("deny-listed channel should be rejected after ReloadAuthTokens")
+	}
+	if !server.authService.IsChannelAllowed(expectedHash, 7) {
+		t.Fatal("channel outside deny list should be allowed after ReloadAuthTokens")
+	}
+}
+
+func TestAdminAPI_CreateAuthToken_InvalidChannelRestrictionMode(t *testing.T) {
+	server := newInMemoryServer(t)
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
+		"description":              "Test Token",
+		"channel_restriction_mode": "denyy",
+	}))
+
+	server.HandleCreateAuthToken(c)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+func TestAdminAPI_CreateAuthToken_NegativeMaxConcurrency(t *testing.T) {
+	server := newInMemoryServer(t)
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
+		"description":     "Test Token",
+		"max_concurrency": -1,
+	}))
+
+	server.HandleCreateAuthToken(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Expected 400, got %d", w.Code)
+	}
+}
+
+func TestAdminAPI_CreateAuthToken_CostLimitRequiresMaxConcurrency(t *testing.T) {
+	server := newInMemoryServer(t)
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
+		"description":    "limited token",
+		"cost_limit_usd": 1.0,
+	}))
+
+	server.HandleCreateAuthToken(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+func TestAdminAPI_ListAuthTokens_ResponseShape(t *testing.T) {
+	server := newInMemoryServer(t)
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/auth-tokens", nil))
+
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	type listResp struct {
+		Tokens  []*model.AuthToken `json:"tokens"`
+		IsToday bool               `json:"is_today"`
+	}
+	resp := mustParseAPIResponse[listResp](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
+	}
+	if resp.Data.Tokens == nil {
+		t.Fatalf("tokens is null, want []")
+	}
+}
+
+// --- HandleListAuthTokens 补充测试 ---
+
+// authTokenListResponse 用于反序列化 HandleListAuthTokens 响应
+type authTokenListResponse struct {
+	Tokens          []*model.AuthToken `json:"tokens"`
+	DurationSeconds float64            `json:"duration_seconds"`
+	RPMStats        *model.RPMStats    `json:"rpm_stats"`
+	IsToday         bool               `json:"is_today"`
+}
+
+// createTestToken 通过 store 直接创建测试 token 并返回
+func createTestToken(t testing.TB, srv *Server, desc string) *model.AuthToken {
+	t.Helper()
+	ctx := context.Background()
+	token := &model.AuthToken{
+		Token:       model.HashToken("test-token-" + desc),
+		Description: desc,
+		IsActive:    true,
+	}
+	if err := srv.store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("CreateAuthToken failed: %v", err)
+	}
+	return token
+}
+
+func TestHandleListAuthTokens_EmptyResult(t *testing.T) {
+	server := newInMemoryServer(t)
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/auth-tokens", nil))
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
+	}
+	if len(resp.Data.Tokens) != 0 {
+		t.Errorf("Expected 0 tokens, got %d", len(resp.Data.Tokens))
+	}
+	// 无 range 参数时 IsToday 应为 false
+	if resp.Data.IsToday {
+		t.Error("Expected IsToday=false when no range param")
+	}
+}
+
+func TestHandleListAuthTokens_WithTokens(t *testing.T) {
+	server := newInMemoryServer(t)
+	createTestToken(t, server, "token-a")
+	createTestToken(t, server, "token-b")
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/auth-tokens", nil))
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
+	if len(resp.Data.Tokens) != 2 {
+		t.Errorf("Expected 2 tokens, got %d", len(resp.Data.Tokens))
+	}
+}
+
+func TestHandleListAuthTokens_RangeToday(t *testing.T) {
+	server := newInMemoryServer(t)
+	token := createTestToken(t, server, "range-token")
+
+	// 创建一条日志记录，使统计聚合有数据
+	ctx := context.Background()
+	now := time.Now()
+	logEntry := &model.LogEntry{
+		Time:         model.JSONTime{Time: now},
+		Model:        "test-model",
+		ChannelID:    1,
+		StatusCode:   200,
+		Duration:     0.5,
+		AuthTokenID:  token.ID,
+		InputTokens:  100,
+		OutputTokens: 50,
+		Cost:         0.01,
+	}
+	if err := server.store.AddLog(ctx, logEntry); err != nil {
+		t.Fatalf("AddLog failed: %v", err)
+	}
+
+	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=today", nil)
+	c, w := newTestContext(t, req)
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
+	}
+	if !resp.Data.IsToday {
+		t.Error("Expected IsToday=true for range=today")
+	}
+	if resp.Data.DurationSeconds < 1 {
+		t.Errorf("Expected DurationSeconds >= 1, got %f", resp.Data.DurationSeconds)
+	}
+}
+
+func TestHandleListAuthTokens_RangeWeek(t *testing.T) {
+	server := newInMemoryServer(t)
+	createTestToken(t, server, "week-token")
+
+	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=this_week", nil)
+	c, w := newTestContext(t, req)
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
+	}
+	// this_week 不是 today，所以 IsToday 应为 false
+	if resp.Data.IsToday {
+		t.Error("Expected IsToday=false for range=this_week")
+	}
+	if resp.Data.DurationSeconds < 1 {
+		t.Errorf("Expected DurationSeconds >= 1, got %f", resp.Data.DurationSeconds)
+	}
+}
+
+func TestHandleListAuthTokens_RangeMonth(t *testing.T) {
+	server := newInMemoryServer(t)
+	createTestToken(t, server, "month-token")
+
+	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=this_month", nil)
+	c, w := newTestContext(t, req)
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
+	}
+	if resp.Data.IsToday {
+		t.Error("Expected IsToday=false for range=this_month")
+	}
+}
+
+func TestHandleListAuthTokens_RangeAll_SkipsStats(t *testing.T) {
+	server := newInMemoryServer(t)
+	token := createTestToken(t, server, "all-token")
+
+	if err := server.store.UpdateTokenStats(context.Background(), token.Token, true, 1.0, false, 0, 10, 20, 0, 0, 1.0, 0.25); err != nil {
+		t.Fatalf("UpdateTokenStats failed: %v", err)
+	}
+
+	// range=all 应跳过统计聚合
+	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=all", nil)
+	c, w := newTestContext(t, req)
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
+	}
+	// range=all 时不执行统计分支
+	if resp.Data.DurationSeconds != 0 {
+		t.Errorf("Expected DurationSeconds=0 for range=all, got %f", resp.Data.DurationSeconds)
+	}
+	if resp.Data.IsToday {
+		t.Error("Expected IsToday=false for range=all")
+	}
+	if len(resp.Data.Tokens) != 1 {
+		t.Fatalf("Expected 1 token, got %d", len(resp.Data.Tokens))
+	}
+	got := resp.Data.Tokens[0]
+	if math.Abs(got.TotalCostUSD-1.0) > 0.000001 {
+		t.Fatalf("TotalCostUSD=%f, want 1.0", got.TotalCostUSD)
+	}
+	if math.Abs(got.EffectiveCostUSD-0.25) > 0.000001 {
+		t.Fatalf("EffectiveCostUSD=%f, want 0.25", got.EffectiveCostUSD)
+	}
+}
+
+func TestHandleListAuthTokens_StatsAggregation(t *testing.T) {
+	server := newInMemoryServer(t)
+	tokenA := createTestToken(t, server, "stats-a")
+	tokenB := createTestToken(t, server, "stats-b")
+
+	ctx := context.Background()
+	now := time.Now()
+
+	// 创建渠道供日志引用
+	cfg := &model.Config{
+		Name:         "test-ch",
+		URLs:         model.ChannelURLs{{URL: "https://test.com"}},
+		Priority:     100,
+		ModelEntries: []model.ModelEntry{{Model: "test-model"}},
+		Enabled:      true,
+	}
+	created, err := server.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	// tokenA: 2 条成功日志
+	for i := 0; i < 2; i++ {
+		entry := &model.LogEntry{
+			Time:         model.JSONTime{Time: now.Add(-time.Duration(i) * time.Minute)},
+			Model:        "test-model",
+			ChannelID:    created.ID,
+			StatusCode:   200,
+			Duration:     0.3,
+			AuthTokenID:  tokenA.ID,
+			InputTokens:  100,
+			OutputTokens: 50,
+			Cost:         0.005,
+		}
+		if err := server.store.AddLog(ctx, entry); err != nil {
+			t.Fatalf("AddLog failed: %v", err)
+		}
+	}
+
+	// tokenB: 1 条成功 + 1 条失败
+	entryOK := &model.LogEntry{
+		Time:         model.JSONTime{Time: now.Add(-30 * time.Second)},
+		Model:        "test-model",
+		ChannelID:    created.ID,
+		StatusCode:   200,
+		Duration:     0.5,
+		AuthTokenID:  tokenB.ID,
+		InputTokens:  200,
+		OutputTokens: 100,
+		Cost:         0.01,
+	}
+	if err := server.store.AddLog(ctx, entryOK); err != nil {
+		t.Fatalf("AddLog failed: %v", err)
+	}
+	entryFail := &model.LogEntry{
+		Time:        model.JSONTime{Time: now.Add(-20 * time.Second)},
+		Model:       "test-model",
+		ChannelID:   created.ID,
+		StatusCode:  500,
+		Duration:    0.1,
+		AuthTokenID: tokenB.ID,
+	}
+	if err := server.store.AddLog(ctx, entryFail); err != nil {
+		t.Fatalf("AddLog failed: %v", err)
+	}
+
+	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=today", nil)
+	c, w := newTestContext(t, req)
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
+	}
+
+	// 验证统计数据已叠加到 token 上
+	tokenMap := make(map[int64]*model.AuthToken)
+	for _, t := range resp.Data.Tokens {
+		tokenMap[t.ID] = t
+	}
+
+	if ta, ok := tokenMap[tokenA.ID]; ok {
+		if ta.SuccessCount != 2 {
+			t.Errorf("tokenA SuccessCount: expected 2, got %d", ta.SuccessCount)
+		}
+	} else {
+		t.Error("tokenA not found in response")
+	}
+
+	if tb, ok := tokenMap[tokenB.ID]; ok {
+		if tb.SuccessCount != 1 {
+			t.Errorf("tokenB SuccessCount: expected 1, got %d", tb.SuccessCount)
+		}
+		if tb.FailureCount != 1 {
+			t.Errorf("tokenB FailureCount: expected 1, got %d", tb.FailureCount)
+		}
+	} else {
+		t.Error("tokenB not found in response")
+	}
+}
+
+func TestHandleListAuthTokens_CustomFutureRangeFallsBackToCurrentDayStats(t *testing.T) {
+	server := newInMemoryServer(t)
+	token := createTestToken(t, server, "custom-future")
+
+	ctx := context.Background()
+	logEntry := &model.LogEntry{
+		Time:         model.JSONTime{Time: time.Now()},
+		Model:        "test-model",
+		ChannelID:    1,
+		StatusCode:   200,
+		Duration:     0.5,
+		AuthTokenID:  token.ID,
+		InputTokens:  100,
+		OutputTokens: 50,
+		Cost:         0.01,
+	}
+	if err := server.store.AddLog(ctx, logEntry); err != nil {
+		t.Fatalf("AddLog failed: %v", err)
+	}
+
+	start := time.Now().AddDate(0, 1, 0)
+	end := start.Add(5 * 24 * time.Hour)
+	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=custom&start_time="+strconv.FormatInt(start.UnixMilli(), 10)+"&end_time="+strconv.FormatInt(end.UnixMilli(), 10), nil)
+	c, w := newTestContext(t, req)
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
+	}
+
+	for _, tk := range resp.Data.Tokens {
+		if tk.ID == token.ID {
+			if tk.SuccessCount != 1 {
+				t.Fatalf("SuccessCount=%d, want 1", tk.SuccessCount)
+			}
+			return
+		}
+	}
+	t.Fatalf("token ID=%d not found in response", token.ID)
+}
+
+func TestHandleListAuthTokens_StatsZeroForNoData(t *testing.T) {
+	server := newInMemoryServer(t)
+	token := createTestToken(t, server, "zero-stats")
+
+	// 有 range 参数但该 token 无日志，统计应清零
+	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=today", nil)
+	c, w := newTestContext(t, req)
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
+	}
+
+	for _, tk := range resp.Data.Tokens {
+		if tk.ID == token.ID {
+			if tk.SuccessCount != 0 || tk.FailureCount != 0 {
+				t.Errorf("Expected zero stats for token with no data, got success=%d failure=%d", tk.SuccessCount, tk.FailureCount)
+			}
+			if tk.PromptTokensTotal != 0 || tk.CompletionTokensTotal != 0 {
+				t.Errorf("Expected zero token stats, got prompt=%d completion=%d", tk.PromptTokensTotal, tk.CompletionTokensTotal)
+			}
+			return
+		}
+	}
+	t.Errorf("token ID=%d not found in response", token.ID)
+}
+
+func TestHandleListAuthTokens_RPMStats(t *testing.T) {
+	server := newInMemoryServer(t)
+	createTestToken(t, server, "rpm-token")
+
+	// 创建渠道和多条日志来生成 RPM 统计
+	ctx := context.Background()
+	now := time.Now()
+	cfg := &model.Config{
+		Name:         "rpm-ch",
+		URLs:         model.ChannelURLs{{URL: "https://rpm.com"}},
+		Priority:     100,
+		ModelEntries: []model.ModelEntry{{Model: "m"}},
+		Enabled:      true,
+	}
+	created, err := server.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		entry := &model.LogEntry{
+			Time:        model.JSONTime{Time: now.Add(-time.Duration(i) * time.Second)},
+			Model:       "m",
+			ChannelID:   created.ID,
+			StatusCode:  200,
+			Duration:    0.1,
+			AuthTokenID: 1,
+		}
+		if err := server.store.AddLog(ctx, entry); err != nil {
+			t.Fatalf("AddLog failed: %v", err)
+		}
+	}
+
+	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=today", nil)
+	c, w := newTestContext(t, req)
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	// 解析原始 JSON 验证 rpm_stats 字段存在
+	var raw map[string]json.RawMessage
+	mustUnmarshalJSON(t, w.Body.Bytes(), &raw)
+	var dataField map[string]json.RawMessage
+	mustUnmarshalJSON(t, raw["data"], &dataField)
+
+	// rpm_stats 可以是 null 或对象，但字段应存在
+	if _, ok := dataField["rpm_stats"]; !ok {
+		t.Error("Expected rpm_stats field in response")
+	}
+}

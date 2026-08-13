@@ -1,0 +1,74 @@
+package util
+
+import (
+	"testing"
+	"time"
+)
+
+// BenchmarkCalculateBackoffDuration_AuthError 基准测试：401认证错误首次冷却
+func BenchmarkCalculateBackoffDuration_AuthError(b *testing.B) {
+	statusCode := 401
+	now := time.Now()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = CalculateBackoffDuration(0, time.Time{}, now, &statusCode)
+	}
+}
+
+// BenchmarkCalculateBackoffDuration_OtherError 基准测试：500服务器错误首次冷却
+func BenchmarkCalculateBackoffDuration_OtherError(b *testing.B) {
+	statusCode := 500
+	now := time.Now()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = CalculateBackoffDuration(0, time.Time{}, now, &statusCode)
+	}
+}
+
+// BenchmarkCalculateBackoffDuration_ExponentialBackoff 基准测试：指数退避计算
+func BenchmarkCalculateBackoffDuration_ExponentialBackoff(b *testing.B) {
+	statusCode := 401
+	now := time.Now()
+	prevMs := int64(5 * time.Minute / time.Millisecond)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = CalculateBackoffDuration(prevMs, time.Unix(0, 0), now, &statusCode)
+	}
+}
+
+// BenchmarkCalculateBackoffDuration_NilStatusCode 基准测试：无状态码场景（网络错误）
+func BenchmarkCalculateBackoffDuration_NilStatusCode(b *testing.B) {
+	now := time.Now()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = CalculateBackoffDuration(0, time.Time{}, now, nil)
+	}
+}
+
+// BenchmarkCalculateBackoffDuration_MaxLimit 基准测试：达到上限30分钟场景
+func BenchmarkCalculateBackoffDuration_MaxLimit(b *testing.B) {
+	statusCode := 401
+	now := time.Now()
+	prevMs := int64(20 * time.Minute / time.Millisecond) // 20分钟 * 2 = 40分钟（超过上限）
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = CalculateBackoffDuration(prevMs, time.Unix(0, 0), now, &statusCode)
+	}
+}
+
+// BenchmarkCalculateCooldownDuration 基准测试：计算冷却持续时间
+func BenchmarkCalculateCooldownDuration(b *testing.B) {
+	now := time.Now()
+	until := now.Add(5 * time.Minute)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = CalculateCooldownDuration(until, now)
+	}
+}

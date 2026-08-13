@@ -1,0 +1,654 @@
+package sql
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"ccLoad/internal/model"
+)
+
+// ==================== API Keys CRUD 实现 ====================
+// [INFO] Linus风格：删除轮询指针数据库代码，已改用内存atomic计数器
+
+// GetAPIKeys 获取指定渠道的所有 API Key（按 key_index 升序）
+func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
+	query := `
+		SELECT id, channel_id, key_index, api_key, key_strategy,
+		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
+		FROM api_keys
+		WHERE channel_id = ?
+		ORDER BY key_index ASC
+	`
+	rows, err := s.QueryContext(ctx, query, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("query api keys: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var keys []*model.APIKey
+	for rows.Next() {
+		key := &model.APIKey{}
+		var createdAt, updatedAt int64
+		var disabled int
+
+		err := rows.Scan(
+			&key.ID,
+			&key.ChannelID,
+			&key.KeyIndex,
+			&key.APIKey,
+			&key.KeyStrategy,
+			&key.Note,
+			&key.CooldownUntil,
+			&key.CooldownDurationMs,
+			&disabled,
+			&createdAt,
+			&updatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+
+		key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
+		key.UpdatedAt = model.JSONTime{Time: unixToTime(updatedAt)}
+		key.Disabled = disabled != 0
+		keys = append(keys, key)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate api keys: %w", err)
+	}
+
+	if keys == nil {
+		keys = make([]*model.APIKey, 0)
+	}
+	return keys, nil
+}
+
+// GetAPIKey 获取指定渠道的特定 API Key
+func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error) {
+	query := `
+		SELECT id, channel_id, key_index, api_key, key_strategy,
+		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
+		FROM api_keys
+		WHERE channel_id = ? AND key_index = ?
+	`
+	row := s.QueryRowContext(ctx, query, channelID, keyIndex)
+
+	key := &model.APIKey{}
+	var createdAt, updatedAt int64
+	var disabled int
+
+	err := row.Scan(
+		&key.ID,
+		&key.ChannelID,
+		&key.KeyIndex,
+		&key.APIKey,
+		&key.KeyStrategy,
+		&key.Note,
+		&key.CooldownUntil,
+		&key.CooldownDurationMs,
+		&disabled,
+		&createdAt,
+		&updatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.New("api key not found")
+		}
+		return nil, fmt.Errorf("query api key: %w", err)
+	}
+
+	key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
+	key.UpdatedAt = model.JSONTime{Time: unixToTime(updatedAt)}
+	key.Disabled = disabled != 0
+
+	return key, nil
+}
+
+// CreateAPIKeysBatch 批量创建 API Keys（高效批量插入）
+func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	checkedChannels := make(map[int64]struct{})
+	for _, key := range keys {
+		if key == nil {
+			return errors.New("api key cannot be nil")
+		}
+		if _, checked := checkedChannels[key.ChannelID]; checked {
+			continue
+		}
+		if err := s.ensureAPIKeyChannelMutable(ctx, key.ChannelID); err != nil {
+			return err
+		}
+		checkedChannels[key.ChannelID] = struct{}{}
+	}
+
+	nowUnix := timeToUnix(time.Now())
+
+	// 使用事务确保原子性
+	tx, err := s.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 构建批量插入语句（每批最多100条，避免SQL语句过长）
+	const batchSize = 100
+	for i := 0; i < len(keys); i += batchSize {
+		end := i + batchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		batch := keys[i:end]
+
+		// 构建 VALUES 部分
+		var sb strings.Builder
+		sb.WriteString(`INSERT INTO api_keys (channel_id, key_index, api_key, note, key_strategy,
+		                      cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at) VALUES `)
+
+		args := make([]any, 0, len(batch)*10)
+		for j, key := range batch {
+			if j > 0 {
+				sb.WriteString(",")
+			}
+			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+
+			strategy := key.KeyStrategy
+			if strategy == "" {
+				strategy = model.KeyStrategySequential
+			}
+			args = append(args, key.ChannelID, key.KeyIndex, key.APIKey, key.Note, strategy,
+				key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix)
+		}
+
+		if _, err := s.execTx(ctx, tx, sb.String(), args...); err != nil {
+			return fmt.Errorf("batch insert api keys: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateAPIKeysStrategy 批量更新渠道所有Key的策略（单条SQL，高效）
+func (s *SQLStore) UpdateAPIKeysStrategy(ctx context.Context, channelID int64, strategy string) error {
+	if err := s.ensureAPIKeyChannelMutable(ctx, channelID); err != nil {
+		return err
+	}
+	if strategy == "" {
+		strategy = model.KeyStrategySequential
+	}
+
+	updatedAtUnix := timeToUnix(time.Now())
+
+	_, err := s.ExecContext(ctx, `
+		UPDATE api_keys
+		SET key_strategy = ?, updated_at = ?
+		WHERE channel_id = ?
+	`, strategy, updatedAtUnix, channelID)
+
+	if err != nil {
+		return fmt.Errorf("update api keys strategy: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateAPIKeyNotes updates admin-only notes for existing API keys by key index.
+func (s *SQLStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, notesByIndex map[int]string) error {
+	if len(notesByIndex) == 0 {
+		return nil
+	}
+	if err := s.ensureAPIKeyChannelMutable(ctx, channelID); err != nil {
+		return err
+	}
+
+	tx, err := s.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin update api key notes transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := s.prepareTx(ctx, tx, `
+		UPDATE api_keys
+		SET note = ?, updated_at = ?
+		WHERE channel_id = ? AND key_index = ?
+	`)
+	if err != nil {
+		return fmt.Errorf("prepare update api key notes: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+
+	updatedAtUnix := timeToUnix(time.Now())
+	for keyIndex, note := range notesByIndex {
+		if _, err := stmt.ExecContext(ctx, note, updatedAtUnix, channelID, keyIndex); err != nil {
+			return fmt.Errorf("update api key note index %d: %w", keyIndex, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit update api key notes: %w", err)
+	}
+	return nil
+}
+
+// DeleteAPIKey 删除指定的 API Key
+func (s *SQLStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
+	if err := s.ensureAPIKeyChannelMutable(ctx, channelID); err != nil {
+		return err
+	}
+	_, err := s.ExecContext(ctx, `
+		DELETE FROM api_keys
+		WHERE channel_id = ? AND key_index = ?
+	`, channelID, keyIndex)
+
+	if err != nil {
+		return fmt.Errorf("delete api key: %w", err)
+	}
+
+	return nil
+}
+
+// CompactKeyIndices 将指定渠道中 key_index > removedIndex 的记录整体前移，保持索引连续
+// 设计原因：KeySelector 使用 key_index 作为逻辑下标；存在间隙会导致轮询和索引匹配异常
+func (s *SQLStore) CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error {
+	if err := s.ensureAPIKeyChannelMutable(ctx, channelID); err != nil {
+		return err
+	}
+	_, err := s.ExecContext(ctx, `
+		UPDATE api_keys
+		SET key_index = key_index - 1
+		WHERE channel_id = ? AND key_index > ?
+	`, channelID, removedIndex)
+	if err != nil {
+		return fmt.Errorf("compact key indices: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteAllAPIKeys 删除渠道的所有 API Key（用于渠道删除时级联清理）
+func (s *SQLStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
+	if err := s.ensureAPIKeyChannelMutable(ctx, channelID); err != nil {
+		return err
+	}
+	_, err := s.ExecContext(ctx, `
+		DELETE FROM api_keys
+		WHERE channel_id = ?
+	`, channelID)
+
+	if err != nil {
+		return fmt.Errorf("delete all api keys: %w", err)
+	}
+
+	return nil
+}
+
+// ==================== 批量导入优化 (P3性能优化) ====================
+
+// ImportChannelBatch 批量导入渠道配置（原子性+性能优化）
+// 单事务+预编译语句，提升CSV导入性能
+// [INFO] ACID原则：确保批量导入的原子性（要么全部成功，要么全部回滚）
+//
+// 参数:
+//   - channels: 渠道配置和API Keys的批量数据
+//
+// 返回:
+//   - created: 新创建的渠道数量
+//   - updated: 更新的渠道数量
+//   - error: 导入失败时的错误信息
+func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error) {
+	if len(channels) == 0 {
+		return 0, 0, nil
+	}
+
+	// 预加载现有渠道名称集合（用于区分创建/更新）
+	existingConfigs, err := s.ListConfigs(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("query existing channels: %w", err)
+	}
+	existingNames := make(map[string]struct{}, len(existingConfigs))
+	existingIDs := make(map[int64]struct{}, len(existingConfigs))
+	existingNameByID := make(map[int64]string, len(existingConfigs))
+	existingAuthByID := make(map[int64]string, len(existingConfigs))
+	existingAuthByName := make(map[string]string, len(existingConfigs))
+	for _, ec := range existingConfigs {
+		existingNames[ec.Name] = struct{}{}
+		existingIDs[ec.ID] = struct{}{}
+		existingNameByID[ec.ID] = ec.Name
+		existingAuthByID[ec.ID] = ec.GetAuthType()
+		existingAuthByName[ec.Name] = ec.GetAuthType()
+	}
+
+	importedIDs := make([]int64, 0, len(channels))
+	hasExplicitID := false
+	for _, cwk := range channels {
+		if cwk != nil && cwk.Config != nil && cwk.Config.ID != 0 {
+			hasExplicitID = true
+			break
+		}
+	}
+
+	// 使用事务确保原子性
+	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if hasExplicitID {
+			if err := s.lockPostgresExplicitIDTable(ctx, tx, "channels"); err != nil {
+				return err
+			}
+		}
+		nowUnix := timeToUnix(time.Now())
+
+		// 预编译渠道插入语句（复用，减少解析开销）
+		// 注意：models 和 model_redirects 已移至 channel_models 表
+		var channelUpsertWithIDSQL string
+		var channelUpsertByNameSQL string
+		if s.supportsONConflict() {
+			channelUpsertWithIDSQL = `
+				INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(id) DO UPDATE SET
+					name = excluded.name,
+					url = excluded.url,
+					priority = excluded.priority,
+					rpm_limit = excluded.rpm_limit,
+					max_concurrency = excluded.max_concurrency,
+					oauth_credential = CASE WHEN channels.auth_type = excluded.auth_type THEN excluded.oauth_credential ELSE channels.oauth_credential END,
+					protocol_transform_mode = excluded.protocol_transform_mode,
+					enabled = excluded.enabled,
+					scheduled_check_enabled = excluded.scheduled_check_enabled,
+					scheduled_check_model = excluded.scheduled_check_model,
+					cooldown_detection_rules = excluded.cooldown_detection_rules,
+					retry_other_keys_on_failure = excluded.retry_other_keys_on_failure,
+					updated_at = excluded.updated_at`
+			channelUpsertByNameSQL = `
+				INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(name) DO UPDATE SET
+					url = excluded.url,
+					priority = excluded.priority,
+					rpm_limit = excluded.rpm_limit,
+					max_concurrency = excluded.max_concurrency,
+					oauth_credential = CASE WHEN channels.auth_type = excluded.auth_type THEN excluded.oauth_credential ELSE channels.oauth_credential END,
+					protocol_transform_mode = excluded.protocol_transform_mode,
+					enabled = excluded.enabled,
+					scheduled_check_enabled = excluded.scheduled_check_enabled,
+					scheduled_check_model = excluded.scheduled_check_model,
+					cooldown_detection_rules = excluded.cooldown_detection_rules,
+					retry_other_keys_on_failure = excluded.retry_other_keys_on_failure,
+					updated_at = excluded.updated_at`
+		} else {
+			channelUpsertWithIDSQL = `
+				INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+					name = VALUES(name),
+					url = VALUES(url),
+					priority = VALUES(priority),
+					rpm_limit = VALUES(rpm_limit),
+					max_concurrency = VALUES(max_concurrency),
+					oauth_credential = IF(auth_type = VALUES(auth_type), VALUES(oauth_credential), oauth_credential),
+					protocol_transform_mode = VALUES(protocol_transform_mode),
+					enabled = VALUES(enabled),
+					scheduled_check_enabled = VALUES(scheduled_check_enabled),
+					scheduled_check_model = VALUES(scheduled_check_model),
+					cooldown_detection_rules = VALUES(cooldown_detection_rules),
+					retry_other_keys_on_failure = VALUES(retry_other_keys_on_failure),
+					updated_at = VALUES(updated_at)`
+			channelUpsertByNameSQL = `
+				INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+					url = VALUES(url),
+					priority = VALUES(priority),
+					rpm_limit = VALUES(rpm_limit),
+					max_concurrency = VALUES(max_concurrency),
+					oauth_credential = IF(auth_type = VALUES(auth_type), VALUES(oauth_credential), oauth_credential),
+					protocol_transform_mode = VALUES(protocol_transform_mode),
+					enabled = VALUES(enabled),
+					scheduled_check_enabled = VALUES(scheduled_check_enabled),
+					scheduled_check_model = VALUES(scheduled_check_model),
+					cooldown_detection_rules = VALUES(cooldown_detection_rules),
+					retry_other_keys_on_failure = VALUES(retry_other_keys_on_failure),
+					updated_at = VALUES(updated_at)`
+		}
+
+		channelStmtWithID, err := s.prepareTx(ctx, tx, channelUpsertWithIDSQL)
+		if err != nil {
+			return fmt.Errorf("prepare channel statement with id: %w", err)
+		}
+		defer func() { _ = channelStmtWithID.Close() }()
+
+		channelStmtByName, err := s.prepareTx(ctx, tx, channelUpsertByNameSQL)
+		if err != nil {
+			return fmt.Errorf("prepare channel statement by name: %w", err)
+		}
+		defer func() { _ = channelStmtByName.Close() }()
+
+		// 预编译API Key插入语句
+		keyStmt, err := s.prepareTx(ctx, tx, `
+			INSERT INTO api_keys (channel_id, key_index, api_key, note, key_strategy,
+			                      cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`)
+		if err != nil {
+			return fmt.Errorf("prepare api key statement: %w", err)
+		}
+		defer func() { _ = keyStmt.Close() }()
+
+		// 批量导入渠道
+		for _, cwk := range channels {
+			config := cwk.Config
+			authType := model.NormalizeAuthType(config.AuthType)
+			if authType == "" {
+				return fmt.Errorf("import channel %s: invalid auth_type %q", config.Name, config.AuthType)
+			}
+			if authType != model.AuthTypeAPIKey && strings.TrimSpace(config.OAuthCredential) == "" {
+				return fmt.Errorf("import channel %s: %s channel requires a credential", config.Name, authType)
+			}
+			if authType != model.AuthTypeAPIKey && len(cwk.APIKeys) != 0 {
+				return fmt.Errorf("import channel %s: OAuth channel API keys are read-only", config.Name)
+			}
+			if authType == model.AuthTypeAPIKey && strings.TrimSpace(config.OAuthCredential) != "" {
+				return fmt.Errorf("import channel %s: api_key channel cannot contain an OAuth credential", config.Name)
+			}
+			protocolTransformMode := config.GetProtocolTransformMode()
+			useExplicitID := config.ID != 0
+			cooldownDetectionRules, err := marshalCooldownDetectionRules(config.CooldownDetectionRules)
+			if err != nil {
+				return fmt.Errorf("import channel %s: %w", config.Name, err)
+			}
+
+			// 检查是否为更新操作
+			var isUpdate bool
+			if useExplicitID {
+				_, isUpdate = existingIDs[config.ID]
+				if existingAuth, exists := existingAuthByID[config.ID]; exists && existingAuth != authType {
+					return fmt.Errorf("import channel %s: auth_type cannot be changed", config.Name)
+				}
+			} else {
+				_, isUpdate = existingNames[config.Name]
+				if existingAuth, exists := existingAuthByName[config.Name]; exists && existingAuth != authType {
+					return fmt.Errorf("import channel %s: auth_type cannot be changed", config.Name)
+				}
+			}
+
+			// 插入或更新渠道配置（不含 models/model_redirects）
+			var channelID int64
+			if useExplicitID {
+				channelID = config.ID
+				_, err := channelStmtWithID.ExecContext(ctx,
+					config.ID, config.Name, config.URLs, config.Priority,
+					config.RPMLimit, config.MaxConcurrency, authType, config.OAuthCredential, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckModel, cooldownDetectionRules, config.RetryOtherKeysOnFailure, nowUnix, nowUnix)
+				if err != nil {
+					return fmt.Errorf("import channel %s: %w", config.Name, err)
+				}
+				if err := s.syncPostgresIDSequence(ctx, tx, "channels"); err != nil {
+					return err
+				}
+			} else {
+				_, err := channelStmtByName.ExecContext(ctx,
+					config.Name, config.URLs, config.Priority,
+					config.RPMLimit, config.MaxConcurrency, authType, config.OAuthCredential, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckModel, cooldownDetectionRules, config.RetryOtherKeysOnFailure, nowUnix, nowUnix)
+				if err != nil {
+					return fmt.Errorf("import channel %s: %w", config.Name, err)
+				}
+
+				// 获取渠道ID
+				err = s.queryRowTx(ctx, tx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
+				if err != nil {
+					return fmt.Errorf("get channel id for %s: %w", config.Name, err)
+				}
+			}
+
+			config.ID = channelID
+			importedIDs = append(importedIDs, channelID)
+			var persistedAuthType string
+			if err := s.queryRowTx(ctx, tx, `SELECT auth_type FROM channels WHERE id = ?`, channelID).Scan(&persistedAuthType); err != nil {
+				return fmt.Errorf("read imported channel auth_type for %d: %w", channelID, err)
+			}
+			if model.NormalizeAuthType(persistedAuthType) != authType {
+				return fmt.Errorf("import channel %s: auth_type cannot be changed", config.Name)
+			}
+
+			// 删除旧的API Keys（模型索引统一交给 saveModelEntriesImpl 处理）
+			if isUpdate && authType == model.AuthTypeAPIKey {
+				if _, err := s.execTx(ctx, tx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID); err != nil {
+					return fmt.Errorf("delete old api keys for channel %d: %w", channelID, err)
+				}
+			}
+
+			if err := s.saveModelEntriesImpl(ctx, tx, channelID, config.ModelEntries); err != nil {
+				return fmt.Errorf("save model entries for channel %d: %w", channelID, err)
+			}
+			// 批量插入API Keys（使用预编译语句）
+			for i := range cwk.APIKeys {
+				cwk.APIKeys[i].ChannelID = channelID
+				key := cwk.APIKeys[i]
+				_, err := keyStmt.ExecContext(ctx,
+					channelID, key.KeyIndex, key.APIKey, key.Note, key.KeyStrategy,
+					key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix)
+				if err != nil {
+					return fmt.Errorf("insert api key %d for channel %d: %w", key.KeyIndex, channelID, err)
+				}
+			}
+
+			// 统计
+			if isUpdate {
+				updated++
+			} else {
+				created++
+			}
+			if oldName, ok := existingNameByID[channelID]; ok && oldName != config.Name {
+				delete(existingNames, oldName)
+				delete(existingAuthByName, oldName)
+			}
+			existingNames[config.Name] = struct{}{}
+			existingIDs[channelID] = struct{}{}
+			existingNameByID[channelID] = config.Name
+			existingAuthByID[channelID] = authType
+			existingAuthByName[config.Name] = authType
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, id := range importedIDs {
+		s.unmarkChannelDeleted(id)
+	}
+
+	return created, updated, nil
+}
+
+// GetAllAPIKeys 批量查询所有API Keys
+// [INFO] 消除N+1问题：一次查询获取所有渠道的Keys，避免逐个查询
+// 返回: map[channelID][]*APIKey
+func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {
+	query := `
+		SELECT id, channel_id, key_index, api_key, key_strategy,
+		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
+		FROM api_keys
+		ORDER BY channel_id ASC, key_index ASC
+	`
+	rows, err := s.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query all api keys: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make(map[int64][]*model.APIKey)
+	for rows.Next() {
+		key := &model.APIKey{}
+		var createdAt, updatedAt int64
+		var disabled int
+
+		err := rows.Scan(
+			&key.ID,
+			&key.ChannelID,
+			&key.KeyIndex,
+			&key.APIKey,
+			&key.KeyStrategy,
+			&key.Note,
+			&key.CooldownUntil,
+			&key.CooldownDurationMs,
+			&disabled,
+			&createdAt,
+			&updatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+
+		key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
+		key.UpdatedAt = model.JSONTime{Time: unixToTime(updatedAt)}
+		key.Disabled = disabled != 0
+
+		result[key.ChannelID] = append(result[key.ChannelID], key)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate api keys: %w", err)
+	}
+
+	return result, nil
+}
+
+// SetAPIKeyDisabled 设置指定 API Key 的禁用状态
+func (s *SQLStore) SetAPIKeyDisabled(ctx context.Context, channelID int64, keyIndex int, disabled bool) error {
+	if err := s.ensureAPIKeyChannelMutable(ctx, channelID); err != nil {
+		return err
+	}
+	updatedAtUnix := timeToUnix(time.Now())
+	_, err := s.ExecContext(ctx, `
+		UPDATE api_keys SET disabled = ?, updated_at = ?
+		WHERE channel_id = ? AND key_index = ?
+	`, disabled, updatedAtUnix, channelID, keyIndex)
+	if err != nil {
+		return fmt.Errorf("set api key disabled: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLStore) ensureAPIKeyChannelMutable(ctx context.Context, channelID int64) error {
+	var authType string
+	if err := s.QueryRowContext(ctx, `SELECT auth_type FROM channels WHERE id = ?`, channelID).Scan(&authType); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("channel not found")
+		}
+		return fmt.Errorf("query channel auth_type: %w", err)
+	}
+	if model.NormalizeAuthType(authType) != model.AuthTypeAPIKey {
+		return errors.New("OAuth channel API keys are read-only")
+	}
+	return nil
+}

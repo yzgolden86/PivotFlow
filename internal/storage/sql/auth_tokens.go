@@ -1,0 +1,838 @@
+package sql
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	mysql "github.com/go-sql-driver/mysql"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/util"
+)
+
+const mysqlDuplicateEntryCode uint16 = 1062
+
+//nolint:gosec // SQL列清单包含“token”字段名，并非硬编码凭据
+const authTokenSelectColumns = `
+	id, token, token_ciphertext, token_hint, description, created_at, expires_at, last_used_at, is_active,
+	success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+	prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
+	cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
+`
+
+func marshalJSONList[T any](field string, values []T) (string, error) {
+	if len(values) == 0 {
+		return "", nil
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "", fmt.Errorf("marshal %s: %w", field, err)
+	}
+	return string(data), nil
+}
+
+func marshalAllowedModels(models []string) (string, error) {
+	return marshalJSONList("allowed_models", models)
+}
+
+func marshalAllowedChannelIDs(channelIDs []int64) (string, error) {
+	return marshalJSONList("allowed_channel_ids", channelIDs)
+}
+
+func normalizeAuthTokenChannelRestrictionMode(token *model.AuthToken) (string, error) {
+	mode, err := model.NormalizeChannelRestrictionMode(token.ChannelRestrictionMode)
+	if err != nil {
+		return "", err
+	}
+	token.ChannelRestrictionMode = mode
+	return mode, nil
+}
+
+//nolint:gosec // SQL查询模板包含"token"字段名，并非硬编码凭据
+const updateTokenStatsQuery = `
+	UPDATE auth_tokens
+	SET
+		success_count = success_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+		failure_count = failure_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+
+		-- 只有成功请求才累加 token 与费用（与内存费用缓存语义保持一致）
+		prompt_tokens_total = prompt_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		completion_tokens_total = completion_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		cache_read_tokens_total = cache_read_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		cache_creation_tokens_total = cache_creation_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		total_cost_usd = total_cost_usd + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		effective_cost_usd = effective_cost_usd + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		cost_used_microusd = cost_used_microusd + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+
+		-- 增量更新平均值（new_avg = (old_avg*old_count + v)/(old_count+1)）
+		stream_avg_ttfb = CASE
+			WHEN ? = 1 THEN ((stream_avg_ttfb * stream_count) + ?) / (stream_count + 1)
+			ELSE stream_avg_ttfb
+		END,
+		stream_count = stream_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+		non_stream_avg_rt = CASE
+			WHEN ? = 1 THEN ((non_stream_avg_rt * non_stream_count) + ?) / (non_stream_count + 1)
+			ELSE non_stream_avg_rt
+		END,
+		non_stream_count = non_stream_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+
+		last_used_at = ?
+	WHERE token = ?
+`
+
+func scanAuthToken(scanner interface {
+	Scan(...any) error
+}) (*model.AuthToken, error) {
+	token := &model.AuthToken{}
+	var createdAtMs int64
+	var expiresAt, lastUsedAt sql.NullInt64
+	var isActive int
+	var tokenCiphertext, tokenHint sql.NullString
+	var allowedModelsJSON string
+	var allowedChannelIDsJSON string
+	var channelRestrictionMode string
+	var costUsedMicroUSD int64
+	var costLimitMicroUSD int64
+
+	if err := scanner.Scan(
+		&token.ID,
+		&token.Token,
+		&tokenCiphertext,
+		&tokenHint,
+		&token.Description,
+		&createdAtMs,
+		&expiresAt,
+		&lastUsedAt,
+		&isActive,
+		&token.SuccessCount,
+		&token.FailureCount,
+		&token.StreamAvgTTFB,
+		&token.NonStreamAvgRT,
+		&token.StreamCount,
+		&token.NonStreamCount,
+		&token.PromptTokensTotal,
+		&token.CompletionTokensTotal,
+		&token.CacheReadTokensTotal,
+		&token.CacheCreationTokensTotal,
+		&token.TotalCostUSD,
+		&token.EffectiveCostUSD,
+		&costUsedMicroUSD,
+		&costLimitMicroUSD,
+		&allowedModelsJSON,
+		&allowedChannelIDsJSON,
+		&channelRestrictionMode,
+		&token.MaxConcurrency,
+	); err != nil {
+		return nil, err
+	}
+	if tokenCiphertext.Valid { token.TokenCiphertext = tokenCiphertext.String }
+	if tokenHint.Valid { token.TokenHint = tokenHint.String }
+
+	token.CreatedAt = time.UnixMilli(createdAtMs)
+	if expiresAt.Valid {
+		// 语义：0 表示永不过期；对外保持 nil（omitempty）更干净
+		if expiresAt.Int64 > 0 {
+			v := expiresAt.Int64
+			token.ExpiresAt = &v
+		}
+	}
+	if lastUsedAt.Valid {
+		// 语义：0 表示从未使用过；对外保持 nil（omitempty）
+		if lastUsedAt.Int64 > 0 {
+			v := lastUsedAt.Int64
+			token.LastUsedAt = &v
+		}
+	}
+	token.IsActive = isActive != 0
+	token.CostUsedMicroUSD = costUsedMicroUSD
+	token.CostLimitMicroUSD = costLimitMicroUSD
+
+	// 解析 allowed_models JSON
+	if allowedModelsJSON != "" {
+		if err := json.Unmarshal([]byte(allowedModelsJSON), &token.AllowedModels); err != nil {
+			return nil, fmt.Errorf("invalid allowed_models json: %w", err)
+		}
+	}
+	if allowedChannelIDsJSON != "" {
+		if err := json.Unmarshal([]byte(allowedChannelIDsJSON), &token.AllowedChannelIDs); err != nil {
+			return nil, fmt.Errorf("invalid allowed_channel_ids json: %w", err)
+		}
+	}
+	token.ChannelRestrictionMode = channelRestrictionMode
+	if _, err := normalizeAuthTokenChannelRestrictionMode(token); err != nil {
+		return nil, err
+	}
+	if err := token.ValidateUsageLimits(); err != nil {
+		return nil, err
+	}
+
+	return token, nil
+}
+
+// UpsertAuthTokenAllFields 用于混合存储/恢复场景：按既有 id 写入完整行，保证两端数据一致。
+// 注意：这不是常规业务写路径，调用方必须确保 token.Token 已是哈希值而非明文。
+func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.AuthToken) error {
+	if token == nil {
+		return errors.New("token cannot be nil")
+	}
+	if token.ID == 0 {
+		return errors.New("token id cannot be 0")
+	}
+	if err := token.ValidateUsageLimits(); err != nil {
+		return err
+	}
+	if token.CreatedAt.IsZero() {
+		token.CreatedAt = time.Now()
+	}
+
+	expiresAt := int64(0)
+	if token.ExpiresAt != nil {
+		expiresAt = *token.ExpiresAt
+	}
+	lastUsedAt := int64(0)
+	if token.LastUsedAt != nil {
+		lastUsedAt = *token.LastUsedAt
+	}
+
+	allowedModelsJSON, err := marshalAllowedModels(token.AllowedModels)
+	if err != nil {
+		return err
+	}
+	allowedChannelIDsJSON, err := marshalAllowedChannelIDs(token.AllowedChannelIDs)
+	if err != nil {
+		return err
+	}
+	channelRestrictionMode, err := normalizeAuthTokenChannelRestrictionMode(token)
+	if err != nil {
+		return err
+	}
+
+	if s.supportsONConflict() {
+		query := `
+			INSERT INTO auth_tokens (
+				id, token, token_ciphertext, token_hint, description, created_at, expires_at, last_used_at, is_active,
+				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
+				cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				token = excluded.token,
+				token_ciphertext = excluded.token_ciphertext,
+				token_hint = excluded.token_hint,
+				description = excluded.description,
+				created_at = excluded.created_at,
+				expires_at = excluded.expires_at,
+				last_used_at = excluded.last_used_at,
+				is_active = excluded.is_active,
+				success_count = excluded.success_count,
+				failure_count = excluded.failure_count,
+				stream_avg_ttfb = excluded.stream_avg_ttfb,
+				non_stream_avg_rt = excluded.non_stream_avg_rt,
+				stream_count = excluded.stream_count,
+				non_stream_count = excluded.non_stream_count,
+				prompt_tokens_total = excluded.prompt_tokens_total,
+				completion_tokens_total = excluded.completion_tokens_total,
+				cache_read_tokens_total = excluded.cache_read_tokens_total,
+				cache_creation_tokens_total = excluded.cache_creation_tokens_total,
+				total_cost_usd = excluded.total_cost_usd,
+				effective_cost_usd = excluded.effective_cost_usd,
+				cost_used_microusd = excluded.cost_used_microusd,
+				cost_limit_microusd = excluded.cost_limit_microusd,
+				allowed_models = excluded.allowed_models,
+				allowed_channel_ids = excluded.allowed_channel_ids,
+				channel_restriction_mode = excluded.channel_restriction_mode,
+				max_concurrency = excluded.max_concurrency`
+		args := []any{
+			token.ID,
+			token.Token,
+			token.TokenCiphertext,
+			token.TokenHint,
+			token.Description,
+			token.CreatedAt.UnixMilli(),
+			expiresAt,
+			lastUsedAt,
+			token.IsActive,
+			token.SuccessCount,
+			token.FailureCount,
+			token.StreamAvgTTFB,
+			token.NonStreamAvgRT,
+			token.StreamCount,
+			token.NonStreamCount,
+			token.PromptTokensTotal,
+			token.CompletionTokensTotal,
+			token.CacheReadTokensTotal,
+			token.CacheCreationTokensTotal,
+			token.TotalCostUSD,
+			token.EffectiveCostUSD,
+			token.CostUsedMicroUSD,
+			token.CostLimitMicroUSD,
+			allowedModelsJSON,
+			allowedChannelIDsJSON,
+			channelRestrictionMode,
+			token.MaxConcurrency,
+		}
+		if s.IsPostgres() {
+			err = s.withPostgresExplicitIDTx(ctx, "auth_tokens", func(tx *sql.Tx) error {
+				_, execErr := s.execTx(ctx, tx, query, args...)
+				return execErr
+			})
+		} else {
+			_, err = s.ExecContext(ctx, query, args...)
+		}
+		if err != nil {
+			return fmt.Errorf("upsert auth token all fields: %w", err)
+		}
+		return nil
+	}
+
+	_, err = s.ExecContext(ctx, `
+		INSERT INTO auth_tokens (
+			id, token, token_ciphertext, token_hint, description, created_at, expires_at, last_used_at, is_active,
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
+			cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			token = VALUES(token),
+			token_ciphertext = VALUES(token_ciphertext),
+			token_hint = VALUES(token_hint),
+			description = VALUES(description),
+			created_at = VALUES(created_at),
+			expires_at = VALUES(expires_at),
+			last_used_at = VALUES(last_used_at),
+			is_active = VALUES(is_active),
+			success_count = VALUES(success_count),
+			failure_count = VALUES(failure_count),
+			stream_avg_ttfb = VALUES(stream_avg_ttfb),
+			non_stream_avg_rt = VALUES(non_stream_avg_rt),
+			stream_count = VALUES(stream_count),
+			non_stream_count = VALUES(non_stream_count),
+			prompt_tokens_total = VALUES(prompt_tokens_total),
+			completion_tokens_total = VALUES(completion_tokens_total),
+			cache_read_tokens_total = VALUES(cache_read_tokens_total),
+			cache_creation_tokens_total = VALUES(cache_creation_tokens_total),
+			total_cost_usd = VALUES(total_cost_usd),
+			effective_cost_usd = VALUES(effective_cost_usd),
+			cost_used_microusd = VALUES(cost_used_microusd),
+			cost_limit_microusd = VALUES(cost_limit_microusd),
+			allowed_models = VALUES(allowed_models),
+			allowed_channel_ids = VALUES(allowed_channel_ids),
+			channel_restriction_mode = VALUES(channel_restriction_mode),
+			max_concurrency = VALUES(max_concurrency)
+	`,
+		token.ID,
+		token.Token,
+		token.TokenCiphertext,
+		token.TokenHint,
+		token.Description,
+		token.CreatedAt.UnixMilli(),
+		expiresAt,
+		lastUsedAt,
+		token.IsActive,
+		token.SuccessCount,
+		token.FailureCount,
+		token.StreamAvgTTFB,
+		token.NonStreamAvgRT,
+		token.StreamCount,
+		token.NonStreamCount,
+		token.PromptTokensTotal,
+		token.CompletionTokensTotal,
+		token.CacheReadTokensTotal,
+		token.CacheCreationTokensTotal,
+		token.TotalCostUSD,
+		token.EffectiveCostUSD,
+		token.CostUsedMicroUSD,
+		token.CostLimitMicroUSD,
+		allowedModelsJSON,
+		allowedChannelIDsJSON,
+		channelRestrictionMode,
+		token.MaxConcurrency,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert auth token all fields: %w", err)
+	}
+	return nil
+}
+
+// ============================================================================
+// Auth Tokens Management - API访问令牌管理
+// ============================================================================
+
+// authTokenInsertCommonCols / authTokenInsertCommonValues 描述了 INSERT auth_tokens 时
+// 的公共字段集合（除自增主键 id）。统计/成本字段以零值初始化，由后续 UpdateTokenStats 累计。
+const (
+	authTokenInsertCommonCols = `token, token_ciphertext, token_hint, description, created_at, expires_at, last_used_at, is_active,
+		success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+		prompt_tokens_total, completion_tokens_total, total_cost_usd, effective_cost_usd, allowed_models, allowed_channel_ids,
+		channel_restriction_mode, cost_used_microusd, cost_limit_microusd, max_concurrency`
+
+	authTokenInsertCommonValues = `?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, 0.0, ?, ?, ?, 0, ?, ?`
+)
+
+// authTokenInsertCommonArgs builds auth_tokens INSERT arguments.
+// It returns nil args with an error; callers must check err before using args.
+func authTokenInsertCommonArgs(token *model.AuthToken) ([]any, error) {
+	if token == nil {
+		return nil, errors.New("token cannot be nil")
+	}
+	if token.Token == "" {
+		return nil, errors.New("token hash cannot be empty")
+	}
+	if err := token.ValidateUsageLimits(); err != nil {
+		return nil, err
+	}
+	if token.CreatedAt.IsZero() {
+		token.CreatedAt = time.Now()
+	}
+
+	// 处理可空字段：SQLite NOT NULL DEFAULT 0 需要传入 0 而不是 nil
+	var expiresAt int64
+	if token.ExpiresAt != nil {
+		expiresAt = *token.ExpiresAt
+	}
+
+	var lastUsedAt int64
+	if token.LastUsedAt != nil {
+		lastUsedAt = *token.LastUsedAt
+	}
+
+	allowedModelsJSON, err := marshalAllowedModels(token.AllowedModels)
+	if err != nil {
+		return nil, err
+	}
+	allowedChannelIDsJSON, err := marshalAllowedChannelIDs(token.AllowedChannelIDs)
+	if err != nil {
+		return nil, err
+	}
+	channelRestrictionMode, err := normalizeAuthTokenChannelRestrictionMode(token)
+	if err != nil {
+		return nil, err
+	}
+
+	return []any{
+		token.Token, token.TokenCiphertext, token.TokenHint, token.Description, token.CreatedAt.UnixMilli(),
+		expiresAt, lastUsedAt, token.IsActive,
+		allowedModelsJSON, allowedChannelIDsJSON,
+		channelRestrictionMode,
+		token.CostLimitMicroUSD, token.MaxConcurrency,
+	}, nil
+}
+
+// CreateAuthToken 创建新的API访问令牌（token字段存储SHA256哈希值）
+func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) error {
+	commonArgs, err := authTokenInsertCommonArgs(token)
+	if err != nil {
+		return err
+	}
+
+	if token.ID != 0 {
+		query := `INSERT INTO auth_tokens (id, ` + authTokenInsertCommonCols + `)
+			VALUES (?, ` + authTokenInsertCommonValues + `)`
+		if s.IsMySQL() {
+			query += " ON DUPLICATE KEY UPDATE id = id"
+		}
+		args := append([]any{token.ID}, commonArgs...)
+		if s.IsPostgres() {
+			err := s.withPostgresExplicitIDTx(ctx, "auth_tokens", func(tx *sql.Tx) error {
+				_, execErr := s.execTx(ctx, tx, query, args...)
+				return execErr
+			})
+			if err != nil {
+				return fmt.Errorf("create auth token: %w", err)
+			}
+			return nil
+		}
+		if _, err := s.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("create auth token: %w", err)
+		}
+		return nil
+	}
+
+	if s.IsPostgres() {
+		var id int64
+		err := s.QueryRowContext(ctx,
+			`INSERT INTO auth_tokens (`+authTokenInsertCommonCols+`)
+			VALUES (`+authTokenInsertCommonValues+`) RETURNING id`,
+			commonArgs...).Scan(&id)
+		if err != nil {
+			return fmt.Errorf("create auth token: %w", err)
+		}
+		token.ID = id
+		return nil
+	}
+
+	result, err := s.ExecContext(ctx,
+		`INSERT INTO auth_tokens (`+authTokenInsertCommonCols+`)
+			VALUES (`+authTokenInsertCommonValues+`)`,
+		commonArgs...)
+	if err != nil {
+		return fmt.Errorf("create auth token: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("get last insert id: %w", err)
+	}
+	token.ID = id
+	return nil
+}
+
+// EnsureAuthToken 幂等创建API访问令牌，已存在同一 token hash 时不修改任何字段。
+func (s *SQLStore) EnsureAuthToken(ctx context.Context, token *model.AuthToken) (bool, error) {
+	commonArgs, err := authTokenInsertCommonArgs(token)
+	if err != nil {
+		return false, err
+	}
+
+	if s.IsMySQL() {
+		return s.ensureAuthTokenMySQL(ctx, token, commonArgs)
+	}
+
+	// SQLite / Postgres：ON CONFLICT DO NOTHING
+	// Postgres 无可靠 LastInsertId，用 RETURNING；冲突时无行 → 再查回填
+	if s.IsPostgres() {
+		var id int64
+		err := s.QueryRowContext(ctx,
+			`INSERT INTO auth_tokens (`+authTokenInsertCommonCols+`)
+			VALUES (`+authTokenInsertCommonValues+`)
+			ON CONFLICT(token) DO NOTHING
+			RETURNING id`,
+			commonArgs...).Scan(&id)
+		if err == nil {
+			token.ID = id
+			return true, nil
+		}
+		if err != sql.ErrNoRows {
+			return false, fmt.Errorf("ensure auth token: %w", err)
+		}
+		existing, getErr := s.GetAuthTokenByValue(ctx, token.Token)
+		if getErr != nil {
+			return false, fmt.Errorf("get ensured auth token: %w", getErr)
+		}
+		*token = *existing
+		return false, nil
+	}
+
+	query := `INSERT INTO auth_tokens (` + authTokenInsertCommonCols + `)
+		VALUES (` + authTokenInsertCommonValues + `) ON CONFLICT(token) DO NOTHING`
+
+	result, err := s.ExecContext(ctx, query, commonArgs...)
+	if err != nil {
+		return false, fmt.Errorf("ensure auth token: %w", err)
+	}
+
+	created := false
+	if rows, err := result.RowsAffected(); err == nil {
+		created = rows > 0
+	}
+	if created {
+		if id, err := result.LastInsertId(); err == nil && id > 0 {
+			token.ID = id
+		}
+	}
+
+	if !created || token.ID == 0 {
+		existing, err := s.GetAuthTokenByValue(ctx, token.Token)
+		if err != nil {
+			return created, fmt.Errorf("get ensured auth token: %w", err)
+		}
+		*token = *existing
+	}
+
+	return created, nil
+}
+
+func (s *SQLStore) ensureAuthTokenMySQL(ctx context.Context, token *model.AuthToken, commonArgs []any) (bool, error) {
+	result, err := s.ExecContext(ctx,
+		`INSERT INTO auth_tokens (`+authTokenInsertCommonCols+`)
+			VALUES (`+authTokenInsertCommonValues+`)`,
+		commonArgs...)
+	if err != nil {
+		if isMySQLDuplicateEntryError(err) {
+			existing, getErr := s.GetAuthTokenByValue(ctx, token.Token)
+			if getErr != nil {
+				return false, fmt.Errorf("get ensured auth token: %w", getErr)
+			}
+			*token = *existing
+			return false, nil
+		}
+		return false, fmt.Errorf("ensure auth token: %w", err)
+	}
+
+	if id, err := result.LastInsertId(); err == nil && id > 0 {
+		token.ID = id
+	}
+	if token.ID == 0 {
+		existing, err := s.GetAuthTokenByValue(ctx, token.Token)
+		if err != nil {
+			return true, fmt.Errorf("get ensured auth token: %w", err)
+		}
+		*token = *existing
+	}
+
+	return true, nil
+}
+
+func isMySQLDuplicateEntryError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == mysqlDuplicateEntryCode
+}
+
+// GetAuthToken 根据ID获取令牌
+func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken, error) {
+	token, err := scanAuthToken(s.QueryRowContext(
+		ctx,
+		fmt.Sprintf("SELECT %s FROM auth_tokens WHERE id = ?", authTokenSelectColumns),
+		id,
+	))
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, model.ErrAuthTokenNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get auth token: %w", err)
+	}
+
+	return token, nil
+}
+
+// GetAuthTokenByValue 根据令牌哈希值获取令牌信息
+// 用于认证时快速查找令牌
+func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*model.AuthToken, error) {
+	token, err := scanAuthToken(s.QueryRowContext(
+		ctx,
+		fmt.Sprintf("SELECT %s FROM auth_tokens WHERE token = ?", authTokenSelectColumns),
+		tokenHash,
+	))
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, model.ErrAuthTokenNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get auth token by value: %w", err)
+	}
+
+	return token, nil
+}
+
+// ListAuthTokens 列出所有令牌
+func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
+	rows, err := s.QueryContext(ctx, fmt.Sprintf(
+		"SELECT %s FROM auth_tokens ORDER BY created_at DESC",
+		authTokenSelectColumns,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("list auth tokens: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var tokens []*model.AuthToken
+	for rows.Next() {
+		token, err := scanAuthToken(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan auth token: %w", err)
+		}
+
+		tokens = append(tokens, token)
+	}
+
+	return tokens, rows.Err()
+}
+
+// ListActiveAuthTokens 列出所有有效的令牌
+// 用于热更新AuthService的令牌缓存
+func (s *SQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
+	now := time.Now().UnixMilli()
+
+	rows, err := s.QueryContext(ctx, fmt.Sprintf(
+		"SELECT %s FROM auth_tokens WHERE is_active = 1 AND (expires_at = 0 OR expires_at > ?) ORDER BY created_at DESC",
+		authTokenSelectColumns,
+	), now)
+	if err != nil {
+		return nil, fmt.Errorf("list active auth tokens: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var tokens []*model.AuthToken
+	for rows.Next() {
+		token, err := scanAuthToken(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan auth token: %w", err)
+		}
+
+		tokens = append(tokens, token)
+	}
+
+	return tokens, rows.Err()
+}
+
+// UpdateAuthToken 更新令牌信息
+func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) error {
+	if token == nil {
+		return errors.New("token cannot be nil")
+	}
+	if err := token.ValidateUsageLimits(); err != nil {
+		return err
+	}
+
+	var expiresAt any = int64(0)
+	if token.ExpiresAt != nil {
+		expiresAt = *token.ExpiresAt
+	}
+
+	var lastUsedAt any = int64(0)
+	if token.LastUsedAt != nil {
+		lastUsedAt = *token.LastUsedAt
+	}
+
+	allowedModelsJSON, err := marshalAllowedModels(token.AllowedModels)
+	if err != nil {
+		return err
+	}
+	allowedChannelIDsJSON, err := marshalAllowedChannelIDs(token.AllowedChannelIDs)
+	if err != nil {
+		return err
+	}
+	channelRestrictionMode, err := normalizeAuthTokenChannelRestrictionMode(token)
+	if err != nil {
+		return err
+	}
+
+	result, err := s.ExecContext(ctx, `
+		UPDATE auth_tokens
+		SET description = ?,
+		    token_ciphertext = ?,
+		    token_hint = ?,
+		    expires_at = ?,
+		    last_used_at = ?,
+		    is_active = ?,
+		    cost_limit_microusd = ?,
+		    allowed_models = ?,
+		    allowed_channel_ids = ?,
+		    channel_restriction_mode = ?,
+		    max_concurrency = ?
+		WHERE id = ?
+	`, token.Description, token.TokenCiphertext, token.TokenHint, expiresAt, lastUsedAt, token.IsActive, token.CostLimitMicroUSD, allowedModelsJSON, allowedChannelIDsJSON, channelRestrictionMode, token.MaxConcurrency, token.ID)
+
+	if err != nil {
+		return fmt.Errorf("update auth token: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("auth token not found")
+	}
+
+	return nil
+}
+
+// DeleteAuthToken 删除令牌
+func (s *SQLStore) DeleteAuthToken(ctx context.Context, id int64) error {
+	result, err := s.ExecContext(ctx, `
+		DELETE FROM auth_tokens WHERE id = ?
+	`, id)
+
+	if err != nil {
+		return fmt.Errorf("delete auth token: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("auth token not found")
+	}
+
+	return nil
+}
+
+// UpdateTokenLastUsed 更新令牌最后使用时间
+// 异步调用，性能优化
+func (s *SQLStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error {
+	_, err := s.ExecContext(ctx, `
+		UPDATE auth_tokens
+		SET last_used_at = ?
+		WHERE token = ?
+	`, now.UnixMilli(), tokenHash)
+
+	if err != nil {
+		return fmt.Errorf("update token last used: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateTokenStats 增量更新Token统计信息
+// 使用事务保证原子性，采用增量计算公式避免扫描历史数据
+// 参数:
+//   - tokenHash: Token的SHA256哈希值
+//   - isSuccess: 本次请求是否成功(2xx状态码)
+//   - duration: 总响应时间(秒)
+//   - isStreaming: 是否为流式请求
+//   - firstByteTime: 流式请求的首字节时间(秒)，非流式时为0
+//   - promptTokens: 输入token数量
+//   - completionTokens: 输出token数量
+//   - costUSD: 本次请求费用(美元)
+func (s *SQLStore) UpdateTokenStats(
+	ctx context.Context,
+	tokenHash string,
+	isSuccess bool,
+	duration float64,
+	isStreaming bool,
+	firstByteTime float64,
+	promptTokens int64,
+	completionTokens int64,
+	cacheReadTokens int64,
+	cacheCreationTokens int64,
+	costUSD float64,
+	effectiveCostUSD float64,
+) error {
+	// 单条 UPDATE 保证原子性：避免每次请求都做 BEGIN+SELECT+UPDATE+COMMIT
+	// 这对 SQLite（减少写锁持有时间/往返）和 MySQL（减少往返/行锁竞争）都更友好。
+	successFlag := isSuccess
+	failureFlag := !isSuccess
+	streamUpdateFlag := isStreaming && firstByteTime > 0
+	nonStreamUpdateFlag := !isStreaming
+	nowMs := time.Now().UnixMilli()
+	costMicroUSD := util.USDToMicroUSD(effectiveCostUSD)
+
+	result, err := s.ExecContext(ctx, updateTokenStatsQuery,
+		successFlag,
+		failureFlag,
+		successFlag, promptTokens,
+		successFlag, completionTokens,
+		successFlag, cacheReadTokens,
+		successFlag, cacheCreationTokens,
+		successFlag, costUSD,
+		successFlag, effectiveCostUSD,
+		successFlag, costMicroUSD,
+		streamUpdateFlag, firstByteTime,
+		streamUpdateFlag,
+		nonStreamUpdateFlag, duration,
+		nonStreamUpdateFlag,
+		nowMs,
+		tokenHash,
+	)
+	if err != nil {
+		return fmt.Errorf("update stats: %w", err)
+	}
+
+	// 兼容性：少数驱动可能不支持 RowsAffected，这里尽力检查
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return fmt.Errorf("token not found: %s", tokenHash)
+	}
+
+	return nil
+}

@@ -1,0 +1,284 @@
+package app
+
+import (
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"testing"
+
+	"ccLoad/internal/model"
+
+	"github.com/gin-gonic/gin"
+)
+
+func TestHandleGetDebugLog_NotFoundIncludesRelevantSettings(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	if err := srv.store.UpdateSetting(t.Context(), "debug_log_enabled", "false"); err != nil {
+		t.Fatalf("update debug_log_enabled: %v", err)
+	}
+	if err := srv.store.UpdateSetting(t.Context(), "debug_log_retention_minutes", "15"); err != nil {
+		t.Fatalf("update debug_log_retention_minutes: %v", err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/debug-logs/123", nil))
+	c.Params = gin.Params{{Key: "log_id", Value: "123"}}
+
+	srv.HandleGetDebugLog(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want %d", w.Code, http.StatusNotFound)
+	}
+
+	type unavailableData struct {
+		Reason                   string               `json:"reason"`
+		DebugLogEnabled          *model.SystemSetting `json:"debug_log_enabled"`
+		DebugLogRetentionMinutes *model.SystemSetting `json:"debug_log_retention_minutes"`
+	}
+
+	resp := mustParseAPIResponse[unavailableData](t, w.Body.Bytes())
+	if resp.Success {
+		t.Fatalf("success=%v, want false", resp.Success)
+	}
+	if resp.Error != "debug log unavailable" {
+		t.Fatalf("error=%q, want %q", resp.Error, "debug log unavailable")
+	}
+	if resp.Data.Reason != "debug_log_not_found" {
+		t.Fatalf("reason=%q, want %q", resp.Data.Reason, "debug_log_not_found")
+	}
+	if resp.Data.DebugLogEnabled == nil {
+		t.Fatal("debug_log_enabled should be returned")
+	}
+	if resp.Data.DebugLogEnabled.Key != "debug_log_enabled" || resp.Data.DebugLogEnabled.Value != "false" {
+		t.Fatalf("debug_log_enabled=%+v, want key/value debug_log_enabled/false", resp.Data.DebugLogEnabled)
+	}
+	if resp.Data.DebugLogRetentionMinutes == nil {
+		t.Fatal("debug_log_retention_minutes should be returned")
+	}
+	if resp.Data.DebugLogRetentionMinutes.Key != "debug_log_retention_minutes" || resp.Data.DebugLogRetentionMinutes.Value != "15" {
+		t.Fatalf("debug_log_retention_minutes=%+v, want key/value debug_log_retention_minutes/15", resp.Data.DebugLogRetentionMinutes)
+	}
+}
+
+func TestDebugLogResponse_IncludesProtocolTransformBodiesOnlyForLocalTransform(t *testing.T) {
+	t.Parallel()
+
+	transformed := debugLogResponse(&model.DebugLogEntry{
+		ProtocolTransformed:   true,
+		OriginalReqURL:        "/v1/chat/completions",
+		OriginalReqHeaders:    `{"Content-Type":"application/json","Authorization":"Bearer secret"}`,
+		OriginalReqBody:       []byte(`{"messages":[{"content":"hello"}]}`),
+		ReqBody:               []byte(`{"contents":[{"parts":[{"text":"hello"}]}]}`),
+		RespBody:              []byte(`{"candidates":[{"content":"world"}]}`),
+		TranslatedRespStatus:  http.StatusOK,
+		TranslatedRespHeaders: `{"Content-Type":"application/json"}`,
+		TranslatedRespBody:    []byte(`{"choices":[{"message":{"content":"world"}}]}`),
+	})
+	if got, ok := transformed["protocol_transformed"].(bool); !ok || !got {
+		t.Fatalf("protocol_transformed=%v, want true", transformed["protocol_transformed"])
+	}
+	if got := transformed["original_req_body"]; got != `{"messages":[{"content":"hello"}]}` {
+		t.Fatalf("original_req_body=%v", got)
+	}
+	if got := transformed["translated_resp_body"]; got != `{"choices":[{"message":{"content":"world"}}]}` {
+		t.Fatalf("translated_resp_body=%v", got)
+	}
+	if got := transformed["original_req_url"]; got != "/v1/chat/completions" {
+		t.Fatalf("original_req_url=%v", got)
+	}
+	if got := transformed["original_req_headers"].(string); strings.Contains(got, "Bearer secret") || !strings.Contains(got, "*") {
+		t.Fatalf("original_req_headers was not masked: %s", got)
+	}
+	if got := transformed["translated_resp_status"]; got != http.StatusOK {
+		t.Fatalf("translated_resp_status=%v", got)
+	}
+	if got := transformed["translated_resp_headers"]; got != `{"Content-Type":"application/json"}` {
+		t.Fatalf("translated_resp_headers=%v", got)
+	}
+
+	native := debugLogResponse(&model.DebugLogEntry{ReqBody: []byte(`{"model":"gpt-4"}`)})
+	if _, ok := native["protocol_transformed"]; ok {
+		t.Fatalf("native debug response should not expose protocol transform fields: %v", native)
+	}
+}
+
+func TestHandleMergeDebugResponse_AcceptsGzipBody(t *testing.T) {
+	t.Parallel()
+
+	srv := newInMemoryServer(t)
+	payload, err := json.Marshal(map[string]any{
+		"resp_body": "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	if _, err := gz.Write(payload); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	req := newJSONRequestBytes(http.MethodPost, "/admin/debug-logs/merged-response", compressed.Bytes())
+	req.Header.Set("Content-Encoding", "gzip")
+	c, w := newTestContext(t, req)
+
+	srv.HandleMergeDebugResponse(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[mergedResponseParts](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=%v, want true", resp.Success)
+	}
+	if resp.Data.Content != "hello" {
+		t.Fatalf("content=%q, want hello", resp.Data.Content)
+	}
+}
+
+func TestMergeResponseBody_FormatsConcatenatedCommandToolsAsBash(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Join([]string{
+		`data: {"type":"response.function_call_arguments.delta","delta":"{\"cmd\":\"echo one\"}\n\n{\"cmd\":\"echo two\"}"}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	parts := mergeResponseBody(raw)
+	if !strings.Contains(parts.Tools, "```bash\necho one\n```") {
+		t.Fatalf("tools should render first command as bash, got:\n%s", parts.Tools)
+	}
+	if !strings.Contains(parts.Tools, "```bash\necho two\n```") {
+		t.Fatalf("tools should render second command as bash, got:\n%s", parts.Tools)
+	}
+	if strings.Contains(parts.Tools, "```swift") || strings.Contains(parts.Tools, `"cmd"`) {
+		t.Fatalf("tools leaked raw command JSON or wrong language, got:\n%s", parts.Tools)
+	}
+}
+
+func TestMergeResponseBody_SeparatesCodexMessageItems(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"first"}`,
+		``,
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","delta":" message"}`,
+		``,
+		`data: {"type":"response.output_text.done","item_id":"msg_1","text":"first message"}`,
+		``,
+		`data: {"type":"response.output_text.delta","item_id":"msg_2","delta":"second message"}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	parts := mergeResponseBody(raw)
+	if parts.Content != "first message\n\n---\n\nsecond message" {
+		t.Fatalf("content=%q", parts.Content)
+	}
+}
+
+func TestMergeResponseBody_FormatsApplyPatchToolInputAsDiff(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Join([]string{
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"custom_tool_call","name":"apply_patch","input":""}}`,
+		``,
+		`data: {"type":"response.custom_tool_call_input.delta","output_index":1,"delta":"*** Begin Patch\n*** Add File: demo.go\n+package main\n*** End Patch"}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	parts := mergeResponseBody(raw)
+	want := "### apply_patch\n\n```diff\n*** Begin Patch\n*** Add File: demo.go\n+package main\n*** End Patch\n```"
+	if parts.Tools != want {
+		t.Fatalf("tools=%q, want %q", parts.Tools, want)
+	}
+}
+
+func TestMergeResponseBody_DeduplicatesCodexToolCallLifecycle(t *testing.T) {
+	t.Parallel()
+
+	arguments := `{"cmd":"git status --short"}`
+	raw := strings.Join([]string{
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"id":"fc_1","type":"function_call","status":"in_progress","arguments":"","call_id":"call_1","name":"exec_command"}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"item_id":"fc_1","delta":"` + strings.ReplaceAll(arguments, `"`, `\"`) + `"}`,
+		``,
+		`data: {"type":"response.function_call_arguments.done","output_index":2,"item_id":"fc_1","arguments":"` + strings.ReplaceAll(arguments, `"`, `\"`) + `"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"id":"fc_1","type":"function_call","status":"completed","arguments":"` + strings.ReplaceAll(arguments, `"`, `\"`) + `","call_id":"call_1","name":"exec_command"}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	parts := mergeResponseBody(raw)
+	wantBlock := "```bash\ngit status --short\n```"
+	if strings.Count(parts.Tools, wantBlock) != 1 {
+		t.Fatalf("tool call should render once, got:\n%s", parts.Tools)
+	}
+	if strings.Count(parts.Tools, "### exec_command") != 1 {
+		t.Fatalf("tool heading should render once, got:\n%s", parts.Tools)
+	}
+}
+
+func TestMergeResponseBody_DeduplicatesCodexToolCallWhenOutputIndexChanges(t *testing.T) {
+	t.Parallel()
+
+	arguments := `{"projectPath":"/Users/caidaoli/Share/Source/go/ccLoad","query":"models endpoint","maxFiles":12}`
+	escapedArguments := strings.ReplaceAll(arguments, `"`, `\"`)
+	raw := strings.Join([]string{
+		`data: {"type":"response.output_item.added","output_index":8,"item":{"id":"fc_1","type":"function_call","status":"in_progress","arguments":"","call_id":"call_1","name":"codegraph_explore"}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":8,"item_id":"fc_1","delta":"` + escapedArguments + `"}`,
+		``,
+		`data: {"type":"response.function_call_arguments.done","output_index":11,"item_id":"fc_1","arguments":"` + escapedArguments + `"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":11,"item":{"id":"fc_1","type":"function_call","status":"completed","arguments":"` + escapedArguments + `","call_id":"call_1","name":"codegraph_explore"}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	parts := mergeResponseBody(raw)
+	if strings.Count(parts.Tools, "### codegraph_explore") != 1 {
+		t.Fatalf("tool heading should render once, got:\n%s", parts.Tools)
+	}
+	if strings.Count(parts.Tools, `"projectPath": "/Users/caidaoli/Share/Source/go/ccLoad"`) != 1 {
+		t.Fatalf("tool arguments should render once, got:\n%s", parts.Tools)
+	}
+}
+
+func TestMergeResponseBody_MergesOpenAIStreamingToolCallIDWithIndexDeltas(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Join([]string{
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]}}]}`,
+		``,
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"go\"}"}}]}}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	parts := mergeResponseBody(raw)
+	if strings.Count(parts.Tools, "### lookup") != 1 {
+		t.Fatalf("tool heading should render once, got:\n%s", parts.Tools)
+	}
+	if !strings.Contains(parts.Tools, `"q": "go"`) {
+		t.Fatalf("tool arguments should be merged as one JSON object, got:\n%s", parts.Tools)
+	}
+	if strings.Contains(parts.Tools, "### tool_call") {
+		t.Fatalf("tool call should not be split into an anonymous second block, got:\n%s", parts.Tools)
+	}
+}

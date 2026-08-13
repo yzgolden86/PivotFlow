@@ -1,0 +1,259 @@
+# ccLoad Makefile - macOS Service Management
+
+# 变量定义
+SERVICE_NAME = com.ccload.service
+PLIST_TEMPLATE = $(SERVICE_NAME).plist.template
+PLIST_FILE = $(SERVICE_NAME).plist
+LAUNCH_AGENTS_DIR = $(HOME)/Library/LaunchAgents
+TARGET_PLIST = $(LAUNCH_AGENTS_DIR)/$(PLIST_FILE)
+BINARY_NAME = ccload
+LOG_DIR = logs
+PROJECT_DIR = $(shell pwd)
+GOTAGS ?= sonic
+RACE_PACKAGES ?= ./internal/...
+RACE_FAST_PACKAGES ?= ./internal/protocol/... ./internal/app ./internal/storage/sql
+RACE_P ?= $(shell sysctl -n hw.physicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+RACE_PARALLEL ?= $(RACE_P)
+
+# 版本信息
+VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME ?= $(shell date '+%Y-%m-%d %H:%M:%S %z')
+BUILT_BY ?= $(shell whoami)
+VERSION_PKG = ccLoad/internal/version
+LDFLAGS = -s -w \
+	-X $(VERSION_PKG).Version=$(VERSION) \
+	-X $(VERSION_PKG).Commit=$(COMMIT) \
+	-X '$(VERSION_PKG).BuildTime=$(BUILD_TIME)' \
+	-X $(VERSION_PKG).BuiltBy=$(BUILT_BY)
+
+.PHONY: help build docker-build console-install console-build console-check web-test verify-web race-fast race www-setup www-run www-release generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
+
+# 默认目标
+help:
+	@echo "ccLoad 服务管理 Makefile"
+	@echo ""
+	@echo "可用命令:"
+	@echo "  build             - 构建二进制文件"
+	@echo "  docker-build      - 构建 Docker 镜像（自动注入版本信息）"
+	@echo "  console-install   - 安装新管理控制台依赖"
+	@echo "  console-build     - 构建新管理控制台到 web/console"
+	@echo "  console-check     - 检查并构建新管理控制台"
+	@echo "  web-test          - 运行 web 前端 node:test 测试"
+	@echo "  verify-web        - 执行 web 前端验证"
+	@echo "  race-fast         - 运行高价值 race 测试子集"
+	@echo "  race              - 运行全量 race 测试（显式并行度）"
+	@echo "  www-setup         - 设置 www 介绍网站（复制共享资源）"
+	@echo "  www-run           - 本地运行 www 网站（使用 Python 简易服务器）"
+	@echo "  www-release       - 使用 rsync 发布 www 到 racknerd"
+	@echo "  generate-plist    - 从模板生成 plist 文件（自动读取 .env 配置）"
+	@echo "  install-service   - 安装 LaunchAgent 服务"
+	@echo "  uninstall-service - 卸载 LaunchAgent 服务"
+	@echo "  start            - 启动服务"
+	@echo "  stop             - 停止服务"
+	@echo "  restart          - 重启服务"
+	@echo "  status           - 查看服务状态"
+	@echo "  logs             - 查看服务日志"
+	@echo "  clean            - 清理构建文件和日志"
+
+# 构建二进制文件（纯Go静态编译 + trimpath）
+build:
+	@echo "构建 $(BINARY_NAME) ($(VERSION))..."
+	@CGO_ENABLED=0 go build -tags "$(GOTAGS)" -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY_NAME) .
+	@echo "构建完成: $(BINARY_NAME)"
+
+# 构建 Docker 镜像（自动注入版本信息）
+DOCKER_IMAGE ?= ccload
+DOCKER_TAG ?= $(VERSION)
+docker-build:
+	@echo "构建 Docker 镜像 $(DOCKER_IMAGE):$(DOCKER_TAG)..."
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG) \
+		-t $(DOCKER_IMAGE):latest \
+		.
+	@echo "Docker 镜像构建完成: $(DOCKER_IMAGE):$(DOCKER_TAG)"
+
+console-install:
+	@cd console && npm ci
+
+console-build:
+	@cd console && npm run build
+
+console-check:
+	@cd console && npm run typecheck
+	@cd console && npm run build
+
+web-test: www-setup
+	@node --test web/assets/js/*.test.js
+
+verify-web: web-test console-check
+
+race-fast:
+	@echo "运行 race-fast: -p $(RACE_P) -parallel $(RACE_PARALLEL) $(RACE_FAST_PACKAGES)"
+	@go test -tags "$(GOTAGS)" -race -p "$(RACE_P)" -parallel "$(RACE_PARALLEL)" $(RACE_FAST_PACKAGES)
+
+race:
+	@echo "运行全量 race: -p $(RACE_P) -parallel $(RACE_PARALLEL) $(RACE_PACKAGES)"
+	@go test -tags "$(GOTAGS)" -race -p "$(RACE_P)" -parallel "$(RACE_PARALLEL)" $(RACE_PACKAGES)
+
+# 设置 www 介绍网站（复制共享资源，使其完全独立）
+www-setup:
+	@echo "设置 www 介绍网站..."
+	@mkdir -p www/assets/{css,js,locales,images}
+	@echo "复制共享资源（CSS、JS、图标）..."
+	@cp -f web/assets/css/styles.css www/assets/css/ 2>/dev/null || true
+	@cp -f web/assets/js/i18n.js www/assets/js/ 2>/dev/null || true
+	@cp -f web/assets/js/theme-init.js www/assets/js/ 2>/dev/null || true
+	@cp -f web/favicon.svg web/favicon.ico web/apple-touch-icon.png web/brand-mark.svg web/brand-wordmark.svg www/ 2>/dev/null || true
+	@cp -f images/ccload.jpg images/ccload-dashboard.jpeg images/ccload-logs.jpg www/assets/images/ 2>/dev/null || true
+	@echo "✓ www 设置完成，现在是完全独立的静态网站"
+
+# 本地运行 www 网站（预览效果）
+WWW_PORT ?= 8888
+WWW_RELEASE_HOST ?= racknerd
+WWW_RELEASE_PATH ?= /var/www/ccload.xyz
+WWW_RELEASE_TARGET ?= $(WWW_RELEASE_HOST):$(WWW_RELEASE_PATH)
+WWW_RELEASE_SSH ?= ssh -T
+WWW_RELEASE_RSYNC_FLAGS ?= -az --delete
+www-run: www-setup
+	@echo "启动 www 介绍网站预览服务器..."
+	@echo "访问地址: http://localhost:$(WWW_PORT)/"
+	@echo "按 Ctrl+C 停止服务"
+	@cd www && python3 -m http.server $(WWW_PORT)
+
+www-release: www-setup
+	@echo "检查远端发布环境..."
+	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'command -v rsync >/dev/null || { echo "远端缺少 rsync，请先在服务器执行: apt-get update && apt-get install -y rsync" >&2; exit 127; }'
+	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'mkdir -p "$(WWW_RELEASE_PATH)"'
+	@echo "同步 www 到 $(WWW_RELEASE_TARGET)..."
+	@rsync -e "$(WWW_RELEASE_SSH)" $(WWW_RELEASE_RSYNC_FLAGS) www/ $(WWW_RELEASE_TARGET)/
+	@echo "修正远程文件权限..."
+	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'find "$(WWW_RELEASE_PATH)" -type d -exec chmod 755 {} \; && find "$(WWW_RELEASE_PATH)" -type f -exec chmod 644 {} \;'
+	@echo "✓ www 已同步到 $(WWW_RELEASE_TARGET)"
+
+# 创建必要的目录
+
+# 生成 plist 文件（从模板动态替换路径和环境变量）
+generate-plist:
+	@echo "从模板生成 plist 文件..."
+	@# 首先进行基础路径替换
+	@sed 's|{{PROJECT_DIR}}|$(PROJECT_DIR)|g' $(PLIST_TEMPLATE) > $(PLIST_FILE).tmp
+	@# 如果存在 .env 文件，则注入环境变量
+	@if [ -f ".env" ]; then \
+		echo "检测到 .env 文件，注入环境变量..."; \
+		$(MAKE) inject-env-vars; \
+	else \
+		echo "未找到 .env 文件，使用默认环境变量"; \
+		mv $(PLIST_FILE).tmp $(PLIST_FILE); \
+	fi
+	@echo "plist 文件已生成: $(PLIST_FILE)"
+
+# 注入 .env 文件中的环境变量到 plist 文件
+inject-env-vars:
+	@# 创建环境变量临时文件
+	@echo "" > .env_vars.tmp
+	@# 解析 .env 文件
+	@grep -v '^[[:space:]]*#' .env | grep -v '^[[:space:]]*$$' | while IFS='=' read -r key value; do \
+		if [ -n "$$key" ]; then \
+			key=$$(echo "$$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$$//'); \
+			value=$$(echo "$$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$$//' | sed 's/^["'\'']\(.*\)["'\'']$$/\1/'); \
+			value=$$(echo "$$value" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'\''/\&#39;/g'); \
+			echo "        <key>$$key</key>" >> .env_vars.tmp; \
+			echo "        <string>$$value</string>" >> .env_vars.tmp; \
+		fi; \
+	done
+	@# 在 PATH 后插入环境变量
+	@awk '/<string>\/usr\/local\/bin:\/usr\/bin:\/bin<\/string>/{print; system("cat .env_vars.tmp"); next}1' $(PLIST_FILE).tmp > $(PLIST_FILE)
+	@# 清理临时文件
+	@rm -f $(PLIST_FILE).tmp .env_vars.tmp
+
+# 安装服务
+install-service: build generate-plist
+	@echo "安装 LaunchAgent 服务..."
+	@mkdir -p $(LOG_DIR)
+	@mkdir -p $(LAUNCH_AGENTS_DIR)
+	@if [ -f "$(TARGET_PLIST)" ]; then \
+		echo "服务已存在，先卸载旧服务..."; \
+		$(MAKE) uninstall-service; \
+	fi
+	@cp $(PLIST_FILE) $(TARGET_PLIST)
+	@launchctl load $(TARGET_PLIST)
+	@echo "服务安装完成并已启动"
+	@$(MAKE) status
+
+# 卸载服务
+uninstall-service:
+	@echo "卸载 LaunchAgent 服务..."
+	@if [ -f "$(TARGET_PLIST)" ]; then \
+		launchctl unload $(TARGET_PLIST) 2>/dev/null || true; \
+		rm -f $(TARGET_PLIST); \
+		echo "服务已卸载"; \
+	else \
+		echo "服务未安装"; \
+	fi
+
+# 启动服务
+start:
+	@echo "启动服务..."
+	@launchctl start $(SERVICE_NAME)
+	@sleep 1
+	@$(MAKE) status
+
+# 停止服务
+stop:
+	@echo "停止服务..."
+	@launchctl stop $(SERVICE_NAME)
+	@sleep 1
+	@$(MAKE) status
+
+# 重启服务
+restart: stop start
+
+# 查看服务状态
+status:
+	@echo "服务状态:"
+	@launchctl list | grep $(SERVICE_NAME) || echo "服务未运行"
+
+# 查看日志
+logs:
+	@echo "=== 标准输出日志 ==="
+	@if [ -f "$(LOG_DIR)/ccload.log" ]; then \
+		tail -f $(LOG_DIR)/ccload.log; \
+	else \
+		echo "日志文件不存在: $(LOG_DIR)/ccload.log"; \
+	fi
+
+# 查看错误日志
+error-logs:
+	@echo "=== 错误日志 ==="
+	@if [ -f "$(LOG_DIR)/ccload.error.log" ]; then \
+		tail -f $(LOG_DIR)/ccload.error.log; \
+	else \
+		echo "错误日志文件不存在: $(LOG_DIR)/ccload.error.log"; \
+	fi
+
+# 清理文件
+clean:
+	@echo "清理构建文件和日志..."
+	@rm -f $(BINARY_NAME)
+	@rm -f $(PLIST_FILE)
+	@rm -rf $(LOG_DIR)
+	@echo "清理完成"
+
+# 开发模式运行（不作为服务）
+dev:
+	@echo "开发模式运行..."
+	@go run -tags "$(GOTAGS)" .
+
+# 查看完整服务信息
+info:
+	@echo "=== 服务信息 ==="
+	@echo "服务名称: $(SERVICE_NAME)"
+	@echo "配置文件: $(PLIST_FILE)"
+	@echo "安装路径: $(TARGET_PLIST)"
+	@echo "二进制文件: $(BINARY_NAME)"
+	@echo "日志目录: $(LOG_DIR)"
+	@echo ""
+	@$(MAKE) status
