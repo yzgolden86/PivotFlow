@@ -51,7 +51,7 @@ self_test() {
 
   (
     cd "$repo"
-    GITHUB_REPOSITORY=caidaoli/ccLoad bash "$script_path" v1.1.0-beta.1 "$notes"
+    GITHUB_REPOSITORY=yzgolden86/PivotFlow bash "$script_path" v1.1.0-beta.1 "$notes"
   )
   assert_contains "$notes" 'fix(core): direct beta fix'
   assert_contains "$notes" 'compare/v1.0.0...v1.1.0-beta.1'
@@ -63,7 +63,7 @@ self_test() {
 
   (
     cd "$repo"
-    GITHUB_REPOSITORY=caidaoli/ccLoad bash "$script_path" v1.1.0-beta.2 "$notes"
+    GITHUB_REPOSITORY=yzgolden86/PivotFlow bash "$script_path" v1.1.0-beta.2 "$notes"
   )
   assert_contains "$notes" 'feat(api): beta follow-up'
   assert_contains "$notes" 'compare/v1.1.0-beta.1...v1.1.0-beta.2'
@@ -75,7 +75,7 @@ self_test() {
 
   (
     cd "$repo"
-    GITHUB_REPOSITORY=caidaoli/ccLoad bash "$script_path" v1.1.0 "$notes"
+    GITHUB_REPOSITORY=yzgolden86/PivotFlow bash "$script_path" v1.1.0 "$notes"
   )
   assert_contains "$notes" 'fix(core): direct beta fix'
   assert_contains "$notes" 'feat(api): beta follow-up'
@@ -85,7 +85,7 @@ self_test() {
   git -C "$repo" tag -a v1.1.1-beta.1 -m 'Release v1.1.1-beta.1'
   if (
     cd "$repo"
-    GITHUB_REPOSITORY=caidaoli/ccLoad bash "$script_path" v1.1.1-beta.1 "$notes"
+    GITHUB_REPOSITORY=yzgolden86/PivotFlow bash "$script_path" v1.1.1-beta.1 "$notes"
   ) >/dev/null 2>&1; then
     fail 'empty release range unexpectedly succeeded'
   fi
@@ -157,7 +157,7 @@ resolve_base_tag() {
 main() {
   local release_tag=${1:-}
   local output=${2:-}
-  local repository=${GITHUB_REPOSITORY:-caidaoli/ccLoad}
+  local repository=${GITHUB_REPOSITORY:-yzgolden86/PivotFlow}
   local release_commit base_tag commit_count commit subject short_commit
 
   [[ -n "$release_tag" && -n "$output" && $# -eq 2 ]] || \

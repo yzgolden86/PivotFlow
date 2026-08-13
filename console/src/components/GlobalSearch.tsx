@@ -18,7 +18,7 @@ const staticEntries: SearchEntry[] = [
   { id: 'page-accounts', label: '账号管理', detail: '凭证、余额、签到与路由同步', href: '#/accounts', kind: 'page' },
   { id: 'page-checkins', label: '签到中心', detail: '批量签到与结果历史', href: '#/checkins', kind: 'page' },
   { id: 'page-announcements', label: '公告中心', detail: '统一查看站点公告', href: '#/announcements', kind: 'page' },
-  { id: 'page-channels', label: '渠道与分发', detail: 'CCLoad 路由候选、协议与冷却', href: '#/channels', kind: 'page' },
+  { id: 'page-channels', label: '渠道与分发', detail: '路由候选、协议与冷却', href: '#/channels', kind: 'page' },
   { id: 'page-logs', label: '请求日志', detail: '路由结果、响应时延与费用', href: '#/logs', kind: 'page' },
   { id: 'page-stats', label: '用量统计', detail: '按渠道与模型核对消耗', href: '#/stats', kind: 'page' },
   { id: 'page-models', label: '模型与测试', detail: '站点模型清单、直测与渠道测试', href: '#/models', kind: 'page' },

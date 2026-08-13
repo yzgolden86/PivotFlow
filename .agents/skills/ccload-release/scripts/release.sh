@@ -211,20 +211,22 @@ self_test() {
   script_path=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
   self_test_root=$(mktemp -d)
   trap 'rm -rf -- "$self_test_root"' EXIT
-  remote_dir="$self_test_root/caidaoli/ccLoad.git"
+  remote_dir="$self_test_root/yzgolden86/PivotFlow.git"
   work_dir="$self_test_root/work"
   stub_dir="$self_test_root/bin"
   mkdir -p "$(dirname "$remote_dir")" "$stub_dir"
 
   git init --bare "$remote_dir" >/dev/null
+  git --git-dir="$remote_dir" symbolic-ref HEAD refs/heads/main
   git clone "$remote_dir" "$work_dir" >/dev/null 2>&1
   git -C "$work_dir" config user.name 'Release Self Test'
   git -C "$work_dir" config user.email 'release-self-test@example.invalid'
+  git -C "$work_dir" branch -M main
   printf 'base\n' >"$work_dir/release-test.txt"
   git -C "$work_dir" add release-test.txt
   git -C "$work_dir" commit -m 'chore: initial release' >/dev/null
   git -C "$work_dir" tag -a v1.0.0 -m 'Release v1.0.0'
-  git -C "$work_dir" push origin master refs/tags/v1.0.0 >/dev/null 2>&1
+  git -C "$work_dir" push origin main refs/tags/v1.0.0 >/dev/null 2>&1
   printf 'local commit\n' >>"$work_dir/release-test.txt"
   git -C "$work_dir" add release-test.txt
   git -C "$work_dir" commit -m 'fix: local ahead' >/dev/null
@@ -272,11 +274,11 @@ EOF
   done
 
   before_head=$(git -C "$work_dir" rev-parse HEAD)
-  before_remote=$(git --git-dir="$remote_dir" rev-parse refs/heads/master)
+  before_remote=$(git --git-dir="$remote_dir" rev-parse refs/heads/main)
   dry_run_output=$(cd "$work_dir" && PATH="$stub_dir:$PATH" "$script_path" beta --dry-run \
     --commit-message 'feat(release): prepare revision')
   assert_equal "$before_head" "$(git -C "$work_dir" rev-parse HEAD)" 'dry-run local HEAD'
-  assert_equal "$before_remote" "$(git --git-dir="$remote_dir" rev-parse refs/heads/master)" 'dry-run remote master'
+  assert_equal "$before_remote" "$(git --git-dir="$remote_dir" rev-parse refs/heads/main)" 'dry-run remote main'
   [[ -n "$(git -C "$work_dir" status --porcelain)" ]] || fail "dry-run unexpectedly cleaned the worktree"
   [[ "$dry_run_output" == *'target tag:      v1.0.1-beta.1'* ]] || fail "dry-run derived the wrong first Beta Tag"
 
@@ -285,10 +287,10 @@ EOF
   published_head=$(git -C "$work_dir" rev-parse HEAD)
   published_tag_target=$(git --git-dir="$remote_dir" rev-parse 'refs/tags/v1.0.1-beta.1^{}')
   assert_equal 'feat(release): prepare revision' "$(git -C "$work_dir" log -1 --format=%s)" 'automatic commit subject'
-  assert_equal "$published_head" "$(git --git-dir="$remote_dir" rev-parse refs/heads/master)" 'pushed master'
+  assert_equal "$published_head" "$(git --git-dir="$remote_dir" rev-parse refs/heads/main)" 'pushed main'
   assert_equal "$published_head" "$published_tag_target" 'published Tag target'
   assert_equal '' "$(git -C "$work_dir" status --porcelain)" 'published worktree'
-  [[ "$publish_output" == *'Container: ghcr.io/caidaoli/ccload:v1.0.1-beta.1 and ghcr.io/caidaoli/ccload:beta'* ]] || \
+  [[ "$publish_output" == *'Container: ghcr.io/yzgolden86/pivotflow:v1.0.1-beta.1 and ghcr.io/yzgolden86/pivotflow:beta'* ]] || \
     fail "publish did not report the Beta container images"
 
   printf 'next change\n' >>"$work_dir/release-test.txt"
@@ -325,10 +327,10 @@ EOF
     --commit-message 'feat: stable minor change')
   stable_published_head=$(git -C "$work_dir" rev-parse HEAD)
   stable_tag_target=$(git --git-dir="$remote_dir" rev-parse 'refs/tags/v1.1.0^{}')
-  assert_equal "$stable_published_head" "$(git --git-dir="$remote_dir" rev-parse refs/heads/master)" \
-    'stable pushed master'
+  assert_equal "$stable_published_head" "$(git --git-dir="$remote_dir" rev-parse refs/heads/main)" \
+    'stable pushed main'
   assert_equal "$stable_published_head" "$stable_tag_target" 'stable published Tag target'
-  [[ "$stable_publish_output" == *'Container: ghcr.io/caidaoli/ccload:v1.1.0 and ghcr.io/caidaoli/ccload:latest'* ]] || \
+  [[ "$stable_publish_output" == *'Container: ghcr.io/yzgolden86/pivotflow:v1.1.0 and ghcr.io/yzgolden86/pivotflow:latest'* ]] || \
     fail "publish did not report the stable container images"
   published_head=$stable_published_head
 
@@ -339,11 +341,11 @@ EOF
   printf 'remote ahead\n' >>"$other_dir/release-test.txt"
   git -C "$other_dir" add release-test.txt
   git -C "$other_dir" commit -m 'fix: remote ahead' >/dev/null
-  git -C "$other_dir" push origin master >/dev/null 2>&1
+  git -C "$other_dir" push origin main >/dev/null 2>&1
   if remote_ahead_error=$(cd "$work_dir" && "$script_path" beta --dry-run 2>&1); then
-    fail "dry-run accepted a remote-ahead master"
+    fail "dry-run accepted a remote-ahead main"
   fi
-  [[ "$remote_ahead_error" == *'origin/master is ahead of local master'* ]] || \
+  [[ "$remote_ahead_error" == *'origin/main is ahead of local main'* ]] || \
     fail "dry-run reported the wrong remote-ahead error"
   assert_equal "$published_head" "$(git -C "$work_dir" rev-parse HEAD)" 'remote-ahead local HEAD'
 
@@ -410,23 +412,23 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || fail "not inside a Git
 cd "$repo_root"
 
 origin_url=$(git remote get-url origin 2>/dev/null) || fail "origin remote is missing"
-if [[ ! "$origin_url" =~ (^|[:/])caidaoli/ccLoad(\.git)?$ ]]; then
-  fail "origin is not caidaoli/ccLoad: $origin_url"
+if [[ ! "$origin_url" =~ (^|[:/])yzgolden86/PivotFlow(\.git)?$ ]]; then
+  fail "origin is not yzgolden86/PivotFlow: $origin_url"
 fi
 
 branch=$(git branch --show-current)
-[[ "$branch" == master ]] || fail "current branch must be master, got ${branch:-detached HEAD}"
+[[ "$branch" == main ]] || fail "current branch must be main, got ${branch:-detached HEAD}"
 
-git fetch --prune origin master
+git fetch --prune origin main
 git fetch --tags origin
 
 head_sha=$(git rev-parse HEAD)
-origin_sha=$(git rev-parse refs/remotes/origin/master)
+origin_sha=$(git rev-parse refs/remotes/origin/main)
 relation=$(branch_relation "$head_sha" "$origin_sha")
 case "$relation" in
   equal|local-ahead) ;;
-  remote-ahead) fail "origin/master is ahead of local master; reconcile it before release" ;;
-  diverged) fail "local master has diverged from origin/master; reconcile it before release" ;;
+  remote-ahead) fail "origin/main is ahead of local main; reconcile it before release" ;;
+  diverged) fail "local main has diverged from origin/main; reconcile it before release" ;;
   *) fail "unknown branch relation: $relation" ;;
 esac
 
@@ -452,7 +454,7 @@ else
   worktree_action=clean
 fi
 if [[ "$relation" == local-ahead ]] || [[ -n "$pending_message" ]]; then
-  branch_action='push verified master'
+  branch_action='push verified main'
 else
   branch_action='already synchronized'
 fi
@@ -509,20 +511,20 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   fail "verification changed the working tree; refusing to push or tag"
 fi
 
-git fetch --prune origin master
-origin_sha=$(git rev-parse refs/remotes/origin/master)
+git fetch --prune origin main
+origin_sha=$(git rev-parse refs/remotes/origin/main)
 relation=$(branch_relation "$head_sha" "$origin_sha")
 case "$relation" in
   equal) ;;
-  local-ahead) git push origin 'HEAD:refs/heads/master' ;;
-  remote-ahead) fail "origin/master advanced during verification; refusing to push or tag" ;;
-  diverged) fail "origin/master diverged during verification; refusing to push or tag" ;;
+  local-ahead) git push origin 'HEAD:refs/heads/main' ;;
+  remote-ahead) fail "origin/main advanced during verification; refusing to push or tag" ;;
+  diverged) fail "origin/main diverged during verification; refusing to push or tag" ;;
   *) fail "unknown branch relation after verification: $relation" ;;
 esac
 
-git fetch --prune origin master
-origin_sha=$(git rev-parse refs/remotes/origin/master)
-[[ "$head_sha" == "$origin_sha" ]] || fail "local HEAD does not match origin/master after branch push"
+git fetch --prune origin main
+origin_sha=$(git rev-parse refs/remotes/origin/main)
+[[ "$head_sha" == "$origin_sha" ]] || fail "local HEAD does not match origin/main after branch push"
 
 git fetch --tags origin
 derive_release_plan ""
@@ -549,7 +551,7 @@ while [[ -z "$run_id" ]] && (( attempt < 60 )); do
 done
 [[ -n "$run_id" ]] || fail "GitHub Actions run was not found for $release_tag"
 
-printf 'GitHub Actions run: https://github.com/caidaoli/ccLoad/actions/runs/%s\n' "$run_id"
+printf 'GitHub Actions run: https://github.com/yzgolden86/PivotFlow/actions/runs/%s\n' "$run_id"
 gh run watch "$run_id" --exit-status
 
 is_prerelease=$(gh release view "$release_tag" --json isPrerelease --jq '.isPrerelease')
@@ -561,7 +563,7 @@ else
   [[ "$is_prerelease" == false ]] || fail "$release_tag was unexpectedly published as a prerelease"
   alias_tag=latest
 fi
-image=ghcr.io/caidaoli/ccload
+image=ghcr.io/yzgolden86/pivotflow
 release_digest=$(docker buildx imagetools inspect "$image:$release_tag" --format '{{.Manifest.Digest}}')
 alias_digest=$(docker buildx imagetools inspect "$image:$alias_tag" --format '{{.Manifest.Digest}}')
 [[ -n "$release_digest" ]] || fail "$image:$release_tag returned an empty manifest digest"

@@ -1,4 +1,4 @@
-# ccLoad Docker镜像构建文件
+# PivotFlow Docker 镜像构建文件
 # 多平台构建：使用 tonistiigi/xx 交叉编译，避免 QEMU 模拟
 # syntax=docker/dockerfile:1.4
 

@@ -11,8 +11,8 @@ RUN apk add --no-cache ca-certificates tzdata && \
 
 WORKDIR /app
 
-COPY dist/ccload-linux-${TARGETARCH} /app/ccload
-RUN chmod 0755 /app/ccload && chown ccload:ccload /app/ccload
+COPY dist/pivotflow-linux-${TARGETARCH} /app/pivotflow
+RUN chmod 0755 /app/pivotflow && chown ccload:ccload /app/pivotflow
 
 USER ccload
 
@@ -26,4 +26,4 @@ ENV PORT=8080 \
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-CMD ["./ccload"]
+CMD ["./pivotflow"]

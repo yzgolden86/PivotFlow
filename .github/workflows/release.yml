@@ -116,19 +116,19 @@ jobs:
         include:
           - goos: darwin
             goarch: amd64
-            output: ccload-darwin-amd64
+            output: pivotflow-darwin-amd64
           - goos: darwin
             goarch: arm64
-            output: ccload-darwin-arm64
+            output: pivotflow-darwin-arm64
           - goos: linux
             goarch: amd64
-            output: ccload-linux-amd64
+            output: pivotflow-linux-amd64
           - goos: linux
             goarch: arm64
-            output: ccload-linux-arm64
+            output: pivotflow-linux-arm64
           - goos: windows
             goarch: amd64
-            output: ccload-windows-amd64.exe
+            output: pivotflow-windows-amd64.exe
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -195,7 +195,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum ccload-* | sort -k2 > checksums.txt
+          sha256sum pivotflow-* | sort -k2 > checksums.txt
           cat checksums.txt
 
       - name: Generate release notes
@@ -215,7 +215,7 @@ jobs:
           body_path: ${{ runner.temp }}/release-notes.md
           fail_on_unmatched_files: true
           files: |
-            dist/ccload-*
+            dist/pivotflow-*
             dist/checksums.txt
 
   docker:

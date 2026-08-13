@@ -324,8 +324,8 @@ window.WebAuth = window.WebAuth || {
   }
 
   // GitHub仓库地址
-  const GITHUB_REPO_URL = 'https://github.com/caidaoli/ccLoad';
-  const GITHUB_RELEASES_URL = 'https://github.com/caidaoli/ccLoad/releases';
+  const GITHUB_REPO_URL = 'https://github.com/yzgolden86/PivotFlow';
+  const GITHUB_RELEASES_URL = 'https://github.com/yzgolden86/PivotFlow/releases';
 
   // 版本信息
   let versionInfo = null;
@@ -694,7 +694,7 @@ window.WebAuth = window.WebAuth || {
         target: '_blank',
         rel: 'noopener noreferrer',
         title: t('nav.githubRepo'),
-        'aria-label': 'ccLoad — API Load Balancer & Proxy'
+        'aria-label': 'PivotFlow — AI API Site Manager and Router'
       }, [
         _activeWrap,
         wordmark

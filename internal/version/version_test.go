@@ -33,7 +33,8 @@ func TestPrintBanner_NonTTY(t *testing.T) {
 	}
 	s := string(out)
 	for _, mustContain := range []string{
-		"API Load Balancer & Proxy",
+		"PivotFlow",
+		"AI API Site Manager & Intelligent Router",
 		"Version:",
 		"test-ver",
 		"Commit:",
@@ -43,7 +44,7 @@ func TestPrintBanner_NonTTY(t *testing.T) {
 		"Built By:",
 		"test-by",
 		"Repo:",
-		"ccLoad",
+		"github.com/yzgolden86/PivotFlow",
 	} {
 		if !strings.Contains(s, mustContain) {
 			t.Fatalf("banner output missing %q, got:\n%s", mustContain, s)

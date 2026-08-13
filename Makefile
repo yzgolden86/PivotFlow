@@ -1,4 +1,4 @@
-# ccLoad Makefile - macOS Service Management
+# PivotFlow Makefile - build, verification and optional macOS service helpers
 
 # 变量定义
 SERVICE_NAME = com.ccload.service
@@ -31,7 +31,7 @@ LDFLAGS = -s -w \
 
 # 默认目标
 help:
-	@echo "ccLoad 服务管理 Makefile"
+	@echo "PivotFlow 服务管理 Makefile"
 	@echo ""
 	@echo "可用命令:"
 	@echo "  build             - 构建二进制文件"
@@ -63,7 +63,7 @@ build:
 	@echo "构建完成: $(BINARY_NAME)"
 
 # 构建 Docker 镜像（自动注入版本信息）
-DOCKER_IMAGE ?= ccload
+DOCKER_IMAGE ?= pivotflow
 DOCKER_TAG ?= $(VERSION)
 docker-build:
 	@echo "构建 Docker 镜像 $(DOCKER_IMAGE):$(DOCKER_TAG)..."
@@ -101,19 +101,16 @@ race:
 # 设置 www 介绍网站（复制共享资源，使其完全独立）
 www-setup:
 	@echo "设置 www 介绍网站..."
-	@mkdir -p www/assets/{css,js,locales,images}
-	@echo "复制共享资源（CSS、JS、图标）..."
-	@cp -f web/assets/css/styles.css www/assets/css/ 2>/dev/null || true
-	@cp -f web/assets/js/i18n.js www/assets/js/ 2>/dev/null || true
-	@cp -f web/assets/js/theme-init.js www/assets/js/ 2>/dev/null || true
+	@mkdir -p www/assets/{css,images}
+	@echo "复制 PivotFlow 品牌资源与脱敏截图..."
 	@cp -f web/favicon.svg web/favicon.ico web/apple-touch-icon.png web/brand-mark.svg web/brand-wordmark.svg www/ 2>/dev/null || true
-	@cp -f images/ccload.jpg images/ccload-dashboard.jpeg images/ccload-logs.jpg www/assets/images/ 2>/dev/null || true
+	@cp -f docs/assets/pivotflow-cover.png docs/assets/dashboard.png docs/assets/routing.png www/assets/images/ 2>/dev/null || true
 	@echo "✓ www 设置完成，现在是完全独立的静态网站"
 
 # 本地运行 www 网站（预览效果）
 WWW_PORT ?= 8888
 WWW_RELEASE_HOST ?= racknerd
-WWW_RELEASE_PATH ?= /var/www/ccload.xyz
+WWW_RELEASE_PATH ?= /var/www/pivotflow
 WWW_RELEASE_TARGET ?= $(WWW_RELEASE_HOST):$(WWW_RELEASE_PATH)
 WWW_RELEASE_SSH ?= ssh -T
 WWW_RELEASE_RSYNC_FLAGS ?= -az --delete
