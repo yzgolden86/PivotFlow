@@ -1,9 +1,9 @@
-version: '3.8'
+name: pivotflow
 
 services:
-  ccload:
-    image: ghcr.io/caidaoli/ccload:latest
-    container_name: ccload
+  pivotflow:
+    image: ghcr.io/yzgolden86/pivotflow:latest
+    container_name: pivotflow
     user: root
     restart: unless-stopped
     ports:
@@ -21,4 +21,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-

@@ -288,7 +288,7 @@ func (m *codexOAuthManager) handleCallback(session *codexOAuthSession, w http.Re
 		_, _ = fmt.Fprintf(w, "<h1>%s 登录失败</h1><p>%s</p>", html.EscapeString(m.provider), html.EscapeString(result.errorMsg))
 		return
 	}
-	_, _ = fmt.Fprintf(w, "<h1>%s 授权已收到</h1><p>ccLoad 正在创建渠道，可以关闭此窗口。</p>", html.EscapeString(m.provider))
+	_, _ = fmt.Fprintf(w, "<h1>%s 授权已收到</h1><p>PivotFlow 正在创建渠道，可以关闭此窗口。</p>", html.EscapeString(m.provider))
 }
 
 func (m *codexOAuthManager) deliverCallback(session *codexOAuthSession, result codexOAuthResult) error {

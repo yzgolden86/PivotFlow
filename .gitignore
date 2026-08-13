@@ -67,7 +67,7 @@ com.ccload.service.plist
 AGENTS.md
 dist
 *.bak
-docs
+# Project documentation and its generated, sanitized screenshots are versioned.
 .worktrees/
 # 步骤1：忽略所有目录下的 claude.md
 **/claude.md

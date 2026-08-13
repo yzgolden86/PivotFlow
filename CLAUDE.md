@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> ccLoad:Claude/OpenAI/Gemini/Codex 多协议 API 网关(渠道/Key/URL 选择 + 故障切换 + 协议转换 + 成本计量)。
+> PivotFlow（枢衡）：个人 AI API 站点管理与智能路由控制台。站点/账号/签到/公告构成控制面，ccLoad 的渠道/Key/URL 选择、故障切换、协议转换与成本计量构成路由数据面。
 > 本文件是 AI 操作手册——只记命令、硬约束、反直觉机制与入口;展开细节读对应代码。
 
 ## 命令
@@ -11,7 +11,7 @@
 make build          # 构建(注入版本号+strip)
 make dev            # 开发运行
 bash .agents/skills/sync-cliproxy-core/scripts/verify.sh --tests # 协议快照审计+定向测试
-bash .agents/skills/ccload-release/scripts/release.sh --self-test # 发布脚本自检
+bash .agents/skills/ccload-release/scripts/release.sh --self-test # PivotFlow 发布脚本自检（目录名为兼容保留）
 go test -tags sonic ./internal/...
 make race-fast      # 高价值 race 子集
 make race           # 全量 race(可用 RACE_P/RACE_PARALLEL 调并行度)
@@ -33,8 +33,11 @@ internal/app/        HTTP+业务:proxy_* / admin_* / selector_* / *_cache / *_se
 internal/protocol/   协议契约与注册;builtin/ 是 ccLoad 适配层;cliproxy/ 是上游转换核心快照
 internal/storage/    存储(factory/hybrid_store/sync_manager/migrate;sql/ sqlite/)
 internal/cooldown/   冷却决策   internal/util/  classifier/cost_calculator/money/...
+internal/site/       站点 Provider、凭证加密与 Webhook;控制面处理入口在 internal/app/admin_sites*.go
 internal/{model,config,version,testutil}/   web/  管理后台前端(HTML+assets/{css,js,locales})
-www/                 独立介绍站(`make www-setup` 复制共享资源后可脱离仓库部署,别和 web/ 混淆)
+console/             PivotFlow React 控制台源码;npm run build 输出到 web/console
+docs/                面向用户与维护者的唯一功能文档;截图只能使用 scripts/docs_screenshots.py 的合成数据
+www/                 精简静态介绍页(`make www-setup` 同步品牌图和脱敏截图,别和 web/ 混淆)
 ```
 
 | 任务 | 入口 |
@@ -91,7 +94,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 
 ## 发布与更新
 
-- 发布必须使用仓库 Skill：Codex 调 `$ccload-release`，Claude Code 调 `/ccload-release`；唯一源码在 `.agents/skills/ccload-release/`，`.claude/skills/ccload-release` 只是软链接
+- 发布必须使用仓库 Skill：Codex 调 `$pivotflow-release`，Claude Code 调 `/pivotflow-release`；实现目录暂保留 `.agents/skills/ccload-release/` 以兼容现有工具入口
 - 无参数默认 Beta；只有显式 `stable` 才发稳定版。Tag 只允许 `vX.Y.Z-beta.N` / `vX.Y.Z`
 - `.github/workflows/release.yml` 是唯一发布入口：Tag 先跑 `internal/...`、Web 验证、构建、lint，再生成多平台 Release 和 GHCR 镜像；Beta=`prerelease=true` 且不改 GitHub latest，镜像发布精确版本 Tag+`beta`；稳定版更新 GitHub latest，镜像发布精确版本 Tag+`latest`
 - 官方容器直接打包同一 Release 的 Linux 二进制；`CCLOAD_CONTAINER=1` 时不启动版本检查或进程内更新，`auto_update_*` 设置只读；稳定版/测试版分别通过 `latest`/`beta` 镜像标签切换

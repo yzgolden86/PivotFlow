@@ -50,7 +50,7 @@ func (s Sender) Send(ctx context.Context, endpoint string, payload any) (int, er
 		}
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "CCFusion-Webhook/1")
+		req.Header.Set("User-Agent", "PivotFlow-Webhook/1")
 		resp, requestErr := client.Do(req)
 		if requestErr == nil {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxWebhookResponseBytes))

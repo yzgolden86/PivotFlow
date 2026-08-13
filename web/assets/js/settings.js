@@ -621,8 +621,8 @@ function renderSettingGroupNotice(group) {
     <div class="settings-group-notice" role="note">
       <p>${escapeHtml(t('settings.update.containerManaged'))}</p>
       <ul>
-        <li>${escapeHtml(t('settings.update.stableImage'))}: <code>ghcr.io/caidaoli/ccload:latest</code></li>
-        <li>${escapeHtml(t('settings.update.betaImage'))}: <code>ghcr.io/caidaoli/ccload:beta</code></li>
+        <li>${escapeHtml(t('settings.update.stableImage'))}: <code>ghcr.io/yzgolden86/pivotflow:latest</code></li>
+        <li>${escapeHtml(t('settings.update.betaImage'))}: <code>ghcr.io/yzgolden86/pivotflow:beta</code></li>
       </ul>
       <p>${escapeHtml(t('settings.update.applyImage'))}</p>
       <code class="settings-group-notice-command">docker compose pull &amp;&amp; docker compose up -d</code>

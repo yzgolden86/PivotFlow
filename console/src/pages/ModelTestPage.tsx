@@ -188,7 +188,7 @@ export default function ModelTestPage() {
             <div className="section-heading"><div><h2>测试请求</h2><p>站点直测不创建渠道，也不改变冷却状态</p></div><span className="composer-channel-state"><i className={ready ? 'is-ready' : ''} />{ready ? '测试目标已就绪' : '没有可测试模型'}</span></div>
             <div className="probe-target-control" role="group" aria-label="测试目标">
               <button type="button" className={target === 'site_account' ? 'is-active' : ''} onClick={() => changeTarget('site_account')}><Server size={15} />站点账号直测</button>
-              <button type="button" className={target === 'channel' ? 'is-active' : ''} onClick={() => changeTarget('channel')}><GitCompareArrows size={15} />CCLoad 渠道</button>
+              <button type="button" className={target === 'channel' ? 'is-active' : ''} onClick={() => changeTarget('channel')}><GitCompareArrows size={15} />路由渠道</button>
             </div>
             <div className="form-grid">
               {target === 'channel' ? (

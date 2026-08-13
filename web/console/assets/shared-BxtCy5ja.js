@@ -1,0 +1,11 @@
+import{c as a,j as n}from"./index-qTjHujfZ.js";import{R as o}from"./refresh-cw-B6cXs6ik.js";/**
+ * @license lucide-react v0.468.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */const c=a("ChevronLeft",[["path",{d:"m15 18-6-6 6-6",key:"1wnfg3"}]]);/**
+ * @license lucide-react v0.468.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */const u=a("ChevronRight",[["path",{d:"m9 18 6-6-6-6",key:"mthhwq"}]]);function d({label:t="正在加载数据"}){return n.jsxs("div",{className:"content-state",role:"status",children:[n.jsx(o,{className:"spin",size:18}),t]})}function h({message:t,retry:e}){return n.jsxs("div",{className:"content-state content-state--error",role:"alert",children:[n.jsx("strong",{children:"数据加载失败"}),n.jsx("span",{children:t}),n.jsxs("button",{className:"secondary-button",type:"button",onClick:e,children:[n.jsx(o,{size:15}),"重试"]})]})}function f({label:t}){return n.jsx("div",{className:"content-state content-state--empty",children:t})}function x({page:t,pageSize:e,total:s,onPage:r}){const i=Math.max(1,Math.ceil(s/e));return n.jsxs("div",{className:"pagination",children:[n.jsxs("span",{children:["共 ",s," 条"]}),n.jsxs("div",{children:[n.jsx("button",{className:"icon-button icon-button--surface",type:"button",disabled:t<=1,onClick:()=>r(t-1),"aria-label":"上一页",children:n.jsx(c,{size:16})}),n.jsxs("strong",{children:[t," / ",i]}),n.jsx("button",{className:"icon-button icon-button--surface",type:"button",disabled:t>=i,onClick:()=>r(t+1),"aria-label":"下一页",children:n.jsx(u,{size:16})})]})]})}function b(t,e=0){return new Intl.NumberFormat("zh-CN",{maximumFractionDigits:e}).format(t||0)}function j(t){return new Intl.NumberFormat("zh-CN",{style:"currency",currency:"USD",maximumFractionDigits:(t||0)>=1?2:4}).format(t||0)}function N(t){const e=t>1e10?t:t*1e3;return new Intl.DateTimeFormat("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:!1}).format(new Date(e))}function g(t){return t>=.95?"success":t>=.8?"warning":"danger"}export{h as E,d as L,x as P,f as a,b,j as c,N as f,g as s};

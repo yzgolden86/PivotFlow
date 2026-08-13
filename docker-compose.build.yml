@@ -1,7 +1,7 @@
-version: '3.8'
+name: pivotflow
 
 services:
-  ccload:
+  pivotflow:
     build:
       context: .
       dockerfile: Dockerfile
@@ -11,8 +11,8 @@ services:
         # - v1.x.x：生产环境，静态资源长缓存
         # 生产构建: VERSION=$(git describe --tags --always) docker-compose -f docker-compose.build.yml build
         VERSION: ${VERSION:-dev}
-    image: ccload:local
-    container_name: ccload
+    image: pivotflow:local
+    container_name: pivotflow
     restart: unless-stopped
     ports:
       # 宿主机端口:容器端口。只改左边即可对外换端口，不要改右边
@@ -22,7 +22,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ccload_data:/app/data
+      - pivotflow_data:/app/data
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s
@@ -31,5 +31,5 @@ services:
       start_period: 40s
 
 volumes:
-  ccload_data:
+  pivotflow_data:
     driver: local
