@@ -168,7 +168,7 @@ MIT, see [LICENSE](LICENSE). Third-party provenance and retained notices are doc
 
 PivotFlow stands on the work and ideas of the open-source community. Special thanks to:
 
-- The upstream routing project that contributed the routing, scheduling, cooldown, failover, and protocol-conversion foundation retained by PivotFlow.
+- [ccLoad](https://github.com/caidaoli/ccLoad) for the routing, scheduling, cooldown, failover, and protocol-conversion foundation retained by PivotFlow.
 - [Metapi](https://github.com/cita-777/metapi) for its site aggregation, account workflows, and dashboard ideas.
 - [All API Hub](https://github.com/qixing-jk/all-api-hub) for its multi-site asset management, provider compatibility, and interaction design references.
 - [Octopus](https://github.com/Hureru/octopus) for its personal gateway, channel management, and concise console design ideas.
