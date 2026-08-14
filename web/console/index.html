@@ -5,8 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#151917" />
     <meta name="description" content="PivotFlow 个人 AI 站点与路由控制台" />
-    <link rel="icon" href="/web/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/web/favicon.svg?v=__VERSION__" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/web/apple-touch-icon.png?v=__VERSION__" />
     <title>PivotFlow</title>
+    <style>
+      .console-boot { position: fixed; inset: 0; display: grid; place-items: center; background: #f4f7f5; color: #28433c; font: 600 14px/1.5 "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif; }
+      .console-boot div { display: flex; align-items: center; gap: 12px; }
+      .console-boot img { width: 38px; height: 38px; border-radius: 11px; }
+      .console-boot i { width: 18px; height: 18px; border: 2px solid #b9cbc3; border-top-color: #278e73; border-radius: 50%; animation: console-spin .75s linear infinite; }
+      @keyframes console-spin { to { transform: rotate(360deg); } }
+    </style>
     <script>
       (() => {
         try {
@@ -15,12 +23,23 @@
             (preference !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
           document.documentElement.dataset.theme = dark ? 'dark' : 'light'
         } catch (_) {}
+
+        const token = localStorage.getItem('pivotflow_token')
+        const expiry = Number(localStorage.getItem('pivotflow_token_expiry') || 0)
+        window.__PIVOTFLOW_AUTH_REDIRECTING__ = !token || (expiry > 0 && Date.now() >= expiry)
+        if (window.__PIVOTFLOW_AUTH_REDIRECTING__) {
+          localStorage.removeItem('pivotflow_token')
+          localStorage.removeItem('pivotflow_token_expiry')
+          localStorage.removeItem('pivotflow_web_role')
+          const redirect = `${location.pathname}${location.search}${location.hash}`
+          location.replace(`/web/auth/?redirect=${encodeURIComponent(redirect)}`)
+        }
       })()
     </script>
-    <script type="module" crossorigin src="/web/console/assets/index-DmZPnWqx.js"></script>
+    <script type="module" crossorigin src="/web/console/assets/index-Dk-SwqLU.js"></script>
     <link rel="stylesheet" crossorigin href="/web/console/assets/index-DPWJhzaa.css">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><div class="console-boot" role="status"><div><img src="/web/brand-mark.svg?v=__VERSION__" alt="" /><i aria-hidden="true"></i><span>正在验证登录状态</span></div></div></div>
   </body>
 </html>

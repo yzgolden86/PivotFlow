@@ -18,7 +18,7 @@ def main():
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         errors = []
         page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
-        page.goto(f"{BASE_URL}/web/login.html")
+        page.goto(f"{BASE_URL}/web/auth/")
         page.wait_for_load_state("networkidle")
         page.locator("#password").fill(PASSWORD)
         page.locator("#login-button").click()

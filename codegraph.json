@@ -1,5 +1,5 @@
 {
   "exclude": [
-    "web/assets/js/*.min.js"
+    "web/console/assets/*.js"
   ]
 }

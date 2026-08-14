@@ -84,6 +84,14 @@ func serveStaticFileFrom(c *gin.Context, fileSystem fs.FS) {
 		return
 	}
 
+	if target, ok := legacyConsoleRedirect(reqPath); ok {
+		if c.Request.URL.RawQuery != "" {
+			target += "?" + c.Request.URL.RawQuery
+		}
+		c.Redirect(http.StatusFound, target)
+		return
+	}
+
 	// 空路径时默认返回 index.html
 	if reqPath == "." || reqPath == "" {
 		reqPath = "index.html"
@@ -143,7 +151,7 @@ func serveStaticWithCacheFrom(c *gin.Context, fileSystem fs.FS, filePath, ext st
 	if version.Version == "dev" {
 		// 开发环境：不缓存，避免前端修改看不到
 		c.Header("Cache-Control", "no-cache, must-revalidate")
-	} else if fileName == "manifest.json" || ext == ".ico" {
+	} else if fileName == "manifest.json" || fileName == "apple-touch-icon.png" || strings.HasPrefix(fileName, "favicon") || ext == ".ico" {
 		// 元数据文件：1小时缓存 + 必须验证
 		c.Header("Cache-Control", "public, max-age=3600, must-revalidate")
 	} else {
@@ -162,6 +170,25 @@ func serveStaticWithCacheFrom(c *gin.Context, fileSystem fs.FS, filePath, ext st
 	contentType := getContentType(ext)
 	c.Header("Content-Type", contentType)
 	c.Data(http.StatusOK, contentType, content)
+}
+
+func legacyConsoleRedirect(reqPath string) (string, bool) {
+	targets := map[string]string{
+		".":               "/web/console/",
+		"":                "/web/console/",
+		"login.html":      "/web/auth/",
+		"index.html":      "/web/console/",
+		"channels.html":   "/web/console/#/channels",
+		"logs.html":       "/web/console/#/logs",
+		"stats.html":      "/web/console/#/stats",
+		"trend.html":      "/web/console/#/trend",
+		"tokens.html":     "/web/console/#/tokens",
+		"sites.html":      "/web/console/#/sites",
+		"settings.html":   "/web/console/#/system",
+		"model-test.html": "/web/console/#/models",
+	}
+	target, ok := targets[reqPath]
+	return target, ok
 }
 
 // getContentType 根据文件扩展名返回 MIME 类型

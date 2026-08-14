@@ -27,7 +27,7 @@ docker compose up -d
 docker compose logs -f pivotflow
 ```
 
-默认地址是 `http://127.0.0.1:8080/web/login.html`。PowerShell 对应命令是 `Copy-Item .env.docker.example .env`。该方式使用 `ghcr.io/yzgolden86/pivotflow:latest`。如果 GHCR 要求认证，请执行 `docker login ghcr.io`，使用 GitHub 用户名和具备 `read:packages` 权限的个人访问令牌；GitHub 账号密码不能直接使用，账号也必须具有镜像读取权限。
+默认地址是 `http://127.0.0.1:8080/web/auth/`。PowerShell 对应命令是 `Copy-Item .env.docker.example .env`。该方式使用 `ghcr.io/yzgolden86/pivotflow:latest`。如果 GHCR 要求认证，请执行 `docker login ghcr.io`，使用 GitHub 用户名和具备 `read:packages` 权限的个人访问令牌；GitHub 账号密码不能直接使用，账号也必须具有镜像读取权限。
 
 如果无法访问已发布镜像，从当前源码构建：
 

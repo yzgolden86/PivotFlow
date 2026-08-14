@@ -30,13 +30,13 @@ def main():
             else None,
         )
 
-        page.goto(f"{BASE_URL}/web/login.html")
+        page.goto(f"{BASE_URL}/web/auth/")
         page.wait_for_load_state("networkidle")
         page.locator("#password").fill(PASSWORD)
         page.locator("#login-button").click()
         page.wait_for_url("**/web/console/")
 
-        page.goto(f"{BASE_URL}/web/sites.html")
+        page.goto(f"{BASE_URL}/web/console/#/sites")
         page.wait_for_load_state("networkidle")
         expect(page.get_by_role("heading", name="站点管理", exact=True)).to_be_visible()
         expect(page.locator(".site-card")).to_have_count(2)
