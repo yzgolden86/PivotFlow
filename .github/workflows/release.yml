@@ -92,6 +92,12 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '24'
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Install console dependencies
+        working-directory: console
+        run: npm ci
 
       - name: Test backend
         run: go test -tags sonic ./internal/...
