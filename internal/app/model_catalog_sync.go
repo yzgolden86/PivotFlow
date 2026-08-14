@@ -126,13 +126,17 @@ func normalizeModelCatalogSyncIntervalHours(hours float64) float64 {
 
 func newModelCatalogSyncResult(status ModelCatalogSyncStatus, startedAt time.Time) ModelCatalogSyncResult {
 	summary := util.CurrentModelCatalogSummary()
+	duration := time.Since(startedAt)
+	if duration <= 0 {
+		duration = time.Nanosecond
+	}
 	return ModelCatalogSyncResult{
 		Status:            status,
 		ModelCount:        summary.ModelCount,
 		ProviderCount:     summary.ProviderCount,
 		SkippedModelCount: summary.SkippedModelCount,
 		ETag:              summary.ETag,
-		Duration:          time.Since(startedAt),
+		Duration:          duration,
 	}
 }
 

@@ -108,7 +108,11 @@ func (rc *requestContext) streamTimeoutTriggered() bool {
 
 // Duration 返回从请求开始到现在的时间
 func (rc *requestContext) Duration() time.Duration {
-	return time.Since(rc.startTime)
+	duration := time.Since(rc.startTime)
+	if duration <= 0 {
+		return time.Nanosecond
+	}
+	return duration
 }
 
 // cleanup 统一清理请求上下文资源（定时器 + context）
