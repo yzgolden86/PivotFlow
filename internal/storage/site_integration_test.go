@@ -14,7 +14,7 @@ func TestSiteControlSQLiteCRUDAndProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	ctx := context.Background()
 	site, err := store.CreateSite(ctx, &model.Site{Name: "demo", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]", LastProbeStatus: "unknown"})
 	if err != nil {
@@ -106,7 +106,7 @@ func TestDeletedSiteNameCanBeReused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	ctx := context.Background()
 	first, err := store.CreateSite(ctx, &model.Site{Name: "reusable", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://old.example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
 	if err != nil {
@@ -132,7 +132,7 @@ func TestUpdateSitePersistsProbeResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	ctx := context.Background()
 	site, err := store.CreateSite(ctx, &model.Site{Name: "probe", Platform: model.SitePlatformUnknown, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]", LastProbeStatus: "unknown"})
 	if err != nil {
@@ -164,7 +164,7 @@ func TestSiteTaskCancellationIsTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	ctx := context.Background()
 	task := &model.SiteTask{ID: "st_cancel", Kind: "refresh", Status: model.SiteTaskStatusQueued, ProgressJSON: `{}`, CreatedAt: time.Now().UnixMilli()}
 	if err := store.CreateSiteTask(ctx, task); err != nil {
@@ -202,7 +202,7 @@ func TestWebhookConfigAndEventStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	ctx := context.Background()
 	config := &model.WebhookConfig{
 		ID: 1, Enabled: true, URLCiphertext: "fc1.v1.encrypted", URLKeyVersion: "v1",
@@ -235,7 +235,7 @@ func TestSiteTaskLeaseExcludesConcurrentOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	ctx := context.Background()
 	const now int64 = 1_000
 	acquired, err := store.AcquireSiteTaskLease(ctx, "account:1:refresh", "owner-1", now, now+90_000)

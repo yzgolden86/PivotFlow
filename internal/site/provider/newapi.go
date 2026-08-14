@@ -485,7 +485,7 @@ func (p *NewAPI) doJSONWithResponseHeaders(ctx context.Context, req AccountReque
 		}
 		return nil, &Error{Code: CodeRequestFailed, Message: "provider request failed"}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, &Error{Code: CodeRequestFailed, Message: "read provider response"}

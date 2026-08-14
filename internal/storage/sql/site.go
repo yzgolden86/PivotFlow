@@ -53,7 +53,7 @@ func (s *SQLStore) ListSites(ctx context.Context, filter model.SiteListFilter) (
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := make([]*model.Site, 0)
 	for rows.Next() {
 		item, err := scanSite(rows)
@@ -187,7 +187,7 @@ func (s *SQLStore) ListSiteAccounts(ctx context.Context, siteID int64, includeDe
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := make([]*model.SiteAccount, 0)
 	for rows.Next() {
 		item, err := scanSiteAccount(rows)
@@ -342,7 +342,7 @@ func (s *SQLStore) ListSiteAccountModels(ctx context.Context, filter model.SiteM
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := make([]model.SiteAccountModel, 0)
 	for rows.Next() {
 		var x model.SiteAccountModel
@@ -409,7 +409,7 @@ func (s *SQLStore) ListSiteAnnouncements(ctx context.Context, filter model.SiteA
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := make([]*model.SiteAnnouncement, 0)
 	for rows.Next() {
 		a := new(model.SiteAnnouncement)
@@ -479,7 +479,7 @@ func (s *SQLStore) ListCheckinAttempts(ctx context.Context, accountID int64, lim
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]*model.CheckinAttempt, 0)
 	for rows.Next() {
 		a := new(model.CheckinAttempt)

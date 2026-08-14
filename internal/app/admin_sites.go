@@ -334,7 +334,7 @@ func (s *siteControlService) enqueueAccountTask(c *gin.Context, kind string, wit
 			s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", "conflict")
 			return
 		}
-		defer s.store.ReleaseSiteTaskLease(context.Background(), leaseKey, task.ID)
+		defer func() { _ = s.store.ReleaseSiteTaskLease(context.Background(), leaseKey, task.ID) }()
 		taskCtx, stopLease := s.leaseContext(ctx, leaseKey, task.ID)
 		defer stopLease()
 		s.updateTask(taskCtx, task, model.SiteTaskStatusRunning, "", "")
