@@ -367,7 +367,7 @@ func (p *Sub2API) probe(ctx context.Context, baseURL, path string) (sub2Envelope
 	if err != nil {
 		return sub2Envelope{}, "", &Error{Code: CodeRequestFailed, Message: "provider request failed"}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil || int64(len(raw)) > maxResponseBytes {
 		return sub2Envelope{}, "", &Error{Code: CodeInvalidResponse, Message: "invalid provider response"}
