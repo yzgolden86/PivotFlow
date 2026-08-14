@@ -2,23 +2,27 @@
 
 ## Docker Compose
 
-从当前源码构建是最稳定的首选方式：
+默认使用已发布的 GHCR 镜像：
 
 ```bash
 cp .env.docker.example .env
+docker compose pull
+docker compose up -d
+docker compose ps
+docker compose logs -f pivotflow
+```
+
+该方式使用 `ghcr.io/yzgolden86/pivotflow:latest`。如果 GHCR 要求认证，先执行 `docker login ghcr.io`：用户名填写 GitHub 用户名，密码使用具备 `read:packages` 权限的个人访问令牌；GitHub 账号密码不能直接使用。该账号还必须具有镜像读取权限。
+
+如果无法访问已发布镜像，可以从当前源码构建：
+
+```bash
 docker compose -f docker-compose.build.yml up -d --build
 docker compose -f docker-compose.build.yml ps
 docker compose -f docker-compose.build.yml logs -f pivotflow
 ```
 
-仓库发布 GHCR 镜像后，也可以使用：
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-数据卷映射到 `/app/data`。升级前备份数据库和凭证主密钥。
+预构建镜像方式把当前目录的 `./data` 映射到 `/app/data`；源码构建方式使用 Compose 管理的 Docker 卷，逻辑名称为 `pivotflow_data`。两者是独立的数据存储，直接切换可能会看到一个空数据库。升级或切换前按照[安全与备份](security.md)备份并迁移数据库和凭证主密钥。
 
 ## 源码开发
 
