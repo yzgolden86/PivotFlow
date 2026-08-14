@@ -144,7 +144,7 @@ function App() {
       localStorage.removeItem('pivotflow_token')
       localStorage.removeItem('pivotflow_token_expiry')
       localStorage.removeItem('pivotflow_web_role')
-      window.location.replace('/web/login.html')
+      window.location.replace('/web/auth/')
     }
   }
 

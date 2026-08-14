@@ -86,7 +86,7 @@ console-check:
 	@cd console && npm run build
 
 web-test: www-setup
-	@node --test web/assets/js/*.test.js
+	@node --test web/auth/*.test.js
 
 verify-web: web-test console-check
 

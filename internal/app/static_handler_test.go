@@ -19,7 +19,7 @@ func TestStaticFileServing(t *testing.T) {
 	}()
 
 	root := fstest.MapFS{
-		"web/index.html":       &fstest.MapFile{Data: []byte("v=__VERSION__")},
+		"web/auth/index.html":  &fstest.MapFile{Data: []byte("v=__VERSION__")},
 		"web/app.js":           &fstest.MapFile{Data: []byte("console.log('x')")},
 		"web/manifest.json":    &fstest.MapFile{Data: []byte(`{"name":"x"}`)},
 		"web/dir/index.html":   &fstest.MapFile{Data: []byte("dir=__VERSION__")},
@@ -37,7 +37,7 @@ func TestStaticFileServing(t *testing.T) {
 
 	t.Run("html_replaces_version_no_cache", func(t *testing.T) {
 		version.Version = "1.2.3"
-		w := serveHTTP(t, r, newRequest(http.MethodGet, "/web/index.html", nil))
+		w := serveHTTP(t, r, newRequest(http.MethodGet, "/web/auth/index.html", nil))
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("status=%d, want %d", w.Code, http.StatusOK)
@@ -47,6 +47,43 @@ func TestStaticFileServing(t *testing.T) {
 		}
 		if w.Body.String() != "v=1.2.3" {
 			t.Fatalf("body=%q, want %q", w.Body.String(), "v=1.2.3")
+		}
+	})
+
+	t.Run("legacy_console_entry_redirects_to_new_console", func(t *testing.T) {
+		w := serveHTTP(t, r, newRequest(http.MethodGet, "/web/index.html", nil))
+		if w.Code != http.StatusFound {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusFound)
+		}
+		if got := w.Header().Get("Location"); got != "/web/console/" {
+			t.Fatalf("Location=%q, want new console", got)
+		}
+	})
+
+	t.Run("legacy_login_redirects_to_new_login", func(t *testing.T) {
+		w := serveHTTP(t, r, newRequest(http.MethodGet, "/web/login.html", nil))
+		if w.Code != http.StatusFound {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusFound)
+		}
+		if got := w.Header().Get("Location"); got != "/web/auth/" {
+			t.Fatalf("Location=%q, want new login", got)
+		}
+	})
+
+	t.Run("legacy_feature_page_preserves_destination", func(t *testing.T) {
+		w := serveHTTP(t, r, newRequest(http.MethodGet, "/web/logs.html", nil))
+		if w.Code != http.StatusFound {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusFound)
+		}
+		if got := w.Header().Get("Location"); got != "/web/console/#/logs" {
+			t.Fatalf("Location=%q, want logs route", got)
+		}
+	})
+
+	t.Run("removed_legacy_assets_are_not_served", func(t *testing.T) {
+		w := serveHTTP(t, r, newRequest(http.MethodGet, "/web/assets/js/index.js", nil))
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status=%d, want old frontend asset removed", w.Code)
 		}
 	})
 

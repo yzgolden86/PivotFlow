@@ -79,7 +79,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Linux/macOS 使用 `cp .env.docker.example .env`。该方式直接使用已发布的 `ghcr.io/yzgolden86/pivotflow:latest` 镜像。如果 GHCR 要求登录，请执行 `docker login ghcr.io`，用户名填写 GitHub 用户名，密码使用具备 `read:packages` 权限的个人访问令牌；GitHub 账号密码不能直接用于登录。该账号还必须具有镜像读取权限。打开 `http://127.0.0.1:8080/web/login.html`，使用 `PIVOTFLOW_PASS` 登录。
+Linux/macOS 使用 `cp .env.docker.example .env`。该方式直接使用已发布的 `ghcr.io/yzgolden86/pivotflow:latest` 镜像。如果 GHCR 要求登录，请执行 `docker login ghcr.io`，用户名填写 GitHub 用户名，密码使用具备 `read:packages` 权限的个人访问令牌；GitHub 账号密码不能直接用于登录。该账号还必须具有镜像读取权限。打开 `http://127.0.0.1:8080/web/auth/`，使用 `PIVOTFLOW_PASS` 登录。
 
 如果账号无法访问已发布镜像，也可以从当前源码构建：
 

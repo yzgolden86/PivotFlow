@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#102c2b" />
+  <meta name="description" content="PivotFlow 管理控制台登录" />
+  <link rel="icon" type="image/svg+xml" href="/web/favicon.svg?v=__VERSION__" />
+  <link rel="apple-touch-icon" href="/web/apple-touch-icon.png?v=__VERSION__" />
+  <link rel="manifest" href="/web/manifest.json?v=__VERSION__" />
+  <title>登录 - PivotFlow</title>
+  <link rel="stylesheet" href="/web/auth/login.css?v=__VERSION__" />
+  <script defer src="/web/auth/session.js?v=__VERSION__"></script>
+  <script defer src="/web/auth/login.js?v=__VERSION__"></script>
+</head>
+<body>
+  <main class="login-shell">
+    <section class="route-stage" aria-label="PivotFlow 智能路由">
+      <div class="stage-brand">
+        <img src="/web/brand-mark.svg?v=__VERSION__" alt="" />
+        <strong>PivotFlow</strong>
+      </div>
+      <div class="route-map" aria-hidden="true">
+        <span class="orbit orbit--outer"></span><span class="orbit orbit--inner"></span>
+        <span class="route-line route-line--a"></span><span class="route-line route-line--b"></span>
+        <span class="route-line route-line--c"></span><span class="route-line route-line--d"></span>
+        <div class="route-core"><img src="/web/brand-mark.svg?v=__VERSION__" alt="" /></div>
+        <div class="route-node route-node--claude"><i>C</i><span>Claude</span></div>
+        <div class="route-node route-node--openai"><i>O</i><span>OpenAI</span></div>
+        <div class="route-node route-node--gemini"><i>G</i><span>Gemini</span></div>
+        <div class="route-node route-node--codex"><i>X</i><span>Codex</span></div>
+        <span class="route-signal route-signal--a"></span><span class="route-signal route-signal--b"></span>
+      </div>
+    </section>
+    <section class="login-panel">
+      <div class="login-card">
+        <div class="login-card__brand"><img src="/web/brand-mark.svg?v=__VERSION__" alt="" /><span>PivotFlow</span></div>
+        <header><h1>管理员登录</h1></header>
+        <div id="error-message" class="login-error" role="alert" hidden></div>
+        <form id="login-form" novalidate>
+          <label for="password">管理密码</label>
+          <div class="password-field">
+            <input id="password" name="password" type="password" autocomplete="current-password" placeholder="输入管理密码" required autofocus />
+            <button id="toggle-password" type="button" aria-label="显示密码" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.4-5.5 9.5-5.5 9.5 5.5 9.5 5.5-3.4 5.5-9.5 5.5S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
+            </button>
+          </div>
+          <button class="submit-button" id="login-button" type="submit">
+            <span class="submit-button__label">进入控制台</span><span class="submit-button__spinner" aria-hidden="true"></span>
+          </button>
+        </form>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

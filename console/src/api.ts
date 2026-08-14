@@ -39,7 +39,7 @@ const EXPIRY_KEY = 'pivotflow_token_expiry'
 
 function loginURL(): string {
   const redirect = `${window.location.pathname}${window.location.search}${window.location.hash}`
-  return `/web/login.html?redirect=${encodeURIComponent(redirect)}`
+  return `/web/auth/?redirect=${encodeURIComponent(redirect)}`
 }
 
 function clearSession(): void {

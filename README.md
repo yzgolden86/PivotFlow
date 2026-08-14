@@ -79,7 +79,7 @@ docker compose pull
 docker compose up -d
 ```
 
-On PowerShell, use `Copy-Item .env.docker.example .env`. This uses the published `ghcr.io/yzgolden86/pivotflow:latest` image. If GHCR asks for authentication, run `docker login ghcr.io` with your GitHub username and a personal access token that has `read:packages`; a GitHub account password is not accepted. The account must also have access to the package. Open `http://127.0.0.1:8080/web/login.html` and sign in with `PIVOTFLOW_PASS`.
+On PowerShell, use `Copy-Item .env.docker.example .env`. This uses the published `ghcr.io/yzgolden86/pivotflow:latest` image. If GHCR asks for authentication, run `docker login ghcr.io` with your GitHub username and a personal access token that has `read:packages`; a GitHub account password is not accepted. The account must also have access to the package. Open `http://127.0.0.1:8080/web/auth/` and sign in with `PIVOTFLOW_PASS`.
 
 If the published image is not available to your account, build the current checkout instead:
 
