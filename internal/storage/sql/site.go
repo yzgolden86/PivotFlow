@@ -569,11 +569,11 @@ func (s *SQLStore) lease(ctx context.Context, key, owner string, now, until int6
 		n, _ := r.RowsAffected()
 		return n == 1, nil
 	}
-	r, err := s.ExecContext(ctx, "INSERT INTO site_task_leases(task_key,owner_id,lease_until,updated_at) VALUES(?,?,?,?)", key, owner, until, now)
+	_, err := s.ExecContext(ctx, "INSERT INTO site_task_leases(task_key,owner_id,lease_until,updated_at) VALUES(?,?,?,?)", key, owner, until, now)
 	if err == nil {
 		return true, nil
 	}
-	r, err = s.ExecContext(ctx, "UPDATE site_task_leases SET owner_id=?,lease_until=?,updated_at=? WHERE task_key=? AND lease_until<?", owner, until, now, key, now)
+	r, err := s.ExecContext(ctx, "UPDATE site_task_leases SET owner_id=?,lease_until=?,updated_at=? WHERE task_key=? AND lease_until<?", owner, until, now, key, now)
 	if err != nil {
 		return false, err
 	}

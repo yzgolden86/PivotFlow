@@ -19,10 +19,9 @@ linters:
   settings:
     revive:
       rules:
-        # 禁用类型名称重叠检查（如 sql.SQLStore），重命名会破坏 API
+        # internal 包不要求导出符号文档；外部 API 文档由公开入口维护
         - name: exported
-          arguments:
-            - "disableStutteringCheck"
+          disabled: true
         # 禁用包名检查（util 等通用包名在 internal 中是合理的）
         - name: var-naming
           disabled: true
