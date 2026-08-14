@@ -75,10 +75,19 @@ See [Core concepts](docs/concepts.md) and [Routing](docs/routing.md) for project
 ```bash
 cp .env.docker.example .env
 # Set at least PIVOTFLOW_PASS in .env
+docker compose pull
+docker compose up -d
+```
+
+On PowerShell, use `Copy-Item .env.docker.example .env`. This uses the published `ghcr.io/yzgolden86/pivotflow:latest` image. If GHCR asks for authentication, run `docker login ghcr.io` with your GitHub username and a personal access token that has `read:packages`; a GitHub account password is not accepted. The account must also have access to the package. Open `http://127.0.0.1:8080/web/login.html` and sign in with `PIVOTFLOW_PASS`.
+
+If the published image is not available to your account, build the current checkout instead:
+
+```bash
 docker compose -f docker-compose.build.yml up -d --build
 ```
 
-On PowerShell, use `Copy-Item .env.docker.example .env`. This command builds the current checkout, so it does not depend on a published image. Open `http://127.0.0.1:8080/web/login.html` and sign in with `PIVOTFLOW_PASS`.
+The published-image Compose file bind-mounts `./data`; the build Compose file uses a Compose-managed Docker volume whose logical name is `pivotflow_data`. They are independent data stores, so switching can appear to start with an empty database. Read [Security and backup](docs/security.md) before migrating the database and credential master key.
 
 ### Build from source
 

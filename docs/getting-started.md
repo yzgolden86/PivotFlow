@@ -22,11 +22,21 @@ TZ=Asia/Shanghai
 启动：
 
 ```bash
+docker compose pull
+docker compose up -d
+docker compose logs -f pivotflow
+```
+
+默认地址是 `http://127.0.0.1:8080/web/login.html`。PowerShell 对应命令是 `Copy-Item .env.docker.example .env`。该方式使用 `ghcr.io/yzgolden86/pivotflow:latest`。如果 GHCR 要求认证，请执行 `docker login ghcr.io`，使用 GitHub 用户名和具备 `read:packages` 权限的个人访问令牌；GitHub 账号密码不能直接使用，账号也必须具有镜像读取权限。
+
+如果无法访问已发布镜像，从当前源码构建：
+
+```bash
 docker compose -f docker-compose.build.yml up -d --build
 docker compose -f docker-compose.build.yml logs -f pivotflow
 ```
 
-默认地址是 `http://127.0.0.1:8080/web/login.html`。PowerShell 对应命令是 `Copy-Item .env.docker.example .env`。该方式从当前源码构建，不要求仓库已经发布容器镜像。
+预构建镜像使用 `./data` 保存数据；源码构建使用 Compose 管理的 Docker 卷，逻辑名称为 `pivotflow_data`。两者是独立的数据存储，直接切换可能会看到一个空数据库。切换前请按照[安全与备份](security.md)迁移数据库和凭证主密钥。
 
 ## 源码构建
 
