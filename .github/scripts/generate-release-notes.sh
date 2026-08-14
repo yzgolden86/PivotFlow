@@ -45,6 +45,14 @@ self_test() {
   git -C "$repo" commit -q -m 'chore: initial'
   git -C "$repo" tag -a v1.0.0 -m 'Release v1.0.0'
 
+  (
+    cd "$repo"
+    GITHUB_REPOSITORY=yzgolden86/PivotFlow bash "$script_path" v1.0.0 "$notes"
+  )
+  assert_contains "$notes" 'chore: initial'
+  assert_contains "$notes" 'releases/tag/v1.0.0'
+  assert_not_contains "$notes" '/compare/'
+
   printf 'beta one\n' > "$repo/change.txt"
   git -C "$repo" commit -qam 'fix(core): direct beta fix'
   git -C "$repo" tag -a v1.1.0-beta.1 -m 'Release v1.1.0-beta.1'
@@ -158,7 +166,7 @@ main() {
   local release_tag=${1:-}
   local output=${2:-}
   local repository=${GITHUB_REPOSITORY:-yzgolden86/PivotFlow}
-  local release_commit base_tag commit_count commit subject short_commit
+  local release_commit base_tag commit_range commit_count commit subject short_commit
 
   [[ -n "$release_tag" && -n "$output" && $# -eq 2 ]] || \
     fail 'usage: generate-release-notes.sh <release-tag> <output-file>'
@@ -167,13 +175,17 @@ main() {
 
   release_commit=$(git rev-parse -q --verify "$release_tag^{commit}") || \
     fail "release tag does not exist or is not a commit: $release_tag"
-  base_tag=$(resolve_base_tag "$release_tag" "$release_commit") || \
-    fail "no comparison base found for $release_tag"
-  git merge-base --is-ancestor "$base_tag^{commit}" "$release_commit" || \
-    fail "$base_tag is not an ancestor of $release_tag"
+  if base_tag=$(resolve_base_tag "$release_tag" "$release_commit"); then
+    git merge-base --is-ancestor "$base_tag^{commit}" "$release_commit" || \
+      fail "$base_tag is not an ancestor of $release_tag"
+    commit_range="$base_tag..$release_tag"
+  else
+    base_tag=
+    commit_range=$release_tag
+  fi
 
-  commit_count=$(git rev-list --count --no-merges "$base_tag..$release_tag")
-  (( commit_count > 0 )) || fail "no non-merge commits exist in $base_tag..$release_tag"
+  commit_count=$(git rev-list --count --no-merges "$commit_range")
+  (( commit_count > 0 )) || fail "no non-merge commits exist in $commit_range"
 
   mkdir -p -- "$(dirname -- "$output")"
   {
@@ -182,12 +194,21 @@ main() {
       short_commit=${commit:0:8}
       printf -- "- %s ([\`%s\`](https://github.com/%s/commit/%s))\n" \
         "$subject" "$short_commit" "$repository" "$commit"
-    done < <(git log --reverse --no-merges --format='%H%x09%s' "$base_tag..$release_tag")
-    printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
-      "$repository" "$base_tag" "$release_tag"
+    done < <(git log --reverse --no-merges --format='%H%x09%s' "$commit_range")
+    if [[ -n "$base_tag" ]]; then
+      printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+        "$repository" "$base_tag" "$release_tag"
+    else
+      printf '\n**Release**: https://github.com/%s/releases/tag/%s\n' \
+        "$repository" "$release_tag"
+    fi
   } > "$output"
 
-  printf 'Release notes: %s..%s -> %s\n' "$base_tag" "$release_tag" "$output"
+  if [[ -n "$base_tag" ]]; then
+    printf 'Release notes: %s..%s -> %s\n' "$base_tag" "$release_tag" "$output"
+  else
+    printf 'Release notes: initial..%s -> %s\n' "$release_tag" "$output"
+  fi
 }
 
 if [[ "${1:-}" == --self-test ]]; then

@@ -163,7 +163,7 @@ func TestMaskToken(t *testing.T) {
 		{
 			name:  "长令牌",
 			token: "test-token-model-auth-1234567890abcdefghijklmnopqrstuvwxyz",
-			want:  "sk-a****wxyz",
+			want:  "test****wxyz",
 		},
 	}
 

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,7 +122,7 @@ func TestModelCatalogSyncUpdatesCacheAndUsesConditionalETag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat cache: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("cache mode = %o, want 600", got)
 	}
 

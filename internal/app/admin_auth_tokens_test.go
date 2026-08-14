@@ -21,7 +21,7 @@ func TestAuthToken_MaskToken(t *testing.T) {
 		{
 			name:     "Long token",
 			token:    "test-token-admin-auth-1234567890",
-			expected: "sk-a****mnop",
+			expected: "test****7890",
 		},
 		{
 			name:     "Short token",
