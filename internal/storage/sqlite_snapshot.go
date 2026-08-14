@@ -47,7 +47,7 @@ func VerifySQLiteSnapshot(ctx context.Context, snapshotPath string) error {
 	if err != nil {
 		return fmt.Errorf("open snapshot: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var integrity string
 	if err := db.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&integrity); err != nil {
 		return fmt.Errorf("run quick_check: %w", err)

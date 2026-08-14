@@ -22,7 +22,7 @@ func TestSiteTaskCancelHandlerCancelsRunningWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	baseCtx, baseCancel := context.WithCancel(context.Background())
 	defer baseCancel()
 	var wg sync.WaitGroup
@@ -123,7 +123,7 @@ func TestSiteSchedulerLimitsGlobalConcurrencyAndSerializesEachSite(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "scheduler-test")
 	if err != nil {
 		t.Fatal(err)

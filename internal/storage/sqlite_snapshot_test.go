@@ -28,7 +28,7 @@ func TestSQLiteSnapshotPreservesEncryptedSiteCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	ctx := context.Background()
 	site, err := store.CreateSite(ctx, &model.Site{Name: "snapshot", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]", LastProbeStatus: "unknown"})
 	if err != nil {
@@ -48,7 +48,7 @@ func TestSQLiteSnapshotPreservesEncryptedSiteCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var restoredCiphertext string
 	if err := db.QueryRowContext(ctx, "SELECT credential_ciphertext FROM site_accounts WHERE site_id=?", site.ID).Scan(&restoredCiphertext); err != nil {
 		t.Fatal(err)
