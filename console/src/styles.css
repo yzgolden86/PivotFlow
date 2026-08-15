@@ -1,6 +1,6 @@
 :root {
   color-scheme: light;
-  font-family: "Noto Sans SC", "Source Han Sans SC", "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  font-family: "MiSans", "HarmonyOS Sans SC", "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   letter-spacing: 0;
@@ -143,7 +143,7 @@ a:focus-visible {
 .brand-copy strong {
   display: block;
   color: var(--text);
-  font-family: "Noto Sans SC", "Source Han Sans SC", "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  font-family: "MiSans", "HarmonyOS Sans SC", "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
   font-size: 15px;
   line-height: 1.2;
 }
@@ -2598,18 +2598,6 @@ body { font-size: 14px; line-height: 1.5; }
 .setting-row input,
 .setting-row select,
 .setting-row textarea { font-size: 13px; }
-
-/* Readability and analytics pass. */
-body { font-size: 15px; }
-.nav-item, .global-search-trigger span { font-size: 15px; }
-.nav-group-label { font-size: 12px; }
-.page-header h1 { font-size: 28px; line-height: 36px; }
-.metric-label, .range-control button, .primary-button, .secondary-button, .filter-bar select, .search-field input { font-size: 14px; }
-.record-row strong, .channel-row strong, .site-row strong, .token-row strong, .announcement-row strong { font-size: 14px; }
-.record-row span, .channel-row span, .channel-row small, .site-row span, .token-row span, .site-sync-row span { font-size: 12px; line-height: 19px; }
-.status-badge, .account-actions > button:not(.icon-button), .text-button { font-size: 12px !important; }
-.console-form > label, .console-form .form-grid label, .credential-section > label, .form-grid label, .textarea-field { font-size: 13px; }
-.console-form input:not([type="checkbox"]), .console-form select, .credential-section input:not([type="checkbox"]), .credential-section select, .textarea-field textarea, .setting-row input, .setting-row select, .setting-row textarea { font-size: 14px; }
 
 .metric-card, .data-panel, .tool-card, .records-panel, .filter-bar, .compact-summary, .settings-layout, .trend-workbench { border-radius: 10px; }
 

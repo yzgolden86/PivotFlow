@@ -10,11 +10,12 @@ import (
 
 // Site control-plane stable identifiers and status values.
 const (
-	SitePlatformNewAPIFamily = "new-api-family"
-	SitePlatformAnyRouter    = "anyrouter"
-	SitePlatformVeloera      = "veloera"
-	SitePlatformSub2API      = "sub2api"
-	SitePlatformUnknown      = "unknown"
+	SitePlatformNewAPIFamily     = "new-api-family"
+	SitePlatformAnyRouter        = "anyrouter"
+	SitePlatformVeloera          = "veloera"
+	SitePlatformSub2API          = "sub2api"
+	SitePlatformOpenAICompatible = "openai-compatible"
+	SitePlatformUnknown          = "unknown"
 
 	CredentialTypeUsernamePassword = "username_password"
 	CredentialTypeAccessToken      = "access_token"

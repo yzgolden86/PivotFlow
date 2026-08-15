@@ -201,8 +201,8 @@ func NewRegistry(adapters ...SiteAdapter) *Registry {
 	return r
 }
 
-// Detect tries adapters in registration order. Dedicated providers should be
-// registered before the broad New API-family fallback.
+// Detect tries adapters in registration order. Management providers must be
+// registered before the API-only OpenAI-compatible fallback.
 func (r *Registry) Detect(ctx context.Context, baseURL string) (DetectionResult, error) {
 	if r == nil {
 		return DetectionResult{}, fmt.Errorf("provider registry is nil")

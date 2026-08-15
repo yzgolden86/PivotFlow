@@ -8,8 +8,9 @@
 
 - New API 系、AnyRouter、Veloera：用户名密码、访问令牌、Cookie、API Key。
 - Sub2API：访问令牌、API Key。
+- OpenAI Compatible：仅 API Key，用于 `/v1/models` 模型发现和路由同步。
 
-平台探测只识别接口特征，不会凭空生成站点令牌。你仍需提供自己有权使用的凭证。
+自动探测会先尝试 Sub2API、Veloera、AnyRouter、New API 系等管理型 Provider，均不匹配时才使用 OpenAI Compatible。平台探测只识别接口特征，不会凭空生成站点令牌。你仍需提供自己有权使用的凭证。
 
 ## 凭证和验证
 
@@ -23,7 +24,7 @@ AnyRouter 的会话 Cookie 需要用户 ID；Veloera 的 Cookie/令牌可能需�
 
 “刷新余额”调用 Provider 的账户信息接口并写入当前余额。“签到”先保存签到前余额，再执行 Provider 签到，最后刷新余额；结果会记录奖励文本、签到状态、余额前后值和余额变化。
 
-支持服务端签到的 Provider：New API 系、AnyRouter、Veloera。Sub2API 当前返回 `unsupported`，可以继续使用余额、模型和公告功能。需要浏览器挑战的站点会返回 `browser_required`，不会伪造成功。
+支持服务端签到的 Provider：New API 系、AnyRouter、Veloera。Sub2API 当前返回 `unsupported`，可以继续使用余额、模型和公告功能。OpenAI Compatible 不提供管理接口，因此不支持余额、签到或公告。需要浏览器挑战的站点会返回 `browser_required`，不会伪造成功。
 
 ## 公告
 

@@ -64,6 +64,7 @@ PivotFlow 是面向个人使用的 AI API 站点管理与智能路由控制台�
 | AnyRouter | ✓ | ✓ | ✓ | ✓ | 支持访问令牌或带用户 ID 的会话 Cookie；必要时可浏览器辅助 |
 | Veloera | ✓ | ✓ | ✓ | ✓ | 使用 Veloera 专用用户信息和签到契约 |
 | Sub2API | ✓ | ✓ | ✓ | — | 当前服务端签到明确不支持 |
+| OpenAI Compatible | — | ✓ | — | — | 仅使用 API Key 发现模型并同步路由的兜底 Provider |
 | OneHub / DoneHub / VoAPI / AxonHub | 兼容 | 兼容 | 兼容 | 取决于实现 | 仅在部署保持 New API / One API 契约时兼容 |
 
 “支持”表示 PivotFlow 中存在对应适配器和契约测试，不代表任意第三方实例都开放相同端点或权限。
