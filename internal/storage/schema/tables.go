@@ -158,6 +158,7 @@ func DefineSitesTable() *TableBuilder {
 		Column("base_url VARCHAR(500) NOT NULL").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
 		Column("timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai'").
+		Column("use_system_proxy TINYINT NOT NULL DEFAULT 1").
 		Column("proxy_url VARCHAR(500)").
 		Column("external_checkin_url VARCHAR(500)").
 		Column("tags_json TEXT NOT NULL").

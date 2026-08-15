@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FileUp, FlaskConical, MoreHorizontal, Pencil, Plus, Power, RefreshCw, Search, Trash2 } from 'lucide-react'
-import { createChannel, deleteChannel, getChannelEditor, getChannels, getSiteChannelBindings, getSiteInventory, getSiteModels, importOAuthCredentials, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
+import { Copy, FileUp, FlaskConical, MoreHorizontal, Pencil, Plus, Power, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
+import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, getChannelEditor, getChannels, getSiteChannelBindings, getSiteInventory, getSiteModels, importOAuthCredentials, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
 import type { Channel, ChannelEditorSnapshot, ChannelModel, ChannelMutation, ChannelURL, Site, SiteAccount, SiteChannelBinding } from '../types'
 import { EmptyState, ErrorState, LoadingState, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
@@ -21,7 +21,10 @@ export default function ChannelsPage() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [batchBusy, setBatchBusy] = useState(false)
   const [editing, setEditing] = useState<number | 'new' | null>(null)
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
   const [syncOpen, setSyncOpen] = useState(false)
   const importInput = useRef<HTMLInputElement>(null)
 
@@ -32,6 +35,7 @@ export default function ChannelsPage() {
       const result = await getChannels({ search, status, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }, signal)
       setChannels(result.data)
       setTotal(result.count)
+      setSelected((current) => new Set([...current].filter((id) => result.data.some((channel) => channel.id === id))))
     } catch (reason) {
       if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '渠道加载失败')
     } finally {
@@ -46,6 +50,9 @@ export default function ChannelsPage() {
   }, [load])
 
   useEffect(() => { setPage(1); setSearchDraft(querySearch); setSearch(querySearch) }, [querySearch])
+  useEffect(() => {
+    if (editing) setSourceMenuOpen(false)
+  }, [editing])
 
   const summary = useMemo(() => ({
     enabled: channels.filter((item) => item.enabled).length,
@@ -74,6 +81,41 @@ export default function ChannelsPage() {
     finally { setBusyId(null) }
   }
 
+  const toggleSelected = (id: number) => setSelected((current) => {
+    const next = new Set(current)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  const allPageSelected = channels.length > 0 && channels.every((channel) => selected.has(channel.id))
+  const toggleAllPage = () => setSelected(allPageSelected ? new Set() : new Set(channels.map((channel) => channel.id)))
+
+  const runBatch = async (action: 'enable' | 'disable' | 'delete') => {
+    const ids = [...selected]
+    if (!ids.length) return
+    if (action === 'delete' && !window.confirm(`删除选中的 ${ids.length} 个渠道？这些渠道将立即退出路由。`)) return
+    setBatchBusy(true); setError(''); setNotice('')
+    try {
+      if (action === 'delete') await deleteChannels(ids)
+      else await setChannelsEnabled(ids, action === 'enable')
+      setNotice(action === 'delete' ? `已删除 ${ids.length} 个渠道` : `已${action === 'enable' ? '启用' : '禁用'} ${ids.length} 个渠道`)
+      setSelected(new Set())
+      await load()
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '批量操作失败') }
+    finally { setBatchBusy(false) }
+  }
+
+  const copyChannel = async (channel: Channel) => {
+    setBusyId(channel.id); setError(''); setNotice('')
+    try {
+      const snapshot = await getChannelEditor(channel.id)
+      const payload = snapshotToMutation(snapshot, `${channel.name} 副本`)
+      await createChannel(payload)
+      setNotice(`已复制渠道“${channel.name}”`)
+      await load()
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '渠道复制失败') }
+    finally { setBusyId(null) }
+  }
+
   const importCredentials = async (files: FileList | null) => {
     if (!files?.length) return
     setError(''); setNotice('')
@@ -91,7 +133,7 @@ export default function ChannelsPage() {
         <h1>渠道与分发</h1>
         <div className="header-controls">
           <input ref={importInput} className="visually-hidden" type="file" accept="application/json,.json" multiple onChange={(event) => void importCredentials(event.target.files)} />
-		  <details className="source-menu"><summary className="secondary-button"><MoreHorizontal size={16} />其他来源</summary><div className="source-menu-popover"><button type="button" onClick={() => importInput.current?.click()}><FileUp size={15} />导入 OAuth</button><button type="button" onClick={() => setEditing('new')}><Plus size={15} />手工渠道</button></div></details>
+		  <div className="source-menu"><button className="secondary-button" type="button" aria-haspopup="menu" aria-expanded={sourceMenuOpen} onClick={() => setSourceMenuOpen((open) => !open)}><MoreHorizontal size={16} />其他来源</button>{sourceMenuOpen && <div className="source-menu-popover" role="menu"><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); importInput.current?.click() }}><FileUp size={15} />导入 OAuth</button><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); setEditing('new') }}><Plus size={15} />手工渠道</button></div>}</div>
 		  <button className="primary-button" type="button" onClick={() => setSyncOpen(true)}><RefreshCw size={16} />同步站点渠道</button>
           <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新渠道" title="刷新渠道"><RefreshCw size={17} /></button>
         </div>
@@ -104,6 +146,7 @@ export default function ChannelsPage() {
       </section>
 
       <form className="filter-bar" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(searchDraft.trim()) }}>
+        <label className="selection-toggle"><input type="checkbox" checked={allPageSelected} onChange={toggleAllPage} aria-label="选择当前页全部渠道" /><span>全选</span></label>
         <label className="search-field"><Search size={16} /><input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="搜索渠道名称" aria-label="搜索渠道名称" /></label>
         <select value={status} onChange={(event) => { setPage(1); setStatus(event.target.value) }} aria-label="渠道状态">
           <option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option><option value="cooldown">冷却中</option>
@@ -111,10 +154,12 @@ export default function ChannelsPage() {
         <button className="primary-button" type="submit"><Search size={15} />筛选</button>
       </form>
 
+      {selected.size > 0 && <div className="batch-toolbar" aria-label="渠道批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
+
       {error && channels.length > 0 && <div className="inline-error">{error}</div>}
       {loading ? <LoadingState label="正在加载渠道" /> : error && channels.length === 0 ? <ErrorState message={error} retry={() => void load()} /> : channels.length === 0 ? <EmptyState label="没有符合条件的渠道" /> : (
         <div className="channel-list">
-          {channels.map((channel) => <ChannelRow channel={channel} busy={busyId === channel.id} toggle={() => void toggleChannel(channel)} edit={() => setEditing(channel.id)} remove={() => void removeChannel(channel)} key={channel.id} />)}
+          {channels.map((channel) => <ChannelRow channel={channel} selected={selected.has(channel.id)} busy={busyId === channel.id || (batchBusy && selected.has(channel.id))} select={() => toggleSelected(channel.id)} toggle={() => void toggleChannel(channel)} copy={() => void copyChannel(channel)} edit={() => setEditing(channel.id)} remove={() => void removeChannel(channel)} key={channel.id} />)}
         </div>
       )}
       <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPage={setPage} />
@@ -222,15 +267,16 @@ function SiteChannelSyncModal({ close, synced }: { close: () => void; synced: ()
   )
 }
 
-function ChannelRow({ channel, busy, toggle, edit, remove }: { channel: Channel; busy: boolean; toggle: () => void; edit: () => void; remove: () => void }) {
+function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remove }: { channel: Channel; selected: boolean; busy: boolean; select: () => void; toggle: () => void; copy: () => void; edit: () => void; remove: () => void }) {
   const cooling = isCooling(channel)
   const activeModels = channel.models.filter((model) => !model.disabled)
   const protocols = Array.from(new Set(channel.urls.flatMap((url) => url.protocols?.length ? url.protocols : ['auto'])))
   return (
-    <article className="channel-row">
+    <article className={`channel-row${selected ? ' row-selected' : ''}`}>
       <div className="channel-identity">
+        <input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${channel.name}`} />
         <span className={`status-dot ${channel.enabled ? cooling ? 'status-dot--warning' : 'status-dot--success' : 'status-dot--muted'}`} />
-        <div><div className="channel-name"><strong>{channel.name}</strong><small>#{channel.id}</small></div><span>{channel.auth_type === 'api_key' ? `${channel.key_count} Keys · ${channel.key_strategy || 'sequential'}` : channel.auth_type}</span></div>
+        <div><div className="channel-name"><strong title={channel.name}>{channel.name}</strong><small>#{channel.id}</small></div><span>{channel.auth_type === 'api_key' ? `${channel.key_count} Keys · ${channel.key_strategy || 'sequential'}` : channel.auth_type}</span></div>
       </div>
       <div className="channel-endpoints"><strong title={channel.urls.map((item) => item.url).join('\n')}>{channel.urls[0]?.url || '未配置 URL'}</strong><span>{channel.urls.length} URL · {protocols.join(' / ')}</span></div>
       <div className="channel-routing"><span>优先级 <strong>{channel.priority}</strong></span><span>倍率 <strong>{channel.cost_multiplier || 1}x</strong></span><small>{protocolMode(channel.protocol_transform_mode)}</small></div>
@@ -239,6 +285,7 @@ function ChannelRow({ channel, busy, toggle, edit, remove }: { channel: Channel;
       <div className="row-actions">
         <a className="icon-button icon-button--surface" href={`#/models?channel=${channel.id}&view=probe`} aria-label={`测试 ${channel.name}`} title="模型测试"><FlaskConical size={16} /></a>
         <button className={`icon-button icon-button--surface ${channel.enabled ? 'is-on' : ''}`} type="button" onClick={toggle} disabled={busy} aria-label={channel.enabled ? `停用 ${channel.name}` : `启用 ${channel.name}`} title={channel.enabled ? '停用渠道' : '启用渠道'}><Power className={busy ? 'spin' : ''} size={16} /></button>
+        <button className="icon-button icon-button--surface" type="button" onClick={copy} disabled={busy} aria-label={`复制 ${channel.name}`} title="复制渠道"><Copy size={16} /></button>
         <button className="icon-button icon-button--surface" type="button" onClick={edit} aria-label={`编辑 ${channel.name}`} title="编辑"><Pencil size={16} /></button>
         <button className="icon-button icon-button--surface danger-button" type="button" onClick={remove} disabled={busy} aria-label={`删除 ${channel.name}`} title="删除"><Trash2 size={16} /></button>
       </div>
@@ -265,6 +312,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
   const [modelSearch, setModelSearch] = useState('')
   const [loading, setLoading] = useState(Boolean(channelId))
   const [saving, setSaving] = useState(false)
+  const [discovering, setDiscovering] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -328,6 +376,21 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
     finally { setSaving(false) }
   }
 
+  const discoverModels = async () => {
+    const urls = parseURLs(form.urls)
+    const keys = parseKeys(form.keys).map((item) => item.api_key)
+    if (!urls.length || !keys.length) { setError('请先填写上游 URL 和 API Key'); return }
+    setDiscovering(true); setError('')
+    try {
+      const result = await fetchChannelModelsPreview({ urls, api_keys: keys })
+      const models = result.models.filter((item) => item.model.trim())
+      if (!models.length) throw new Error('上游没有返回可用模型')
+      setAvailableModels((current) => Array.from(new Set([...current, ...models.map((item) => item.model)])).sort((a, b) => a.localeCompare(b)))
+      setForm((current) => ({ ...current, models }))
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '模型获取失败') }
+    finally { setDiscovering(false) }
+  }
+
   return <Modal title={channelId ? '编辑渠道' : '添加渠道'} close={close} wide>
     {loading ? <LoadingState label="正在加载渠道配置" /> : <form className="console-form channel-editor-form" onSubmit={submit}>
       {error && <div className="modal-error inline-error">{error}</div>}
@@ -343,10 +406,11 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
         <label>每日费用限额<input type="number" min="0" step="0.01" value={form.dailyCostLimit} onChange={(event) => setForm({ ...form, dailyCostLimit: Number(event.target.value) })} /></label>
         <label>渠道代理<input value={form.proxyURL} onChange={(event) => setForm({ ...form, proxyURL: event.target.value })} placeholder="留空使用环境代理" /></label>
       </div>
-	  <div className="form-help">正常情况请从站点添加账号并点击“同步”，系统会自动读取 URL、API Key 和模型并生成渠道。这里仅用于无法纳入站点管理的特殊上游或多 URL 高级配置。</div>
+      <div className="form-help">正常情况请从站点添加账号并点击“同步”，系统会自动读取 URL、API Key 和模型并生成渠道。这里仅用于无法纳入站点管理的特殊上游或多 URL 高级配置。</div>
       <label className="textarea-field">上游 URL<textarea required rows={3} value={form.urls} onChange={(event) => setForm({ ...form, urls: event.target.value })} placeholder="每行一个；可写 URL | anthropic, openai" /></label>
-      <ModelMappingEditor models={form.models} availableModels={availableModels} search={modelSearch} setSearch={setModelSearch} setModels={(models) => setForm((current) => ({ ...current, models }))} />
       {form.authType === 'api_key' ? <label className="textarea-field">API Keys<textarea required rows={4} value={form.keys} onChange={(event) => setForm({ ...form, keys: event.target.value })} placeholder="每行一个；可写 key | 备注" /></label> : <div className="form-help">OAuth 渠道不在这里手填密钥，请使用顶部“导入凭证”导入 Codex 或 Antigravity 凭证文件。</div>}
+      {form.authType === 'api_key' && <div className="model-discovery-action"><div><strong>自动获取模型</strong><span>使用上方 URL 和 Key 请求上游模型列表，结果会自动勾选。</span></div><button className="secondary-button" type="button" onClick={() => void discoverModels()} disabled={discovering || !form.urls.trim() || !form.keys.trim()}>{discovering ? <RefreshCw className="spin" size={15} /> : <Sparkles size={15} />}{discovering ? '获取中' : '获取模型'}</button></div>}
+      <ModelMappingEditor models={form.models} availableModels={availableModels} search={modelSearch} setSearch={setModelSearch} setModels={(models) => setForm((current) => ({ ...current, models }))} />
       <div className="checkbox-grid"><label className="checkbox-field"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用渠道</label><label className="checkbox-field"><input type="checkbox" checked={form.websockets} onChange={(event) => setForm({ ...form, websockets: event.target.checked })} />WebSocket</label><label className="checkbox-field"><input type="checkbox" checked={form.retryOtherKeys} onChange={(event) => setForm({ ...form, retryOtherKeys: event.target.checked })} />失败时尝试其他 Key</label></div>
       <footer><button className="secondary-button" type="button" onClick={close}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving ? <RefreshCw className="spin" size={15} /> : null}{saving ? '保存中' : '保存渠道'}</button></footer>
     </form>}
@@ -374,4 +438,30 @@ function protocolMode(mode: string): string {
   if (mode === 'local') return '本地协议转换'
   if (mode === 'upstream') return '上游原生协议'
   return '自动协议协商'
+}
+
+function snapshotToMutation(snapshot: ChannelEditorSnapshot, name: string): ChannelMutation {
+  const channel = snapshot.channel
+  return {
+    name,
+    auth_type: channel.auth_type,
+    api_keys: snapshot.keys.map((item) => ({ api_key: item.api_key, note: item.note })),
+    key_strategy: channel.key_strategy || snapshot.keys[0]?.key_strategy || 'sequential',
+    urls: channel.urls,
+    priority: channel.priority || 0,
+    rpm_limit: channel.rpm_limit || 0,
+    max_concurrency: channel.max_concurrency || 0,
+    models: channel.models,
+    enabled: channel.enabled,
+    websockets: Boolean(channel.websockets),
+    protocol_transform_mode: channel.protocol_transform_mode || 'auto',
+    scheduled_check_enabled: Boolean(channel.scheduled_check_enabled),
+    scheduled_check_model: channel.scheduled_check_model || '',
+    daily_cost_limit: channel.daily_cost_limit || 0,
+    cost_multiplier: channel.cost_multiplier ?? 1,
+    proxy_url: channel.proxy_url || '',
+    retry_other_keys_on_failure: Boolean(channel.retry_other_keys_on_failure),
+    custom_request_rules: channel.custom_request_rules,
+    cooldown_detection_rules: channel.cooldown_detection_rules,
+  }
 }

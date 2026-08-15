@@ -4,6 +4,7 @@ import type {
   ChannelEditorSnapshot,
   ChannelFilters,
   ChannelMutation,
+  ChannelModelsPreview,
   ChannelTestResult,
   DashboardRange,
   DashboardSnapshot,
@@ -119,6 +120,18 @@ export function setChannelsEnabled(channelIds: number[], enabled: boolean): Prom
   return apiMutation('/admin/channels/batch-enabled', { channel_ids: channelIds, enabled })
 }
 
+export function deleteChannels(channelIds: number[]): Promise<unknown> {
+  return apiMutation('/admin/channels/batch-delete', { channel_ids: channelIds })
+}
+
+export function fetchChannelModelsPreview(payload: {
+  urls: import('./types').ChannelURL[]
+  api_keys: string[]
+  protocol?: string
+}): Promise<ChannelModelsPreview> {
+  return apiMutation<ChannelModelsPreview>('/admin/channels/models/fetch', payload)
+}
+
 export function getChannelEditor(channelId: number, signal?: AbortSignal): Promise<ChannelEditorSnapshot> {
   return apiRequest<ChannelEditorSnapshot>(`/admin/channels/${channelId}/editor`, signal)
 }
@@ -190,6 +203,7 @@ export function createSite(payload: {
   base_url: string
   platform: string
   timezone: string
+  use_system_proxy?: boolean
   proxy_url?: string
   external_checkin_url?: string
   tags?: string[]
@@ -207,7 +221,7 @@ export function createSite(payload: {
 }
 
 export function updateSite(siteId: number, payload: Partial<Pick<Site,
-  'name' | 'base_url' | 'platform' | 'timezone' | 'proxy_url' | 'external_checkin_url' | 'enabled'
+  'name' | 'base_url' | 'platform' | 'timezone' | 'use_system_proxy' | 'proxy_url' | 'external_checkin_url' | 'enabled'
 >>): Promise<Site> {
   return apiMutation<Site>(`/admin/sites/${siteId}`, payload, 'PATCH')
 }

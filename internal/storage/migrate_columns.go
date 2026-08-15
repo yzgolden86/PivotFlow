@@ -23,6 +23,7 @@ var sqliteMigratableTables = map[string]bool{
 	"model_fingerprints":       true,
 	"schema_migrations":        true,
 	"checkin_attempts":         true,
+	"sites":                    true,
 }
 
 type sqliteColumnDef struct {
@@ -674,6 +675,12 @@ func ensureChannelsProxyURL(ctx context.Context, db *sql.DB, dialect Dialect) er
 	return ensureColumn(ctx, db, dialect, "channels", "proxy_url",
 		"VARCHAR(255) NOT NULL DEFAULT ''",
 		"TEXT NOT NULL DEFAULT ''")
+}
+
+func ensureSitesUseSystemProxy(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "sites", "use_system_proxy",
+		"TINYINT NOT NULL DEFAULT 1",
+		"INTEGER NOT NULL DEFAULT 1")
 }
 
 func ensureChannelsRetryOtherKeysOnFailure(ctx context.Context, db *sql.DB, dialect Dialect) error {

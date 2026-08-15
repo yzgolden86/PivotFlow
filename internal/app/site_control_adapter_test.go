@@ -24,3 +24,23 @@ func TestSiteControlAdapterMapsNewAPIFamilyAliases(t *testing.T) {
 		})
 	}
 }
+
+func TestSiteProxyURLPriority(t *testing.T) {
+	tests := []struct {
+		name string
+		site *model.Site
+		want string
+	}{
+		{name: "nil site uses environment proxy", site: nil, want: ""},
+		{name: "system proxy enabled", site: &model.Site{UseSystemProxy: true}, want: ""},
+		{name: "system proxy disabled", site: &model.Site{UseSystemProxy: false}, want: provider.DirectProxyURL},
+		{name: "explicit proxy wins", site: &model.Site{UseSystemProxy: false, ProxyURL: " http://127.0.0.1:7890 "}, want: "http://127.0.0.1:7890"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := siteProxyURL(tt.site); got != tt.want {
+				t.Fatalf("siteProxyURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

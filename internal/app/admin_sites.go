@@ -281,14 +281,14 @@ func (s *siteControlService) handleSiteAccountCredentialVerify(c *gin.Context) {
 	verifyCtx, cancel := context.WithTimeout(c.Request.Context(), 35*time.Second)
 	defer cancel()
 	if preparedType == model.CredentialTypeAPIKey {
-		models, listErr := adapter.ListModels(verifyCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: prepared})
+		models, listErr := adapter.ListModels(verifyCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: prepared})
 		if listErr != nil {
 			respondSiteProviderError(c, http.StatusBadRequest, listErr)
 			return
 		}
 		result["model_count"] = len(models)
 	} else {
-		snapshot, refreshErr := adapter.RefreshAccount(verifyCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: prepared})
+		snapshot, refreshErr := adapter.RefreshAccount(verifyCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: prepared})
 		if refreshErr != nil {
 			respondSiteProviderError(c, http.StatusBadRequest, refreshErr)
 			return
