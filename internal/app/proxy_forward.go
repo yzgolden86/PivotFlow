@@ -1620,6 +1620,11 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		resp, req, sentBody, err = s.doCodexWebsocketRequest(
 			reqCtx.ctx, cfg, native.session,
 			replayReq, replayBody, incrementalReq, incrementalBody,
+			func(upstreamWebsocket bool) {
+				if observer != nil && observer.OnUpstreamWebsocket != nil {
+					observer.OnUpstreamWebsocket(upstreamWebsocket)
+				}
+			},
 		)
 		if err != nil && isCodexWebsocketHandshakeFallbackError(err) {
 			log.Printf("[INFO] 渠道 %d WebSocket 握手协商失败 (%v)，同 Key/URL 回退 HTTP", cfg.ID, err)

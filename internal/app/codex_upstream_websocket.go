@@ -1073,6 +1073,7 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 	incrementalBody []byte,
 	skipTLSVerify bool,
 	timeouts codexWebsocketTimeouts,
+	onTransport func(bool),
 ) (resp *http.Response, usedReq *http.Request, usedBody []byte, err error) {
 	s.turnMu.Lock()
 	handedOff := false
@@ -1121,6 +1122,9 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 			connRetry, respRetry, errDial := s.dial(ctx, dialer, target, replayReq, timeouts)
 			if errDial == nil {
 				if errWrite := s.writeRequest(connRetry, preparedReplay); errWrite == nil {
+					if onTransport != nil {
+						onTransport(true)
+					}
 					response := s.streamResponse(
 						ctx, connRetry, replayReq, dialer, target, replayReq, replayBody, timeouts,
 					)
@@ -1139,6 +1143,9 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 		}
 		return nil, usedReq, usedBody, err
 	}
+	if onTransport != nil {
+		onTransport(true)
+	}
 	response := s.streamResponse(
 		ctx, conn, usedReq, dialer, target, replayReq, replayBody, timeouts,
 	)
@@ -1154,6 +1161,7 @@ func (s *Server) doCodexWebsocketRequest(
 	replayBody []byte,
 	incrementalReq *http.Request,
 	incrementalBody []byte,
+	onTransport func(bool),
 ) (*http.Response, *http.Request, []byte, error) {
 	if replayReq != nil {
 		replayBody = normalizeCodexWebsocketParallelToolCalls(replayBody, replayReq.Header)
@@ -1175,6 +1183,7 @@ func (s *Server) doCodexWebsocketRequest(
 		incrementalBody,
 		s.skipTLSVerify,
 		s.codexWebsocketTimeouts(),
+		onTransport,
 	)
 	if err != nil {
 		release()
