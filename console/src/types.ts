@@ -137,6 +137,13 @@ export interface ChannelEditorSnapshot {
   features: { scheduled_check_enabled: boolean }
 }
 
+export interface ChannelModelsPreview {
+  models: ChannelModel[]
+  protocol: string
+  source: string
+  debug?: unknown
+}
+
 export interface ChannelMutation {
   name: string
   auth_type: string
@@ -307,6 +314,7 @@ export interface Site {
   base_url: string
   enabled: boolean
   timezone: string
+  use_system_proxy: boolean
   proxy_url?: string
   external_checkin_url?: string
   tags_json: string

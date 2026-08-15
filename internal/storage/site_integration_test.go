@@ -16,9 +16,12 @@ func TestSiteControlSQLiteCRUDAndProjection(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	ctx := context.Background()
-	site, err := store.CreateSite(ctx, &model.Site{Name: "demo", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]", LastProbeStatus: "unknown"})
+	site, err := store.CreateSite(ctx, &model.Site{Name: "demo", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", UseSystemProxy: true, TagsJSON: "[]", LastProbeStatus: "unknown"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !site.UseSystemProxy {
+		t.Fatal("site system proxy preference was not persisted")
 	}
 	account, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "main", CredentialType: model.CredentialTypeAPIKey, CredentialCiphertext: "fc1.test", CredentialKeyVersion: "v1", Enabled: true, AutoCheckin: true, AutoRefresh: true, Status: "unknown", BalanceCurrency: "CNY", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
 	if err != nil {

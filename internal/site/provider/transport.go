@@ -14,6 +14,8 @@ import (
 
 const maxResponseBytes int64 = 2 << 20
 
+const DirectProxyURL = "direct://"
+
 type ClientFactory struct {
 	AllowPrivate bool
 	Resolver     *net.Resolver
@@ -25,7 +27,12 @@ func (f ClientFactory) New(proxyURL string) (*http.Client, error) {
 		resolver = net.DefaultResolver
 	}
 	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
-	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+	proxyFunc := http.ProxyFromEnvironment
+	if strings.EqualFold(strings.TrimSpace(proxyURL), DirectProxyURL) {
+		proxyFunc = nil
+		proxyURL = ""
+	}
+	transport := &http.Transport{Proxy: proxyFunc, ForceAttemptHTTP2: true, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
 			return nil, err

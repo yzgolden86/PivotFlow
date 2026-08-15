@@ -122,7 +122,7 @@ func (s *Server) HandleSiteAccountModelProbe(c *gin.Context) {
 		ModelEntries:          []model.ModelEntry{{Model: req.Model}},
 		Enabled:               true,
 		CostMultiplier:        1,
-		ProxyURL:              site.ProxyURL,
+		ProxyURL:              siteProxyURL(site),
 	}
 	testReq := &testutil.TestChannelRequest{
 		Model:          req.Model,

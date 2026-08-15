@@ -44,6 +44,7 @@ type Site struct {
 	BaseURL            string `json:"base_url"`
 	Enabled            bool   `json:"enabled"`
 	Timezone           string `json:"timezone"`
+	UseSystemProxy     bool   `json:"use_system_proxy"`
 	ProxyURL           string `json:"proxy_url,omitempty"`
 	ExternalCheckinURL string `json:"external_checkin_url,omitempty"`
 	TagsJSON           string `json:"tags_json"`

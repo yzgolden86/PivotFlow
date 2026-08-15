@@ -65,6 +65,22 @@ func newSiteControlService(store storage.Store, baseCtx context.Context, wg *syn
 
 func (s *siteControlService) locked() bool { return s == nil || s.cipher == nil }
 
+// siteProxyURL centralizes the effective transport choice for all upstream
+// management calls. An explicit site proxy always wins; otherwise sites may
+// opt out of the process-level HTTP(S)_PROXY environment configuration.
+func siteProxyURL(site *model.Site) string {
+	if site == nil {
+		return ""
+	}
+	if proxyURL := strings.TrimSpace(site.ProxyURL); proxyURL != "" {
+		return proxyURL
+	}
+	if site.UseSystemProxy {
+		return ""
+	}
+	return provider.DirectProxyURL
+}
+
 func newSiteTaskID() string {
 	var raw [12]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -164,7 +180,7 @@ func (s *siteControlService) operationCredentials(ctx context.Context, account *
 		return creds, nil
 	}
 	resolveCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	resolved, err := resolver.ResolveManagementCredentials(resolveCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: creds})
+	resolved, err := resolver.ResolveManagementCredentials(resolveCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
 	cancel()
 	if err != nil {
 		return provider.Credentials{}, err
@@ -222,7 +238,11 @@ func (s *siteControlService) createSite(ctx context.Context, req siteCreateReque
 	if len(req.Tags) == 0 {
 		tags = []byte("[]")
 	}
-	return s.store.CreateSite(ctx, &model.Site{Name: name, BaseURL: baseURL, Platform: platform, Enabled: true, Timezone: timezone, ProxyURL: strings.TrimSpace(req.ProxyURL), ExternalCheckinURL: strings.TrimSpace(req.ExternalCheckinURL), TagsJSON: string(tags), LastProbeStatus: "unknown"})
+	useSystemProxy := true
+	if req.UseSystemProxy != nil {
+		useSystemProxy = *req.UseSystemProxy
+	}
+	return s.store.CreateSite(ctx, &model.Site{Name: name, BaseURL: baseURL, Platform: platform, Enabled: true, Timezone: timezone, UseSystemProxy: useSystemProxy, ProxyURL: strings.TrimSpace(req.ProxyURL), ExternalCheckinURL: strings.TrimSpace(req.ExternalCheckinURL), TagsJSON: string(tags), LastProbeStatus: "unknown"})
 }
 
 type siteCreateRequest struct {
@@ -230,6 +250,7 @@ type siteCreateRequest struct {
 	BaseURL            string                `json:"base_url"`
 	Platform           string                `json:"platform"`
 	Timezone           string                `json:"timezone"`
+	UseSystemProxy     *bool                 `json:"use_system_proxy"`
 	ProxyURL           string                `json:"proxy_url"`
 	ExternalCheckinURL string                `json:"external_checkin_url"`
 	Tags               []string              `json:"tags"`
@@ -240,6 +261,7 @@ type sitePatchRequest struct {
 	BaseURL            *string `json:"base_url"`
 	Platform           *string `json:"platform"`
 	Timezone           *string `json:"timezone"`
+	UseSystemProxy     *bool   `json:"use_system_proxy"`
 	ProxyURL           *string `json:"proxy_url"`
 	ExternalCheckinURL *string `json:"external_checkin_url"`
 	Enabled            *bool   `json:"enabled"`
@@ -364,7 +386,7 @@ func (s *siteControlService) prepareAccountCredential(ctx context.Context, site 
 		}
 		loginCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 		loggedIn, loginErr := authenticator.Login(loginCtx, provider.LoginRequest{
-			BaseURL: site.BaseURL, ProxyURL: site.ProxyURL,
+			BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site),
 			Username: credentials.Username, Password: credentials.Password,
 		})
 		cancel()
@@ -387,7 +409,7 @@ func (s *siteControlService) prepareAccountCredential(ctx context.Context, site 
 	if credType != model.CredentialTypeAPIKey {
 		if resolver, ok := adapter.(provider.ManagementCredentialResolver); ok {
 			resolveCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-			resolved, resolveErr := resolver.ResolveManagementCredentials(resolveCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: credentials})
+			resolved, resolveErr := resolver.ResolveManagementCredentials(resolveCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: credentials})
 			cancel()
 			if resolveErr != nil {
 				return "", provider.Credentials{}, resolveErr
@@ -404,7 +426,7 @@ func (s *siteControlService) prepareAccountCredential(ctx context.Context, site 
 	if credType != model.CredentialTypeAPIKey {
 		if keyProvider, ok := adapter.(provider.RoutingKeyProvider); ok {
 			keyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			keys, keyErr := keyProvider.ListRoutingKeys(keyCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: credentials})
+			keys, keyErr := keyProvider.ListRoutingKeys(keyCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: credentials})
 			cancel()
 			if keyErr == nil {
 				for _, item := range keys {
@@ -503,7 +525,7 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 
 	callCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
-	snapshot, err := adapter.RefreshAccount(callCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: creds})
+	snapshot, err := adapter.RefreshAccount(callCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
 	now := time.Now().UnixMilli()
 	account.LastRefreshAt = now
 	if err != nil {
@@ -544,7 +566,7 @@ func (s *siteControlService) routingSnapshots(ctx context.Context, account *mode
 		return nil, &provider.Error{Code: provider.CodeRoutingKeyUnavailable, Message: "routing API key discovery is unavailable"}
 	}
 	keyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	keys, err := keyProvider.ListRoutingKeys(keyCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: creds})
+	keys, err := keyProvider.ListRoutingKeys(keyCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
 	cancel()
 	if err != nil {
 		return nil, err
@@ -571,7 +593,7 @@ func stableProjectionKey(item provider.RoutingKeySnapshot, index int) string {
 }
 
 func (s *siteControlService) refreshModels(ctx context.Context, account *model.SiteAccount, site *model.Site, adapter provider.SiteAdapter, creds provider.Credentials) error {
-	items, err := adapter.ListModels(ctx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: creds})
+	items, err := adapter.ListModels(ctx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
 	if err != nil {
 		return err
 	}
@@ -592,7 +614,7 @@ func (s *siteControlService) ensureRoutingKey(ctx context.Context, account *mode
 		return creds, &provider.Error{Code: provider.CodeRoutingKeyUnavailable, Message: "routing API key is unavailable"}
 	}
 	keyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	keys, err := keyProvider.ListRoutingKeys(keyCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: creds})
+	keys, err := keyProvider.ListRoutingKeys(keyCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
 	cancel()
 	if err != nil {
 		if provider.ErrorCode(err) == provider.CodeUnsupported {
@@ -731,7 +753,7 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 		balanceBefore = &value
 	}
 	preRefreshCtx, cancelPreRefresh := context.WithTimeout(ctx, 20*time.Second)
-	preSnapshot, preRefreshErr := adapter.RefreshAccount(preRefreshCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: creds})
+	preSnapshot, preRefreshErr := adapter.RefreshAccount(preRefreshCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
 	cancelPreRefresh()
 	if preRefreshErr == nil && preSnapshot.Balance != nil {
 		value := *preSnapshot.Balance
@@ -746,7 +768,7 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 	var result provider.CheckinResult
 	for try := 1; try <= 3; try++ {
 		attempt.AttemptNo = try
-		result, err = adapter.Checkin(ctx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: creds})
+		result, err = adapter.Checkin(ctx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
 		if err == nil || provider.ErrorCode(err) == provider.CodeBrowserRequired || provider.ErrorCode(err) == provider.CodeUnsupported || provider.ErrorCode(err) == provider.CodeExpired || provider.ErrorCode(err) == provider.CodeUserIDRequired {
 			break
 		}
@@ -774,7 +796,7 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 		account.LastCheckinStatus = provider.CheckinSuccess
 		account.LastCheckinAt = attempt.FinishedAt
 		refreshCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-		snapshot, refreshErr := adapter.RefreshAccount(refreshCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL, Credentials: creds})
+		snapshot, refreshErr := adapter.RefreshAccount(refreshCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
 		cancel()
 		if refreshErr == nil && snapshot.Balance != nil {
 			after := *snapshot.Balance
@@ -848,7 +870,7 @@ func (s *siteControlService) refreshAnnouncements(ctx context.Context, siteID in
 	if err != nil {
 		return err
 	}
-	request := provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: site.ProxyURL}
+	request := provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site)}
 	accounts, listErr := s.store.ListSiteAccounts(ctx, siteID, false)
 	if listErr == nil {
 		for _, account := range accounts {
@@ -949,6 +971,9 @@ func (s *siteControlService) handleSiteByID(c *gin.Context) {
 		}
 		if req.Timezone != nil {
 			site.Timezone = strings.TrimSpace(*req.Timezone)
+		}
+		if req.UseSystemProxy != nil {
+			site.UseSystemProxy = *req.UseSystemProxy
 		}
 		if req.ProxyURL != nil {
 			site.ProxyURL = strings.TrimSpace(*req.ProxyURL)

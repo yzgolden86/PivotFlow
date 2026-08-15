@@ -33,15 +33,16 @@ func (s *SQLStore) insertID(ctx context.Context, tx *sql.Tx, table string, colum
 
 func scanSite(scanner interface{ Scan(...any) error }) (*model.Site, error) {
 	var site model.Site
-	var enabled int
-	if err := scanner.Scan(&site.ID, &site.Name, &site.Platform, &site.BaseURL, &enabled, &site.Timezone, &site.ProxyURL, &site.ExternalCheckinURL, &site.TagsJSON, &site.LastProbeStatus, &site.LastError, &site.CreatedAt, &site.UpdatedAt, &site.DeletedAt); err != nil {
+	var enabled, useSystemProxy int
+	if err := scanner.Scan(&site.ID, &site.Name, &site.Platform, &site.BaseURL, &enabled, &site.Timezone, &useSystemProxy, &site.ProxyURL, &site.ExternalCheckinURL, &site.TagsJSON, &site.LastProbeStatus, &site.LastError, &site.CreatedAt, &site.UpdatedAt, &site.DeletedAt); err != nil {
 		return nil, err
 	}
 	site.Enabled = enabled != 0
+	site.UseSystemProxy = useSystemProxy != 0
 	return &site, nil
 }
 
-const siteColumns = `id, name, platform, base_url, enabled, timezone, proxy_url, external_checkin_url, tags_json, last_probe_status, last_error, created_at, updated_at, deleted_at`
+const siteColumns = `id, name, platform, base_url, enabled, timezone, use_system_proxy, proxy_url, external_checkin_url, tags_json, last_probe_status, last_error, created_at, updated_at, deleted_at`
 
 func (s *SQLStore) ListSites(ctx context.Context, filter model.SiteListFilter) ([]*model.Site, error) {
 	query := "SELECT " + siteColumns + " FROM sites"
@@ -113,7 +114,7 @@ func (s *SQLStore) CreateSite(ctx context.Context, site *model.Site) (*model.Sit
 			}
 		}
 		var err error
-		id, err = s.insertID(ctx, tx, "sites", "name,platform,base_url,enabled,timezone,proxy_url,external_checkin_url,tags_json,last_probe_status,last_error,created_at,updated_at,deleted_at", []any{site.Name, site.Platform, site.BaseURL, site.Enabled, site.Timezone, site.ProxyURL, site.ExternalCheckinURL, site.TagsJSON, site.LastProbeStatus, site.LastError, now, now, 0})
+		id, err = s.insertID(ctx, tx, "sites", "name,platform,base_url,enabled,timezone,use_system_proxy,proxy_url,external_checkin_url,tags_json,last_probe_status,last_error,created_at,updated_at,deleted_at", []any{site.Name, site.Platform, site.BaseURL, site.Enabled, site.Timezone, site.UseSystemProxy, site.ProxyURL, site.ExternalCheckinURL, site.TagsJSON, site.LastProbeStatus, site.LastError, now, now, 0})
 		return err
 	})
 	if err != nil {
@@ -127,7 +128,7 @@ func (s *SQLStore) UpdateSite(ctx context.Context, id int64, site *model.Site) (
 		return nil, errors.New("site cannot be nil")
 	}
 	now := siteNow()
-	_, err := s.ExecContext(ctx, `UPDATE sites SET name=?, platform=?, base_url=?, enabled=?, timezone=?, proxy_url=?, external_checkin_url=?, tags_json=?, last_probe_status=?, last_error=?, updated_at=? WHERE id=? AND deleted_at=0`, site.Name, site.Platform, site.BaseURL, site.Enabled, site.Timezone, site.ProxyURL, site.ExternalCheckinURL, site.TagsJSON, site.LastProbeStatus, site.LastError, now, id)
+	_, err := s.ExecContext(ctx, `UPDATE sites SET name=?, platform=?, base_url=?, enabled=?, timezone=?, use_system_proxy=?, proxy_url=?, external_checkin_url=?, tags_json=?, last_probe_status=?, last_error=?, updated_at=? WHERE id=? AND deleted_at=0`, site.Name, site.Platform, site.BaseURL, site.Enabled, site.Timezone, site.UseSystemProxy, site.ProxyURL, site.ExternalCheckinURL, site.TagsJSON, site.LastProbeStatus, site.LastError, now, id)
 	if err != nil {
 		return nil, err
 	}

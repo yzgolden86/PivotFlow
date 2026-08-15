@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Globe2, Pencil, Plus, Power, Radar, RefreshCw, Search, Trash2, UserPlus } from 'lucide-react'
+import { Copy, ExternalLink, Globe2, Network, Pencil, Plus, Power, Radar, RefreshCw, Search, Trash2, UserPlus } from 'lucide-react'
 import { createSite, deleteSite, getSiteInventory, probeSite, updateSite } from '../api'
 import type { Site, SiteAccount } from '../types'
 import { EmptyState, ErrorState, LoadingState } from './shared'
@@ -8,12 +8,12 @@ import { useLocation } from 'react-router-dom'
 import { credentialLabel, credentialOptions, normalizeCredentialType, platformSupportsCheckin, type CredentialType } from '../siteCredentials'
 
 type SiteForm = {
-  name: string; base_url: string; platform: string; timezone: string; proxy_url: string; external_checkin_url: string; enabled: boolean
+  name: string; base_url: string; platform: string; timezone: string; use_system_proxy: boolean; proxy_url: string; external_checkin_url: string; enabled: boolean
   addAccount: boolean; accountLabel: string; credentialType: CredentialType; credential: string; username: string; password: string; userId: number
   autoCheckin: boolean; autoRefresh: boolean
 }
 const emptyForm: SiteForm = {
-  name: '', base_url: '', platform: 'unknown', timezone: 'Asia/Shanghai', proxy_url: '', external_checkin_url: '', enabled: true,
+  name: '', base_url: '', platform: 'unknown', timezone: 'Asia/Shanghai', use_system_proxy: true, proxy_url: '', external_checkin_url: '', enabled: true,
   addAccount: true, accountLabel: '主账号', credentialType: 'username_password', credential: '', username: '', password: '', userId: 0, autoCheckin: true, autoRefresh: true,
 }
 
@@ -34,6 +34,8 @@ export default function SitesPage() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [batchBusy, setBatchBusy] = useState(false)
   const [editing, setEditing] = useState<Site | null | undefined>(undefined)
   const [form, setForm] = useState<SiteForm>(emptyForm)
   const [saving, setSaving] = useState(false)
@@ -42,7 +44,12 @@ export default function SitesPage() {
   const load = useCallback(async (signal?: AbortSignal, options: { silent?: boolean } = {}) => {
     if (!options.silent) setLoading(true)
     setError('')
-    try { const data = await getSiteInventory(signal); setSites(data.sites); setAccounts(data.accounts) }
+    try {
+      const data = await getSiteInventory(signal)
+      setSites(data.sites)
+      setAccounts(data.accounts)
+      setSelected((current) => new Set([...current].filter((id) => data.sites.some((site) => site.id === id))))
+    }
     catch (reason) { if (!signal?.aborted) setError(siteErrorMessage(reason)) }
     finally { if (!signal?.aborted && !options.silent) setLoading(false) }
   }, [])
@@ -68,7 +75,7 @@ export default function SitesPage() {
     setEditing(site || null)
     setForm(site ? {
       ...emptyForm, name: site.name, base_url: site.base_url, platform: site.platform, timezone: site.timezone,
-      proxy_url: site.proxy_url || '', external_checkin_url: site.external_checkin_url || '', enabled: site.enabled, addAccount: false,
+      use_system_proxy: site.use_system_proxy, proxy_url: site.proxy_url || '', external_checkin_url: site.external_checkin_url || '', enabled: site.enabled, addAccount: false,
     } : { ...emptyForm })
   }
 
@@ -78,7 +85,7 @@ export default function SitesPage() {
       if (editing) {
         await updateSite(editing.id, {
           name: form.name, base_url: form.base_url, platform: form.platform, timezone: form.timezone,
-          proxy_url: form.proxy_url, external_checkin_url: form.external_checkin_url, enabled: form.enabled,
+          use_system_proxy: form.use_system_proxy, proxy_url: form.proxy_url, external_checkin_url: form.external_checkin_url, enabled: form.enabled,
         })
       } else {
 		const credential = form.credentialType === 'username_password'
@@ -90,7 +97,7 @@ export default function SitesPage() {
 					: { access_token: form.credential, ...(form.userId > 0 ? { user_id: form.userId } : {}) }
 		await createSite({
 			name: form.name, base_url: form.base_url, platform: form.platform, timezone: form.timezone,
-			proxy_url: form.proxy_url, external_checkin_url: form.external_checkin_url, tags: [],
+			use_system_proxy: form.use_system_proxy, proxy_url: form.proxy_url, external_checkin_url: form.external_checkin_url, tags: [],
 			...(form.addAccount ? { account: {
 				label: form.accountLabel.trim() || '主账号', credential_type: form.credentialType, credential,
 				enabled: true, auto_checkin: form.credentialType === 'api_key' || !platformSupportsCheckin(form.platform) ? false : form.autoCheckin,
@@ -117,24 +124,61 @@ export default function SitesPage() {
     finally { setBusyId(null) }
   }
 
+  const toggleSelected = (id: number) => setSelected((current) => {
+    const next = new Set(current)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  const allVisibleSelected = visible.length > 0 && visible.every((site) => selected.has(site.id))
+  const toggleAllVisible = () => setSelected((current) => {
+    const next = new Set(current)
+    if (allVisibleSelected) visible.forEach((site) => next.delete(site.id)); else visible.forEach((site) => next.add(site.id))
+    return next
+  })
+
+  const runBatch = async (action: 'proxy_on' | 'proxy_off' | 'enable' | 'disable' | 'delete') => {
+    const targets = sites.filter((site) => selected.has(site.id))
+    if (!targets.length) return
+    if (action === 'delete' && !window.confirm(`删除选中的 ${targets.length} 个站点？关联账号和投影渠道将被禁用。`)) return
+    setBatchBusy(true); setError(''); setNotice('')
+    let failed = 0
+    await runLimited(targets, async (site) => {
+      try {
+        if (action === 'delete') await deleteSite(site.id)
+        else if (action === 'proxy_on' || action === 'proxy_off') await updateSite(site.id, { use_system_proxy: action === 'proxy_on' })
+        else await updateSite(site.id, { enabled: action === 'enable' })
+      } catch { failed++ }
+    })
+    setNotice(failed ? `批量操作完成，${targets.length - failed} 个成功，${failed} 个失败` : `已处理 ${targets.length} 个站点`)
+    if (action === 'delete') setSelected(new Set())
+    await load(undefined, { silent: true })
+    setBatchBusy(false)
+  }
+
+  const copySite = async (site: Site) => {
+    try { await navigator.clipboard.writeText(site.base_url); setNotice(`已复制 ${site.name} 的站点地址`) }
+    catch { setError('复制失败，请检查浏览器剪贴板权限') }
+  }
+
   return <div className="workspace-page">
     <header className="page-header">
 	  <h1>站点管理</h1>
       <div className="header-controls"><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新站点"><RefreshCw size={17} /></button></div>
     </header>
     <section className="compact-summary"><span><strong>{sites.length}</strong>站点总数</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>已启用</span><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{healthy}</strong>健康账号</span></section>
-    <div className="filter-bar"><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索站点、地址或平台" aria-label="搜索站点" /></label><span className="filter-count"><Globe2 size={14} />{visible.length} 个站点</span></div>
+    <div className="filter-bar"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部站点" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索站点、地址或平台" aria-label="搜索站点" /></label><span className="filter-count"><Globe2 size={14} />{visible.length} 个站点</span></div>
+    {selected.size > 0 && <div className="batch-toolbar" aria-label="站点批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('proxy_on')} disabled={batchBusy}><Network size={14} />开启系统代理</button><button type="button" onClick={() => void runBatch('proxy_off')} disabled={batchBusy}><Network size={14} />关闭系统代理</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
     {notice && <div className="operation-notice">{notice}</div>}{error && sites.length > 0 && <div className="inline-error">{error}</div>}
-    {loading ? <LoadingState label="正在加载站点资产" /> : error && !sites.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={sites.length ? '没有匹配的站点' : '尚未添加站点'} /> : <div className="site-list">{visible.map((site) => <SiteRow key={site.id} site={site} accounts={accounts.filter((account) => account.site_id === site.id)} busy={busyId === site.id} focused={site.id === focusSiteId} rowRef={(node) => { if (node) rowRefs.current.set(site.id, node); else rowRefs.current.delete(site.id) }} edit={() => openForm(site)} execute={(action) => void execute(site, action)} />)}</div>}
+    {loading ? <LoadingState label="正在加载站点资产" /> : error && !sites.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={sites.length ? '没有匹配的站点' : '尚未添加站点'} /> : <div className="site-list">{visible.map((site) => <SiteRow key={site.id} site={site} accounts={accounts.filter((account) => account.site_id === site.id)} selected={selected.has(site.id)} busy={busyId === site.id || (batchBusy && selected.has(site.id))} focused={site.id === focusSiteId} rowRef={(node) => { if (node) rowRefs.current.set(site.id, node); else rowRefs.current.delete(site.id) }} select={() => toggleSelected(site.id)} copy={() => void copySite(site)} edit={() => openForm(site)} execute={(action) => void execute(site, action)} />)}</div>}
     {editing !== undefined && <Modal title={editing ? '编辑站点' : '添加站点'} close={() => setEditing(undefined)}>{error && <div className="inline-error modal-error">{error}</div>}<SiteFormView form={form} setForm={setForm} saving={saving} submit={save} editing={Boolean(editing)} /></Modal>}
   </div>
 }
 
-function SiteRow({ site, accounts, busy, focused, rowRef, edit, execute }: { site: Site; accounts: SiteAccount[]; busy: boolean; focused: boolean; rowRef: (node: HTMLElement | null) => void; edit: () => void; execute: (action: 'probe' | 'toggle' | 'delete') => void }) {
+function SiteRow({ site, accounts, selected, busy, focused, rowRef, select, copy, edit, execute }: { site: Site; accounts: SiteAccount[]; selected: boolean; busy: boolean; focused: boolean; rowRef: (node: HTMLElement | null) => void; select: () => void; copy: () => void; edit: () => void; execute: (action: 'probe' | 'toggle' | 'delete') => void }) {
   const healthy = accounts.filter((account) => account.status === 'healthy').length
-  return <article ref={rowRef} data-site-id={site.id} className={`site-row${focused ? ' row-focus-highlight' : ''}`}>
-    <div className="site-identity"><span className={`status-dot ${site.enabled ? 'status-dot--success' : 'status-dot--muted'}`} /><div><a className="entity-link" href={`#/sites?focus_site_id=${site.id}`}><strong>{site.name}</strong></a><span>#{site.id} · {site.timezone || 'Asia/Shanghai'}</span></div></div>
-    <div className="site-address"><strong title={site.base_url}>{site.base_url}</strong><span>{site.platform || 'unknown'}{site.proxy_url ? ' · 已配置代理' : ''}</span></div>
+  return <article ref={rowRef} data-site-id={site.id} className={`site-row${selected ? ' row-selected' : ''}${focused ? ' row-focus-highlight' : ''}`}>
+    <div className="site-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${site.name}`} /><span className={`status-dot ${site.enabled ? 'status-dot--success' : 'status-dot--muted'}`} /><div><a className="entity-link" href={`#/sites?focus_site_id=${site.id}`}><strong>{site.name}</strong></a><span>#{site.id} · {site.timezone || 'Asia/Shanghai'}</span></div></div>
+    <div className="site-address"><strong title={site.base_url}>{site.base_url}</strong><span>{site.platform || 'unknown'} · {site.proxy_url ? '自定义代理' : site.use_system_proxy ? '系统代理' : '直连'}</span></div>
     <div className="site-account-summary"><strong>{healthy}/{accounts.length}</strong><div className="site-account-links">{accounts.length ? accounts.slice(0, 2).map((account) => <a className="entity-chip" key={account.id} href={`#/accounts?focus_account_id=${account.id}${['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}>{account.label}</a>) : <span>暂无账号</span>}</div></div>
     <div className="site-probe"><StatusBadge status={site.last_probe_status} /><span title={site.last_error}>{site.last_error || '最近探测状态'}</span></div>
     <div className="row-actions">
@@ -142,6 +186,7 @@ function SiteRow({ site, accounts, busy, focused, rowRef, edit, execute }: { sit
       <button className="icon-button icon-button--surface" type="button" onClick={() => execute('probe')} disabled={busy} aria-label={`探测 ${site.name}`} title="探测站点"><Radar className={busy ? 'spin' : ''} size={16} /></button>
       <button className={`icon-button icon-button--surface ${site.enabled ? 'is-on' : ''}`} type="button" onClick={() => execute('toggle')} disabled={busy} aria-label={site.enabled ? `停用 ${site.name}` : `启用 ${site.name}`}><Power size={16} /></button>
       <a className="icon-button icon-button--surface" href={`#/accounts?site_id=${site.id}&create=1`} aria-label={`为 ${site.name} 添加账号`} title="添加账号"><UserPlus size={16} /></a>
+      <button className="icon-button icon-button--surface" type="button" onClick={copy} aria-label={`复制 ${site.name} 地址`} title="复制站点地址"><Copy size={16} /></button>
       <button className="icon-button icon-button--surface" type="button" onClick={edit} aria-label={`编辑 ${site.name}`} title="编辑站点"><Pencil size={16} /></button>
       <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => execute('delete')} disabled={busy} aria-label={`删除 ${site.name}`}><Trash2 size={16} /></button>
     </div>
@@ -163,6 +208,7 @@ function SiteFormView({ form, setForm, saving, submit, editing }: { form: SiteFo
     <div className="form-grid"><label><span>站点名称</span><input required maxLength={191} value={form.name} onChange={(event) => field('name', event.target.value)} placeholder="例如：我的主力站" /></label><label><span>主站地址</span><input required type="url" value={form.base_url} onChange={(event) => field('base_url', event.target.value)} placeholder="https://example.com" /></label></div>
 		<div className="form-grid"><label><span>平台类型</span><select value={form.platform} onChange={(event) => changePlatform(event.target.value)}>{PLATFORM_OPTIONS.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>站点时区</span><input value={form.timezone} onChange={(event) => field('timezone', event.target.value)} placeholder="Asia/Shanghai" /></label></div>
 	<div className="form-help">建议使用账号密码或系统访问令牌：系统会读取余额、签到、公告，并自动发现模型调用 Key。只填模型 API Key 时仅支持模型与路由。</div>
+    <label className="checkbox-field"><input type="checkbox" checked={form.use_system_proxy} onChange={(event) => field('use_system_proxy', event.target.checked)} /><span>使用系统代理</span></label>
     <label><span>代理地址（可选）</span><input value={form.proxy_url} onChange={(event) => field('proxy_url', event.target.value)} placeholder="http://127.0.0.1:7890" /></label>
     <label><span>外部签到地址（可选）</span><input type="url" value={form.external_checkin_url} onChange={(event) => field('external_checkin_url', event.target.value)} placeholder="需要浏览器时打开此地址" /></label>
 	{!editing && <section className="embedded-form-section">
@@ -178,4 +224,10 @@ function SiteFormView({ form, setForm, saving, submit, editing }: { form: SiteFo
     {editing && <label className="checkbox-field"><input type="checkbox" checked={form.enabled} onChange={(event) => field('enabled', event.target.checked)} /><span>启用站点</span></label>}
     <footer><button className="primary-button" type="submit" disabled={saving}>{saving ? <RefreshCw className="spin" size={15} /> : null}{saving ? '保存中' : '保存站点'}</button></footer>
   </form>
+}
+
+async function runLimited<T>(items: T[], worker: (item: T) => Promise<void>, concurrency = 3): Promise<void> {
+  let cursor = 0
+  const run = async () => { while (cursor < items.length) await worker(items[cursor++]) }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, run))
 }

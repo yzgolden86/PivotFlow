@@ -132,6 +132,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 				return fmt.Errorf("migrate checkin_attempts balance columns: %w", err)
 			}
 		}
+		if tb.Name() == "sites" {
+			if err := ensureSitesUseSystemProxy(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate sites use_system_proxy: %w", err)
+			}
+		}
 
 		// 增量迁移：确保logs表新字段存在（2025-12新增）
 		if tb.Name() == "logs" {
