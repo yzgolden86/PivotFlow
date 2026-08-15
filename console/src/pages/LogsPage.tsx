@@ -117,13 +117,14 @@ function ActiveRequestsView() {
 
 function LogRow({ entry }: { entry: LogEntry }) {
   const success = entry.status_code >= 200 && entry.status_code < 300
+  const statusText = `${entry.status_code || 'ERR'} · ${success ? '成功' : '错误'}`
   const effectiveCost = entry.cost * (entry.cost_multiplier > 0 ? entry.cost_multiplier : 1)
   return (
     <article className="record-row log-grid">
       <div><strong>{formatTime(entry.time)}</strong><span>{sourceLabel(entry.log_source)}</span></div>
       <div><strong>{entry.channel_name || `渠道 #${entry.channel_id}`}</strong><span>#{entry.channel_id}</span></div>
       <div><strong title={entry.actual_model && entry.actual_model !== entry.model ? `${entry.model} → ${entry.actual_model}` : entry.model}>{entry.model}</strong><span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
-      <div><span className={`status-badge status-badge--${success ? 'success' : 'danger'}`}>{entry.status_code || 'ERR'}</span>{entry.message && <span className="record-message" title={entry.message}>{entry.message}</span>}</div>
+      <div className="log-status"><span className={`status-badge status-badge--${success ? 'success' : 'danger'}`}>{statusText}</span>{entry.message && <span className="record-message" title={entry.message}>{entry.message}</span>}</div>
       <div><strong>{entry.duration ? `${entry.duration.toFixed(2)}s` : '—'}</strong><span>首字 {entry.first_byte_time ? `${entry.first_byte_time.toFixed(2)}s` : '—'}</span></div>
       <div><strong>{formatNumber(entry.input_tokens)} / {formatNumber(entry.output_tokens)}</strong><span>输入 / 输出</span></div>
       <div><strong>{formatMoney(effectiveCost)}</strong><span>{entry.is_streaming ? '流式' : '非流式'}</span></div>
