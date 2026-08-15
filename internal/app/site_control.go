@@ -23,17 +23,20 @@ import (
 )
 
 type siteControlService struct {
-	store         storage.Store
-	cipher        *credential.Cipher
-	registry      *provider.Registry
-	baseCtx       context.Context
-	wg            *sync.WaitGroup
-	taskMu        sync.Mutex
-	webhookMu     sync.Mutex
-	tasks         map[string]context.CancelFunc
-	stopped       bool
-	webhookSender sitewebhook.Sender
+	store               storage.Store
+	cipher              *credential.Cipher
+	registry            *provider.Registry
+	baseCtx             context.Context
+	wg                  *sync.WaitGroup
+	taskMu              sync.Mutex
+	webhookMu           sync.Mutex
+	tasks               map[string]context.CancelFunc
+	stopped             bool
+	webhookSender       sitewebhook.Sender
+	onProjectionChanged func()
 }
+
+const credentialRefreshLead = 2 * time.Minute
 
 func newSiteControlService(store storage.Store, baseCtx context.Context, wg *sync.WaitGroup) *siteControlService {
 	cipher, err := credential.NewFromEnv()
@@ -65,6 +68,12 @@ func newSiteControlService(store storage.Store, baseCtx context.Context, wg *syn
 }
 
 func (s *siteControlService) locked() bool { return s == nil || s.cipher == nil }
+
+func (s *siteControlService) projectionChanged() {
+	if s != nil && s.onProjectionChanged != nil {
+		s.onProjectionChanged()
+	}
+}
 
 // siteProxyURL centralizes the effective transport choice for all upstream
 // management calls. An explicit site proxy always wins; otherwise sites may
@@ -171,10 +180,87 @@ func (s *siteControlService) credentials(account *model.SiteAccount) (provider.C
 	return creds, nil
 }
 
+func (s *siteControlService) decorateAccountCredentialMetadata(account *model.SiteAccount) {
+	if account == nil || s.locked() {
+		return
+	}
+	creds, err := s.credentials(account)
+	if err != nil {
+		return
+	}
+	account.CredentialRefreshConfigured = strings.TrimSpace(creds.RefreshToken) != ""
+	account.CredentialExpiresAt = creds.EffectiveExpiresAt()
+}
+
+func (s *siteControlService) preserveCredentialRefresh(account *model.SiteAccount, next *provider.Credentials) {
+	if account == nil || next == nil || s.locked() {
+		return
+	}
+	existing, err := s.credentials(account)
+	if err != nil {
+		return
+	}
+	if strings.TrimSpace(next.RefreshToken) == "" {
+		next.RefreshToken = existing.RefreshToken
+	}
+	if next.ExpiresAt == 0 {
+		next.ExpiresAt = next.EffectiveExpiresAt()
+		if next.ExpiresAt == 0 && strings.TrimSpace(next.AccessToken) == strings.TrimSpace(existing.AccessToken) {
+			next.ExpiresAt = existing.EffectiveExpiresAt()
+		}
+	}
+}
+
+func (s *siteControlService) persistCredentials(ctx context.Context, account *model.SiteAccount, creds provider.Credentials) error {
+	if creds.ExpiresAt == 0 {
+		creds.ExpiresAt = creds.EffectiveExpiresAt()
+	}
+	sealed, err := s.cipher.Seal(creds)
+	if err != nil {
+		return err
+	}
+	if err := s.store.UpdateSiteAccountCredential(ctx, account.ID, account.CredentialType, sealed, s.cipher.Version()); err != nil {
+		return err
+	}
+	account.CredentialCiphertext = sealed
+	account.CredentialKeyVersion = s.cipher.Version()
+	account.CredentialRefreshConfigured = strings.TrimSpace(creds.RefreshToken) != ""
+	account.CredentialExpiresAt = creds.EffectiveExpiresAt()
+	return nil
+}
+
+func credentialsChanged(before, after provider.Credentials) bool {
+	return before.AccessToken != after.AccessToken || before.RefreshToken != after.RefreshToken || before.ExpiresAt != after.ExpiresAt || before.APIKey != after.APIKey || before.Cookie != after.Cookie || before.UserID != after.UserID
+}
+
+func (s *siteControlService) refreshExpiredCredentials(ctx context.Context, account *model.SiteAccount, site *model.Site, adapter provider.SiteAdapter, creds provider.Credentials) (provider.Credentials, error) {
+	refresher, ok := adapter.(provider.CredentialRefresher)
+	if !ok || strings.TrimSpace(creds.RefreshToken) == "" {
+		return provider.Credentials{}, &provider.Error{Code: provider.CodeExpired, Message: "credential refresh is unavailable"}
+	}
+	refreshCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	refreshed, err := refresher.RefreshCredentials(refreshCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
+	cancel()
+	if err != nil {
+		return provider.Credentials{}, err
+	}
+	if err := s.persistCredentials(ctx, account, refreshed); err != nil {
+		return provider.Credentials{}, err
+	}
+	return refreshed, nil
+}
+
 func (s *siteControlService) operationCredentials(ctx context.Context, account *model.SiteAccount, site *model.Site, adapter provider.SiteAdapter) (provider.Credentials, error) {
 	creds, err := s.credentials(account)
 	if err != nil {
 		return provider.Credentials{}, err
+	}
+	if _, ok := adapter.(provider.CredentialRefresher); ok && creds.RefreshDue(time.Now(), credentialRefreshLead) {
+		refreshed, refreshErr := s.refreshExpiredCredentials(ctx, account, site, adapter, creds)
+		if refreshErr != nil {
+			return provider.Credentials{}, refreshErr
+		}
+		creds = refreshed
 	}
 	if account.CredentialType == model.CredentialTypeAPIKey || creds.UserID > 0 {
 		return creds, nil
@@ -189,18 +275,12 @@ func (s *siteControlService) operationCredentials(ctx context.Context, account *
 	if err != nil {
 		return provider.Credentials{}, err
 	}
-	if resolved.UserID == creds.UserID {
+	if !credentialsChanged(creds, resolved) {
 		return resolved, nil
 	}
-	sealed, err := s.cipher.Seal(resolved)
-	if err != nil {
+	if err := s.persistCredentials(ctx, account, resolved); err != nil {
 		return provider.Credentials{}, err
 	}
-	if err := s.store.UpdateSiteAccountCredential(ctx, account.ID, account.CredentialType, sealed, s.cipher.Version()); err != nil {
-		return provider.Credentials{}, err
-	}
-	account.CredentialCiphertext = sealed
-	account.CredentialKeyVersion = s.cipher.Version()
 	return resolved, nil
 }
 
@@ -382,9 +462,22 @@ func (s *siteControlService) prepareAccountCredential(ctx context.Context, site 
 	if credType == model.CredentialTypeAccessToken {
 		credentials.AccessToken = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(credentials.AccessToken), "Bearer "))
 	}
+	credentials.RefreshToken = strings.TrimSpace(credentials.RefreshToken)
+	if credentials.ExpiresAt == 0 {
+		credentials.ExpiresAt = credentials.EffectiveExpiresAt()
+	}
 	capabilities := adapter.Capabilities()
 	if len(capabilities.CredentialTypes) > 0 && !containsCredentialType(capabilities.CredentialTypes, credType) {
 		return "", provider.Credentials{}, &provider.Error{Code: provider.CodeUnsupported, Message: "this credential type is not supported by the selected platform"}
+	}
+	if refresher, ok := adapter.(provider.CredentialRefresher); ok && credType != model.CredentialTypeAPIKey && credentials.RefreshDue(time.Now(), credentialRefreshLead) {
+		refreshCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		refreshed, refreshErr := refresher.RefreshCredentials(refreshCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: credentials})
+		cancel()
+		if refreshErr != nil {
+			return "", provider.Credentials{}, refreshErr
+		}
+		credentials = refreshed
 	}
 	if credType == model.CredentialTypeUsernamePassword {
 		authenticator, ok := adapter.(provider.AccountAuthenticator)
@@ -504,32 +597,29 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 		return
 	}
 	if modelRefresh {
-		if err := s.refreshModels(ctx, account, site, adapter, creds); err != nil {
-			s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
-			return
-		}
-		account.Status, account.LastError, account.ConsecutiveFailures = model.SiteAccountStatusHealthy, "", 0
-		_, _ = s.store.UpdateSiteAccount(ctx, account.ID, account)
 		keys, keyErr := s.routingSnapshots(ctx, account, site, adapter, creds)
 		if keyErr != nil {
 			s.updateTask(ctx, task, model.SiteTaskStatusPartial, fmt.Sprintf("site_account:%d", accountID), siteTaskError(keyErr))
 			return
 		}
+		modelsByProjection, facts, modelErr := s.routingModels(ctx, account, site, adapter, creds, keys)
+		if modelErr != nil {
+			s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(modelErr))
+			return
+		}
+		if err := s.store.ReplaceSiteAccountModels(ctx, account.ID, facts); err != nil {
+			s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
+			return
+		}
+		account.Status, account.LastError, account.ConsecutiveFailures = model.SiteAccountStatusHealthy, "", 0
+		_, _ = s.store.UpdateSiteAccount(ctx, account.ID, account)
 		activeProjectionKeys := make([]string, 0, len(keys))
 		for index, item := range keys {
 			projectionKey := stableProjectionKey(item, index)
 			activeProjectionKeys = append(activeProjectionKeys, projectionKey)
 			keyCreds := creds
 			keyCreds.APIKey = item.Key
-			models := item.Models
-			if len(models) == 0 {
-				facts, _ := s.store.ListSiteAccountModels(ctx, model.SiteModelFilter{SiteAccountID: account.ID, Limit: 1000})
-				for _, fact := range facts {
-					if !fact.Disabled && !fact.Stale {
-						models = append(models, fact.Model)
-					}
-				}
-			}
+			models := modelsByProjection[projectionKey]
 			name := fmt.Sprintf("%s / %s", site.Name, account.Label)
 			if strings.TrimSpace(item.Group) != "" {
 				name += " / " + strings.TrimSpace(item.Group)
@@ -546,6 +636,7 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 			s.updateTask(ctx, task, model.SiteTaskStatusPartial, fmt.Sprintf("site_account:%d", accountID), siteTaskError(err))
 			return
 		}
+		s.projectionChanged()
 		s.updateTask(ctx, task, model.SiteTaskStatusSuccess, fmt.Sprintf("site_account:%d", accountID), "")
 		return
 	}
@@ -553,6 +644,16 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 	callCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
 	snapshot, err := adapter.RefreshAccount(callCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
+	if provider.ErrorCode(err) == provider.CodeExpired {
+		if refreshed, refreshErr := s.refreshExpiredCredentials(ctx, account, site, adapter, creds); refreshErr == nil {
+			creds = refreshed
+			retryCtx, retryCancel := context.WithTimeout(ctx, 35*time.Second)
+			snapshot, err = adapter.RefreshAccount(retryCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
+			retryCancel()
+		} else {
+			err = refreshErr
+		}
+	}
 	now := time.Now().UnixMilli()
 	account.LastRefreshAt = now
 	if err != nil {
@@ -595,6 +696,16 @@ func (s *siteControlService) routingSnapshots(ctx context.Context, account *mode
 	keyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	keys, err := keyProvider.ListRoutingKeys(keyCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
 	cancel()
+	if provider.ErrorCode(err) == provider.CodeExpired {
+		if refreshed, refreshErr := s.refreshExpiredCredentials(ctx, account, site, adapter, creds); refreshErr == nil {
+			creds = refreshed
+			retryCtx, retryCancel := context.WithTimeout(ctx, 20*time.Second)
+			keys, err = keyProvider.ListRoutingKeys(retryCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
+			retryCancel()
+		} else {
+			err = refreshErr
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -617,6 +728,124 @@ func stableProjectionKey(item provider.RoutingKeySnapshot, index int) string {
 		identity = model.HashToken(item.Key)[:12]
 	}
 	return "key:" + identity
+}
+
+func (s *siteControlService) routingModels(ctx context.Context, account *model.SiteAccount, site *model.Site, adapter provider.SiteAdapter, managementCreds provider.Credentials, keys []provider.RoutingKeySnapshot) (map[string][]string, []model.SiteAccountModel, error) {
+	modelsByProjection := make(map[string][]string, len(keys))
+	type unresolvedKey struct {
+		projectionKey string
+		item          provider.RoutingKeySnapshot
+		err           error
+	}
+	unresolved := make([]unresolvedKey, 0)
+	snapshotNames := make(map[int][]string, len(keys))
+	var snapshotSignature string
+	snapshotVaries := false
+	for index, item := range keys {
+		names := normalizedModelNames(item.Models)
+		snapshotNames[index] = names
+		signature := strings.Join(names, "\x00")
+		if index == 0 {
+			snapshotSignature = signature
+		} else if signature != snapshotSignature {
+			snapshotVaries = true
+		}
+	}
+	for index, item := range keys {
+		projectionKey := stableProjectionKey(item, index)
+		// Always ask the upstream model endpoint with this exact routing key.
+		// Some management APIs return a shared model list on every key, which
+		// would otherwise leak one group's models into all projected channels.
+		keyCreds := provider.Credentials{APIKey: strings.TrimSpace(item.Key)}
+		modelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		items, err := adapter.ListModels(modelCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: keyCreds})
+		cancel()
+		keyNames := make([]string, 0)
+		if err == nil {
+			keyNames = modelSnapshotNames(items)
+		}
+		names := keyNames
+		// A provider that already returns different model snapshots per key is
+		// giving us the most specific group information. Keep those snapshots
+		// even if its generic model endpoint returns an unscoped list.
+		if snapshotVaries {
+			names = snapshotNames[index]
+			if len(names) == 0 {
+				names = keyNames
+			}
+		}
+		if len(names) == 0 && len(keys) == 1 {
+			// A single-key deployment can safely use the snapshot returned by
+			// the management endpoint, or the management credential itself when
+			// the key endpoint is unavailable.
+			names = normalizedModelNames(item.Models)
+			if len(names) == 0 {
+				modelCtx, cancel = context.WithTimeout(ctx, 30*time.Second)
+				items, err = adapter.ListModels(modelCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: managementCreds})
+				cancel()
+				if err == nil {
+					names = modelSnapshotNames(items)
+				}
+			}
+		}
+		if len(names) == 0 {
+			unresolved = append(unresolved, unresolvedKey{projectionKey: projectionKey, item: item, err: err})
+			continue
+		}
+		modelsByProjection[projectionKey] = names
+	}
+	if len(unresolved) > 0 {
+		first := unresolved[0]
+		detail := strings.TrimSpace(first.item.Group)
+		if detail == "" {
+			detail = strings.TrimSpace(first.item.Name)
+		}
+		if detail == "" {
+			detail = first.projectionKey
+		}
+		if first.err != nil {
+			return nil, nil, &provider.Error{Code: provider.ErrorCode(first.err), Message: fmt.Sprintf("unable to discover models for routing key %s: %s", detail, provider.ErrorMessage(first.err))}
+		}
+		return nil, nil, &provider.Error{Code: provider.CodeUnsupported, Message: fmt.Sprintf("routing key %s returned no models", detail)}
+	}
+
+	seen := map[string]model.SiteAccountModel{}
+	now := time.Now().UnixMilli()
+	for _, names := range modelsByProjection {
+		for _, name := range names {
+			seen[name] = model.SiteAccountModel{SiteAccountID: account.ID, Model: name, RouteType: "openai_chat", Source: "routing_key_models", LastSeenAt: now}
+		}
+	}
+	facts := make([]model.SiteAccountModel, 0, len(seen))
+	for _, fact := range seen {
+		facts = append(facts, fact)
+	}
+	return modelsByProjection, facts, nil
+}
+
+func modelSnapshotNames(items []provider.ModelSnapshot) []string {
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item.Model)
+	}
+	return normalizedModelNames(names)
+}
+
+func normalizedModelNames(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func (s *siteControlService) refreshModels(ctx context.Context, account *model.SiteAccount, site *model.Site, adapter provider.SiteAdapter, creds provider.Credentials) error {
@@ -723,8 +952,31 @@ func (s *siteControlService) projectAccountWithModels(ctx context.Context, accou
 	if strings.TrimSpace(name) == "" {
 		name = fmt.Sprintf("%s / %s", site.Name, account.Label)
 	}
-	sourceHash := model.SiteProjectionSourceHash(site.BaseURL, []string{"openai"}, filtered, creds.APIKey, account.Enabled)
-	return s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: site.BaseURL, Protocols: []string{"openai"}, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, Enabled: account.Enabled, Force: force})
+	baseURL := routingBaseURL(site.BaseURL)
+	sourceHash := model.SiteProjectionSourceHash(baseURL, []string{"openai"}, filtered, creds.APIKey, account.Enabled)
+	result, err := s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: baseURL, Protocols: []string{"openai"}, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, Enabled: account.Enabled, Force: force})
+	if err != nil {
+		return nil, err
+	}
+	s.projectionChanged()
+	return result, nil
+}
+
+func routingBaseURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return strings.TrimRight(strings.TrimSpace(raw), "/")
+	}
+	cleanPath := strings.TrimRight(u.Path, "/")
+	if strings.HasSuffix(cleanPath, "/v1/models") {
+		cleanPath = strings.TrimSuffix(cleanPath, "/models")
+	}
+	if strings.HasSuffix(cleanPath, "/v1") {
+		cleanPath = strings.TrimSuffix(cleanPath, "/v1")
+	}
+	u.Path = strings.TrimRight(cleanPath, "/")
+	u.RawPath, u.RawQuery, u.Fragment = "", "", ""
+	return strings.TrimRight(u.String(), "/")
 }
 
 func siteTaskError(err error) string {
@@ -898,6 +1150,7 @@ func (s *siteControlService) refreshAnnouncements(ctx context.Context, siteID in
 		return err
 	}
 	request := provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site)}
+	var selectedAccount *model.SiteAccount
 	accounts, listErr := s.store.ListSiteAccounts(ctx, siteID, false)
 	if listErr == nil {
 		for _, account := range accounts {
@@ -907,11 +1160,20 @@ func (s *siteControlService) refreshAnnouncements(ctx context.Context, siteID in
 			credentials, credentialErr := s.operationCredentials(ctx, account, site, adapter)
 			if credentialErr == nil {
 				request.Credentials = credentials
+				selectedAccount = account
 				break
 			}
 		}
 	}
 	items, err := adapter.ListAnnouncements(ctx, request)
+	if provider.ErrorCode(err) == provider.CodeExpired && selectedAccount != nil {
+		if refreshed, refreshErr := s.refreshExpiredCredentials(ctx, selectedAccount, site, adapter, request.Credentials); refreshErr == nil {
+			request.Credentials = refreshed
+			items, err = adapter.ListAnnouncements(ctx, request)
+		} else {
+			err = refreshErr
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -1016,12 +1278,14 @@ func (s *siteControlService) handleSiteByID(c *gin.Context) {
 			RespondError(c, 400, err)
 			return
 		}
+		s.projectionChanged()
 		RespondJSON(c, 200, out)
 	case http.MethodDelete:
 		if err := s.store.DeleteSite(ctx, id); err != nil {
 			RespondError(c, 500, err)
 			return
 		}
+		s.projectionChanged()
 		RespondJSON(c, 200, gin.H{"id": id, "deleted": true})
 	}
 }

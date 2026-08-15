@@ -109,15 +109,16 @@ def main():
 
         route_checks = []
         console_routes = [
-            ("站点与账号", "站点与账号", "#/sites", sites_path),
+            ("站点管理", "站点管理", "#/sites", sites_path),
+            ("账号管理", "账号管理", "#/accounts", accounts_path),
             ("签到中心", "签到中心", "#/checkins", checkins_path),
             ("公告中心", "公告中心", "#/announcements", announcements_path),
-            ("渠道与分发", "渠道与分发", "#/channels", channels_path),
+            ("渠道分发", "渠道分发", "#/channels", channels_path),
             ("请求日志", "请求日志", "#/logs", logs_path),
             ("用量统计", "用量统计", "#/stats", stats_path),
             ("消费趋势", "消费趋势", "#/trend", trend_path),
-            ("模型与测试", "模型与测试", "#/models", model_test_path),
-            ("下游密钥", "下游密钥", "#/tokens", tokens_path),
+            ("模型测试", "模型测试", "#/models", model_test_path),
+            ("令牌管理", "令牌管理", "#/tokens", tokens_path),
             ("系统设置", "系统设置", "#/system", system_path),
         ]
         for nav_label, heading, route, screenshot_path in console_routes:
@@ -136,45 +137,93 @@ def main():
             route_checks.append({"route": route, "overflow": overflow, "legacy_links": legacy_links})
             page.screenshot(path=screenshot_path, full_page=True)
 
-        page.get_by_role("navigation", name="主导航").get_by_role("link", name="模型与测试", exact=True).click()
+        page.get_by_role("navigation", name="主导航").get_by_role("link", name="模型测试", exact=True).click()
         page.wait_for_url("**/#/models")
         expect(page.get_by_role("tab", name="模型清单")).to_have_attribute("aria-selected", "true")
         page.get_by_role("tab", name="连通测试").click()
         expect(page.get_by_role("button", name="站点账号直测", exact=True)).to_be_visible()
-        expect(page.get_by_role("button", name="PivotFlow 渠道", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="路由渠道", exact=True)).to_be_visible()
 
-        page.get_by_role("navigation", name="主导航").get_by_role("link", name="站点与账号", exact=True).click()
+        page.get_by_role("navigation", name="主导航").get_by_role("link", name="站点管理", exact=True).click()
         page.wait_for_url("**/#/sites")
+        expect(page.locator(".pagination select")).to_have_value("20")
+        expect(page.locator(".pagination select option")).to_have_count(3)
         page.get_by_role("button", name="添加站点", exact=True).click()
-        expect(page.get_by_role("dialog", name="添加站点")).to_be_visible()
-        expect(page.get_by_text("同时添加首个账号", exact=True)).to_be_visible()
-        expect(page.get_by_label("平台类型")).to_contain_text("One API")
+        site_dialog = page.get_by_role("dialog", name="添加站点")
+        expect(site_dialog).to_be_visible()
+        expect(site_dialog.get_by_text("同时添加首个账号", exact=True)).to_be_visible()
+        expect(site_dialog.get_by_label("平台类型")).to_contain_text("One API")
+        site_dialog.get_by_label("平台类型").select_option("sub2api")
+        site_dialog.get_by_label("添加方式").select_option("access_token")
+        expect(site_dialog.get_by_text("Refresh Token（可选）", exact=True)).to_be_visible()
+        expect(site_dialog.get_by_text("访问令牌过期时间（可选）", exact=True)).to_be_visible()
         page.get_by_role("button", name="关闭弹窗").click()
         expect(page.get_by_role("dialog", name="添加站点")).not_to_be_visible()
 
-        page.get_by_role("navigation", name="主导航").get_by_role("link", name="渠道与分发", exact=True).click()
-        page.get_by_role("button", name="手工渠道", exact=True).click()
+        page.get_by_role("navigation", name="主导航").get_by_role("link", name="账号管理", exact=True).click()
+        page.wait_for_url("**/#/accounts")
+        expect(page.locator(".pagination select")).to_have_value("20")
+        expect(page.locator(".pagination select option")).to_have_text(["20", "50", "100"])
+
+        page.get_by_role("navigation", name="主导航").get_by_role("link", name="渠道分发", exact=True).click()
+        expect(page.locator(".pagination select")).to_have_value("20")
+        expect(page.locator(".pagination select option")).to_have_text(["20", "50", "100"])
+        page.get_by_role("button", name="其他来源", exact=True).click()
+        page.get_by_role("menuitem", name="手工渠道", exact=True).click()
         expect(page.get_by_role("dialog", name="添加渠道")).to_be_visible()
         expect(page.get_by_text("模型映射", exact=True)).to_be_visible()
         page.get_by_role("button", name="关闭弹窗").click()
 
-        page.get_by_role("navigation", name="主导航").get_by_role("link", name="下游密钥", exact=True).click()
-        page.get_by_role("button", name="创建密钥", exact=True).click()
-        expect(page.get_by_role("dialog", name="创建下游密钥")).to_be_visible()
+        page.get_by_role("navigation", name="主导航").get_by_role("link", name="令牌管理", exact=True).click()
+        page.get_by_role("button", name="创建令牌", exact=True).click()
+        expect(page.get_by_role("dialog", name="创建令牌")).to_be_visible()
         expect(page.get_by_text("允许的模型", exact=True)).to_be_visible()
         page.get_by_role("button", name="关闭弹窗").click()
 
         page.get_by_role("navigation", name="主导航").get_by_role("link", name="请求日志", exact=True).click()
+        status_width = page.evaluate(
+            """
+            () => {
+              const node = document.createElement('div');
+              node.className = 'record-head log-grid';
+              node.innerHTML = '<span></span><span></span><span></span><span></span><span></span><span></span><span></span>';
+              node.style.width = '1000px';
+              document.body.appendChild(node);
+              const width = node.children[3].getBoundingClientRect().width;
+              node.remove();
+              return width;
+            }
+            """
+        )
+        if status_width < 120:
+            raise AssertionError(f"log status column too narrow: {status_width}")
         page.get_by_role("tab", name="进行中", exact=True).click()
         page.wait_for_url("**/#/logs?view=active")
         expect(page.get_by_text("当前没有进行中的请求", exact=True)).to_be_visible()
+
+        toast_style = page.evaluate(
+            """
+            () => {
+              const node = document.createElement('div');
+              node.className = 'operation-notice';
+              node.textContent = '操作完成';
+              document.body.appendChild(node);
+              const style = getComputedStyle(node);
+              const result = { position: style.position, top: style.top, right: style.right };
+              node.remove();
+              return result;
+            }
+            """
+        )
+        if toast_style["position"] != "fixed" or toast_style["right"] == "auto":
+            raise AssertionError(f"operation notice is not a right-side toast: {toast_style}")
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(250)
         expect(page.get_by_role("button", name="打开导航")).to_be_visible()
         page.get_by_role("button", name="打开导航").click()
         expect(page.locator(".sidebar")).to_have_class("sidebar sidebar--open")
-        expect(page.get_by_text("渠道与分发", exact=True)).to_be_visible()
+        expect(page.get_by_text("渠道分发", exact=True)).to_be_visible()
         page.wait_for_timeout(250)
         mobile_overflow = page.evaluate(
             "document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"

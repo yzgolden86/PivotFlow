@@ -62,7 +62,7 @@ go build -tags sonic -trimpath -o pivotflow.exe .
 2. 添加一个测试站点和账号，点击验证凭证。
 3. 刷新余额并同步模型。
 4. 执行一次账号直测，再同步站点渠道。
-5. 创建下游密钥，用客户端发一条最小请求。
+5. 在“令牌管理”创建访问令牌，用客户端发一条最小请求。
 
 ## 最小请求
 
@@ -73,7 +73,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"gpt-5.4","messages":[{"role":"user","content":"ping"}]}'
 ```
 
-不要把上游访问令牌放在这个请求中；代理只使用 PivotFlow 下游密钥。
+不要把上游访问令牌放在这个请求中；代理只使用 PivotFlow 发放的访问令牌。
 
 ## 验证服务
 

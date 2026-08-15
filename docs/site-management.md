@@ -7,7 +7,7 @@
 凭证类型按 Provider 能力显示：
 
 - New API 系、AnyRouter、Veloera：用户名密码、访问令牌、Cookie、API Key。
-- Sub2API：访问令牌、API Key。
+- Sub2API：访问令牌、Refresh Token、API Key。访问令牌为 JWT 时会自动识别 `exp`；同时保存 Refresh Token 后，系统会在到期前自动续期并保存轮换后的令牌。
 - OpenAI Compatible：仅 API Key，用于 `/v1/models` 模型发现和路由同步。
 
 自动探测会先尝试 Sub2API、Veloera、AnyRouter、New API 系等管理型 Provider，均不匹配时才使用 OpenAI Compatible。平台探测只识别接口特征，不会凭空生成站点令牌。你仍需提供自己有权使用的凭证。
@@ -16,7 +16,7 @@
 
 添加或修改账号后，使用“验证凭证”检查用户信息、余额、模型数量和路由 Key 可用性。验证是一次性请求，不会替换数据库中的凭证；“保存凭证”才会加密写入。
 
-如果提示 `credential_locked`，检查 `FUSION_MASTER_KEY`、`FUSION_MASTER_KEY_FILE` 和数据目录权限。如果提示 `expired`，重新填写上游访问令牌或会话 Cookie，并同时填写 Provider 要求的用户 ID。
+如果提示 `credential_locked`，检查 `FUSION_MASTER_KEY`、`FUSION_MASTER_KEY_FILE` 和数据目录权限。如果提示 `expired`，重新填写上游访问令牌或会话 Cookie，并同时填写 Provider 要求的用户 ID。JWT 的 `exp` 会自动识别；opaque token 没有可解析的 `exp` 时，可在账号凭证表单中手动填写过期时间。Refresh Token 只在对应 Provider 实现续期接口时生效。
 
 AnyRouter 的会话 Cookie 需要用户 ID；Veloera 的 Cookie/令牌可能需要兼容用户头。Sub2API 的访问令牌通常是 JWT，`session cookie` 不是把 JWT 随便填进 Cookie 字段。
 

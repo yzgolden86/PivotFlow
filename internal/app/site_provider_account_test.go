@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
 	"github.com/yzgolden86/PivotFlow/internal/site/credential"
@@ -111,11 +114,24 @@ func (managementProjectionTestAdapter) ListRoutingKeys(context.Context, provider
 
 type multiKeyProjectionTestAdapter struct {
 	projectionTestAdapter
-	keys []provider.RoutingKeySnapshot
+	keys        []provider.RoutingKeySnapshot
+	modelsByKey map[string][]string
 }
 
 func (a *multiKeyProjectionTestAdapter) ListRoutingKeys(context.Context, provider.AccountRequest) ([]provider.RoutingKeySnapshot, error) {
 	return append([]provider.RoutingKeySnapshot(nil), a.keys...), nil
+}
+
+func (a *multiKeyProjectionTestAdapter) ListModels(ctx context.Context, req provider.AccountRequest) ([]provider.ModelSnapshot, error) {
+	if a.modelsByKey == nil {
+		return a.projectionTestAdapter.ListModels(ctx, req)
+	}
+	models := a.modelsByKey[req.Credentials.APIKey]
+	out := make([]provider.ModelSnapshot, 0, len(models))
+	for _, name := range models {
+		out = append(out, provider.ModelSnapshot{Model: name, RouteType: "openai_chat", Source: "routing_key_models"})
+	}
+	return out, nil
 }
 
 type cookieLoginAdapter struct{}
@@ -279,6 +295,73 @@ func TestCreateSub2APILegacyCookieInputStoresValidatedAccessToken(t *testing.T) 
 	}
 }
 
+func TestSub2APIOpaqueExpiredTokenRefreshesReactively(t *testing.T) {
+	var refreshCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/me":
+			if r.Header.Get("Authorization") != "Bearer access-new" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"code":"UNAUTHORIZED","message":"token expired"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"id":7,"username":"renewed","balance":19.5}}`))
+		case "/api/v1/auth/refresh":
+			refreshCalls++
+			if r.Header.Get("Authorization") != "Bearer access-old" {
+				t.Errorf("refresh authorization=%q", r.Header.Get("Authorization"))
+			}
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["refresh_token"] != "refresh-old" {
+				t.Errorf("refresh body=%v err=%v", body, err)
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"access-new","refresh_token":"refresh-new","expires_in":3600}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "sub2-reactive-refresh-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	srv.siteControl.registry = provider.NewRegistry(provider.NewSub2API(provider.ClientFactory{AllowPrivate: true}))
+	ctx := context.Background()
+	site, err := srv.store.CreateSite(ctx, &model.Site{Name: "Sub2 refresh", Platform: model.SitePlatformSub2API, BaseURL: upstream.URL, Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := cipher.Seal(provider.Credentials{AccessToken: "access-old", RefreshToken: "refresh-old", UserID: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := srv.store.CreateSiteAccount(ctx, &model.SiteAccount{
+		SiteID: site.ID, Label: "main", CredentialType: model.CredentialTypeAccessToken,
+		CredentialCiphertext: sealed, CredentialKeyVersion: cipher.Version(), Enabled: true,
+		Status: model.SiteAccountStatusHealthy, BalanceCurrency: "USD", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &model.SiteTask{ID: newSiteTaskID(), Kind: "refresh", Status: model.SiteTaskStatusRunning}
+	srv.siteControl.refreshAccount(ctx, task, account.ID, false)
+	if task.Status != model.SiteTaskStatusSuccess || refreshCalls != 1 {
+		t.Fatalf("task=%+v refreshCalls=%d", task, refreshCalls)
+	}
+	updated, err := srv.store.GetSiteAccount(ctx, account.ID)
+	if err != nil || updated.Balance == nil || *updated.Balance != 19.5 {
+		t.Fatalf("account=%+v err=%v", updated, err)
+	}
+	stored, err := srv.siteControl.credentials(updated)
+	if err != nil || stored.AccessToken != "access-new" || stored.RefreshToken != "refresh-new" || stored.ExpiresAt <= time.Now().UnixMilli() {
+		t.Fatalf("credentials=%+v err=%v", stored, err)
+	}
+}
+
 func TestCheckinPersistsBalanceIncrease(t *testing.T) {
 	srv := newInMemoryServer(t)
 	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "checkin-balance-test")
@@ -403,6 +486,82 @@ func TestModelRefreshAutomaticallyCreatesProjectedChannel(t *testing.T) {
 	}
 }
 
+func TestModelRefreshInvalidatesRoutingCacheAndProxiesImmediately(t *testing.T) {
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			if r.Header.Get("Authorization") != "Bearer sk-projected-live" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":{"message":"invalid key"}}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
+		case "/v1/chat/completions":
+			upstreamCalls++
+			if r.Header.Get("Authorization") != "Bearer sk-projected-live" {
+				t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chat-live","object":"chat.completion","model":"gpt-live","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "projection-live-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	srv.siteControl.registry = provider.NewRegistry(provider.NewOpenAICompatible(provider.ClientFactory{AllowPrivate: true}))
+	ctx := context.Background()
+
+	// Warm the empty channel snapshot first. Without explicit invalidation, a
+	// newly projected channel remains invisible to the router until cache TTL.
+	if channels, getErr := srv.getEnabledChannelsSnapshotByModel(ctx, "gpt-live"); getErr != nil || len(channels) != 0 {
+		t.Fatalf("warm channels=%+v err=%v", channels, getErr)
+	}
+
+	site, err := srv.store.CreateSite(ctx, &model.Site{Name: "Live", Platform: model.SitePlatformOpenAICompatible, BaseURL: upstream.URL + "/v1", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := srv.siteControl.createAccount(ctx, site.ID, accountCreateRequest{Label: "main", CredentialType: model.CredentialTypeAPIKey, Credential: provider.Credentials{APIKey: "sk-projected-live"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &model.SiteTask{ID: newSiteTaskID(), Kind: "model_refresh", Status: model.SiteTaskStatusRunning}
+	srv.siteControl.refreshAccount(ctx, task, account.ID, true)
+	if task.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("task=%+v", task)
+	}
+
+	injectAPIToken(srv.authService, "test-api-key", 0, 1)
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+	response := doProxyRequest(t, engine, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-live",
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls=%d, want 1", upstreamCalls)
+	}
+
+	entry := waitForProxyLog(t, &proxyTestEnv{server: srv, store: srv.store, engine: engine}, "gpt-live")
+	if entry.InputTokens != 11 || entry.OutputTokens != 3 {
+		t.Fatalf("tokens=%d/%d, want 11/3", entry.InputTokens, entry.OutputTokens)
+	}
+}
+
 func TestModelRefreshDoesNotRepeatManagementModelProbeWithRoutingKey(t *testing.T) {
 	srv := newInMemoryServer(t)
 	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "projection-management-test")
@@ -515,6 +674,66 @@ func TestModelRefreshProjectsEachRoutingKeyAndDeactivatesRemovedKeys(t *testing.
 		}
 		if channel.Enabled {
 			t.Fatalf("removed key channel remains enabled: %+v", channel)
+		}
+	}
+}
+
+func TestModelRefreshDiscoversModelsWithEachRoutingKey(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "per-key-model-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	adapter := &multiKeyProjectionTestAdapter{
+		keys: []provider.RoutingKeySnapshot{
+			{ID: "free", Name: "Free", Group: "free", Key: "sk-free", Models: []string{"shared-management-model"}, Enabled: true},
+			{ID: "pro", Name: "Pro", Group: "pro", Key: "sk-pro", Models: []string{"shared-management-model"}, Enabled: true},
+		},
+		modelsByKey: map[string][]string{
+			"sk-free": {"gpt-free"},
+			"sk-pro":  {"gpt-pro", "claude-pro"},
+		},
+	}
+	srv.siteControl.registry = provider.NewRegistry(adapter)
+	ctx := context.Background()
+	site, err := srv.store.CreateSite(ctx, &model.Site{Name: "Grouped", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://grouped.example.com/v1", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := srv.siteControl.createAccount(ctx, site.ID, accountCreateRequest{Label: "admin", CredentialType: model.CredentialTypeAccessToken, Credential: provider.Credentials{AccessToken: "system-token", UserID: 7}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &model.SiteTask{ID: newSiteTaskID(), Kind: "model_refresh", Status: model.SiteTaskStatusRunning}
+	srv.siteControl.refreshAccount(ctx, task, account.ID, true)
+	if task.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("task=%+v", task)
+	}
+	bindings, err := srv.store.ListSiteChannelBindings(ctx)
+	if err != nil || len(bindings) != 2 {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+	want := map[string][]string{"sk-free": {"gpt-free"}, "sk-pro": {"claude-pro", "gpt-pro"}}
+	for _, binding := range bindings {
+		channel, getErr := srv.store.GetConfig(ctx, binding.ChannelID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		keys, keyErr := srv.store.GetAPIKeys(ctx, channel.ID)
+		if keyErr != nil || len(keys) != 1 {
+			t.Fatalf("keys=%+v err=%v", keys, keyErr)
+		}
+		if channel.URLs[0].RuntimeURL() != "https://grouped.example.com" {
+			t.Fatalf("routing url=%q", channel.URLs[0].RuntimeURL())
+		}
+		got := make([]string, 0, len(channel.ModelEntries))
+		for _, entry := range channel.ModelEntries {
+			got = append(got, entry.Model)
+		}
+		slices.Sort(got)
+		if !slices.Equal(got, want[keys[0].APIKey]) {
+			t.Fatalf("key=%s models=%v want=%v", keys[0].APIKey, got, want[keys[0].APIKey])
 		}
 	}
 }

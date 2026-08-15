@@ -303,6 +303,10 @@ func NewServer(store storage.Store) *Server {
 		store, // 传入store用于热更新令牌
 	)
 	s.siteControl = newSiteControlService(store, s.baseCtx, &s.wg)
+	s.siteControl.onProjectionChanged = func() {
+		s.InvalidateChannelListCache()
+		s.InvalidateAllAPIKeysCache()
+	}
 
 	// 启动后台 worker（Token 统计 / Token 清理 / 状态清理）
 	s.startBackgroundWorkers()

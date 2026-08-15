@@ -2,8 +2,11 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -72,12 +75,14 @@ func ErrorStatusCode(err error) int {
 }
 
 type Credentials struct {
-	Username    string `json:"username,omitempty"`
-	Password    string `json:"password,omitempty"`
-	AccessToken string `json:"access_token,omitempty"`
-	APIKey      string `json:"api_key,omitempty"`
-	Cookie      string `json:"cookie,omitempty"`
-	UserID      int64  `json:"user_id,omitempty"`
+	Username     string `json:"username,omitempty"`
+	Password     string `json:"password,omitempty"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
+	APIKey       string `json:"api_key,omitempty"`
+	Cookie       string `json:"cookie,omitempty"`
+	UserID       int64  `json:"user_id,omitempty"`
 }
 
 func (c Credentials) Token() string {
@@ -85,6 +90,51 @@ func (c Credentials) Token() string {
 		return c.AccessToken
 	}
 	return c.APIKey
+}
+
+// EffectiveExpiresAt returns an explicitly stored expiry, or the exp claim
+// from a JWT when the upstream did not provide a separate expires_in value.
+// Opaque access tokens simply return zero and are refreshed only when the
+// provider exposes an explicit expiry.
+func (c Credentials) EffectiveExpiresAt() int64 {
+	if c.ExpiresAt > 0 {
+		return c.ExpiresAt
+	}
+	parts := strings.Split(strings.TrimSpace(strings.TrimPrefix(c.AccessToken, "Bearer ")), ".")
+	if len(parts) != 3 {
+		return 0
+	}
+	claims, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0
+	}
+	var payload map[string]any
+	if json.Unmarshal(claims, &payload) != nil {
+		return 0
+	}
+	switch value := payload["exp"].(type) {
+	case float64:
+		if value > 0 {
+			return int64(value * 1000)
+		}
+	case json.Number:
+		if seconds, err := strconv.ParseInt(string(value), 10, 64); err == nil && seconds > 0 {
+			return seconds * 1000
+		}
+	case string:
+		if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil && seconds > 0 {
+			return seconds * 1000
+		}
+	}
+	return 0
+}
+
+func (c Credentials) RefreshDue(now time.Time, lead time.Duration) bool {
+	if strings.TrimSpace(c.RefreshToken) == "" {
+		return false
+	}
+	expiresAt := c.EffectiveExpiresAt()
+	return expiresAt > 0 && expiresAt-now.Add(lead).UnixMilli() <= 0
 }
 
 type ProviderCapabilities struct {
@@ -170,6 +220,12 @@ type SiteAdapter interface {
 // login for a management/session token.
 type AccountAuthenticator interface {
 	Login(ctx context.Context, req LoginRequest) (Credentials, error)
+}
+
+// CredentialRefresher is implemented by providers whose management session
+// can be renewed without asking the user to paste a new access token.
+type CredentialRefresher interface {
+	RefreshCredentials(ctx context.Context, req AccountRequest) (Credentials, error)
 }
 
 // ManagementCredentialResolver validates a management credential and fills

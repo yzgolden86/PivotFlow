@@ -43,8 +43,8 @@ def main():
 
         page.goto(f"{BASE_URL}/web/console/#/tokens")
         page.wait_for_load_state("networkidle")
-        page.get_by_role("button", name="创建密钥", exact=True).click()
-        dialog = page.get_by_role("dialog", name="创建下游密钥")
+        page.get_by_role("button", name="创建令牌", exact=True).click()
+        dialog = page.get_by_role("dialog", name="创建令牌")
         expect(dialog).to_be_visible()
         dialog.screenshot(path=os.path.join(ARTIFACT_DIR, "console-token-create.png"))
         desktop_overflow = page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth + 1")

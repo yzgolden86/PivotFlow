@@ -59,30 +59,32 @@ type Site struct {
 // SiteAccount contains account state. CredentialCiphertext is deliberately
 // excluded from JSON and may only be decrypted immediately before a provider call.
 type SiteAccount struct {
-	ID                   int64    `json:"id"`
-	SiteID               int64    `json:"site_id"`
-	Label                string   `json:"label"`
-	CredentialType       string   `json:"credential_type"`
-	CredentialCiphertext string   `json:"-"`
-	CredentialKeyVersion string   `json:"-"`
-	CredentialConfigured bool     `json:"credential_configured"`
-	Enabled              bool     `json:"enabled"`
-	AutoCheckin          bool     `json:"auto_checkin"`
-	AutoRefresh          bool     `json:"auto_refresh"`
-	Timezone             string   `json:"timezone,omitempty"`
-	Status               string   `json:"status"`
-	Balance              *float64 `json:"balance,omitempty"`
-	BalanceCurrency      string   `json:"balance_currency"`
-	BalanceUpdatedAt     int64    `json:"balance_updated_at,omitempty"`
-	LastRefreshAt        int64    `json:"last_refresh_at,omitempty"`
-	LastRefreshStatus    string   `json:"last_refresh_status"`
-	ConsecutiveFailures  int      `json:"consecutive_failures"`
-	LastCheckinAt        int64    `json:"last_checkin_at,omitempty"`
-	LastCheckinStatus    string   `json:"last_checkin_status"`
-	LastError            string   `json:"last_error,omitempty"`
-	CreatedAt            int64    `json:"created_at"`
-	UpdatedAt            int64    `json:"updated_at"`
-	DeletedAt            int64    `json:"deleted_at,omitempty"`
+	ID                          int64    `json:"id"`
+	SiteID                      int64    `json:"site_id"`
+	Label                       string   `json:"label"`
+	CredentialType              string   `json:"credential_type"`
+	CredentialCiphertext        string   `json:"-"`
+	CredentialKeyVersion        string   `json:"-"`
+	CredentialConfigured        bool     `json:"credential_configured"`
+	CredentialRefreshConfigured bool     `json:"credential_refresh_configured"`
+	CredentialExpiresAt         int64    `json:"credential_expires_at,omitempty"`
+	Enabled                     bool     `json:"enabled"`
+	AutoCheckin                 bool     `json:"auto_checkin"`
+	AutoRefresh                 bool     `json:"auto_refresh"`
+	Timezone                    string   `json:"timezone,omitempty"`
+	Status                      string   `json:"status"`
+	Balance                     *float64 `json:"balance,omitempty"`
+	BalanceCurrency             string   `json:"balance_currency"`
+	BalanceUpdatedAt            int64    `json:"balance_updated_at,omitempty"`
+	LastRefreshAt               int64    `json:"last_refresh_at,omitempty"`
+	LastRefreshStatus           string   `json:"last_refresh_status"`
+	ConsecutiveFailures         int      `json:"consecutive_failures"`
+	LastCheckinAt               int64    `json:"last_checkin_at,omitempty"`
+	LastCheckinStatus           string   `json:"last_checkin_status"`
+	LastError                   string   `json:"last_error,omitempty"`
+	CreatedAt                   int64    `json:"created_at"`
+	UpdatedAt                   int64    `json:"updated_at"`
+	DeletedAt                   int64    `json:"deleted_at,omitempty"`
 }
 
 // SiteAccountModel is the last known model fact for one account.

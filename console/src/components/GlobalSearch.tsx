@@ -18,15 +18,15 @@ const staticEntries: SearchEntry[] = [
   { id: 'page-accounts', label: '账号管理', detail: '凭证、余额、签到与路由同步', href: '#/accounts', kind: 'page' },
   { id: 'page-checkins', label: '签到中心', detail: '批量签到与结果历史', href: '#/checkins', kind: 'page' },
   { id: 'page-announcements', label: '公告中心', detail: '统一查看站点公告', href: '#/announcements', kind: 'page' },
-  { id: 'page-channels', label: '渠道与分发', detail: '路由候选、协议与冷却', href: '#/channels', kind: 'page' },
+  { id: 'page-channels', label: '渠道分发', detail: '路由候选、协议与冷却', href: '#/channels', kind: 'page' },
   { id: 'page-logs', label: '请求日志', detail: '路由结果、响应时延与费用', href: '#/logs', kind: 'page' },
   { id: 'page-stats', label: '用量统计', detail: '按渠道与模型核对消耗', href: '#/stats', kind: 'page' },
-  { id: 'page-models', label: '模型与测试', detail: '站点模型清单、直测与渠道测试', href: '#/models', kind: 'page' },
+  { id: 'page-models', label: '模型测试', detail: '站点模型清单、直测与渠道测试', href: '#/models', kind: 'page' },
 	{ id: 'page-settings', label: '系统设置', detail: '运行参数与通知', href: '#/system', kind: 'page' },
   { id: 'advanced-oauth', label: 'OAuth 凭证导入', detail: '在渠道页直接导入 Codex 与 Antigravity 凭证', href: '#/channels', kind: 'advanced', keywords: 'codex antigravity 用量' },
   { id: 'advanced-active', label: '活动请求与调试日志', detail: '实时请求与调试快照', href: '#/logs?view=active', kind: 'advanced' },
   { id: 'advanced-settings', label: '冷却规则与系统设置', detail: '路由、冷却、日志与运行参数', href: '#/system', kind: 'advanced' },
-  { id: 'advanced-token', label: '下游 API 密钥', detail: '访问令牌、限额与用量', href: '#/tokens', kind: 'advanced' },
+  { id: 'advanced-token', label: '令牌管理', detail: '访问令牌、限额与用量', href: '#/tokens', kind: 'advanced' },
   { id: 'advanced-trend', label: '消费趋势', detail: '请求、Token 与费用走势', href: '#/trend', kind: 'advanced' },
 ]
 

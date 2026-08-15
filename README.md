@@ -38,7 +38,7 @@ PivotFlow is the product and the routing foundation is integrated into the same 
 
 - Dashboard for balances, spend, model distribution, site distribution, and client tools.
 - Request logs, usage statistics, cost trends, and active requests.
-- Recoverable downstream API keys with model, channel, cost, and concurrency restrictions.
+- Recoverable access tokens with model, channel, cost, and concurrency restrictions.
 - Codex OAuth, Antigravity OAuth, and credential-file import.
 - SQLite, MySQL, PostgreSQL, and hybrid primary-database/SQLite storage.
 - Themes, routing, cooldown, logging, notification, and read-only upstream version settings.
@@ -63,7 +63,7 @@ See [Core concepts](docs/concepts.md) and [Routing](docs/routing.md) for project
 | New API / One API family | Yes | Yes | Yes | Yes | Exact behavior depends on the deployed fork |
 | AnyRouter | Yes | Yes | Yes | Yes | Access token or session cookie with user ID; browser assistance may be required |
 | Veloera | Yes | Yes | Yes | Yes | Uses its dedicated user and check-in contracts |
-| Sub2API | Yes | Yes | Yes | No | Server-side check-in is explicitly unsupported today |
+| Sub2API | Yes | Yes | Yes | No | JWT `exp` detection and Refresh Token auto-renewal; server-side check-in is explicitly unsupported today |
 | OpenAI Compatible | No | Yes | No | No | API-key-only fallback for model discovery and routing |
 | OneHub / DoneHub / VoAPI / AxonHub | Compatible | Compatible | Compatible | Varies | Works only where the deployment preserves the New API / One API contract |
 

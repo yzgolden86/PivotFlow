@@ -28,7 +28,7 @@ func TestNewAPIRefreshModelsCheckinAndNotice(t *testing.T) {
 	adapter := NewNewAPI(ClientFactory{AllowPrivate: true})
 	req := AccountRequest{BaseURL: server.URL, Credentials: Credentials{AccessToken: "session"}}
 	snapshot, err := adapter.RefreshAccount(context.Background(), req)
-	if err != nil || snapshot.Balance == nil || *snapshot.Balance != 2 {
+	if err != nil || snapshot.Balance == nil || *snapshot.Balance != 2 || snapshot.Currency != "USD" {
 		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
 	}
 	models, err := adapter.ListModels(context.Background(), req)

@@ -99,6 +99,41 @@ func (p *Sub2API) ResolveManagementCredentials(ctx context.Context, req AccountR
 	return credentials, nil
 }
 
+func (p *Sub2API) RefreshCredentials(ctx context.Context, req AccountRequest) (Credentials, error) {
+	refreshToken := strings.TrimSpace(req.Credentials.RefreshToken)
+	if refreshToken == "" {
+		return Credentials{}, &Error{Code: CodeExpired, Message: "Sub2API refresh token is required"}
+	}
+	var payload sub2Envelope
+	err := p.family.doJSON(ctx, req, http.MethodPost, "/api/v1/auth/refresh", map[string]any{"refresh_token": refreshToken}, &payload)
+	if err != nil {
+		return Credentials{}, err
+	}
+	if !sub2SuccessCode(payload.Code) {
+		message := strings.TrimSpace(payload.Message)
+		if message == "" {
+			message = "Sub2API rejected the refresh token"
+		}
+		return Credentials{}, &Error{Code: CodeExpired, Message: message}
+	}
+	accessToken := firstSub2String(payload.Data, "access_token", "accessToken", "token")
+	if accessToken == "" {
+		return Credentials{}, &Error{Code: CodeInvalidResponse, Message: "Sub2API refresh response is missing access_token"}
+	}
+	next := req.Credentials
+	next.AccessToken = strings.TrimSpace(strings.TrimPrefix(accessToken, "Bearer "))
+	if rotated := firstSub2String(payload.Data, "refresh_token", "refreshToken"); rotated != "" {
+		next.RefreshToken = rotated
+	}
+	if expiresIn, ok := numberValue(payload.Data, "expires_in"); ok && expiresIn > 0 {
+		next.ExpiresAt = time.Now().Add(time.Duration(expiresIn) * time.Second).UnixMilli()
+	} else {
+		next.ExpiresAt = 0
+		next.ExpiresAt = next.EffectiveExpiresAt()
+	}
+	return next, nil
+}
+
 func (p *Sub2API) ListModels(ctx context.Context, req AccountRequest) ([]ModelSnapshot, error) {
 	items, directErr := p.listModelsWithCredentials(ctx, req)
 	if directErr == nil && len(items) > 0 {

@@ -330,6 +330,8 @@ export interface SiteAccount {
   label: string
   credential_type: string
   credential_configured: boolean
+  credential_refresh_configured: boolean
+  credential_expires_at?: number
   enabled: boolean
   auto_checkin: boolean
   auto_refresh: boolean

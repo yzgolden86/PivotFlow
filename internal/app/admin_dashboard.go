@@ -112,11 +112,13 @@ func buildDashboardSnapshot(
 	}
 
 	siteNames := make(map[int64]string, len(sites))
+	sitePlatforms := make(map[int64]string, len(sites))
 	for _, site := range sites {
 		if site == nil {
 			continue
 		}
 		siteNames[site.ID] = site.Name
+		sitePlatforms[site.ID] = site.Platform
 		if site.Enabled {
 			snapshot.EnabledSites++
 		}
@@ -141,6 +143,9 @@ func buildDashboardSnapshot(
 			continue
 		}
 		currency := strings.ToUpper(strings.TrimSpace(account.BalanceCurrency))
+		if platform := sitePlatforms[account.SiteID]; platform == model.SitePlatformNewAPIFamily || platform == model.SitePlatformAnyRouter {
+			currency = "USD"
+		}
 		if currency == "" {
 			currency = "UNKNOWN"
 		}

@@ -9,7 +9,7 @@
 | `SQLITE_PATH` | SQLite 路径，默认 `./data/pivotflow.db` |
 | `FUSION_MASTER_KEY` | 凭证加密主密钥 |
 | `FUSION_MASTER_KEY_FILE` | 从文件读取凭证加密主密钥 |
-| `PIVOTFLOW_API_TOKENS` | 启动时预置下游密钥，已有 token 不覆盖 |
+| `PIVOTFLOW_API_TOKENS` | 启动时预置访问令牌，已有 token 不覆盖 |
 | `PIVOTFLOW_ANTIGRAVITY_CLIENT_ID` | Antigravity OAuth 客户端 ID |
 | `PIVOTFLOW_ANTIGRAVITY_CLIENT_SECRET` | Antigravity OAuth 客户端密钥 |
 | `PIVOTFLOW_MYSQL` | 使用 MySQL 主存储 |

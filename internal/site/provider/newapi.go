@@ -216,6 +216,12 @@ func mergeResolvedCredentials(original, resolved Credentials) Credentials {
 	if resolved.APIKey == "" {
 		resolved.APIKey = original.APIKey
 	}
+	if resolved.RefreshToken == "" {
+		resolved.RefreshToken = original.RefreshToken
+	}
+	if resolved.ExpiresAt == 0 {
+		resolved.ExpiresAt = original.ExpiresAt
+	}
 	if resolved.Cookie == "" {
 		resolved.Cookie = original.Cookie
 	}
@@ -341,7 +347,7 @@ func (p *NewAPI) RefreshAccount(ctx context.Context, req RefreshAccountRequest) 
 		value := quota / 500000
 		balance = &value
 	}
-	return AccountSnapshot{Username: username, Balance: balance, Currency: "CNY", Status: model.SiteAccountStatusHealthy}, nil
+	return AccountSnapshot{Username: username, Balance: balance, Currency: "USD", Status: model.SiteAccountStatusHealthy}, nil
 }
 
 func (p *NewAPI) ListModels(ctx context.Context, req AccountRequest) ([]ModelSnapshot, error) {
