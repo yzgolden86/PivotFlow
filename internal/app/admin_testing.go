@@ -1110,12 +1110,13 @@ func (s *Server) doChannelTestCodexWebsocket(
 	capacityRelease func(),
 ) (*http.Response, error) {
 	if capacityRelease == nil {
-		resp, _, _, err := s.doCodexWebsocketRequest(ctx, cfg, session, req, body, nil, nil)
+		resp, _, _, err := s.doCodexWebsocketRequest(ctx, cfg, session, req, body, nil, nil, nil)
 		return resp, err
 	}
 
 	resp, _, _, err := session.roundTrip(
 		ctx, cfg, s.codexWebsocketDialer(cfg), req, body, nil, nil, s.skipTLSVerify, s.codexWebsocketTimeouts(),
+		nil,
 	)
 	if err != nil || resp == nil || resp.Body == nil {
 		capacityRelease()
