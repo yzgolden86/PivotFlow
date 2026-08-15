@@ -971,9 +971,7 @@ func routingBaseURL(raw string) string {
 	if strings.HasSuffix(cleanPath, "/v1/models") {
 		cleanPath = strings.TrimSuffix(cleanPath, "/models")
 	}
-	if strings.HasSuffix(cleanPath, "/v1") {
-		cleanPath = strings.TrimSuffix(cleanPath, "/v1")
-	}
+	cleanPath = strings.TrimSuffix(cleanPath, "/v1")
 	u.Path = strings.TrimRight(cleanPath, "/")
 	u.RawPath, u.RawQuery, u.Fragment = "", "", ""
 	return strings.TrimRight(u.String(), "/")
