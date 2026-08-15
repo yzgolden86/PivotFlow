@@ -3,12 +3,14 @@ export type CredentialType = 'username_password' | 'access_token' | 'cookie' | '
 const ALL_CREDENTIALS: CredentialType[] = ['username_password', 'access_token', 'cookie', 'api_key']
 
 export function credentialOptions(platform: string): CredentialType[] {
+  if (normalizePlatform(platform) === 'openaicompatible') return ['api_key']
   if (normalizePlatform(platform) === 'sub2api') return ['access_token', 'api_key']
   return ALL_CREDENTIALS
 }
 
 export function normalizeCredentialType(platform: string, type: CredentialType): CredentialType {
-  return credentialOptions(platform).includes(type) ? type : 'access_token'
+  const options = credentialOptions(platform)
+  return options.includes(type) ? type : options[0]
 }
 
 export function credentialLabel(type: string, platform = ''): string {
@@ -19,7 +21,7 @@ export function credentialLabel(type: string, platform = ''): string {
 }
 
 export function platformSupportsCheckin(platform: string): boolean {
-  return normalizePlatform(platform) !== 'sub2api'
+  return !['sub2api', 'openaicompatible'].includes(normalizePlatform(platform))
 }
 
 function normalizePlatform(platform: string): string {

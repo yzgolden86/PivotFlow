@@ -25,6 +25,23 @@ func TestSiteControlAdapterMapsNewAPIFamilyAliases(t *testing.T) {
 	}
 }
 
+func TestSiteControlAdapterMapsOpenAICompatibleAliases(t *testing.T) {
+	service := &siteControlService{
+		registry: provider.NewRegistry(provider.NewOpenAICompatible(provider.ClientFactory{})),
+	}
+	for _, platform := range []string{"openai-compatible", "openai", "openai-compatible-api", "openai_compatible"} {
+		t.Run(platform, func(t *testing.T) {
+			adapter, err := service.adapter(&model.Site{Platform: platform})
+			if err != nil {
+				t.Fatalf("adapter(%q): %v", platform, err)
+			}
+			if adapter.ID() != model.SitePlatformOpenAICompatible {
+				t.Fatalf("adapter(%q).ID() = %q, want %q", platform, adapter.ID(), model.SitePlatformOpenAICompatible)
+			}
+		})
+	}
+}
+
 func TestSiteProxyURLPriority(t *testing.T) {
 	tests := []struct {
 		name string

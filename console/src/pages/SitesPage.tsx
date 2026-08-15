@@ -20,6 +20,7 @@ const emptyForm: SiteForm = {
 const PLATFORM_OPTIONS = [
   ['unknown', '自动识别'], ['new-api-family', 'New API 家族'], ['one-api', 'One API'], ['one-hub', 'OneHub'], ['done-hub', 'DoneHub'],
   ['veloera', 'Veloera'], ['anyrouter', 'AnyRouter'], ['sub2api', 'Sub2API'], ['voapi', 'VoAPI'], ['axon-hub', 'AxonHub'],
+  ['openai-compatible', 'OpenAI Compatible'],
 ] as const
 
 export default function SitesPage() {

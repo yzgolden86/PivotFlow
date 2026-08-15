@@ -64,6 +64,7 @@ See [Core concepts](docs/concepts.md) and [Routing](docs/routing.md) for project
 | AnyRouter | Yes | Yes | Yes | Yes | Access token or session cookie with user ID; browser assistance may be required |
 | Veloera | Yes | Yes | Yes | Yes | Uses its dedicated user and check-in contracts |
 | Sub2API | Yes | Yes | Yes | No | Server-side check-in is explicitly unsupported today |
+| OpenAI Compatible | No | Yes | No | No | API-key-only fallback for model discovery and routing |
 | OneHub / DoneHub / VoAPI / AxonHub | Compatible | Compatible | Compatible | Varies | Works only where the deployment preserves the New API / One API contract |
 
 “Supported” means that PivotFlow contains an adapter and contract tests. A third-party deployment may still disable endpoints, require different permissions, or diverge from its upstream project.

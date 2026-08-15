@@ -55,6 +55,7 @@ func newSiteControlService(store storage.Store, baseCtx context.Context, wg *syn
 			provider.NewVeloera(provider.ClientFactory{}),
 			provider.NewAnyRouter(provider.ClientFactory{}),
 			provider.NewNewAPI(provider.ClientFactory{}),
+			provider.NewOpenAICompatible(provider.ClientFactory{}),
 		),
 		baseCtx:       baseCtx,
 		wg:            wg,
@@ -152,6 +153,9 @@ func (s *siteControlService) adapter(site *model.Site) (provider.SiteAdapter, er
 	}
 	if id == "sub2-api" {
 		id = model.SitePlatformSub2API
+	}
+	if id == "openai" || id == "openai-compatible-api" || id == "openai_compatible" {
+		id = model.SitePlatformOpenAICompatible
 	}
 	return s.registry.Get(id)
 }
@@ -302,13 +306,27 @@ func (s *siteControlService) createAccount(ctx context.Context, siteID int64, re
 	if err != nil {
 		return nil, errors.New("site not found")
 	}
+	credentialType := requestedCredentialType(req.CredentialType, req.Credential)
 	if strings.TrimSpace(site.Platform) == "" || strings.EqualFold(site.Platform, model.SitePlatformUnknown) {
 		detectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		result, detectErr := s.registry.Detect(detectCtx, site.BaseURL)
 		cancel()
 		if detectErr == nil && result.Matched {
+			if result.ProviderID == model.SitePlatformOpenAICompatible && credentialType != model.CredentialTypeAPIKey {
+				return nil, &provider.Error{Code: provider.CodeUnsupported, Message: "management provider was not detected; OpenAI Compatible only accepts an API key"}
+			}
 			site.Platform = result.ProviderID
 			site.LastProbeStatus = "success"
+			site.LastError = ""
+			if updated, updateErr := s.store.UpdateSite(ctx, site.ID, site); updateErr == nil {
+				site = updated
+			}
+		} else if credentialType == model.CredentialTypeAPIKey && strings.TrimSpace(req.Credential.APIKey) != "" {
+			// A model-call key does not require a management-plane provider. If
+			// fingerprinting is inconclusive (proxy, WAF, or a non-New-API
+			// frontend), preserve the useful OpenAI-compatible routing path.
+			site.Platform = model.SitePlatformOpenAICompatible
+			site.LastProbeStatus = "unknown"
 			site.LastError = ""
 			if updated, updateErr := s.store.UpdateSite(ctx, site.ID, site); updateErr == nil {
 				site = updated
@@ -344,18 +362,7 @@ func (s *siteControlService) createAccount(ctx context.Context, siteID int64, re
 }
 
 func (s *siteControlService) prepareAccountCredential(ctx context.Context, site *model.Site, requestedType string, credentials provider.Credentials) (string, provider.Credentials, error) {
-	credType := strings.TrimSpace(requestedType)
-	if credType == "" {
-		if credentials.AccessToken != "" {
-			credType = model.CredentialTypeAccessToken
-		} else if credentials.APIKey != "" {
-			credType = model.CredentialTypeAPIKey
-		} else if credentials.Cookie != "" {
-			credType = model.CredentialTypeCookie
-		} else if credentials.Username != "" {
-			credType = model.CredentialTypeUsernamePassword
-		}
-	}
+	credType := requestedCredentialType(requestedType, credentials)
 	if credType != model.CredentialTypeAccessToken && credType != model.CredentialTypeAPIKey && credType != model.CredentialTypeCookie && credType != model.CredentialTypeUsernamePassword {
 		return "", provider.Credentials{}, errors.New("unsupported credential_type")
 	}
@@ -440,6 +447,26 @@ func (s *siteControlService) prepareAccountCredential(ctx context.Context, site 
 	}
 	credentials.Password = ""
 	return credType, credentials, nil
+}
+
+func requestedCredentialType(requestedType string, credentials provider.Credentials) string {
+	credType := strings.TrimSpace(requestedType)
+	if credType != "" {
+		return credType
+	}
+	if credentials.AccessToken != "" {
+		return model.CredentialTypeAccessToken
+	}
+	if credentials.APIKey != "" {
+		return model.CredentialTypeAPIKey
+	}
+	if credentials.Cookie != "" {
+		return model.CredentialTypeCookie
+	}
+	if credentials.Username != "" {
+		return model.CredentialTypeUsernamePassword
+	}
+	return ""
 }
 
 func containsCredentialType(values []string, target string) bool {

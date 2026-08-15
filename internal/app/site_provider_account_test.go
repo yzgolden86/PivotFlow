@@ -46,6 +46,65 @@ func (managementProjectionTestAdapter) ListModels(_ context.Context, req provide
 	return []provider.ModelSnapshot{{Model: "gpt-5", RouteType: "openai", Source: "test"}}, nil
 }
 
+func TestCreateAPIKeyAccountFallsBackToOpenAICompatibleProvider(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"api key required"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-fallback"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "openai-fallback-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	srv.siteControl.registry = provider.NewRegistry(
+		provider.NewNewAPI(provider.ClientFactory{AllowPrivate: true}),
+		provider.NewOpenAICompatible(provider.ClientFactory{AllowPrivate: true}),
+	)
+	ctx := context.Background()
+	site, err := srv.store.CreateSite(ctx, &model.Site{Name: "Fallback", Platform: model.SitePlatformUnknown, BaseURL: upstream.URL, Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := srv.siteControl.createAccount(ctx, site.ID, accountCreateRequest{
+		Label: "api-key", CredentialType: model.CredentialTypeAPIKey,
+		Credential: provider.Credentials{APIKey: "sk-fallback"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedSite, err := srv.store.GetSite(ctx, site.ID)
+	if err != nil || updatedSite.Platform != model.SitePlatformOpenAICompatible {
+		t.Fatalf("site=%+v err=%v", updatedSite, err)
+	}
+	adapter, err := srv.siteControl.adapter(updatedSite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := srv.siteControl.credentials(account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.siteControl.refreshModels(ctx, account, updatedSite, adapter, credentials); err != nil {
+		t.Fatal(err)
+	}
+	models, err := srv.store.ListSiteAccountModels(ctx, model.SiteModelFilter{SiteAccountID: account.ID, Limit: 10})
+	if err != nil || len(models) != 1 || models[0].Model != "gpt-fallback" {
+		t.Fatalf("models=%+v err=%v", models, err)
+	}
+}
+
 func (managementProjectionTestAdapter) ListRoutingKeys(context.Context, provider.AccountRequest) ([]provider.RoutingKeySnapshot, error) {
 	return []provider.RoutingKeySnapshot{{Key: "sk-projected-management", Enabled: true}}, nil
 }
