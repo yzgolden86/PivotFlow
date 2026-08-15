@@ -109,10 +109,10 @@ def main():
         expect(page.get_by_role("button", name="账号", exact=True)).to_have_class("is-active")
         expect(page.get_by_role("button", name="记录", exact=True)).to_be_visible()
 
-        navigation.get_by_role("link", name="渠道与分发", exact=True).click()
+        navigation.get_by_role("link", name="渠道分发", exact=True).click()
         page.wait_for_url("**/#/channels")
         page.wait_for_load_state("networkidle")
-        expect(page.get_by_role("heading", name="渠道与分发", exact=True)).to_be_visible()
+        expect(page.get_by_role("heading", name="渠道分发", exact=True)).to_be_visible()
         expect(page.get_by_role("link", name="从站点添加", exact=True)).to_have_count(0)
         page.get_by_role("button", name="同步站点渠道", exact=True).click()
         sync_dialog = page.get_by_role("dialog", name="同步站点渠道")
@@ -141,7 +141,7 @@ def main():
 
         page.goto(f"{BASE_URL}/web/console/#/fingerprints")
         page.wait_for_url("**/#/models")
-        expect(page.get_by_role("heading", name="模型与测试", exact=True)).to_be_visible()
+        expect(page.get_by_role("heading", name="模型测试", exact=True)).to_be_visible()
 
         desktop_overflow = page.evaluate(
             "document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"

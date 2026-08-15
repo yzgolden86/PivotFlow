@@ -112,7 +112,7 @@ export default function DashboardPage() {
         <MetricCard
           icon={WalletCards}
           tone="amber"
-          label="站点总余额"
+          label="站点余额"
           value={<BalanceValue balances={snapshot.balances} />}
           meta={`${snapshot.healthy_accounts}/${snapshot.account_count} 个健康账号`}
         />
@@ -235,11 +235,14 @@ function MetricCard({
 function BalanceValue({ balances }: { balances: DashboardBalance[] }) {
   if (!balances.length) return <>—</>
   return (
-    <span className="balance-value">
+    <span
+      className={`balance-value${balances.length > 1 ? ' balance-value--multiple' : ''}`}
+      aria-label={balances.map((balance) => `${currencyName(balance.currency)} ${formatNumber(balance.amount, 2)}`).join('，')}
+    >
       {balances.map((balance) => (
-        <span key={balance.currency}>
-          {currencySymbol(balance.currency)}{formatNumber(balance.amount, 2)}
-          {balances.length > 1 && <small>{balance.currency}</small>}
+        <span key={balance.currency} title={`${currencyName(balance.currency)}（${balance.currency}）`}>
+          <b>{currencySymbol(balance.currency)}{formatNumber(balance.amount, 2)}</b>
+          <small>{currencyName(balance.currency)}</small>
         </span>
       ))}
     </span>
@@ -505,6 +508,17 @@ function currencySymbol(currency: string): string {
   if (currency === 'JPY') return '¥'
   if (currency === 'USD' || currency === 'USDT') return '$'
   return `${currency} `
+}
+
+function currencyName(currency: string): string {
+  if (currency === 'CNY' || currency === 'RMB') return '人民币'
+  if (currency === 'USD') return '美元'
+  if (currency === 'USDT') return 'USDT'
+  if (currency === 'EUR') return '欧元'
+  if (currency === 'GBP') return '英镑'
+  if (currency === 'JPY') return '日元'
+  if (currency === 'UNKNOWN') return '未标明币种'
+  return currency
 }
 
 function rangeLabel(range: DashboardRange): string {

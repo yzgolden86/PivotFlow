@@ -5,7 +5,7 @@
 | 文档 | 解决的问题 |
 | --- | --- |
 | [快速开始](getting-started.md) | 第一次启动、登录和验证 |
-| [核心概念](concepts.md) | 站点、账号、渠道、下游密钥的边界 |
+| [核心概念](concepts.md) | 站点、账号、渠道、访问令牌的边界 |
 | [站点与账号管理](site-management.md) | 凭证、余额、签到、公告和 Provider 能力 |
 | [路由与分发](routing.md) | PivotFlow 路由、Key/URL、优先级、冷却和同步 |
 | [模型测试](model-testing.md) | 模型同步、账号直测和渠道测试 |

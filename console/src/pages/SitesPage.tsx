@@ -2,19 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Copy, ExternalLink, Globe2, Network, Pencil, Plus, Power, Radar, RefreshCw, Search, Trash2, UserPlus } from 'lucide-react'
 import { createSite, deleteSite, getSiteInventory, probeSite, updateSite } from '../api'
 import type { Site, SiteAccount } from '../types'
-import { EmptyState, ErrorState, LoadingState } from './shared'
+import { EmptyState, ErrorState, LoadingState, Pagination } from './shared'
 import { Modal, StatusBadge, siteErrorMessage } from './siteShared'
 import { useLocation } from 'react-router-dom'
 import { credentialLabel, credentialOptions, normalizeCredentialType, platformSupportsCheckin, type CredentialType } from '../siteCredentials'
 
 type SiteForm = {
   name: string; base_url: string; platform: string; timezone: string; use_system_proxy: boolean; proxy_url: string; external_checkin_url: string; enabled: boolean
-  addAccount: boolean; accountLabel: string; credentialType: CredentialType; credential: string; username: string; password: string; userId: number
+  addAccount: boolean; accountLabel: string; credentialType: CredentialType; credential: string; username: string; password: string; userId: number; refreshToken: string; expiresAt: string
   autoCheckin: boolean; autoRefresh: boolean
 }
 const emptyForm: SiteForm = {
   name: '', base_url: '', platform: 'unknown', timezone: 'Asia/Shanghai', use_system_proxy: true, proxy_url: '', external_checkin_url: '', enabled: true,
-  addAccount: true, accountLabel: '主账号', credentialType: 'username_password', credential: '', username: '', password: '', userId: 0, autoCheckin: true, autoRefresh: true,
+  addAccount: true, accountLabel: '主账号', credentialType: 'username_password', credential: '', username: '', password: '', userId: 0, refreshToken: '', expiresAt: '', autoCheckin: true, autoRefresh: true,
 }
 
 const PLATFORM_OPTIONS = [
@@ -31,6 +31,8 @@ export default function SitesPage() {
   const [sites, setSites] = useState<Site[]>([])
   const [accounts, setAccounts] = useState<SiteAccount[]>([])
   const [search, setSearch] = useState(querySearch)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -58,7 +60,20 @@ export default function SitesPage() {
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
   useEffect(() => setSearch(querySearch), [querySearch])
   const visible = useMemo(() => sites.filter((site) => !search.trim() || [site.name, site.base_url, site.platform].some((value) => value.toLowerCase().includes(search.trim().toLowerCase()))), [search, sites])
+  const pagedVisible = useMemo(() => visible.slice((page - 1) * pageSize, page * pageSize), [page, pageSize, visible])
   const healthy = accounts.filter((account) => account.status === 'healthy').length
+
+  useEffect(() => { setPage(1) }, [search])
+  useEffect(() => {
+    const pages = Math.max(1, Math.ceil(visible.length / pageSize))
+    if (page > pages) setPage(pages)
+  }, [page, pageSize, visible.length])
+
+  useEffect(() => {
+    if (!focusSiteId) return
+    const index = visible.findIndex((site) => site.id === focusSiteId)
+    if (index >= 0) setPage(Math.floor(index / pageSize) + 1)
+  }, [focusSiteId, pageSize, visible])
 
   useEffect(() => {
     if (!focusSiteId || loading) return
@@ -69,7 +84,7 @@ export default function SitesPage() {
     }
     const timer = window.setTimeout(() => row.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80)
     return () => window.clearTimeout(timer)
-  }, [focusSiteId, loading, visible])
+  }, [focusSiteId, loading, pagedVisible])
 
   const openForm = (site?: Site) => {
     setError('')
@@ -95,7 +110,7 @@ export default function SitesPage() {
 				? { api_key: form.credential }
 				: form.credentialType === 'cookie'
 					? { cookie: form.credential, user_id: form.userId }
-					: { access_token: form.credential, ...(form.userId > 0 ? { user_id: form.userId } : {}) }
+				: { access_token: form.credential, ...(form.userId > 0 ? { user_id: form.userId } : {}), ...(form.refreshToken.trim() ? { refresh_token: form.refreshToken.trim() } : {}), ...(form.expiresAt ? { expires_at: new Date(form.expiresAt).getTime() } : {}) }
 		await createSite({
 			name: form.name, base_url: form.base_url, platform: form.platform, timezone: form.timezone,
 			use_system_proxy: form.use_system_proxy, proxy_url: form.proxy_url, external_checkin_url: form.external_checkin_url, tags: [],
@@ -130,10 +145,10 @@ export default function SitesPage() {
     if (next.has(id)) next.delete(id); else next.add(id)
     return next
   })
-  const allVisibleSelected = visible.length > 0 && visible.every((site) => selected.has(site.id))
+  const allVisibleSelected = pagedVisible.length > 0 && pagedVisible.every((site) => selected.has(site.id))
   const toggleAllVisible = () => setSelected((current) => {
     const next = new Set(current)
-    if (allVisibleSelected) visible.forEach((site) => next.delete(site.id)); else visible.forEach((site) => next.add(site.id))
+    if (allVisibleSelected) pagedVisible.forEach((site) => next.delete(site.id)); else pagedVisible.forEach((site) => next.add(site.id))
     return next
   })
 
@@ -170,7 +185,8 @@ export default function SitesPage() {
     <div className="filter-bar"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部站点" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索站点、地址或平台" aria-label="搜索站点" /></label><span className="filter-count"><Globe2 size={14} />{visible.length} 个站点</span></div>
     {selected.size > 0 && <div className="batch-toolbar" aria-label="站点批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('proxy_on')} disabled={batchBusy}><Network size={14} />开启系统代理</button><button type="button" onClick={() => void runBatch('proxy_off')} disabled={batchBusy}><Network size={14} />关闭系统代理</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
     {notice && <div className="operation-notice">{notice}</div>}{error && sites.length > 0 && <div className="inline-error">{error}</div>}
-    {loading ? <LoadingState label="正在加载站点资产" /> : error && !sites.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={sites.length ? '没有匹配的站点' : '尚未添加站点'} /> : <div className="site-list">{visible.map((site) => <SiteRow key={site.id} site={site} accounts={accounts.filter((account) => account.site_id === site.id)} selected={selected.has(site.id)} busy={busyId === site.id || (batchBusy && selected.has(site.id))} focused={site.id === focusSiteId} rowRef={(node) => { if (node) rowRefs.current.set(site.id, node); else rowRefs.current.delete(site.id) }} select={() => toggleSelected(site.id)} copy={() => void copySite(site)} edit={() => openForm(site)} execute={(action) => void execute(site, action)} />)}</div>}
+    {loading ? <LoadingState label="正在加载站点资产" /> : error && !sites.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={sites.length ? '没有匹配的站点' : '尚未添加站点'} /> : <div className="site-list">{pagedVisible.map((site) => <SiteRow key={site.id} site={site} accounts={accounts.filter((account) => account.site_id === site.id)} selected={selected.has(site.id)} busy={busyId === site.id || (batchBusy && selected.has(site.id))} focused={site.id === focusSiteId} rowRef={(node) => { if (node) rowRefs.current.set(site.id, node); else rowRefs.current.delete(site.id) }} select={() => toggleSelected(site.id)} copy={() => void copySite(site)} edit={() => openForm(site)} execute={(action) => void execute(site, action)} />)}</div>}
+    <Pagination page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[20, 50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
     {editing !== undefined && <Modal title={editing ? '编辑站点' : '添加站点'} close={() => setEditing(undefined)}>{error && <div className="inline-error modal-error">{error}</div>}<SiteFormView form={form} setForm={setForm} saving={saving} submit={save} editing={Boolean(editing)} /></Modal>}
   </div>
 }
@@ -179,7 +195,7 @@ function SiteRow({ site, accounts, selected, busy, focused, rowRef, select, copy
   const healthy = accounts.filter((account) => account.status === 'healthy').length
   return <article ref={rowRef} data-site-id={site.id} className={`site-row${selected ? ' row-selected' : ''}${focused ? ' row-focus-highlight' : ''}`}>
     <div className="site-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${site.name}`} /><span className={`status-dot ${site.enabled ? 'status-dot--success' : 'status-dot--muted'}`} /><div><a className="entity-link" href={`#/sites?focus_site_id=${site.id}`}><strong>{site.name}</strong></a><span>#{site.id} · {site.timezone || 'Asia/Shanghai'}</span></div></div>
-    <div className="site-address"><strong title={site.base_url}>{site.base_url}</strong><span>{site.platform || 'unknown'} · {site.proxy_url ? '自定义代理' : site.use_system_proxy ? '系统代理' : '直连'}</span></div>
+    <div className="site-address"><a className="site-base-link" href={site.base_url} target="_blank" rel="noreferrer" title={`在新标签页打开 ${site.base_url}`}><strong>{site.base_url}</strong><ExternalLink size={12} /></a><span>{site.platform || 'unknown'} · {site.proxy_url ? '自定义代理' : site.use_system_proxy ? '系统代理' : '直连'}</span></div>
     <div className="site-account-summary"><strong>{healthy}/{accounts.length}</strong><div className="site-account-links">{accounts.length ? accounts.slice(0, 2).map((account) => <a className="entity-chip" key={account.id} href={`#/accounts?focus_account_id=${account.id}${['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}>{account.label}</a>) : <span>暂无账号</span>}</div></div>
     <div className="site-probe"><StatusBadge status={site.last_probe_status} /><span title={site.last_error}>{site.last_error || '最近探测状态'}</span></div>
     <div className="row-actions">
@@ -218,7 +234,7 @@ function SiteFormView({ form, setForm, saving, submit, editing }: { form: SiteFo
         <div className="form-grid"><label><span>账号名称</span><input value={form.accountLabel} onChange={(event) => field('accountLabel', event.target.value)} placeholder="主账号" /></label><label><span>添加方式</span><select value={form.credentialType} onChange={(event) => field('credentialType', event.target.value)}>{options.map((option) => <option value={option} key={option}>{credentialLabel(option, form.platform)}</option>)}</select></label></div>
         {form.credentialType === 'username_password' ? <div className="form-grid"><label><span>用户名</span><input required value={form.username} onChange={(event) => field('username', event.target.value)} autoComplete="username" /></label><label><span>密码</span><input required type="password" value={form.password} onChange={(event) => field('password', event.target.value)} autoComplete="current-password" /></label></div> : <label><span>{credentialLabel(form.credentialType, form.platform)}</span><input required type="password" autoComplete="off" value={form.credential} onChange={(event) => field('credential', event.target.value)} placeholder={form.platform === 'sub2api' && form.credentialType === 'access_token' ? '填写浏览器存储中的 auth token' : '凭证会加密保存'} /></label>}
         {!['api_key', 'username_password'].includes(form.credentialType) && form.platform !== 'sub2api' && <label><span>上游用户 ID{form.credentialType === 'cookie' ? '' : '（自动识别失败时填写）'}</span><input required={form.credentialType === 'cookie'} type="number" min="1" value={form.userId || ''} onChange={(event) => field('userId', Number(event.target.value))} placeholder="用户个人中心显示的数字 ID" /></label>}
-        {form.credentialType === 'access_token' && <div className="form-help">{form.platform === 'sub2api' ? '填写 Sub2API 登录后保存的 Auth Token（JWT），不要选择或粘贴 Session Cookie。' : '填写用户个人中心的系统访问令牌，不是以 sk- 开头的模型调用 Key。'}</div>}
+        {form.credentialType === 'access_token' && <><div className="form-grid"><label><span>Refresh Token（可选）</span><input type="password" autoComplete="off" value={form.refreshToken} onChange={(event) => field('refreshToken', event.target.value)} placeholder="用于访问令牌自动续期" /></label><label><span>访问令牌过期时间（可选）</span><input type="datetime-local" value={form.expiresAt} onChange={(event) => field('expiresAt', event.target.value)} /></label></div><div className="form-help">{form.platform === 'sub2api' ? '填写 Auth Token；如同时提供 Refresh Token，系统会在 JWT 即将过期前自动续期。JWT 可自动识别过期时间。' : '填写用户个人中心的系统访问令牌；JWT 可自动识别过期时间，其他令牌可手动填写。'}</div></>}
         {form.credentialType === 'api_key' ? <div className="form-help">模型 API Key 会用于模型发现和自动创建渠道，不会执行余额刷新、签到或公告同步。</div> : <div className="checkbox-grid"><label className="checkbox-field"><input type="checkbox" checked={form.autoCheckin} onChange={(event) => field('autoCheckin', event.target.checked)} disabled={!supportsCheckin} /><span>{supportsCheckin ? '自动签到' : '该平台不支持签到'}</span></label><label className="checkbox-field"><input type="checkbox" checked={form.autoRefresh} onChange={(event) => field('autoRefresh', event.target.checked)} /><span>自动刷新余额</span></label></div>}
       </>}
     </section>}

@@ -171,7 +171,7 @@ export default function ModelTestPage() {
   return (
     <div className="workspace-page model-test-page">
       <header className="page-header">
-        <h1>模型与测试</h1>
+        <h1>模型测试</h1>
 		<div className="header-controls"><button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新模型数据" title="刷新模型数据"><RefreshCw size={17} /></button></div>
       </header>
 

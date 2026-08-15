@@ -32,13 +32,13 @@ PivotFlow 是面向个人使用的 AI API 站点管理与智能路由控制台�
 - 本地协议转换、上游原生协议和自动协议协商。
 - RPM、并发、成本倍率、日成本上限、WebSocket 和请求日志。
 
-![PivotFlow 渠道与分发](docs/assets/routing.png)
+![PivotFlow 渠道分发](docs/assets/routing.png)
 
 ### 运维与观测
 
 - 首页余额、消耗、模型分配、站点分配和客户端入口统计。
 - 请求日志、用量统计、消费趋势和活动请求。
-- 下游 API 密钥，可限制模型、渠道、成本和并发，并可再次复制已保存密钥。
+- 访问令牌，可限制模型、渠道、成本和并发，并可再次复制已保存令牌。
 - Codex OAuth、Antigravity OAuth 及凭证文件导入。
 - SQLite、MySQL、PostgreSQL 和主库加 SQLite 副本的混合存储。
 - 主题、路由、冷却、日志、通知和只读上游版本检查。
@@ -50,9 +50,9 @@ PivotFlow 是面向个人使用的 AI API 站点管理与智能路由控制台�
 | 站点 | 上游地址、平台、时区和代理 | 标识一个上游服务 |
 | 账号 | 站点下的一组登录凭证及状态 | 余额、签到、模型和公告 |
 | 渠道 | URL、Key、模型和路由策略 | 承接下游请求并执行 PivotFlow 路由 |
-| 下游密钥 | PivotFlow 发放的令牌及限制 | 让 Claude Code、Codex、Gemini 或 OpenAI 客户端调用 PivotFlow |
+| 访问令牌 | PivotFlow 发放的令牌及限制 | 让 Claude Code、Codex、Gemini 或 OpenAI 客户端调用 PivotFlow |
 
-账号和渠道不是两套必须重复维护的配置。先在站点下添加账号，再在“渠道与分发”执行“同步站点渠道”。PivotFlow 会发现路由 Key 和模型，创建或更新带来源绑定的渠道。只有无法纳入站点管理的特殊上游才使用手工渠道。
+账号和渠道不是两套必须重复维护的配置。先在站点下添加账号，再在“渠道分发”执行“同步站点渠道”。PivotFlow 会发现路由 Key 和模型，创建或更新带来源绑定的渠道。只有无法纳入站点管理的特殊上游才使用手工渠道。
 
 多 Key、多分组和同步覆盖规则见 [核心概念](docs/concepts.md) 与 [路由与分发](docs/routing.md)。
 
@@ -106,9 +106,9 @@ go build -tags sonic -o pivotflow.exe .
 2. 在“站点管理”添加上游，并可在同一表单创建首个账号。
 3. 在“账号管理”验证凭证、刷新余额并同步模型。
 4. 在“签到中心”执行一次手动签到。
-5. 在“渠道与分发”同步站点渠道，检查 URL、模型、Key 数和优先级。
-6. 在“下游密钥”创建令牌并填入客户端。
-7. 在“模型与测试”执行一次账号直测或渠道测试，再开始真实流量。
+5. 在“渠道分发”同步站点渠道，检查 URL、模型、Key 数和优先级。
+6. 在“令牌管理”创建访问令牌并填入客户端。
+7. 在“模型测试”执行一次账号直测或渠道测试，再开始真实流量。
 
 ## 下游入口
 
@@ -122,7 +122,7 @@ Gemini                   http://127.0.0.1:8080/v1beta/models/{model}:generateCon
 Codex                    http://127.0.0.1:8080/v1/responses
 ```
 
-客户端只使用 PivotFlow 下游密钥。上游凭证留在站点账号或渠道中，不应写入客户端配置。
+客户端只使用 PivotFlow 访问令牌。上游凭证留在站点账号或渠道中，不应写入客户端配置。
 
 ## 安全要点
 
@@ -130,7 +130,7 @@ Codex                    http://127.0.0.1:8080/v1/responses
 - 站点凭证和 Webhook URL 会加密保存。个人 SQLite 未显式配置密钥时，会在数据库旁生成 `fusion-master.key`；备份时数据库和该文件必须成对保存。
 - `FUSION_MASTER_KEY` 与 `FUSION_MASTER_KEY_FILE` 二选一，生产密钥应放在仓库之外。
 - `PIVOTFLOW_ALLOW_INSECURE_TLS=1` 只用于临时排障。
-- 管理 API 使用登录会话；代理 API 使用下游密钥。
+- 管理 API 使用登录会话；代理 API 使用访问令牌。
 
 迁移或恢复数据前请阅读 [安全与备份](docs/security.md)。
 

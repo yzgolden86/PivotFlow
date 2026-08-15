@@ -117,6 +117,9 @@ func (s *siteControlService) handleSiteAccounts(c *gin.Context) {
 			RespondError(c, 500, err)
 			return
 		}
+		for _, item := range items {
+			s.decorateAccountCredentialMetadata(item)
+		}
 		RespondJSON(c, 200, items)
 	case http.MethodPost:
 		var req accountCreateRequest
@@ -133,6 +136,7 @@ func (s *siteControlService) handleSiteAccounts(c *gin.Context) {
 			RespondErrorMsg(c, code, err.Error())
 			return
 		}
+		s.decorateAccountCredentialMetadata(item)
 		RespondJSON(c, 201, item)
 	}
 }
@@ -150,6 +154,7 @@ func (s *siteControlService) handleSiteAccountByID(c *gin.Context) {
 	}
 	switch c.Request.Method {
 	case http.MethodGet:
+		s.decorateAccountCredentialMetadata(account)
 		RespondJSON(c, 200, account)
 	case http.MethodPatch:
 		var req accountPatchRequest
@@ -180,6 +185,9 @@ func (s *siteControlService) handleSiteAccountByID(c *gin.Context) {
 			credentialType := account.CredentialType
 			if req.CredentialType != nil {
 				credentialType = strings.TrimSpace(*req.CredentialType)
+			}
+			if credentialType == model.CredentialTypeAccessToken {
+				s.preserveCredentialRefresh(account, req.Credential)
 			}
 			site, siteErr := s.store.GetSite(c.Request.Context(), account.SiteID)
 			if siteErr != nil {
@@ -227,12 +235,17 @@ func (s *siteControlService) handleSiteAccountByID(c *gin.Context) {
 			RespondError(c, 400, err)
 			return
 		}
+		// Account updates can disable projected channels in the store. Evict the
+		// router snapshots so the data plane observes that change immediately.
+		s.projectionChanged()
+		s.decorateAccountCredentialMetadata(out)
 		RespondJSON(c, 200, out)
 	case http.MethodDelete:
 		if err := s.store.DeleteSiteAccount(c.Request.Context(), id); err != nil {
 			RespondError(c, 500, err)
 			return
 		}
+		s.projectionChanged()
 		RespondJSON(c, 200, gin.H{"id": id, "deleted": true})
 	}
 }
@@ -261,6 +274,9 @@ func (s *siteControlService) handleSiteAccountCredentialVerify(c *gin.Context) {
 	credentialType := strings.TrimSpace(req.CredentialType)
 	if credentialType == "" {
 		credentialType = account.CredentialType
+	}
+	if credentialType == model.CredentialTypeAccessToken {
+		s.preserveCredentialRefresh(account, &req.Credential)
 	}
 	preparedType, prepared, err := s.prepareAccountCredential(c.Request.Context(), site, credentialType, req.Credential)
 	if err != nil {

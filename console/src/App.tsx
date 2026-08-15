@@ -68,8 +68,8 @@ const navigation: NavGroup[] = [
   {
     label: '路由',
     entries: [
-      { label: '渠道与分发', href: '/channels', icon: RouteIcon },
-      { label: '下游密钥', href: '/tokens', icon: KeyRound },
+      { label: '渠道分发', href: '/channels', icon: RouteIcon },
+      { label: '令牌管理', href: '/tokens', icon: KeyRound },
     ],
   },
   {
@@ -83,7 +83,7 @@ const navigation: NavGroup[] = [
   {
     label: '工具',
     entries: [
-      { label: '模型与测试', href: '/models', icon: FlaskConical },
+      { label: '模型测试', href: '/models', icon: FlaskConical },
 	  { label: '系统设置', href: '/system', icon: Settings },
     ],
   },

@@ -2,9 +2,11 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
 )
@@ -189,5 +191,36 @@ func TestSub2APIParsesStringSuccessCodeAndCollectionVariants(t *testing.T) {
 	models, err := adapter.ListModels(context.Background(), AccountRequest{BaseURL: server.URL, Credentials: Credentials{APIKey: keys[0].Key}})
 	if err != nil || len(models) != 1 || models[0].Model != "gpt-record" {
 		t.Fatalf("models=%+v err=%v", models, err)
+	}
+}
+
+func TestSub2APIRefreshCredentialsRotatesManagedTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/refresh" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["refresh_token"] != "refresh-old" {
+			t.Fatalf("refresh body=%v err=%v", body, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"access-new","refresh_token":"refresh-new","expires_in":3600}}`))
+	}))
+	defer server.Close()
+
+	before := time.Now().UnixMilli()
+	refreshed, err := NewSub2API(ClientFactory{AllowPrivate: true}).RefreshCredentials(context.Background(), AccountRequest{
+		BaseURL:     server.URL,
+		Credentials: Credentials{AccessToken: "access-old", RefreshToken: "refresh-old"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.AccessToken != "access-new" || refreshed.RefreshToken != "refresh-new" {
+		t.Fatalf("refreshed=%+v", refreshed)
+	}
+	if refreshed.ExpiresAt < before+3_500_000 || refreshed.ExpiresAt > before+3_700_000 {
+		t.Fatalf("expires_at=%d before=%d", refreshed.ExpiresAt, before)
 	}
 }

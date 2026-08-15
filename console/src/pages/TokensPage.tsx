@@ -35,7 +35,7 @@ export default function TokensPage() {
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true); setError('')
     try { setTokens((await getAuthTokens(range, signal)).tokens || []) }
-    catch (reason) { if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '密钥加载失败') }
+    catch (reason) { if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '令牌加载失败') }
     finally { if (!signal?.aborted) setLoading(false) }
   }, [range])
 
@@ -47,7 +47,8 @@ export default function TokensPage() {
 
   const visible = useMemo(() => {
     const value = query.trim().toLowerCase()
-    return value ? tokens.filter((token) => token.description.toLowerCase().includes(value) || String(token.id).includes(value)) : tokens
+    const filtered = value ? tokens.filter((token) => token.description.toLowerCase().includes(value) || String(token.id).includes(value)) : tokens
+    return [...filtered].sort((left, right) => createdTimestamp(right) - createdTimestamp(left))
   }, [query, tokens])
 
   const totals = useMemo(() => ({
@@ -66,7 +67,7 @@ export default function TokensPage() {
   }
 
   const remove = async (token: AuthToken) => {
-    if (!window.confirm(`删除下游密钥“${token.description}”？该操作立即生效。`)) return
+    if (!window.confirm(`删除令牌“${token.description}”？该操作立即生效。`)) return
     setBusyId(token.id); setError('')
     try { await deleteAuthToken(token.id); setTokens((items) => items.filter((item) => item.id !== token.id)) }
     catch (reason) { setError(reason instanceof Error ? reason.message : '删除失败') }
@@ -79,7 +80,7 @@ export default function TokensPage() {
       const result = await revealAuthToken(token.id)
       setRevealed({ id: token.id, value: result.token })
       await copyValue(result.token)
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '密钥恢复失败') }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '令牌恢复失败') }
     finally { setBusyId(null) }
   }
 
@@ -89,28 +90,28 @@ export default function TokensPage() {
 
   return <div className="workspace-page tokens-page">
     <header className="page-header">
-      <h1>下游密钥</h1>
+      <h1>令牌管理</h1>
       <div className="header-controls">
-        <button className="primary-button" type="button" onClick={() => setEditing('new')}><Plus size={16} />创建密钥</button>
-        <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新密钥"><RefreshCw size={17} /></button>
+        <button className="primary-button" type="button" onClick={() => setEditing('new')}><Plus size={16} />创建令牌</button>
+        <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新令牌"><RefreshCw size={17} /></button>
       </div>
     </header>
 
-    <section className="compact-summary" aria-label="下游密钥摘要">
-      <span><strong>{tokens.length}</strong>密钥总数</span><span><strong>{totals.active}</strong>已启用</span>
+    <section className="compact-summary" aria-label="令牌摘要">
+      <span><strong>{tokens.length}</strong>令牌总数</span><span><strong>{totals.active}</strong>已启用</span>
       <span><strong>{formatNumber(totals.requests)}</strong>请求</span><span><strong>{formatMoney(totals.cost)}</strong>消耗</span>
     </section>
 
     <div className="filter-bar">
       <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或 ID" /></label>
-      <div className="range-control range-control--compact" role="radiogroup" aria-label="密钥统计范围">
+      <div className="range-control range-control--compact" role="radiogroup" aria-label="令牌统计范围">
         {([['today', '今日'], ['this_week', '本周'], ['this_month', '本月']] as const).map(([value, label]) => <button className={range === value ? 'is-active' : ''} type="button" role="radio" aria-checked={range === value} onClick={() => setRange(value)} key={value}>{label}</button>)}
       </div>
       <span className="filter-count">{visible.length} 条</span>
     </div>
 
     {error && tokens.length > 0 && <div className="inline-error">{error}</div>}
-    {loading ? <LoadingState label="正在加载下游密钥" /> : error && !tokens.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label="没有符合条件的下游密钥" /> : <div className="token-list">
+    {loading ? <LoadingState label="正在加载令牌" /> : error && !tokens.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label="没有符合条件的令牌" /> : <div className="token-list">
       {visible.map((token) => <article className="token-row" key={token.id}>
         <span className={`token-icon${token.is_active ? '' : ' token-icon--off'}`}><KeyRound size={17} /></span>
         <div className="token-identity"><strong>{token.description}</strong><span>#{token.id} · {token.token || '已安全存储'}</span></div>
@@ -123,7 +124,7 @@ export default function TokensPage() {
           <button className="icon-button icon-button--surface" type="button" onClick={() => setEditing(token)} aria-label={`编辑 ${token.description}`} title="编辑"><Pencil size={16} /></button>
           <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => void remove(token)} disabled={busyId === token.id} aria-label={`删除 ${token.description}`} title="删除"><Trash2 size={16} /></button>
         </div>
-        <div className="token-secret-cell"><code>{revealed?.id === token.id ? revealed.value : (token.token_hint || token.token || '不可恢复')}</code><button className="icon-button icon-button--surface" type="button" onClick={() => revealed?.id === token.id ? void copyValue(revealed.value) : void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={revealed?.id === token.id ? '复制密钥' : token.token_recoverable ? '显示并复制密钥' : '历史密钥不可恢复'}><Copy size={15} /></button></div>
+        <div className="token-secret-cell"><code>{revealed?.id === token.id ? revealed.value : (token.token_hint || token.token || '不可恢复')}</code><button className="icon-button icon-button--surface" type="button" onClick={() => revealed?.id === token.id ? void copyValue(revealed.value) : void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={revealed?.id === token.id ? '复制令牌' : token.token_recoverable ? '显示并复制令牌' : '历史令牌不可恢复'}><Copy size={15} /></button></div>
       </article>)}
     </div>}
 
@@ -131,7 +132,7 @@ export default function TokensPage() {
       setEditing(null); if (plain) setCreatedToken(plain)
       setTokens((items) => editing === 'new' ? [token, ...items] : items.map((item) => item.id === token.id ? { ...item, ...token } : item))
     }} />}
-    {createdToken && <Modal title="密钥已创建" close={() => setCreatedToken('')}><div className="secret-reveal"><p>密钥已安全保存，之后可在列表中复制。</p><code>{createdToken}</code><button className="primary-button" type="button" onClick={() => void copyValue(createdToken)}><Copy size={15} />复制密钥</button></div></Modal>}
+    {createdToken && <Modal title="令牌已创建" close={() => setCreatedToken('')}><div className="secret-reveal"><p>令牌已安全保存，之后可在列表中复制。</p><code>{createdToken}</code><button className="primary-button" type="button" onClick={() => void copyValue(createdToken)}><Copy size={15} />复制令牌</button></div></Modal>}
   </div>
 }
 
@@ -190,7 +191,7 @@ function TokenForm({ token, close, saved }: { token?: AuthToken; close: () => vo
     finally { setSaving(false) }
   }
 
-  return <Modal title={token ? '编辑下游密钥' : '创建下游密钥'} close={close} wide>
+  return <Modal title={token ? '编辑令牌' : '创建令牌'} close={close} wide>
     <form className="console-form" onSubmit={submit}>
       {error && <div className="modal-error inline-error">{error}</div>}
       <div className="form-grid">
@@ -209,6 +210,10 @@ function TokenForm({ token, close, saved }: { token?: AuthToken; close: () => vo
 }
 
 function formatDate(value: number): string { return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value)) }
+function createdTimestamp(token: AuthToken): number {
+  const value = Date.parse(token.created_at)
+  return Number.isFinite(value) ? value : token.id
+}
 function toLocalInput(value: number): string {
   const date = new Date(value - new Date(value).getTimezoneOffset() * 60_000)
   return date.toISOString().slice(0, 16)

@@ -102,7 +102,7 @@ func TestHandleAdminDashboardAggregatesControlAndDataPlanes(t *testing.T) {
 	if snapshot.Totals.EffectiveCost != 0.25 {
 		t.Fatalf("effective cost=%v, want 0.25", snapshot.Totals.EffectiveCost)
 	}
-	if len(snapshot.Balances) != 1 || snapshot.Balances[0].Currency != "CNY" || snapshot.Balances[0].Amount != balance {
+	if len(snapshot.Balances) != 1 || snapshot.Balances[0].Currency != "USD" || snapshot.Balances[0].Amount != balance {
 		t.Fatalf("unexpected balances: %+v", snapshot.Balances)
 	}
 	if len(snapshot.ModelUsage) != 1 || snapshot.ModelUsage[0].Label != "claude-sonnet-4-5" {

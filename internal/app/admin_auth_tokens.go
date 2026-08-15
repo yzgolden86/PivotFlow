@@ -284,7 +284,7 @@ func (s *Server) HandleRevealAuthToken(c *gin.Context) {
 	}
 	var plain string
 	if err := s.siteControl.cipher.Open(token.TokenCiphertext, &plain); err != nil || strings.TrimSpace(plain) == "" {
-		RespondErrorMsg(c, http.StatusConflict, "密钥密文不可恢复，请重新创建密钥")
+		RespondErrorMsg(c, http.StatusConflict, "令牌密文不可恢复，请重新创建令牌")
 		return
 	}
 	RespondJSON(c, http.StatusOK, gin.H{"id": id, "token": plain, "token_hint": model.MaskToken(plain)})

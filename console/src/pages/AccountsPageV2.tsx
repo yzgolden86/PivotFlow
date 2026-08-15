@@ -11,7 +11,7 @@ import {
   verifySiteAccountCredential,
 } from '../api'
 import type { CheckinAttempt, Site, SiteAccount, SiteCredentialVerification } from '../types'
-import { EmptyState, ErrorState, formatTime, LoadingState } from './shared'
+import { EmptyState, ErrorState, formatTime, LoadingState, Pagination } from './shared'
 import { formatAccountBalance, Modal, siteErrorMessage, StatusBadge } from './siteShared'
 import { credentialLabel, credentialOptions, normalizeCredentialType, platformSupportsCheckin, type CredentialType } from '../siteCredentials'
 
@@ -21,6 +21,8 @@ type CredentialForm = {
   username: string
   password: string
   user_id: number
+  refresh_token: string
+  expires_at: string
 }
 
 type CreateAccountForm = CredentialForm & {
@@ -48,6 +50,8 @@ const emptyCredential = (type: CredentialType = 'username_password'): Credential
   username: '',
   password: '',
   user_id: 0,
+  refresh_token: '',
+  expires_at: '',
 })
 
 const emptyAccount = (siteId = 0): CreateAccountForm => ({
@@ -75,6 +79,8 @@ export default function AccountsPage() {
   const [search, setSearch] = useState(querySearch)
   const [siteFilter, setSiteFilter] = useState(querySite)
   const [status, setStatus] = useState('all')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -133,6 +139,19 @@ export default function AccountsPage() {
     && (status === 'all' || account.status === status)
     && (!search.trim() || [account.label, siteMap.get(account.site_id)?.name || ''].some((value) => value.toLowerCase().includes(search.trim().toLowerCase())))
   )), [accounts, search, siteFilter, siteMap, status])
+  const pagedVisible = useMemo(() => visible.slice((page - 1) * pageSize, page * pageSize), [page, pageSize, visible])
+
+  useEffect(() => { setPage(1) }, [search, siteFilter, status])
+  useEffect(() => {
+    const pages = Math.max(1, Math.ceil(visible.length / pageSize))
+    if (page > pages) setPage(pages)
+  }, [page, pageSize, visible.length])
+
+  useEffect(() => {
+    if (!focusAccountId) return
+    const index = visible.findIndex((account) => account.id === focusAccountId)
+    if (index >= 0) setPage(Math.floor(index / pageSize) + 1)
+  }, [focusAccountId, pageSize, visible])
 
   const openCreate = useCallback(async (preferredSiteId = 0) => {
     setOpeningCreate(true)
@@ -173,7 +192,9 @@ export default function AccountsPage() {
   const openCredential = useCallback((account: SiteAccount) => {
     setCredentialAccount(account)
     const platform = siteMap.get(account.site_id)?.platform || ''
-    setCredentialForm(emptyCredential(normalizeCredentialType(platform, account.credential_type as CredentialType)))
+    const next = emptyCredential(normalizeCredentialType(platform, account.credential_type as CredentialType))
+    next.expires_at = account.credential_expires_at ? toLocalInput(account.credential_expires_at) : ''
+    setCredentialForm(next)
     setCredentialError('')
     setVerification(null)
   }, [siteMap])
@@ -201,7 +222,7 @@ export default function AccountsPage() {
     if (!row) return
     const timer = window.setTimeout(() => row.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80)
     return () => window.clearTimeout(timer)
-  }, [focusAccountId, loading, visible])
+  }, [focusAccountId, loading, pagedVisible])
 
   const saveCreate = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -340,10 +361,10 @@ export default function AccountsPage() {
     if (next.has(id)) next.delete(id); else next.add(id)
     return next
   })
-  const allVisibleSelected = visible.length > 0 && visible.every((account) => selected.has(account.id))
+  const allVisibleSelected = pagedVisible.length > 0 && pagedVisible.every((account) => selected.has(account.id))
   const toggleAllVisible = () => setSelected((current) => {
     const next = new Set(current)
-    if (allVisibleSelected) visible.forEach((account) => next.delete(account.id)); else visible.forEach((account) => next.add(account.id))
+    if (allVisibleSelected) pagedVisible.forEach((account) => next.delete(account.id)); else pagedVisible.forEach((account) => next.add(account.id))
     return next
   })
 
@@ -392,7 +413,8 @@ export default function AccountsPage() {
     {selected.size > 0 && <div className="batch-toolbar" aria-label="账号批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('refresh')} disabled={batchBusy}><WalletCards size={14} />刷新余额</button><button type="button" onClick={() => void runBatch('model_refresh')} disabled={batchBusy}><RefreshCw size={14} />同步路由</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
     {notice && <div className="operation-notice">{notice}</div>}
     {error && accounts.length > 0 && <div className="inline-error">{error}</div>}
-    {loading ? <LoadingState label="正在加载账号" /> : error && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? accounts.length ? <EmptyState label="没有匹配的账号" /> : <div className="content-state content-state--empty"><strong>还没有账号</strong><button className="secondary-button" type="button" onClick={() => void openCreate()} disabled={!sites.length}><Plus size={15} />添加账号</button></div> : <div className="account-records records-panel"><div className="record-head account-grid"><span>账号 / 站点</span><span>状态</span><span>余额</span><span>最近签到</span><span>自动任务</span><span>操作</span></div>{visible.map((account) => <AccountRow key={account.id} account={account} site={siteMap.get(account.site_id)} latestCheckin={latestCheckins[account.id]} selected={selected.has(account.id)} busyKind={busy.get(account.id)} focused={account.id === focusAccountId} rowRef={(node) => { if (node) rowRefs.current.set(account.id, node); else rowRefs.current.delete(account.id) }} select={() => toggleSelected(account.id)} task={(kind) => void task(account, kind)} copy={() => void copyAccount(account)} edit={() => openMetadata(account)} credential={() => openCredential(account)} remove={() => void remove(account)} />)}</div>}
+    {loading ? <LoadingState label="正在加载账号" /> : error && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? accounts.length ? <EmptyState label="没有匹配的账号" /> : <div className="content-state content-state--empty"><strong>还没有账号</strong><button className="secondary-button" type="button" onClick={() => void openCreate()} disabled={!sites.length}><Plus size={15} />添加账号</button></div> : <div className="account-records records-panel"><div className="record-head account-grid"><span>账号 / 站点</span><span>状态</span><span>余额</span><span>最近签到</span><span>自动任务</span><span>操作</span></div>{pagedVisible.map((account) => <AccountRow key={account.id} account={account} site={siteMap.get(account.site_id)} latestCheckin={latestCheckins[account.id]} selected={selected.has(account.id)} busyKind={busy.get(account.id)} focused={account.id === focusAccountId} rowRef={(node) => { if (node) rowRefs.current.set(account.id, node); else rowRefs.current.delete(account.id) }} select={() => toggleSelected(account.id)} task={(kind) => void task(account, kind)} copy={() => void copyAccount(account)} edit={() => openMetadata(account)} credential={() => openCredential(account)} remove={() => void remove(account)} />)}</div>}
+    <Pagination page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[20, 50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
 
     {creating && <Modal title="添加账号" close={() => setCreating(false)}>{error && <div className="inline-error modal-error">{error}</div>}<CreateAccountFormView form={createForm} setForm={setCreateForm} sites={sites} saving={openingCreate} submit={saveCreate} /></Modal>}
     {editing && metadata && <Modal title="编辑账号" close={() => { setEditing(null); setMetadata(null) }}>{error && <div className="inline-error modal-error">{error}</div>}<MetadataFormView account={editing} site={siteMap.get(editing.site_id)} form={metadata} setForm={setMetadata} saving={savingMetadata} submit={saveMetadata} /></Modal>}
@@ -419,7 +441,7 @@ function AccountRow({ account, site, latestCheckin, selected, busyKind, focused,
   const needsCredential = ['expired', 'error'].includes(account.status) || Boolean(account.last_error)
   const busy = Boolean(busyKind)
   return <article ref={rowRef} data-account-id={account.id} className={`record-row account-grid${selected ? ' row-selected' : ''}${focused ? ' row-focus-highlight' : ''}`}>
-    <div className="account-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${account.label}`} /><div><a className="entity-link" href={`#/accounts?focus_account_id=${account.id}`}><strong>{account.label}</strong></a><a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a><span>{credentialLabel(account.credential_type, site?.platform)}</span></div></div>
+    <div className="account-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${account.label}`} /><div><a className="entity-link" href={`#/accounts?focus_account_id=${account.id}`}><strong>{account.label}</strong></a><a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a><span>{credentialLabel(account.credential_type, site?.platform)}{account.credential_refresh_configured ? ` · 自动续期${account.credential_expires_at ? `至 ${formatTime(account.credential_expires_at)}` : ''}` : ''}</span></div></div>
     <div><StatusBadge status={account.enabled ? account.status : 'disabled'} />{needsCredential ? <button className="inline-entity-action" type="button" onClick={credential} title={account.last_error}>{account.last_error ? siteErrorMessage(account.last_error) : '需要更新凭证'}</button> : <span>{account.consecutive_failures} 次连续失败</span>}</div>
     <div><strong>{formatAccountBalance(account)}</strong>{latestCheckin?.balance_delta !== undefined && Math.abs(latestCheckin.balance_delta) > 0.000001 && <em className={latestCheckin.balance_delta > 0 ? 'balance-delta balance-delta--gain' : 'balance-delta balance-delta--loss'}>{latestCheckin.balance_delta > 0 ? '+' : ''}{latestCheckin.balance_delta.toFixed(2)} {latestCheckin.balance_currency || account.balance_currency}</em>}<span>{apiKeyOnly ? 'API Key 不读取余额' : account.balance_updated_at ? formatTime(account.balance_updated_at) : '尚未同步'}</span></div>
     <div><StatusBadge status={apiKeyOnly ? 'unsupported' : account.last_checkin_status} /><span>{apiKeyOnly ? '需要登录凭证' : account.last_checkin_at ? formatTime(account.last_checkin_at) : '尚无记录'}</span></div>
@@ -487,14 +509,14 @@ function CredentialUpdateView({ account, site, form, change, verification, verif
 
 function CredentialFields<T extends CredentialForm>({ form, field, platform }: { form: T; field: (key: keyof T, value: string | number | boolean) => void; platform: string }) {
   const options = credentialOptions(platform)
-  return <section className="embedded-form-section credential-section"><label><span>凭证类型</span><select value={form.credential_type} onChange={(event) => field('credential_type', event.target.value)}>{options.map((option) => <option value={option} key={option}>{credentialLabel(option, platform)}</option>)}</select></label>{form.credential_type === 'username_password' ? <div className="form-grid"><label><span>用户名</span><input required value={form.username} onChange={(event) => field('username', event.target.value)} autoComplete="username" /></label><label><span>密码</span><input required type="password" value={form.password} onChange={(event) => field('password', event.target.value)} autoComplete="current-password" /></label></div> : <label><span>{credentialLabel(form.credential_type, platform)}</span><input required type="password" autoComplete="off" value={form.credential} onChange={(event) => field('credential', event.target.value)} placeholder={platform === 'sub2api' && form.credential_type === 'access_token' ? '填写浏览器存储中的 auth token' : '凭证将加密保存'} /></label>}{!['api_key', 'username_password'].includes(form.credential_type) && platform !== 'sub2api' && <label><span>上游用户 ID{form.credential_type === 'cookie' ? '' : '（自动识别失败时填写）'}</span><input required={form.credential_type === 'cookie'} type="number" min="1" value={form.user_id || ''} onChange={(event) => field('user_id', Number(event.target.value))} placeholder="用户个人中心显示的数字 ID" /></label>}{form.credential_type === 'access_token' && <div className="form-help">{platform === 'sub2api' ? '填写 Sub2API 登录后保存的 Auth Token（JWT），不要粘贴 Session Cookie。' : '填写 New API 用户个人中心的系统访问令牌，不是以 sk- 开头的模型调用 Key。'}</div>}{form.credential_type === 'api_key' && <div className="form-help">模型 API Key 只用于发现模型和路由，不支持余额、签到或公告。</div>}</section>
+  return <section className="embedded-form-section credential-section"><label><span>凭证类型</span><select value={form.credential_type} onChange={(event) => field('credential_type', event.target.value)}>{options.map((option) => <option value={option} key={option}>{credentialLabel(option, platform)}</option>)}</select></label>{form.credential_type === 'username_password' ? <div className="form-grid"><label><span>用户名</span><input required value={form.username} onChange={(event) => field('username', event.target.value)} autoComplete="username" /></label><label><span>密码</span><input required type="password" value={form.password} onChange={(event) => field('password', event.target.value)} autoComplete="current-password" /></label></div> : <label><span>{credentialLabel(form.credential_type, platform)}</span><input required type="password" autoComplete="off" value={form.credential} onChange={(event) => field('credential', event.target.value)} placeholder={platform === 'sub2api' && form.credential_type === 'access_token' ? '填写浏览器存储中的 auth token' : '凭证将加密保存'} /></label>}{!['api_key', 'username_password'].includes(form.credential_type) && platform !== 'sub2api' && <label><span>上游用户 ID{form.credential_type === 'cookie' ? '' : '（自动识别失败时填写）'}</span><input required={form.credential_type === 'cookie'} type="number" min="1" value={form.user_id || ''} onChange={(event) => field('user_id', Number(event.target.value))} placeholder="用户个人中心显示的数字 ID" /></label>}{form.credential_type === 'access_token' && <><div className="form-grid"><label><span>Refresh Token（可选）</span><input type="password" autoComplete="off" value={form.refresh_token} onChange={(event) => field('refresh_token', event.target.value)} placeholder="用于访问令牌自动续期" /></label><label><span>访问令牌过期时间（可选）</span><input type="datetime-local" value={form.expires_at} onChange={(event) => field('expires_at', event.target.value)} /></label></div><div className="form-help">{platform === 'sub2api' ? 'Sub2API 会在 JWT 即将过期前自动刷新。Refresh Token 为空时仍可使用，但过期后需要重新登录。' : '如果上游提供 refresh token，可一并保存；JWT 的 exp 会自动识别，opaque token 建议填写过期时间。'}</div></>}{form.credential_type === 'api_key' && <div className="form-help">模型 API Key 只用于发现模型和路由，不支持余额、签到或公告。</div>}</section>
 }
 
 function credentialPayload(form: CredentialForm) {
   if (form.credential_type === 'username_password') return { username: form.username.trim(), password: form.password }
   if (form.credential_type === 'api_key') return { api_key: form.credential }
   if (form.credential_type === 'cookie') return { cookie: form.credential, user_id: form.user_id }
-  return { access_token: form.credential, ...(form.user_id > 0 ? { user_id: form.user_id } : {}) }
+  return { access_token: form.credential, ...(form.user_id > 0 ? { user_id: form.user_id } : {}), ...(form.refresh_token.trim() ? { refresh_token: form.refresh_token.trim() } : {}), ...(form.expires_at ? { expires_at: new Date(form.expires_at).getTime() } : {}) }
 }
 
 function credentialComplete(form: CredentialForm): boolean {
@@ -507,4 +529,9 @@ async function runLimited<T>(items: T[], worker: (item: T) => Promise<void>, con
   let cursor = 0
   const run = async () => { while (cursor < items.length) await worker(items[cursor++]) }
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, run))
+}
+
+function toLocalInput(value: number): string {
+  const date = new Date(value - new Date(value).getTimezoneOffset() * 60_000)
+  return date.toISOString().slice(0, 16)
 }

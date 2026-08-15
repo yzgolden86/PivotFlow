@@ -210,7 +210,7 @@ export function createSite(payload: {
 	account?: {
 		label: string
 		credential_type: string
-		credential: { api_key?: string; access_token?: string; cookie?: string; user_id?: number; username?: string; password?: string }
+		credential: { api_key?: string; access_token?: string; refresh_token?: string; expires_at?: number; cookie?: string; user_id?: number; username?: string; password?: string }
 		enabled: boolean
 		auto_checkin: boolean
 		auto_refresh: boolean
@@ -247,7 +247,7 @@ export async function getSiteInventory(signal?: AbortSignal): Promise<SiteInvent
 export function createSiteAccount(siteId: number, payload: {
   label: string
   credential_type: string
-	credential: { api_key?: string; access_token?: string; cookie?: string; user_id?: number; username?: string; password?: string }
+	credential: { api_key?: string; access_token?: string; refresh_token?: string; expires_at?: number; cookie?: string; user_id?: number; username?: string; password?: string }
   enabled: boolean
   auto_checkin: boolean
   auto_refresh: boolean
@@ -258,13 +258,13 @@ export function createSiteAccount(siteId: number, payload: {
 
 export function updateSiteAccount(accountId: number, payload: Partial<Pick<SiteAccount,
   'label' | 'enabled' | 'auto_checkin' | 'auto_refresh' | 'timezone' | 'credential_type'
->> & { credential?: { api_key?: string; access_token?: string; cookie?: string; user_id?: number; username?: string; password?: string } }): Promise<SiteAccount> {
+>> & { credential?: { api_key?: string; access_token?: string; refresh_token?: string; expires_at?: number; cookie?: string; user_id?: number; username?: string; password?: string } }): Promise<SiteAccount> {
   return apiMutation<SiteAccount>(`/admin/site-accounts/${accountId}`, payload, 'PATCH')
 }
 
 export function verifySiteAccountCredential(accountId: number, payload: {
   credential_type: string
-  credential: { api_key?: string; access_token?: string; cookie?: string; user_id?: number; username?: string; password?: string }
+  credential: { api_key?: string; access_token?: string; refresh_token?: string; expires_at?: number; cookie?: string; user_id?: number; username?: string; password?: string }
 }): Promise<SiteCredentialVerification> {
   return apiMutation<SiteCredentialVerification>(`/admin/site-accounts/${accountId}/credential/verify`, payload)
 }

@@ -6,14 +6,13 @@ import { EmptyState, ErrorState, LoadingState, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
 import { Modal, siteErrorMessage, StatusBadge } from './siteShared'
 
-const PAGE_SIZE = 12
-
 export default function ChannelsPage() {
   const location = useLocation()
   const querySearch = useMemo(() => new URLSearchParams(location.search).get('search') || '', [location.search])
   const [channels, setChannels] = useState<Channel[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   const [searchDraft, setSearchDraft] = useState(querySearch)
   const [search, setSearch] = useState(querySearch)
   const [status, setStatus] = useState('all')
@@ -32,7 +31,7 @@ export default function ChannelsPage() {
     setLoading(true)
     setError('')
     try {
-      const result = await getChannels({ search, status, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }, signal)
+      const result = await getChannels({ search, status, limit: pageSize, offset: (page - 1) * pageSize }, signal)
       setChannels(result.data)
       setTotal(result.count)
       setSelected((current) => new Set([...current].filter((id) => result.data.some((channel) => channel.id === id))))
@@ -41,7 +40,7 @@ export default function ChannelsPage() {
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [page, search, status])
+  }, [page, pageSize, search, status])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -130,7 +129,7 @@ export default function ChannelsPage() {
   return (
     <div className="workspace-page">
       <header className="page-header">
-        <h1>渠道与分发</h1>
+        <h1>渠道分发</h1>
         <div className="header-controls">
           <input ref={importInput} className="visually-hidden" type="file" accept="application/json,.json" multiple onChange={(event) => void importCredentials(event.target.files)} />
 		  <div className="source-menu"><button className="secondary-button" type="button" aria-haspopup="menu" aria-expanded={sourceMenuOpen} onClick={() => setSourceMenuOpen((open) => !open)}><MoreHorizontal size={16} />其他来源</button>{sourceMenuOpen && <div className="source-menu-popover" role="menu"><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); importInput.current?.click() }}><FileUp size={15} />导入 OAuth</button><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); setEditing('new') }}><Plus size={15} />手工渠道</button></div>}</div>
@@ -162,7 +161,7 @@ export default function ChannelsPage() {
           {channels.map((channel) => <ChannelRow channel={channel} selected={selected.has(channel.id)} busy={busyId === channel.id || (batchBusy && selected.has(channel.id))} select={() => toggleSelected(channel.id)} toggle={() => void toggleChannel(channel)} copy={() => void copyChannel(channel)} edit={() => setEditing(channel.id)} remove={() => void removeChannel(channel)} key={channel.id} />)}
         </div>
       )}
-      <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPage={setPage} />
+      <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} pageSizes={[20, 50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
       {editing && <ChannelEditor channelId={editing === 'new' ? undefined : editing} close={() => setEditing(null)} saved={() => { setEditing(null); void load() }} />}
       {syncOpen && <SiteChannelSyncModal close={() => setSyncOpen(false)} synced={() => void load()} />}
     </div>
