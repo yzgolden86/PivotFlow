@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BellRing, CheckCircle2, RefreshCw, RotateCcw, Save, Search, SlidersHorizontal } from 'lucide-react'
 import { getSystemSettings, resetSystemSetting, updateSystemSettings } from '../api'
 import type { SystemSetting } from '../types'
-import { EmptyState, ErrorState, LoadingState } from './shared'
+import { EmptyState, ErrorState, LoadingState, OperationNotice } from './shared'
 import { WebhookSettingsPanel } from './SettingsPage'
 
 const groups = [
@@ -77,7 +77,7 @@ export default function SystemSettingsPage() {
 	<header className="page-header"><h1>系统设置</h1>{section === 'runtime' && <div className="header-controls"><button className="primary-button" type="button" onClick={() => void save()} disabled={!dirty.size || saving}><Save size={15} />{saving ? '保存中' : `保存${dirty.size ? ` (${dirty.size})` : ''}`}</button><button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新系统设置"><RefreshCw size={17} /></button></div>}</header>
 	<div className="view-tabs" role="tablist" aria-label="系统设置分类"><button type="button" role="tab" aria-selected={section === 'runtime'} className={section === 'runtime' ? 'is-active' : ''} onClick={() => setSection('runtime')}><SlidersHorizontal size={15} />运行参数</button><button type="button" role="tab" aria-selected={section === 'notifications'} className={section === 'notifications' ? 'is-active' : ''} onClick={() => setSection('notifications')}><BellRing size={15} />通知</button></div>
 	{section === 'notifications' ? <WebhookSettingsPanel /> : <>
-	{notice && <div className="operation-notice"><CheckCircle2 size={15} />{notice}</div>}
+	{notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={15} />{notice}</OperationNotice>}
 	{error && <div className="inline-error">{error}</div>}
 	<div className="settings-layout">
       <aside className="settings-groups" aria-label="参数分类">

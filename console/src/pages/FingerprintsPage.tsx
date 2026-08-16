@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Beaker, Fingerprint, Play, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { deleteFingerprint, getChannels, getFingerprintResults, getFingerprints, startFingerprintCalibration, startFingerprintTest, waitForFingerprintJob } from '../api'
 import type { Channel, FingerprintTestRecord, ModelFingerprint } from '../types'
-import { EmptyState, ErrorState, formatNumber, LoadingState } from './shared'
+import { EmptyState, ErrorState, formatNumber, LoadingState, OperationNotice } from './shared'
 import { Modal } from './siteShared'
 
 type Mode = 'baselines' | 'results'
@@ -90,7 +90,7 @@ function FingerprintJobForm({ mode, channels, fingerprints, close, finished }: {
     {mode === 'calibrate' && <label>基线名称<input required value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：官方 Claude Sonnet" /></label>}
     {mode === 'test' && <label>对比基线<select value={baselineId} onChange={(event) => setBaselineId(Number(event.target.value))}>{fingerprints.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}
     <div className="form-grid"><label>渠道<select value={channelId} onChange={(event) => setChannelId(Number(event.target.value))}>{channels.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>模型<select required value={model} onChange={(event) => setModel(event.target.value)}>{models.map((item) => <option value={item.model} key={item.model}>{item.model}</option>)}</select></label><label>客户端协议<select value={protocol} onChange={(event) => setProtocol(event.target.value)}><option value="anthropic">Anthropic</option><option value="openai">OpenAI Chat</option><option value="codex">OpenAI Responses</option><option value="gemini">Gemini</option></select></label><label>采样次数<input type="number" min="3" max="100" value={iterations} onChange={(event) => setIterations(Number(event.target.value))} /></label><label>并发数<input type="number" min="1" max="10" value={concurrency} onChange={(event) => setConcurrency(Number(event.target.value))} /></label><label className="checkbox-field"><input type="checkbox" checked={stream} onChange={(event) => setStream(event.target.checked)} />流式请求</label></div>
-    {progress && <div className="operation-notice"><RefreshCw className="spin" size={15} />{progress}</div>}
+    {progress && <OperationNotice persistent><RefreshCw className="spin" size={15} />{progress}</OperationNotice>}
     <footer><button className="secondary-button" type="button" onClick={close} disabled={running}>取消</button><button className="primary-button" type="submit" disabled={running || !channelId || !model || (mode === 'calibrate' && !name.trim())}>{running ? <RefreshCw className="spin" size={15} /> : <Play size={15} />}{running ? '运行中' : '开始'}</button></footer>
   </form></Modal>
 }

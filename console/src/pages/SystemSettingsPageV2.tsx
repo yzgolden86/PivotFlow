@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { checkForUpdates, getSystemSettings, resetSystemSetting, updateSystemSettings } from '../api'
 import type { SystemSetting } from '../types'
-import { EmptyState, ErrorState, LoadingState } from './shared'
+import { EmptyState, ErrorState, LoadingState, OperationNotice } from './shared'
 import { WebhookSettingsPanel } from './SettingsPage'
 import { applyTheme, readThemePreference } from '../theme'
 import type { ThemePreference } from '../theme'
@@ -158,7 +158,7 @@ export default function SystemSettingsPageV2() {
     </div>
 
     {section === 'notifications' ? <WebhookSettingsPanel /> : <>
-      {notice && <div className="operation-notice"><CheckCircle2 size={16} />{notice}</div>}
+      {notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={16} />{notice}</OperationNotice>}
       {error && <div className="inline-error">{error}</div>}
       <div className="settings-layout">
         <aside className="settings-groups" aria-label="设置分类">

@@ -107,6 +107,40 @@ func TestNewAPILoginAcceptsSessionCookieAndDiscoversRoutingKey(t *testing.T) {
 	}
 }
 
+func TestNewAPIListRoutingKeysParsesStringAndMapModelLimits(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/token/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"items":[{"id":1,"name":"free","group":"free","key":"sk-free","status":1,"models":"gpt-free, claude-free\nembed-free"},{"id":2,"name":"pro","group":"pro","key":"sk-pro","status":1,"model_limits":{"gpt-pro":1000,"claude-pro":2000}}]}}`))
+	}))
+	defer server.Close()
+
+	keys, err := NewNewAPI(ClientFactory{AllowPrivate: true}).ListRoutingKeys(context.Background(), AccountRequest{
+		BaseURL: server.URL, Credentials: Credentials{AccessToken: "management", UserID: 7},
+	})
+	if err != nil || len(keys) != 2 {
+		t.Fatalf("keys=%+v err=%v", keys, err)
+	}
+	if got := keys[0].Models; len(got) != 3 || got[0] != "gpt-free" || got[1] != "claude-free" || got[2] != "embed-free" {
+		t.Fatalf("string models=%v", got)
+	}
+	if got := keys[1].Models; len(got) != 2 || !containsString(got, "gpt-pro") || !containsString(got, "claude-pro") {
+		t.Fatalf("map model limits=%v", got)
+	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestNewAPIResolveManagementCredentialsDiscoversRequiredUserID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

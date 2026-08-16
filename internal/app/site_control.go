@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -603,23 +604,32 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 			return
 		}
 		modelsByProjection, facts, modelErr := s.routingModels(ctx, account, site, adapter, creds, keys)
-		if modelErr != nil {
+		if modelErr != nil && len(modelsByProjection) == 0 {
 			s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(modelErr))
 			return
 		}
-		if err := s.store.ReplaceSiteAccountModels(ctx, account.ID, facts); err != nil {
-			s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
-			return
+		if len(facts) > 0 || modelErr == nil {
+			if err := s.store.ReplaceSiteAccountModels(ctx, account.ID, facts); err != nil {
+				s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
+				return
+			}
 		}
 		account.Status, account.LastError, account.ConsecutiveFailures = model.SiteAccountStatusHealthy, "", 0
 		_, _ = s.store.UpdateSiteAccount(ctx, account.ID, account)
 		activeProjectionKeys := make([]string, 0, len(keys))
+		syncErrors := make([]string, 0)
+		if modelErr != nil {
+			syncErrors = append(syncErrors, siteTaskError(modelErr))
+		}
 		for index, item := range keys {
 			projectionKey := stableProjectionKey(item, index)
 			activeProjectionKeys = append(activeProjectionKeys, projectionKey)
+			models, resolved := modelsByProjection[projectionKey]
+			if !resolved || len(models) == 0 {
+				continue
+			}
 			keyCreds := creds
 			keyCreds.APIKey = item.Key
-			models := modelsByProjection[projectionKey]
 			name := fmt.Sprintf("%s / %s", site.Name, account.Label)
 			if strings.TrimSpace(item.Group) != "" {
 				name += " / " + strings.TrimSpace(item.Group)
@@ -628,8 +638,7 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 				name += " / " + strings.TrimSpace(item.Name)
 			}
 			if _, err := s.projectAccountWithModels(ctx, account, site, keyCreds, projectionKey, name, models, false); err != nil {
-				s.updateTask(ctx, task, model.SiteTaskStatusPartial, fmt.Sprintf("site_account:%d", accountID), siteTaskError(err))
-				return
+				syncErrors = append(syncErrors, fmt.Sprintf("%s: %s", routingKeyLabel(item, projectionKey), siteTaskError(err)))
 			}
 		}
 		if err := s.store.DeactivateSiteProjectionsExcept(ctx, account.ID, activeProjectionKeys); err != nil {
@@ -637,6 +646,10 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 			return
 		}
 		s.projectionChanged()
+		if len(syncErrors) > 0 {
+			s.updateTask(ctx, task, model.SiteTaskStatusPartial, fmt.Sprintf("site_account:%d", accountID), strings.Join(syncErrors, "; "))
+			return
+		}
 		s.updateTask(ctx, task, model.SiteTaskStatusSuccess, fmt.Sprintf("site_account:%d", accountID), "")
 		return
 	}
@@ -710,9 +723,15 @@ func (s *siteControlService) routingSnapshots(ctx context.Context, account *mode
 		return nil, err
 	}
 	filtered := make([]provider.RoutingKeySnapshot, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
 		if key.Enabled && strings.TrimSpace(key.Key) != "" {
 			key.Key = strings.TrimSpace(key.Key)
+			identity := stableProjectionKey(key, len(filtered))
+			if _, exists := seen[identity]; exists {
+				continue
+			}
+			seen[identity] = struct{}{}
 			filtered = append(filtered, key)
 		}
 	}
@@ -730,6 +749,15 @@ func stableProjectionKey(item provider.RoutingKeySnapshot, index int) string {
 	return "key:" + identity
 }
 
+func routingKeyLabel(item provider.RoutingKeySnapshot, fallback string) string {
+	for _, value := range []string{item.Group, item.Name, item.ID} {
+		if label := strings.TrimSpace(value); label != "" {
+			return label
+		}
+	}
+	return fallback
+}
+
 func (s *siteControlService) routingModels(ctx context.Context, account *model.SiteAccount, site *model.Site, adapter provider.SiteAdapter, managementCreds provider.Credentials, keys []provider.RoutingKeySnapshot) (map[string][]string, []model.SiteAccountModel, error) {
 	modelsByProjection := make(map[string][]string, len(keys))
 	type unresolvedKey struct {
@@ -739,16 +767,32 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 	}
 	unresolved := make([]unresolvedKey, 0)
 	snapshotNames := make(map[int][]string, len(keys))
-	var snapshotSignature string
-	snapshotVaries := false
+	keyNames := make(map[int][]string, len(keys))
+	keyErrors := make(map[int]error, len(keys))
+	var endpointSignature string
+	endpointSnapshotKnown := false
+	endpointVaries := false
 	for index, item := range keys {
 		names := normalizedModelNames(item.Models)
 		snapshotNames[index] = names
-		signature := strings.Join(names, "\x00")
-		if index == 0 {
-			snapshotSignature = signature
-		} else if signature != snapshotSignature {
-			snapshotVaries = true
+		modelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		items, err := adapter.ListModels(modelCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: provider.Credentials{APIKey: strings.TrimSpace(item.Key)}})
+		cancel()
+		if err != nil {
+			keyErrors[index] = err
+			continue
+		}
+		names = modelSnapshotNames(items)
+		keyNames[index] = names
+		if len(names) == 0 {
+			continue
+		}
+		signature := modelNamesSignature(names)
+		if !endpointSnapshotKnown {
+			endpointSignature = signature
+			endpointSnapshotKnown = true
+		} else if signature != endpointSignature {
+			endpointVaries = true
 		}
 	}
 	for index, item := range keys {
@@ -756,23 +800,17 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 		// Always ask the upstream model endpoint with this exact routing key.
 		// Some management APIs return a shared model list on every key, which
 		// would otherwise leak one group's models into all projected channels.
-		keyCreds := provider.Credentials{APIKey: strings.TrimSpace(item.Key)}
-		modelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		items, err := adapter.ListModels(modelCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: keyCreds})
-		cancel()
-		keyNames := make([]string, 0)
-		if err == nil {
-			keyNames = modelSnapshotNames(items)
-		}
-		names := keyNames
-		// A provider that already returns different model snapshots per key is
-		// giving us the most specific group information. Keep those snapshots
-		// even if its generic model endpoint returns an unscoped list.
-		if snapshotVaries {
+		names := keyNames[index]
+		// If the per-key endpoint genuinely varies, it is the most precise
+		// source (the endpoint may apply hidden provider-side policy). When all
+		// keys return the same list, treat explicit management-side model limits
+		// as authoritative; otherwise a shared unscoped /models response leaks
+		// every model into every group.
+		if !endpointVaries && len(snapshotNames[index]) > 0 {
 			names = snapshotNames[index]
-			if len(names) == 0 {
-				names = keyNames
-			}
+		}
+		if len(names) == 0 && len(snapshotNames[index]) > 0 {
+			names = snapshotNames[index]
 		}
 		if len(names) == 0 && len(keys) == 1 {
 			// A single-key deployment can safely use the snapshot returned by
@@ -780,8 +818,8 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 			// the key endpoint is unavailable.
 			names = normalizedModelNames(item.Models)
 			if len(names) == 0 {
-				modelCtx, cancel = context.WithTimeout(ctx, 30*time.Second)
-				items, err = adapter.ListModels(modelCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: managementCreds})
+				modelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				items, err := adapter.ListModels(modelCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: managementCreds})
 				cancel()
 				if err == nil {
 					names = modelSnapshotNames(items)
@@ -789,38 +827,36 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 			}
 		}
 		if len(names) == 0 {
-			unresolved = append(unresolved, unresolvedKey{projectionKey: projectionKey, item: item, err: err})
+			unresolved = append(unresolved, unresolvedKey{projectionKey: projectionKey, item: item, err: keyErrors[index]})
 			continue
 		}
 		modelsByProjection[projectionKey] = names
 	}
 	if len(unresolved) > 0 {
 		first := unresolved[0]
-		detail := strings.TrimSpace(first.item.Group)
-		if detail == "" {
-			detail = strings.TrimSpace(first.item.Name)
-		}
-		if detail == "" {
-			detail = first.projectionKey
-		}
+		detail := routingKeyLabel(first.item, first.projectionKey)
 		if first.err != nil {
-			return nil, nil, &provider.Error{Code: provider.ErrorCode(first.err), Message: fmt.Sprintf("unable to discover models for routing key %s: %s", detail, provider.ErrorMessage(first.err))}
+			return modelsByProjection, siteAccountModelsFromProjection(account.ID, modelsByProjection), &provider.Error{Code: provider.ErrorCode(first.err), Message: fmt.Sprintf("unable to discover models for routing key %s: %s", detail, provider.ErrorMessage(first.err))}
 		}
-		return nil, nil, &provider.Error{Code: provider.CodeUnsupported, Message: fmt.Sprintf("routing key %s returned no models", detail)}
+		return modelsByProjection, siteAccountModelsFromProjection(account.ID, modelsByProjection), &provider.Error{Code: provider.CodeUnsupported, Message: fmt.Sprintf("routing key %s returned no models", detail)}
 	}
 
+	return modelsByProjection, siteAccountModelsFromProjection(account.ID, modelsByProjection), nil
+}
+
+func siteAccountModelsFromProjection(accountID int64, modelsByProjection map[string][]string) []model.SiteAccountModel {
 	seen := map[string]model.SiteAccountModel{}
 	now := time.Now().UnixMilli()
 	for _, names := range modelsByProjection {
 		for _, name := range names {
-			seen[name] = model.SiteAccountModel{SiteAccountID: account.ID, Model: name, RouteType: "openai_chat", Source: "routing_key_models", LastSeenAt: now}
+			seen[name] = model.SiteAccountModel{SiteAccountID: accountID, Model: name, RouteType: "openai_chat", Source: "routing_key_models", LastSeenAt: now}
 		}
 	}
 	facts := make([]model.SiteAccountModel, 0, len(seen))
 	for _, fact := range seen {
 		facts = append(facts, fact)
 	}
-	return modelsByProjection, facts, nil
+	return facts
 }
 
 func modelSnapshotNames(items []provider.ModelSnapshot) []string {
@@ -846,6 +882,12 @@ func normalizedModelNames(items []string) []string {
 		out = append(out, item)
 	}
 	return out
+}
+
+func modelNamesSignature(names []string) string {
+	canonical := append([]string(nil), names...)
+	slices.Sort(canonical)
+	return strings.Join(canonical, "\x00")
 }
 
 func (s *siteControlService) refreshModels(ctx context.Context, account *model.SiteAccount, site *model.Site, adapter provider.SiteAdapter, creds provider.Credentials) error {

@@ -1576,7 +1576,10 @@ a:focus-visible {
   z-index: 40;
   top: 22px;
   right: 24px;
+  display: flex;
   width: min(390px, calc(100vw - 48px));
+  align-items: center;
+  justify-content: space-between;
   margin: 0;
   padding: 11px 14px;
   color: var(--green);
@@ -1588,6 +1591,22 @@ a:focus-visible {
   font-size: 12px;
   animation: notice-in 180ms ease-out both;
 }
+.operation-notice__content { display: flex; min-width: 0; align-items: center; gap: 7px; line-height: 18px; overflow-wrap: anywhere; }
+.operation-notice__dismiss {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  margin: -3px -5px -3px 10px;
+  padding: 0;
+  color: var(--green);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.operation-notice__dismiss:hover { background: color-mix(in srgb, var(--green) 12%, transparent); }
 
 @keyframes notice-in { from { opacity: 0; transform: translate3d(0, -7px, 0); } to { opacity: 1; transform: translate3d(0, 0, 0); } }
 

@@ -632,33 +632,75 @@ func stringValue(value any, key string) (string, bool) {
 func modelNames(value any) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
-	add := func(v string) {
-		v = strings.TrimSpace(v)
-		if v == "" {
+	var add func(string)
+	add = func(raw string) {
+		raw = strings.TrimSpace(strings.TrimPrefix(raw, "models/"))
+		if raw == "" {
 			return
 		}
-		if _, ok := seen[v]; ok {
+		// New API and several compatible panels serialize the allowed model list
+		// as a comma/newline/semicolon separated string instead of an array.
+		parts := strings.FieldsFunc(raw, func(r rune) bool {
+			return r == ',' || r == ';' || r == '\n' || r == '\r'
+		})
+		if len(parts) > 1 {
+			for _, part := range parts {
+				add(part)
+			}
 			return
 		}
-		seen[v] = struct{}{}
-		out = append(out, v)
+		if _, ok := seen[raw]; ok {
+			return
+		}
+		seen[raw] = struct{}{}
+		out = append(out, raw)
 	}
-	switch data := value.(type) {
-	case []any:
-		for _, item := range data {
-			switch v := item.(type) {
-			case string:
-				add(v)
-			case map[string]any:
-				if id, ok := v["id"].(string); ok {
-					add(id)
+	var visit func(any)
+	visit = func(current any) {
+		switch data := current.(type) {
+		case string:
+			add(data)
+		case []string:
+			for _, item := range data {
+				add(item)
+			}
+		case []any:
+			for _, item := range data {
+				visit(item)
+			}
+		case map[string]any:
+			// Prefer nested model fields when a provider wraps the list in an
+			// object. If none are present, model-limit maps use their keys as
+			// model names (for example {"gpt-4": 1000}).
+			matchedField := false
+			for _, key := range []string{"models", "allowed_models", "model_limits", "model_list", "modelList", "data", "items", "list"} {
+				if child, ok := data[key]; ok {
+					visit(child)
+					matchedField = true
+				}
+			}
+			for _, key := range []string{"id", "model", "model_name", "modelName"} {
+				if child, ok := data[key]; ok {
+					if name, ok := child.(string); ok {
+						add(name)
+						matchedField = true
+					}
+				}
+			}
+			if matchedField {
+				return
+			}
+			for key, child := range data {
+				if key == "models" || key == "allowed_models" || key == "model_limits" || key == "model_list" || key == "modelList" || key == "data" || key == "items" || key == "list" || key == "id" || key == "model" || key == "model_name" || key == "modelName" || key == "name" || key == "key" || key == "group" || key == "group_name" || key == "status" {
+					continue
+				}
+				switch child.(type) {
+				case string, float64, json.Number, int, int64, bool:
+					add(key)
 				}
 			}
 		}
-	case map[string]any:
-		for key := range data {
-			add(key)
-		}
 	}
+	visit(value)
 	return out
 }

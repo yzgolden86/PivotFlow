@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { BellRing, CheckCircle2, RefreshCw, Send, Trash2, WalletCards } from 'lucide-react'
 import { getWebhookConfig, testWebhook, updateWebhookConfig } from '../api'
 import type { WebhookConfig } from '../types'
-import { ErrorState, LoadingState, formatTime } from './shared'
+import { ErrorState, LoadingState, OperationNotice, formatTime } from './shared'
 import { siteErrorMessage, StatusBadge } from './siteShared'
 
 type FormState = Pick<WebhookConfig,
@@ -85,7 +85,7 @@ export function WebhookSettingsPanel() {
   if (error && !config) return <ErrorState message={error} retry={() => void load()} />
 
   return <section className="settings-page">
-    {notice && <div className="operation-notice"><CheckCircle2 size={15} />{notice}</div>}
+    {notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={15} />{notice}</OperationNotice>}
     {error && <div className="inline-error">{error}</div>}
 
     <form className="webhook-settings" onSubmit={save}>

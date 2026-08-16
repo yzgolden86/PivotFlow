@@ -116,6 +116,7 @@ type multiKeyProjectionTestAdapter struct {
 	projectionTestAdapter
 	keys        []provider.RoutingKeySnapshot
 	modelsByKey map[string][]string
+	errorsByKey map[string]error
 }
 
 func (a *multiKeyProjectionTestAdapter) ListRoutingKeys(context.Context, provider.AccountRequest) ([]provider.RoutingKeySnapshot, error) {
@@ -123,6 +124,9 @@ func (a *multiKeyProjectionTestAdapter) ListRoutingKeys(context.Context, provide
 }
 
 func (a *multiKeyProjectionTestAdapter) ListModels(ctx context.Context, req provider.AccountRequest) ([]provider.ModelSnapshot, error) {
+	if err := a.errorsByKey[req.Credentials.APIKey]; err != nil {
+		return nil, err
+	}
 	if a.modelsByKey == nil {
 		return a.projectionTestAdapter.ListModels(ctx, req)
 	}
@@ -734,6 +738,120 @@ func TestModelRefreshDiscoversModelsWithEachRoutingKey(t *testing.T) {
 		slices.Sort(got)
 		if !slices.Equal(got, want[keys[0].APIKey]) {
 			t.Fatalf("key=%s models=%v want=%v", keys[0].APIKey, got, want[keys[0].APIKey])
+		}
+	}
+}
+
+func TestModelRefreshUsesTokenRestrictionsWhenModelEndpointIsUnscopedAndTracksChanges(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "unscoped-model-endpoint-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	allModels := []string{"gpt-free", "gpt-pro", "claude-pro", "extra-1", "extra-2", "extra-3", "extra-4", "extra-5"}
+	adapter := &multiKeyProjectionTestAdapter{
+		keys: []provider.RoutingKeySnapshot{
+			{ID: "free", Name: "Free key", Group: "free", Models: []string{"gpt-free"}, Key: "sk-free", Enabled: true},
+			{ID: "pro", Name: "Pro key", Group: "pro", Models: []string{"gpt-pro", "claude-pro"}, Key: "sk-pro", Enabled: true},
+		},
+		modelsByKey: map[string][]string{"sk-free": allModels, "sk-pro": allModels},
+	}
+	srv.siteControl.registry = provider.NewRegistry(adapter)
+	ctx := context.Background()
+	site, err := srv.store.CreateSite(ctx, &model.Site{Name: "Grouped", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://grouped.example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := srv.siteControl.createAccount(ctx, site.ID, accountCreateRequest{Label: "admin", CredentialType: model.CredentialTypeAccessToken, Credential: provider.Credentials{AccessToken: "system-token", UserID: 7}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sync := func() *model.SiteTask {
+		task := &model.SiteTask{ID: newSiteTaskID(), Kind: "model_refresh", Status: model.SiteTaskStatusRunning}
+		srv.siteControl.refreshAccount(ctx, task, account.ID, true)
+		return task
+	}
+	if task := sync(); task.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("first sync=%+v", task)
+	}
+	assertProjectedModelsByKey(t, ctx, srv, map[string][]string{"sk-free": {"gpt-free"}, "sk-pro": {"claude-pro", "gpt-pro"}})
+
+	adapter.keys[0].Group = "starter"
+	adapter.keys[0].Models = []string{"gpt-free-v2"}
+	adapter.modelsByKey["sk-free"] = allModels
+	if task := sync(); task.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("second sync=%+v", task)
+	}
+	assertProjectedModelsByKey(t, ctx, srv, map[string][]string{"sk-free": {"gpt-free-v2"}, "sk-pro": {"claude-pro", "gpt-pro"}})
+}
+
+func TestModelRefreshContinuesAfterOneRoutingKeyModelFailure(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "partial-key-sync-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	adapter := &multiKeyProjectionTestAdapter{
+		keys: []provider.RoutingKeySnapshot{
+			{ID: "good", Name: "Good", Group: "good", Key: "sk-good", Enabled: true},
+			{ID: "bad", Name: "Bad", Group: "bad", Key: "sk-bad", Enabled: true},
+		},
+		modelsByKey: map[string][]string{"sk-good": {"gpt-good"}},
+		errorsByKey: map[string]error{"sk-bad": &provider.Error{Code: provider.CodeRequestFailed, Message: "upstream model endpoint failed"}},
+	}
+	srv.siteControl.registry = provider.NewRegistry(adapter)
+	ctx := context.Background()
+	site, err := srv.store.CreateSite(ctx, &model.Site{Name: "Partial", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://partial.example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := srv.siteControl.createAccount(ctx, site.ID, accountCreateRequest{Label: "admin", CredentialType: model.CredentialTypeAccessToken, Credential: provider.Credentials{AccessToken: "system-token", UserID: 7}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &model.SiteTask{ID: newSiteTaskID(), Kind: "model_refresh", Status: model.SiteTaskStatusRunning}
+	srv.siteControl.refreshAccount(ctx, task, account.ID, true)
+	if task.Status != model.SiteTaskStatusPartial || !strings.Contains(task.Error, "bad") {
+		t.Fatalf("task=%+v", task)
+	}
+	assertProjectedModelsByKey(t, ctx, srv, map[string][]string{"sk-good": {"gpt-good"}})
+}
+
+func assertProjectedModelsByKey(t *testing.T, ctx context.Context, srv *Server, want map[string][]string) {
+	t.Helper()
+	bindings, err := srv.store.ListSiteChannelBindings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string][]string)
+	for _, binding := range bindings {
+		if binding.Status != "active" || binding.ChannelID == 0 {
+			continue
+		}
+		channel, getErr := srv.store.GetConfig(ctx, binding.ChannelID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		keys, keyErr := srv.store.GetAPIKeys(ctx, channel.ID)
+		if keyErr != nil || len(keys) != 1 {
+			t.Fatalf("channel=%d keys=%+v err=%v", channel.ID, keys, keyErr)
+		}
+		models := make([]string, 0, len(channel.ModelEntries))
+		for _, entry := range channel.ModelEntries {
+			models = append(models, entry.Model)
+		}
+		slices.Sort(models)
+		got[keys[0].APIKey] = models
+	}
+	if len(got) != len(want) {
+		t.Fatalf("projected=%v want=%v", got, want)
+	}
+	for key, expected := range want {
+		slices.Sort(expected)
+		if !slices.Equal(got[key], expected) {
+			t.Fatalf("key=%s models=%v want=%v", key, got[key], expected)
 		}
 	}
 }
