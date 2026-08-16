@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Bell, CheckCheck, ExternalLink, RefreshCw } from 'lucide-react'
 import { getAnnouncements, getSites, markAllAnnouncementsRead, markAnnouncementRead, refreshAnnouncements, waitForSiteTask } from '../api'
 import type { Site, SiteAnnouncement } from '../types'
-import { EmptyState, ErrorState, formatTime, LoadingState, Pagination } from './shared'
+import { EmptyState, ErrorState, formatTime, LoadingState, OperationNotice, Pagination } from './shared'
 import { Modal, siteErrorMessage } from './siteShared'
 
 const PAGE_SIZE = 30
@@ -21,7 +21,7 @@ export default function AnnouncementsPage() {
     <header className="page-header"><h1>公告中心</h1><div className="header-controls"><button className="secondary-button" type="button" onClick={() => void readAll()} disabled={!unreadCount}><CheckCheck size={15} />全部已读</button><button className="primary-button" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />}{refreshing ? '刷新中' : '刷新公告'}</button></div></header>
     <section className="compact-summary"><span><strong>{total}</strong>当前公告</span><span><strong>{unreadCount}</strong>未读</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>启用站点</span><span><strong>{items.filter((item) => item.level === 'important' || item.level === 'warning').length}</strong>重要提醒</span></section>
     <div className="filter-bar"><select value={siteFilter} onChange={(event) => { setPage(1); setSiteFilter(Number(event.target.value)) }} aria-label="公告站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><label className="checkbox-field filter-checkbox"><input type="checkbox" checked={unread} onChange={(event) => { setPage(1); setUnread(event.target.checked) }} /><span>只看未读</span></label><span className="filter-count"><Bell size={14} />{total} 条公告</span></div>
-    {notice && <div className="operation-notice">{notice}</div>}{error && items.length > 0 && <div className="inline-error">{error}</div>}
+    {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}{error && items.length > 0 && <div className="inline-error">{error}</div>}
     {loading ? <LoadingState label="正在加载站点公告" /> : error && !items.length ? <ErrorState message={error} retry={() => void load()} /> : !items.length ? <EmptyState label={unread ? '没有未读公告' : '暂无站点公告'} /> : <div className="announcement-list">{items.map((item) => <AnnouncementRow key={item.id} item={item} siteName={siteMap.get(item.site_id)?.name || `站点 #${item.site_id}`} open={() => void open(item)} />)}</div>}
     <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPage={setPage} />
     {selected && <Modal title={selected.title || '公告'} close={() => setSelected(null)} wide><div className="announcement-detail"><div className="announcement-detail-meta"><a className="entity-chip" href={`#/sites?focus_site_id=${selected.site_id}`} onClick={() => setSelected(null)}>{siteMap.get(selected.site_id)?.name || `站点 #${selected.site_id}`}</a><time>{formatTime(selected.upstream_updated_at || selected.last_seen_at)}</time>{selected.source_url && <a href={selected.source_url} target="_blank" rel="noreferrer">查看原文<ExternalLink size={12} /></a>}</div><pre>{selected.content_markdown || '暂无正文'}</pre></div></Modal>}

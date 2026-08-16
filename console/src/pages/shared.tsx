@@ -1,4 +1,33 @@
-import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { ChevronLeft, ChevronRight, RefreshCw, X } from 'lucide-react'
+
+export function OperationNotice({ children, persistent = false, onDismiss }: { children: ReactNode; persistent?: boolean; onDismiss?: () => void }) {
+  const [visible, setVisible] = useState(true)
+  const onDismissRef = useRef(onDismiss)
+
+  useEffect(() => { onDismissRef.current = onDismiss }, [onDismiss])
+
+  const dismiss = useCallback(() => {
+    setVisible(false)
+    onDismissRef.current?.()
+  }, [])
+
+  useEffect(() => {
+    setVisible(true)
+    if (persistent) return
+    const timer = window.setTimeout(dismiss, 4500)
+    return () => window.clearTimeout(timer)
+  }, [dismiss, persistent])
+
+  if (!visible) return null
+
+  return (
+    <div className="operation-notice" role="status" aria-live="polite">
+      <span className="operation-notice__content">{children}</span>
+      <button className="operation-notice__dismiss" type="button" onClick={dismiss} aria-label="关闭提示"><X size={15} /></button>
+    </div>
+  )
+}
 
 export function LoadingState({ label = '正在加载数据' }: { label?: string }) {
   return <div className="content-state" role="status"><RefreshCw className="spin" size={18} />{label}</div>

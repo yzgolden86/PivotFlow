@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Copy, FileUp, FlaskConical, MoreHorizontal, Pencil, Plus, Power, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
 import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, getChannelEditor, getChannels, getSiteChannelBindings, getSiteInventory, getSiteModels, importOAuthCredentials, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
 import type { Channel, ChannelEditorSnapshot, ChannelModel, ChannelMutation, ChannelURL, Site, SiteAccount, SiteChannelBinding } from '../types'
-import { EmptyState, ErrorState, LoadingState, Pagination } from './shared'
+import { EmptyState, ErrorState, LoadingState, OperationNotice, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
 import { Modal, siteErrorMessage, StatusBadge } from './siteShared'
 
@@ -138,7 +138,7 @@ export default function ChannelsPage() {
         </div>
       </header>
 
-      {notice && <div className="operation-notice">{notice}</div>}
+      {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
 
       <section className="compact-summary" aria-label="当前页渠道摘要">
         <span><strong>{total}</strong>渠道总数</span><span><strong>{summary.enabled}</strong>当前页启用</span><span><strong>{summary.cooldown}</strong>冷却中</span><span><strong>{summary.models}</strong>可用模型映射</span>
