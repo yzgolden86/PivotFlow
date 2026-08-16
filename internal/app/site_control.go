@@ -769,6 +769,8 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 	snapshotNames := make(map[int][]string, len(keys))
 	keyNames := make(map[int][]string, len(keys))
 	keyErrors := make(map[int]error, len(keys))
+	managementNames := make(map[int][]string, len(keys))
+	managementAttempted := make(map[int]bool, len(keys))
 	var endpointSignature string
 	endpointSnapshotKnown := false
 	endpointVaries := false
@@ -795,6 +797,29 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 			endpointVaries = true
 		}
 	}
+	if modelProvider, ok := adapter.(provider.RoutingModelProvider); ok {
+		for index, item := range keys {
+			// A missing endpoint needs a management fallback. An identical model
+			// list across keys is also ambiguous; when the key has a group, ask
+			// the management API for that exact group instead of projecting the
+			// shared site-wide list into every channel.
+			needsFallback := len(keyNames[index]) == 0 || (!endpointVaries && strings.TrimSpace(item.Group) != "" && len(snapshotNames[index]) == 0)
+			if !needsFallback {
+				continue
+			}
+			managementAttempted[index] = true
+			modelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			items, err := modelProvider.ListModelsForRoutingKey(modelCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: managementCreds}, item)
+			cancel()
+			if err != nil {
+				if keyErrors[index] == nil {
+					keyErrors[index] = err
+				}
+				continue
+			}
+			managementNames[index] = modelSnapshotNames(items)
+		}
+	}
 	for index, item := range keys {
 		projectionKey := stableProjectionKey(item, index)
 		// Always ask the upstream model endpoint with this exact routing key.
@@ -806,11 +831,21 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 		// keys return the same list, treat explicit management-side model limits
 		// as authoritative; otherwise a shared unscoped /models response leaks
 		// every model into every group.
-		if !endpointVaries && len(snapshotNames[index]) > 0 {
-			names = snapshotNames[index]
+		if !endpointVaries {
+			if len(snapshotNames[index]) > 0 {
+				names = snapshotNames[index]
+			} else if managementAttempted[index] {
+				// Do not fall back to a known-unscoped endpoint after a grouped
+				// management lookup failed; an incomplete sync is safer than
+				// routing a key to models its group cannot use.
+				names = managementNames[index]
+			}
 		}
 		if len(names) == 0 && len(snapshotNames[index]) > 0 {
 			names = snapshotNames[index]
+		}
+		if len(names) == 0 && len(managementNames[index]) > 0 {
+			names = managementNames[index]
 		}
 		if len(names) == 0 && len(keys) == 1 {
 			// A single-key deployment can safely use the snapshot returned by

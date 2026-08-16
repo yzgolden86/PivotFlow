@@ -132,6 +132,31 @@ func TestNewAPIListRoutingKeysParsesStringAndMapModelLimits(t *testing.T) {
 	}
 }
 
+func TestNewAPIListModelsForRoutingKeyUsesManagementGroup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/user/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("groups"); got != `["coding"]` {
+			t.Fatalf("groups=%q", got)
+		}
+		if r.Header.Get("Authorization") != "Bearer management-token" || r.Header.Get("New-API-User") != "42" {
+			t.Fatalf("management credential was not forwarded: %#v", r.Header)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":["claude-sonnet-4-5","gpt-5-codex"]}`))
+	}))
+	defer server.Close()
+
+	models, err := NewNewAPI(ClientFactory{AllowPrivate: true}).ListModelsForRoutingKey(context.Background(), AccountRequest{
+		BaseURL: server.URL, Credentials: Credentials{AccessToken: "management-token", UserID: 42},
+	}, RoutingKeySnapshot{Group: "coding", Key: "sk-coding"})
+	if err != nil || len(models) != 2 || models[0].Model != "claude-sonnet-4-5" || models[0].Source != "routing_group_models" {
+		t.Fatalf("models=%+v err=%v", models, err)
+	}
+}
+
 func containsString(items []string, target string) bool {
 	for _, item := range items {
 		if item == target {

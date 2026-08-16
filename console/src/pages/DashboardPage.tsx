@@ -21,6 +21,7 @@ import type {
   DashboardUsage,
   MetricPoint,
 } from '../types'
+import { OperationNotice } from './shared'
 
 const rangeOptions: Array<{ value: DashboardRange; label: string }> = [
   { value: 'today', label: '今日' },
@@ -106,7 +107,7 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      {error && <div className="inline-error">{error}</div>}
+      {error && <OperationNotice tone="error">{error}</OperationNotice>}
 
       <section className="kpi-grid" aria-label="关键指标">
         <MetricCard

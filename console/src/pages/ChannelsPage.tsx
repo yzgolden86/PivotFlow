@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Copy, FileUp, FlaskConical, MoreHorizontal, Pencil, Plus, Power, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
-import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, getChannelEditor, getChannels, getSiteChannelBindings, getSiteInventory, getSiteModels, importOAuthCredentials, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
+import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, getChannelEditor, getChannels, getSiteChannelBindings, getSiteInventory, importOAuthCredentials, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
 import type { Channel, ChannelEditorSnapshot, ChannelModel, ChannelMutation, ChannelURL, Site, SiteAccount, SiteChannelBinding } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
@@ -155,7 +155,7 @@ export default function ChannelsPage() {
 
       {selected.size > 0 && <div className="batch-toolbar" aria-label="渠道批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
 
-      {error && channels.length > 0 && <div className="inline-error">{error}</div>}
+      {error && channels.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
       {loading ? <LoadingState label="正在加载渠道" /> : error && channels.length === 0 ? <ErrorState message={error} retry={() => void load()} /> : channels.length === 0 ? <EmptyState label="没有符合条件的渠道" /> : (
         <div className="channel-list">
           {channels.map((channel) => <ChannelRow channel={channel} selected={selected.has(channel.id)} busy={busyId === channel.id || (batchBusy && selected.has(channel.id))} select={() => toggleSelected(channel.id)} toggle={() => void toggleChannel(channel)} copy={() => void copyChannel(channel)} edit={() => setEditing(channel.id)} remove={() => void removeChannel(channel)} key={channel.id} />)}
@@ -307,8 +307,6 @@ const blankEditor: EditorForm = {
 function ChannelEditor({ channelId, close, saved }: { channelId?: number; close: () => void; saved: () => void }) {
   const [snapshot, setSnapshot] = useState<ChannelEditorSnapshot | null>(null)
   const [form, setForm] = useState<EditorForm>(blankEditor)
-  const [availableModels, setAvailableModels] = useState<string[]>([])
-  const [modelSearch, setModelSearch] = useState('')
   const [loading, setLoading] = useState(Boolean(channelId))
   const [saving, setSaving] = useState(false)
   const [discovering, setDiscovering] = useState(false)
@@ -341,18 +339,6 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
     return () => controller.abort()
   }, [channelId])
 
-  useEffect(() => {
-    const controller = new AbortController()
-    void getSiteModels({ limit: 2000 }, controller.signal).then((result) => {
-      setAvailableModels((current) => Array.from(new Set([...current, ...result.data.map((item) => item.model)])).sort((a, b) => a.localeCompare(b)))
-    }).catch(() => undefined)
-    return () => controller.abort()
-  }, [])
-
-  useEffect(() => {
-    if (snapshot) setAvailableModels((current) => Array.from(new Set([...current, ...snapshot.channel.models.map((item) => item.model)])).sort((a, b) => a.localeCompare(b)))
-  }, [snapshot])
-
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); setSaving(true); setError('')
     try {
@@ -384,7 +370,6 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
       const result = await fetchChannelModelsPreview({ urls, api_keys: keys })
       const models = result.models.filter((item) => item.model.trim())
       if (!models.length) throw new Error('上游没有返回可用模型')
-      setAvailableModels((current) => Array.from(new Set([...current, ...models.map((item) => item.model)])).sort((a, b) => a.localeCompare(b)))
       setForm((current) => ({ ...current, models }))
     } catch (reason) { setError(reason instanceof Error ? reason.message : '模型获取失败') }
     finally { setDiscovering(false) }
@@ -408,21 +393,16 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
       <div className="form-help">正常情况请从站点添加账号并点击“同步”，系统会自动读取 URL、API Key 和模型并生成渠道。这里仅用于无法纳入站点管理的特殊上游或多 URL 高级配置。</div>
       <label className="textarea-field">上游 URL<textarea required rows={3} value={form.urls} onChange={(event) => setForm({ ...form, urls: event.target.value })} placeholder="每行一个；可写 URL | anthropic, openai" /></label>
       {form.authType === 'api_key' ? <label className="textarea-field">API Keys<textarea required rows={4} value={form.keys} onChange={(event) => setForm({ ...form, keys: event.target.value })} placeholder="每行一个；可写 key | 备注" /></label> : <div className="form-help">OAuth 渠道不在这里手填密钥，请使用顶部“导入凭证”导入 Codex 或 Antigravity 凭证文件。</div>}
-      {form.authType === 'api_key' && <div className="model-discovery-action"><div><strong>自动获取模型</strong><span>使用上方 URL 和 Key 请求上游模型列表，结果会自动勾选。</span></div><button className="secondary-button" type="button" onClick={() => void discoverModels()} disabled={discovering || !form.urls.trim() || !form.keys.trim()}>{discovering ? <RefreshCw className="spin" size={15} /> : <Sparkles size={15} />}{discovering ? '获取中' : '获取模型'}</button></div>}
-      <ModelMappingEditor models={form.models} availableModels={availableModels} search={modelSearch} setSearch={setModelSearch} setModels={(models) => setForm((current) => ({ ...current, models }))} />
+      {form.authType === 'api_key' && <div className="model-discovery-action"><div><strong>自动获取模型</strong><span>使用上方 URL 和 Key 请求模型列表，获取结果会直接用于渠道。</span></div><button className="secondary-button" type="button" onClick={() => void discoverModels()} disabled={discovering || !form.urls.trim() || !form.keys.trim()}>{discovering ? <RefreshCw className="spin" size={15} /> : <Sparkles size={15} />}{discovering ? '获取中' : '获取模型'}</button></div>}
+      <DiscoveredModelList models={form.models} />
       <div className="checkbox-grid"><label className="checkbox-field"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用渠道</label><label className="checkbox-field"><input type="checkbox" checked={form.websockets} onChange={(event) => setForm({ ...form, websockets: event.target.checked })} />WebSocket</label><label className="checkbox-field"><input type="checkbox" checked={form.retryOtherKeys} onChange={(event) => setForm({ ...form, retryOtherKeys: event.target.checked })} />失败时尝试其他 Key</label></div>
       <footer><button className="secondary-button" type="button" onClick={close}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving ? <RefreshCw className="spin" size={15} /> : null}{saving ? '保存中' : '保存渠道'}</button></footer>
     </form>}
   </Modal>
 }
 
-function ModelMappingEditor({ models, availableModels, search, setSearch, setModels }: { models: ChannelModel[]; availableModels: string[]; search: string; setSearch: (value: string) => void; setModels: (models: ChannelModel[]) => void }) {
-  const visible = availableModels.filter((model) => !search.trim() || model.toLowerCase().includes(search.trim().toLowerCase()))
-  const selected = new Set(models.map((item) => item.model))
-  const toggle = (model: string) => setModels(selected.has(model) ? models.filter((item) => item.model !== model) : [...models, { model, redirect_model: '' }])
-  const updateRedirect = (model: string, redirect_model: string) => setModels(models.map((item) => item.model === model ? { ...item, redirect_model } : item))
-  const addCustom = () => { const value = window.prompt('输入自定义模型名称'); if (value?.trim() && !selected.has(value.trim())) setModels([...models, { model: value.trim(), redirect_model: '' }]) }
-  return <section className="selection-panel model-mapping-panel"><header><div><strong>模型映射</strong><span>{models.length ? `已选 ${models.length} 个，可设置重定向模型` : '从站点已发现模型中勾选'}</span></div><div className="selection-actions"><button type="button" className="text-button" onClick={() => setModels(availableModels.map((model) => ({ model, redirect_model: '' })))}>全选</button><button type="button" className="text-button" onClick={() => setModels([])}>清空</button><button type="button" className="text-button" onClick={addCustom}>自定义</button></div></header><label className="search-field selection-search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索已发现模型" /></label><div className="selection-list model-selection-list">{visible.length ? visible.map((model) => <label className={`selection-option${selected.has(model) ? ' is-selected' : ''}`} key={model}><input type="checkbox" checked={selected.has(model)} onChange={() => toggle(model)} /><code>{model}</code></label>) : <span className="selection-empty">暂无站点模型；可以点击“自定义”添加。</span>}</div>{models.length > 0 && <div className="mapping-list">{models.map((item) => <div className="mapping-row" key={item.model}><code>{item.model}</code><span>→</span><input value={item.redirect_model || ''} onChange={(event) => updateRedirect(item.model, event.target.value)} placeholder="留空使用原模型" aria-label={`${item.model} 重定向模型`} /></div>)}</div>}</section>
+function DiscoveredModelList({ models }: { models: ChannelModel[] }) {
+  return <section className="selection-panel discovered-model-panel"><header><div><strong>渠道模型</strong><span>{models.length ? `已自动获取 ${models.length} 个模型` : '尚未获取模型'}</span></div></header><div className="discovered-model-list">{models.length ? models.map((item) => <code title={item.redirect_model ? `${item.model} → ${item.redirect_model}` : item.model} key={item.model}>{item.model}{item.redirect_model ? ` → ${item.redirect_model}` : ''}</code>) : <span className="selection-empty">填写 URL 和 API Key 后点击“获取模型”。</span>}</div></section>
 }
 
 function parseURLs(value: string): ChannelURL[] { return splitRows(value).map((row) => { const [url, protocolText] = row.split('|').map((item) => item.trim()); return { url, ...(protocolText ? { protocols: protocolText.split(',').map((item) => item.trim()).filter(Boolean) } : {}) } }).filter((item) => item.url) }

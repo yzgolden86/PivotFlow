@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { getChannels, getSiteInventory, getSiteModels, testChannel, testSiteAccountModel } from '../api'
 import type { Channel, ChannelTestResult, Site, SiteAccount, SiteAccountModel } from '../types'
-import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState } from './shared'
+import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice } from './shared'
 import { useLocation } from 'react-router-dom'
 
 type ModelsView = 'catalog' | 'probe'
@@ -202,7 +202,7 @@ export default function ModelTestPage() {
             </div>
             <label className="textarea-field"><span>测试内容</span><textarea rows={6} value={content} onChange={(event) => setContent(event.target.value)} /></label>
             {ready && <RoutePreview target={target} channel={channel} account={account} site={siteMap.get(account?.site_id || 0)} protocol={protocol} />}
-            {error && <div className="inline-error">{error}</div>}
+            {error && <OperationNotice tone="error">{error}</OperationNotice>}
             <button className="primary-button test-submit" type="button" disabled={!ready || !model || testing} onClick={() => void run()}>{testing ? <RefreshCw className="spin" size={17} /> : <Play size={17} />}{testing ? '正在测试' : '开始测试'}</button>
           </section>
           <section className="test-result-panel">

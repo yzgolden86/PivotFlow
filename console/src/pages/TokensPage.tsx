@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Check, Copy, KeyRound, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { createAuthToken, deleteAuthToken, getAuthTokens, getChannels, getSiteModels, revealAuthToken, updateAuthToken } from '../api'
 import type { AuthToken, Channel, DashboardRange } from '../types'
-import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState } from './shared'
+import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, OperationNotice } from './shared'
 import { Modal } from './siteShared'
 
 interface TokenFormValue {
@@ -110,11 +110,12 @@ export default function TokensPage() {
       <span className="filter-count">{visible.length} 条</span>
     </div>
 
-    {error && tokens.length > 0 && <div className="inline-error">{error}</div>}
+    {error && tokens.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
     {loading ? <LoadingState label="正在加载令牌" /> : error && !tokens.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label="没有符合条件的令牌" /> : <div className="token-list">
       {visible.map((token) => <article className="token-row" key={token.id}>
         <span className={`token-icon${token.is_active ? '' : ' token-icon--off'}`}><KeyRound size={17} /></span>
         <div className="token-identity"><strong>{token.description}</strong><span>#{token.id} · {token.token || '已安全存储'}</span></div>
+        <div className="token-secret-cell"><code>{revealed?.id === token.id ? revealed.value : (token.token_hint || token.token || '不可恢复')}</code><button className="icon-button icon-button--surface" type="button" onClick={() => revealed?.id === token.id ? void copyValue(revealed.value) : void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={revealed?.id === token.id ? '复制令牌' : token.token_recoverable ? '显示并复制令牌' : '历史令牌不可恢复'}><Copy size={15} /></button></div>
         <div><strong>{formatNumber(token.success_count + token.failure_count)}</strong><span>{token.failure_count} 次失败</span></div>
         <div><strong>{formatMoney(token.effective_cost_usd)}</strong><span>{formatNumber((token.prompt_tokens_total || 0) + (token.completion_tokens_total || 0))} tokens</span></div>
         <div><strong>{token.max_concurrency || '不限'}</strong><span>{token.cost_limit_usd ? `限额 ${formatMoney(token.cost_limit_usd)}` : '无费用限额'}</span></div>
@@ -124,7 +125,6 @@ export default function TokensPage() {
           <button className="icon-button icon-button--surface" type="button" onClick={() => setEditing(token)} aria-label={`编辑 ${token.description}`} title="编辑"><Pencil size={16} /></button>
           <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => void remove(token)} disabled={busyId === token.id} aria-label={`删除 ${token.description}`} title="删除"><Trash2 size={16} /></button>
         </div>
-        <div className="token-secret-cell"><code>{revealed?.id === token.id ? revealed.value : (token.token_hint || token.token || '不可恢复')}</code><button className="icon-button icon-button--surface" type="button" onClick={() => revealed?.id === token.id ? void copyValue(revealed.value) : void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={revealed?.id === token.id ? '复制令牌' : token.token_recoverable ? '显示并复制令牌' : '历史令牌不可恢复'}><Copy size={15} /></button></div>
       </article>)}
     </div>}
 
