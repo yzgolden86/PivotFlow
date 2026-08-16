@@ -368,17 +368,36 @@ func (p *NewAPI) ListModels(ctx context.Context, req AccountRequest) ([]ModelSna
 	if req.Credentials.AccessToken == "" && req.Credentials.Cookie == "" {
 		return nil, &Error{Code: CodeUnsupported, Message: "model endpoint unavailable for this credential"}
 	}
+	return p.listManagementModels(ctx, req, "/api/user/models", "models_endpoint")
+}
+
+func (p *NewAPI) ListModelsForRoutingKey(ctx context.Context, req AccountRequest, key RoutingKeySnapshot) ([]ModelSnapshot, error) {
+	path := "/api/user/models"
+	if group := strings.TrimSpace(key.Group); group != "" {
+		groups, _ := json.Marshal([]string{group})
+		path += "?groups=" + url.QueryEscape(string(groups))
+	}
+	return p.listManagementModels(ctx, req, path, "routing_group_models")
+}
+
+func (p *NewAPI) listManagementModels(ctx context.Context, req AccountRequest, path, source string) ([]ModelSnapshot, error) {
 	var payload envelope
-	if err := p.doJSON(ctx, req, http.MethodGet, "/api/user/models", nil, &payload); err != nil {
+	if err := p.doJSON(ctx, req, http.MethodGet, path, nil, &payload); err != nil {
 		return nil, err
 	}
 	models := modelNames(payload.Data)
+	// A few New API forks omit the success flag while still returning a valid
+	// data array. Preserve that compatibility, but keep upstream error messages
+	// when the response contains no usable model list.
+	if !payload.Success && len(models) == 0 && strings.TrimSpace(payload.Message) != "" {
+		return nil, responseError(payload, http.StatusOK)
+	}
 	if len(models) == 0 {
 		return nil, &Error{Code: CodeUnsupported, Message: "models endpoint returned no supported model list"}
 	}
 	out := make([]ModelSnapshot, 0, len(models))
 	for _, name := range models {
-		out = append(out, ModelSnapshot{Model: name, RouteType: "openai_chat", Source: "models_endpoint"})
+		out = append(out, ModelSnapshot{Model: name, RouteType: "openai_chat", Source: source})
 	}
 	return out, nil
 }

@@ -193,7 +193,7 @@ export default function AccountsPage() {
     setCredentialAccount(account)
     const platform = siteMap.get(account.site_id)?.platform || ''
     const next = emptyCredential(normalizeCredentialType(platform, account.credential_type as CredentialType))
-    next.expires_at = account.credential_expires_at ? toLocalInput(account.credential_expires_at) : ''
+    next.expires_at = platform === 'sub2api' && account.credential_expires_at ? String(account.credential_expires_at) : ''
     setCredentialForm(next)
     setCredentialError('')
     setVerification(null)
@@ -233,7 +233,7 @@ export default function AccountsPage() {
       await createSiteAccount(createForm.site_id, {
         label: createForm.label,
         credential_type: createForm.credential_type,
-        credential: credentialPayload(createForm),
+        credential: credentialPayload(createForm, platform),
         enabled: createForm.enabled,
         auto_checkin: createForm.credential_type === 'api_key' || !platformSupportsCheckin(platform) ? false : createForm.auto_checkin,
         auto_refresh: createForm.credential_type === 'api_key' ? false : createForm.auto_refresh,
@@ -286,7 +286,7 @@ export default function AccountsPage() {
     try {
       const result = await verifySiteAccountCredential(credentialAccount.id, {
         credential_type: credentialForm.credential_type,
-        credential: credentialPayload(credentialForm),
+        credential: credentialPayload(credentialForm, siteMap.get(credentialAccount.site_id)?.platform || ''),
       })
       setVerification(result)
     } catch (reason) {
@@ -303,7 +303,7 @@ export default function AccountsPage() {
     try {
       await updateSiteAccount(credentialAccount.id, {
         credential_type: credentialForm.credential_type,
-        credential: credentialPayload(credentialForm),
+        credential: credentialPayload(credentialForm, siteMap.get(credentialAccount.site_id)?.platform || ''),
       })
       setCredentialAccount(null)
       setVerification(null)
@@ -412,7 +412,7 @@ export default function AccountsPage() {
     <div className="filter-bar filter-bar--wide"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部账号" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索账号或站点" aria-label="搜索账号" /></label><select value={siteFilter} onChange={(event) => setSiteFilter(Number(event.target.value))} aria-label="账号站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="账号状态"><option value="all">全部状态</option><option value="healthy">正常</option><option value="error">异常</option><option value="expired">已过期</option><option value="unknown">未知</option></select></div>
     {selected.size > 0 && <div className="batch-toolbar" aria-label="账号批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('refresh')} disabled={batchBusy}><WalletCards size={14} />刷新余额</button><button type="button" onClick={() => void runBatch('model_refresh')} disabled={batchBusy}><RefreshCw size={14} />同步路由</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
     {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
-    {error && accounts.length > 0 && <div className="inline-error">{error}</div>}
+    {error && accounts.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
     {loading ? <LoadingState label="正在加载账号" /> : error && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? accounts.length ? <EmptyState label="没有匹配的账号" /> : <div className="content-state content-state--empty"><strong>还没有账号</strong><button className="secondary-button" type="button" onClick={() => void openCreate()} disabled={!sites.length}><Plus size={15} />添加账号</button></div> : <div className="account-records records-panel"><div className="record-head account-grid"><span>账号 / 站点</span><span>状态</span><span>余额</span><span>最近签到</span><span>自动任务</span><span>操作</span></div>{pagedVisible.map((account) => <AccountRow key={account.id} account={account} site={siteMap.get(account.site_id)} latestCheckin={latestCheckins[account.id]} selected={selected.has(account.id)} busyKind={busy.get(account.id)} focused={account.id === focusAccountId} rowRef={(node) => { if (node) rowRefs.current.set(account.id, node); else rowRefs.current.delete(account.id) }} select={() => toggleSelected(account.id)} task={(kind) => void task(account, kind)} copy={() => void copyAccount(account)} edit={() => openMetadata(account)} credential={() => openCredential(account)} remove={() => void remove(account)} />)}</div>}
     <Pagination page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[20, 50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
 
@@ -441,7 +441,7 @@ function AccountRow({ account, site, latestCheckin, selected, busyKind, focused,
   const needsCredential = ['expired', 'error'].includes(account.status) || Boolean(account.last_error)
   const busy = Boolean(busyKind)
   return <article ref={rowRef} data-account-id={account.id} className={`record-row account-grid${selected ? ' row-selected' : ''}${focused ? ' row-focus-highlight' : ''}`}>
-    <div className="account-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${account.label}`} /><div><a className="entity-link" href={`#/accounts?focus_account_id=${account.id}`}><strong>{account.label}</strong></a><a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a><span>{credentialLabel(account.credential_type, site?.platform)}{account.credential_refresh_configured ? ` · 自动续期${account.credential_expires_at ? `至 ${formatTime(account.credential_expires_at)}` : ''}` : ''}</span></div></div>
+    <div className="account-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${account.label}`} /><div><a className="entity-link" href={`#/accounts?focus_account_id=${account.id}`}><strong>{account.label}</strong></a><a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a><span>{credentialLabel(account.credential_type, site?.platform)}{site?.platform === 'sub2api' && account.credential_refresh_configured ? ` · 自动续期${account.credential_expires_at ? `至 ${formatTime(account.credential_expires_at)}` : ''}` : ''}</span></div></div>
     <div><StatusBadge status={account.enabled ? account.status : 'disabled'} />{needsCredential ? <button className="inline-entity-action" type="button" onClick={credential} title={account.last_error}>{account.last_error ? siteErrorMessage(account.last_error) : '需要更新凭证'}</button> : <span>{account.consecutive_failures} 次连续失败</span>}</div>
     <div><strong>{formatAccountBalance(account)}</strong>{latestCheckin?.balance_delta !== undefined && Math.abs(latestCheckin.balance_delta) > 0.000001 && <em className={latestCheckin.balance_delta > 0 ? 'balance-delta balance-delta--gain' : 'balance-delta balance-delta--loss'}>{latestCheckin.balance_delta > 0 ? '+' : ''}{latestCheckin.balance_delta.toFixed(2)} {latestCheckin.balance_currency || account.balance_currency}</em>}<span>{apiKeyOnly ? 'API Key 不读取余额' : account.balance_updated_at ? formatTime(account.balance_updated_at) : '尚未同步'}</span></div>
     <div><StatusBadge status={apiKeyOnly ? 'unsupported' : account.last_checkin_status} /><span>{apiKeyOnly ? '需要登录凭证' : account.last_checkin_at ? formatTime(account.last_checkin_at) : '尚无记录'}</span></div>
@@ -509,14 +509,16 @@ function CredentialUpdateView({ account, site, form, change, verification, verif
 
 function CredentialFields<T extends CredentialForm>({ form, field, platform }: { form: T; field: (key: keyof T, value: string | number | boolean) => void; platform: string }) {
   const options = credentialOptions(platform)
-  return <section className="embedded-form-section credential-section"><label><span>凭证类型</span><select value={form.credential_type} onChange={(event) => field('credential_type', event.target.value)}>{options.map((option) => <option value={option} key={option}>{credentialLabel(option, platform)}</option>)}</select></label>{form.credential_type === 'username_password' ? <div className="form-grid"><label><span>用户名</span><input required value={form.username} onChange={(event) => field('username', event.target.value)} autoComplete="username" /></label><label><span>密码</span><input required type="password" value={form.password} onChange={(event) => field('password', event.target.value)} autoComplete="current-password" /></label></div> : <label><span>{credentialLabel(form.credential_type, platform)}</span><input required type="password" autoComplete="off" value={form.credential} onChange={(event) => field('credential', event.target.value)} placeholder={platform === 'sub2api' && form.credential_type === 'access_token' ? '填写浏览器存储中的 auth token' : '凭证将加密保存'} /></label>}{!['api_key', 'username_password'].includes(form.credential_type) && platform !== 'sub2api' && <label><span>上游用户 ID{form.credential_type === 'cookie' ? '' : '（自动识别失败时填写）'}</span><input required={form.credential_type === 'cookie'} type="number" min="1" value={form.user_id || ''} onChange={(event) => field('user_id', Number(event.target.value))} placeholder="用户个人中心显示的数字 ID" /></label>}{form.credential_type === 'access_token' && <><div className="form-grid"><label><span>Refresh Token（可选）</span><input type="password" autoComplete="off" value={form.refresh_token} onChange={(event) => field('refresh_token', event.target.value)} placeholder="用于访问令牌自动续期" /></label><label><span>访问令牌过期时间（可选）</span><input type="datetime-local" value={form.expires_at} onChange={(event) => field('expires_at', event.target.value)} /></label></div><div className="form-help">{platform === 'sub2api' ? 'Sub2API 会在 JWT 即将过期前自动刷新。Refresh Token 为空时仍可使用，但过期后需要重新登录。' : '如果上游提供 refresh token，可一并保存；JWT 的 exp 会自动识别，opaque token 建议填写过期时间。'}</div></>}{form.credential_type === 'api_key' && <div className="form-help">模型 API Key 只用于发现模型和路由，不支持余额、签到或公告。</div>}</section>
+  const supportsRefresh = platform === 'sub2api' && form.credential_type === 'access_token'
+  return <section className="embedded-form-section credential-section"><label><span>凭证类型</span><select value={form.credential_type} onChange={(event) => field('credential_type', event.target.value)}>{options.map((option) => <option value={option} key={option}>{credentialLabel(option, platform)}</option>)}</select></label>{form.credential_type === 'username_password' ? <div className="form-grid"><label><span>用户名</span><input required value={form.username} onChange={(event) => field('username', event.target.value)} autoComplete="username" /></label><label><span>密码</span><input required type="password" value={form.password} onChange={(event) => field('password', event.target.value)} autoComplete="current-password" /></label></div> : <label><span>{credentialLabel(form.credential_type, platform)}</span><input required type="password" autoComplete="off" value={form.credential} onChange={(event) => field('credential', event.target.value)} placeholder={platform === 'sub2api' && form.credential_type === 'access_token' ? '填写浏览器存储中的 auth token' : '凭证将加密保存'} /></label>}{!['api_key', 'username_password'].includes(form.credential_type) && platform !== 'sub2api' && <label><span>上游用户 ID{form.credential_type === 'cookie' ? '' : '（自动识别失败时填写）'}</span><input required={form.credential_type === 'cookie'} type="number" min="1" value={form.user_id || ''} onChange={(event) => field('user_id', Number(event.target.value))} placeholder="用户个人中心显示的数字 ID" /></label>}{supportsRefresh && <><div className="form-grid"><label><span>Refresh Token（可选）</span><input type="password" autoComplete="off" value={form.refresh_token} onChange={(event) => field('refresh_token', event.target.value)} placeholder="用于访问令牌自动续期" /></label><label><span>访问令牌过期时间（可选）</span><input type="text" inputMode="numeric" pattern="[0-9]*" value={form.expires_at} onChange={(event) => field('expires_at', event.target.value.replace(/[^0-9]/g, ''))} placeholder="例如 1786982260314" /></label></div><div className="form-help">Sub2API 会在 JWT 即将过期前自动刷新。Refresh Token 为空时仍可使用，但过期后需要重新登录。</div></>}{form.credential_type === 'api_key' && <div className="form-help">模型 API Key 只用于发现模型和路由，不支持余额、签到或公告。</div>}</section>
 }
 
-function credentialPayload(form: CredentialForm) {
+function credentialPayload(form: CredentialForm, platform: string) {
   if (form.credential_type === 'username_password') return { username: form.username.trim(), password: form.password }
   if (form.credential_type === 'api_key') return { api_key: form.credential }
   if (form.credential_type === 'cookie') return { cookie: form.credential, user_id: form.user_id }
-  return { access_token: form.credential, ...(form.user_id > 0 ? { user_id: form.user_id } : {}), ...(form.refresh_token.trim() ? { refresh_token: form.refresh_token.trim() } : {}), ...(form.expires_at ? { expires_at: new Date(form.expires_at).getTime() } : {}) }
+  const expiresAt = platform === 'sub2api' && /^\d+$/.test(form.expires_at.trim()) ? Number(form.expires_at.trim()) : 0
+  return { access_token: form.credential, ...(form.user_id > 0 ? { user_id: form.user_id } : {}), ...(platform === 'sub2api' && form.refresh_token.trim() ? { refresh_token: form.refresh_token.trim() } : {}), ...(expiresAt > 0 ? { expires_at: expiresAt } : {}) }
 }
 
 function credentialComplete(form: CredentialForm): boolean {
@@ -529,9 +531,4 @@ async function runLimited<T>(items: T[], worker: (item: T) => Promise<void>, con
   let cursor = 0
   const run = async () => { while (cursor < items.length) await worker(items[cursor++]) }
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, run))
-}
-
-function toLocalInput(value: number): string {
-  const date = new Date(value - new Date(value).getTimezoneOffset() * 60_000)
-  return date.toISOString().slice(0, 16)
 }

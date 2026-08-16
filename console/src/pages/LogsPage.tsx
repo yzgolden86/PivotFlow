@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Bug, History, RefreshCw, Search, Waves } from 'lucide-react'
 import { getActiveRequestDebug, getActiveRequests, getLogs, getLogsBootstrap } from '../api'
 import type { ActiveRequest, DashboardRange, LogEntry, LogsBootstrap } from '../types'
-import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, Pagination } from './shared'
+import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
 import { Modal } from './siteShared'
 
@@ -103,7 +103,7 @@ function ActiveRequestsView() {
 
   if (loading) return <LoadingState label="正在读取活动请求" />
   return <>
-    {error && <div className="inline-error">{error}</div>}
+    {error && <OperationNotice tone="error">{error}</OperationNotice>}
     {!requests.length ? <EmptyState label="当前没有进行中的请求" /> : <div className="records-panel"><div className="record-head active-request-grid"><span>开始时间</span><span>渠道 / 模型</span><span>上游</span><span>传输状态</span><span>调试</span></div>{requests.map((request) => <article className="record-row active-request-grid" key={request.id}>
       <div><strong>{formatTime(request.start_time)}</strong><span>#{request.id} · {request.is_streaming ? '流式' : '非流式'}</span></div>
       <div><strong>{request.channel_name || `渠道 #${request.channel_id}`}</strong><span>{request.model}</span></div>

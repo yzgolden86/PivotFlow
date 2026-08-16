@@ -42,7 +42,7 @@ export default function FingerprintsPage() {
 
   return <div className="workspace-page fingerprints-page">
     <header className="page-header"><div><h1>模型能力基线</h1><span className="page-header-note">用固定采样记录响应耗时和结果特征，检查上游模型是否发生变化</span></div><div className="header-controls"><button className="secondary-button" type="button" onClick={() => setJobMode('test')} disabled={!fingerprints.length}><Play size={15} />开始对比</button><button className="primary-button" type="button" onClick={() => setJobMode('calibrate')}><Plus size={15} />创建基线</button><button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新模型能力基线"><RefreshCw size={17} /></button></div></header>
-    {error && <div className="inline-error">{error}</div>}
+    {error && <OperationNotice tone="error">{error}</OperationNotice>}
     <div className="page-tabs" role="tablist"><button className={mode === 'baselines' ? 'is-active' : ''} type="button" role="tab" aria-selected={mode === 'baselines'} onClick={() => setMode('baselines')}><Fingerprint size={15} />能力基线 ({fingerprints.length})</button><button className={mode === 'results' ? 'is-active' : ''} type="button" role="tab" aria-selected={mode === 'results'} onClick={() => setMode('results')}><Beaker size={15} />对比记录 ({results.length})</button></div>
 
     {mode === 'baselines' ? !fingerprints.length ? <EmptyState label="还没有模型能力基线" /> : <div className="fingerprint-grid">{fingerprints.map((item) => <article className="fingerprint-card" key={item.id}>

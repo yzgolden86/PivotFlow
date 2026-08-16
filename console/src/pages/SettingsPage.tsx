@@ -86,7 +86,7 @@ export function WebhookSettingsPanel() {
 
   return <section className="settings-page">
     {notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={15} />{notice}</OperationNotice>}
-    {error && <div className="inline-error">{error}</div>}
+    {error && <OperationNotice tone="error">{error}</OperationNotice>}
 
     <form className="webhook-settings" onSubmit={save}>
       <header className="settings-section-header">

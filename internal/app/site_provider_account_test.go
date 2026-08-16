@@ -119,6 +119,23 @@ type multiKeyProjectionTestAdapter struct {
 	errorsByKey map[string]error
 }
 
+type groupFallbackProjectionTestAdapter struct {
+	multiKeyProjectionTestAdapter
+	modelsByGroup map[string][]string
+}
+
+func (a *groupFallbackProjectionTestAdapter) ListModelsForRoutingKey(_ context.Context, req provider.AccountRequest, key provider.RoutingKeySnapshot) ([]provider.ModelSnapshot, error) {
+	if req.Credentials.AccessToken == "" {
+		return nil, &provider.Error{Code: provider.CodeUnsupported, Message: "management credential is required"}
+	}
+	models := a.modelsByGroup[key.Group]
+	out := make([]provider.ModelSnapshot, 0, len(models))
+	for _, name := range models {
+		out = append(out, provider.ModelSnapshot{Model: name, RouteType: "openai_chat", Source: "routing_group_models"})
+	}
+	return out, nil
+}
+
 func (a *multiKeyProjectionTestAdapter) ListRoutingKeys(context.Context, provider.AccountRequest) ([]provider.RoutingKeySnapshot, error) {
 	return append([]provider.RoutingKeySnapshot(nil), a.keys...), nil
 }
@@ -817,6 +834,90 @@ func TestModelRefreshContinuesAfterOneRoutingKeyModelFailure(t *testing.T) {
 		t.Fatalf("task=%+v", task)
 	}
 	assertProjectedModelsByKey(t, ctx, srv, map[string][]string{"sk-good": {"gpt-good"}})
+}
+
+func TestModelRefreshFallsBackToManagementModelsForEachRoutingGroup(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "group-fallback-sync-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	endpointErr := &provider.Error{Code: provider.CodeUnsupported, Message: "model endpoint unavailable for this credential"}
+	adapter := &groupFallbackProjectionTestAdapter{
+		multiKeyProjectionTestAdapter: multiKeyProjectionTestAdapter{
+			keys: []provider.RoutingKeySnapshot{
+				{ID: "coding", Name: "Coding", Group: "coding", Key: "sk-coding", Enabled: true},
+				{ID: "general", Name: "General", Group: "default", Key: "sk-general", Enabled: true},
+			},
+			errorsByKey: map[string]error{"sk-coding": endpointErr, "sk-general": endpointErr},
+		},
+		modelsByGroup: map[string][]string{
+			"coding":  {"claude-sonnet-4-5", "gpt-5-codex"},
+			"default": {"gpt-4.1"},
+		},
+	}
+	srv.siteControl.registry = provider.NewRegistry(adapter)
+	ctx := context.Background()
+	site, err := srv.store.CreateSite(ctx, &model.Site{Name: "Grouped fallback", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://group-fallback.example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := srv.siteControl.createAccount(ctx, site.ID, accountCreateRequest{Label: "admin", CredentialType: model.CredentialTypeAccessToken, Credential: provider.Credentials{AccessToken: "system-token", UserID: 42}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &model.SiteTask{ID: newSiteTaskID(), Kind: "model_refresh", Status: model.SiteTaskStatusRunning}
+	srv.siteControl.refreshAccount(ctx, task, account.ID, true)
+	if task.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("task=%+v", task)
+	}
+	assertProjectedModelsByKey(t, ctx, srv, map[string][]string{
+		"sk-coding":  {"claude-sonnet-4-5", "gpt-5-codex"},
+		"sk-general": {"gpt-4.1"},
+	})
+}
+
+func TestModelRefreshPrefersManagementGroupModelsOverSharedKeyEndpoint(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "group-scope-sync-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	shared := []string{"gpt-coding", "claude-coding", "gpt-general", "extra-1", "extra-2"}
+	adapter := &groupFallbackProjectionTestAdapter{
+		multiKeyProjectionTestAdapter: multiKeyProjectionTestAdapter{
+			keys: []provider.RoutingKeySnapshot{
+				{ID: "coding", Group: "coding", Key: "sk-coding", Enabled: true},
+				{ID: "general", Group: "default", Key: "sk-general", Enabled: true},
+			},
+			modelsByKey: map[string][]string{"sk-coding": shared, "sk-general": shared},
+		},
+		modelsByGroup: map[string][]string{
+			"coding":  {"claude-coding", "gpt-coding"},
+			"default": {"gpt-general"},
+		},
+	}
+	srv.siteControl.registry = provider.NewRegistry(adapter)
+	ctx := context.Background()
+	site, err := srv.store.CreateSite(ctx, &model.Site{Name: "Scoped fallback", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://group-scope.example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := srv.siteControl.createAccount(ctx, site.ID, accountCreateRequest{Label: "admin", CredentialType: model.CredentialTypeAccessToken, Credential: provider.Credentials{AccessToken: "system-token", UserID: 42}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &model.SiteTask{ID: newSiteTaskID(), Kind: "model_refresh", Status: model.SiteTaskStatusRunning}
+	srv.siteControl.refreshAccount(ctx, task, account.ID, true)
+	if task.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("task=%+v", task)
+	}
+	assertProjectedModelsByKey(t, ctx, srv, map[string][]string{
+		"sk-coding":  {"claude-coding", "gpt-coding"},
+		"sk-general": {"gpt-general"},
+	})
 }
 
 func assertProjectedModelsByKey(t *testing.T, ctx context.Context, srv *Server, want map[string][]string) {

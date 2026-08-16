@@ -241,6 +241,13 @@ type RoutingKeyProvider interface {
 	ListRoutingKeys(ctx context.Context, req AccountRequest) ([]RoutingKeySnapshot, error)
 }
 
+// RoutingModelProvider resolves the model list for one routing key through a
+// provider's management API. It is used when the key-level OpenAI endpoint is
+// unavailable or returns an unscoped model list for every key.
+type RoutingModelProvider interface {
+	ListModelsForRoutingKey(ctx context.Context, req AccountRequest, key RoutingKeySnapshot) ([]ModelSnapshot, error)
+}
+
 type Registry struct {
 	adapters map[string]SiteAdapter
 	order    []SiteAdapter

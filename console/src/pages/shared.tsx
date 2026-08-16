@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight, RefreshCw, X } from 'lucide-react'
 
-export function OperationNotice({ children, persistent = false, onDismiss }: { children: ReactNode; persistent?: boolean; onDismiss?: () => void }) {
+export function OperationNotice({ children, persistent = false, onDismiss, tone = 'success' }: { children: ReactNode; persistent?: boolean; onDismiss?: () => void; tone?: 'success' | 'error' }) {
   const [visible, setVisible] = useState(true)
   const onDismissRef = useRef(onDismiss)
 
@@ -22,7 +22,7 @@ export function OperationNotice({ children, persistent = false, onDismiss }: { c
   if (!visible) return null
 
   return (
-    <div className="operation-notice" role="status" aria-live="polite">
+    <div className={`operation-notice operation-notice--${tone}`} role={tone === 'error' ? 'alert' : 'status'} aria-live={tone === 'error' ? 'assertive' : 'polite'}>
       <span className="operation-notice__content">{children}</span>
       <button className="operation-notice__dismiss" type="button" onClick={dismiss} aria-label="关闭提示"><X size={15} /></button>
     </div>

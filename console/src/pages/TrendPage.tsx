@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Activity, CircleDollarSign, Clock3, RefreshCw, TrendingUp, Zap } from 'lucide-react'
 import { getDashboard } from '../api'
 import type { DashboardRange, DashboardSnapshot, MetricPoint } from '../types'
-import { ErrorState, formatMoney, formatNumber, LoadingState } from './shared'
+import { ErrorState, formatMoney, formatNumber, LoadingState, OperationNotice } from './shared'
 
 type TrendMetric = 'requests' | 'tokens' | 'cost'
 
@@ -42,7 +42,7 @@ export default function TrendPage() {
         <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新趋势"><RefreshCw size={17} /></button>
       </div>
     </header>
-    {error && <div className="inline-error">{error}</div>}
+    {error && <OperationNotice tone="error">{error}</OperationNotice>}
 
     <section className="stat-kpis">
       <article><span><Activity size={18} /></span><div><small>请求</small><strong>{formatNumber(snapshot.totals.requests)}</strong><small>{formatNumber(snapshot.totals.errors)} 次失败</small></div></article>

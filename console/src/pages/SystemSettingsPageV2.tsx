@@ -159,7 +159,7 @@ export default function SystemSettingsPageV2() {
 
     {section === 'notifications' ? <WebhookSettingsPanel /> : <>
       {notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={16} />{notice}</OperationNotice>}
-      {error && <div className="inline-error">{error}</div>}
+      {error && <OperationNotice tone="error">{error}</OperationNotice>}
       <div className="settings-layout">
         <aside className="settings-groups" aria-label="设置分类">
           {groups.map(({ key, label, description, icon: Icon }) => <button className={group === key && !query.trim() ? 'is-active' : ''} type="button" onClick={() => { setGroup(key); setQuery('') }} key={key}>

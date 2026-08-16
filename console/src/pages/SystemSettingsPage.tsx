@@ -78,7 +78,7 @@ export default function SystemSettingsPage() {
 	<div className="view-tabs" role="tablist" aria-label="系统设置分类"><button type="button" role="tab" aria-selected={section === 'runtime'} className={section === 'runtime' ? 'is-active' : ''} onClick={() => setSection('runtime')}><SlidersHorizontal size={15} />运行参数</button><button type="button" role="tab" aria-selected={section === 'notifications'} className={section === 'notifications' ? 'is-active' : ''} onClick={() => setSection('notifications')}><BellRing size={15} />通知</button></div>
 	{section === 'notifications' ? <WebhookSettingsPanel /> : <>
 	{notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={15} />{notice}</OperationNotice>}
-	{error && <div className="inline-error">{error}</div>}
+	{error && <OperationNotice tone="error">{error}</OperationNotice>}
 	<div className="settings-layout">
       <aside className="settings-groups" aria-label="参数分类">
         {groups.map(([key, label]) => <button className={group === key ? 'is-active' : ''} type="button" onClick={() => setGroup(key)} key={key}><span>{label}</span><strong>{counts[key] || 0}</strong></button>)}
