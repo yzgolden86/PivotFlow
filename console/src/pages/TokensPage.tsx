@@ -29,7 +29,6 @@ export default function TokensPage() {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<AuthToken | 'new' | null>(null)
   const [createdToken, setCreatedToken] = useState('')
-  const [revealed, setRevealed] = useState<{ id: number; value: string } | null>(null)
   const [copiedId, setCopiedId] = useState<number | 'created' | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
 
@@ -79,7 +78,6 @@ export default function TokensPage() {
     setBusyId(token.id); setError('')
     try {
       const result = await revealAuthToken(token.id)
-      setRevealed({ id: token.id, value: result.token })
       await copyValue(result.token, token.id)
     } catch (reason) { setError(reason instanceof Error ? reason.message : '令牌恢复失败') }
     finally { setBusyId(null) }
@@ -134,8 +132,8 @@ export default function TokensPage() {
     {loading ? <LoadingState label="正在加载令牌" /> : error && !tokens.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label="没有符合条件的令牌" /> : <div className="token-list">
       {visible.map((token) => <article className="token-row" key={token.id}>
         <span className={`token-icon${token.is_active ? '' : ' token-icon--off'}`}><KeyRound size={17} /></span>
-        <div className="token-identity"><strong>{token.description}</strong><span>#{token.id} · {token.token || '已安全存储'}</span></div>
-        <div className="token-secret-cell"><code>{revealed?.id === token.id ? revealed.value : (token.token_hint || token.token || '不可恢复')}</code><button className="icon-button icon-button--surface" type="button" onClick={() => revealed?.id === token.id ? void copyValue(revealed.value, token.id) : void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={revealed?.id === token.id ? '复制令牌' : token.token_recoverable ? '显示并复制令牌' : '历史令牌不可恢复'}>{copiedId === token.id ? <Check size={15} /> : <Copy size={15} />}</button></div>
+        <div className="token-identity"><strong>{token.description}</strong><span>令牌 #{token.id}</span></div>
+        <div className="token-secret-cell"><span>{token.token_recoverable ? '安全存储' : '不可恢复'}</span><button className="icon-button icon-button--surface" type="button" onClick={() => void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={token.token_recoverable ? '复制令牌' : '历史令牌不可恢复'}>{copiedId === token.id ? <Check size={15} /> : <Copy size={15} />}</button></div>
         <div><strong>{formatNumber(token.success_count + token.failure_count)}</strong><span>{token.failure_count} 次失败</span></div>
         <div><strong>{formatMoney(token.effective_cost_usd)}</strong><span>{formatNumber((token.prompt_tokens_total || 0) + (token.completion_tokens_total || 0))} tokens</span></div>
         <div><strong>{token.max_concurrency || '不限'}</strong><span>{token.cost_limit_usd ? `限额 ${formatMoney(token.cost_limit_usd)}` : '无费用限额'}</span></div>
@@ -153,7 +151,7 @@ export default function TokensPage() {
       setEditing(null); if (plain) setCreatedToken(plain)
       setTokens((items) => editing === 'new' ? [token, ...items] : items.map((item) => item.id === token.id ? { ...item, ...token } : item))
     }} />}
-    {createdToken && <Modal title="令牌已创建" close={() => setCreatedToken('')}><div className="secret-reveal"><p>令牌已安全保存，之后可在列表中复制。</p><code>{createdToken}</code><button className="primary-button" type="button" onClick={() => void copyValue(createdToken, 'created')}>{copiedId === 'created' ? <Check size={15} /> : <Copy size={15} />}{copiedId === 'created' ? '已复制' : '复制令牌'}</button></div></Modal>}
+    {createdToken && <Modal title="令牌已创建" close={() => setCreatedToken('')}><div className="secret-reveal"><p>请立即保存完整令牌。关闭后，列表将不再显示密钥内容。</p><code>{createdToken}</code><button className="primary-button" type="button" onClick={() => void copyValue(createdToken, 'created')}>{copiedId === 'created' ? <Check size={15} /> : <Copy size={15} />}{copiedId === 'created' ? '已复制' : '复制令牌'}</button></div></Modal>}
   </div>
 }
 
