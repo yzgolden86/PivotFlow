@@ -284,6 +284,19 @@ func (p *NewAPI) ListRoutingKeys(ctx context.Context, req AccountRequest) ([]Rou
 			items = direct
 		}
 	}
+	maskedIDs := make([]int, 0)
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		key, _ := stringValue(item, "key")
+		id, err := strconv.Atoi(strings.TrimSpace(fmt.Sprint(item["id"])))
+		if isMaskedRoutingKey(key) && err == nil && id > 0 {
+			maskedIDs = append(maskedIDs, id)
+		}
+	}
+	resolvedKeys := p.resolveRoutingKeysBatch(ctx, req, maskedIDs)
 	out := make([]RoutingKeySnapshot, 0, len(items))
 	for index, raw := range items {
 		item, ok := raw.(map[string]any)
@@ -302,6 +315,17 @@ func (p *NewAPI) ListRoutingKeys(ctx context.Context, req AccountRequest) ([]Rou
 		if id == "<nil>" {
 			id = ""
 		}
+		if isMaskedRoutingKey(key) {
+			if resolved := strings.TrimSpace(resolvedKeys[id]); resolved != "" && !isMaskedRoutingKey(resolved) {
+				key = resolved
+			} else {
+				resolved, err := p.resolveRoutingKey(ctx, req, id)
+				if err != nil {
+					return nil, &Error{Code: ErrorCode(err), StatusCode: ErrorStatusCode(err), Message: fmt.Sprintf("unable to recover routing key %s: %s", name, ErrorMessage(err))}
+				}
+				key = resolved
+			}
+		}
 		group, _ := stringValue(item, "group")
 		if group == "" {
 			group, _ = stringValue(item, "group_name")
@@ -319,6 +343,74 @@ func (p *NewAPI) ListRoutingKeys(ctx context.Context, req AccountRequest) ([]Rou
 		out = append(out, RoutingKeySnapshot{ID: id, Name: name, Group: group, Models: models, Key: key, Enabled: enabled})
 	}
 	return out, nil
+}
+
+func isMaskedRoutingKey(value string) bool {
+	return strings.Contains(value, "*") || strings.Contains(value, "\u2022")
+}
+
+func (p *NewAPI) resolveRoutingKeysBatch(ctx context.Context, req AccountRequest, ids []int) map[string]string {
+	if len(ids) == 0 {
+		return nil
+	}
+	var payload envelope
+	if err := p.doJSON(ctx, req, http.MethodPost, "/api/token/batch/keys", map[string]any{"ids": ids}, &payload); err != nil || !payload.Success {
+		return nil
+	}
+	data, ok := payload.Data.(map[string]any)
+	if !ok {
+		return nil
+	}
+	keys, ok := data["keys"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	resolved := make(map[string]string, len(keys))
+	for id, raw := range keys {
+		key := strings.TrimSpace(fmt.Sprint(raw))
+		if key != "" && key != "<nil>" && !isMaskedRoutingKey(key) {
+			resolved[id] = key
+		}
+	}
+	return resolved
+}
+
+func (p *NewAPI) resolveRoutingKey(ctx context.Context, req AccountRequest, id string) (string, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", &Error{Code: CodeRoutingKeyUnavailable, Message: "masked routing key has no token ID"}
+	}
+	path := "/api/token/" + url.PathEscape(id) + "/key"
+	var lastErr error
+	for _, method := range []string{http.MethodPost, http.MethodGet} {
+		var payload envelope
+		if err := p.doJSON(ctx, req, method, path, nil, &payload); err != nil {
+			lastErr = err
+			if method == http.MethodPost && (ErrorStatusCode(err) == http.StatusMethodNotAllowed || ErrorCode(err) == CodeUnsupported) {
+				continue
+			}
+			return "", err
+		}
+		if !payload.Success {
+			lastErr = responseError(payload, http.StatusOK)
+			continue
+		}
+		key := ""
+		switch data := payload.Data.(type) {
+		case string:
+			key = strings.TrimSpace(data)
+		case map[string]any:
+			key, _ = stringValue(data, "key")
+		}
+		if key == "" || isMaskedRoutingKey(key) {
+			lastErr = &Error{Code: CodeInvalidResponse, Message: "routing key reveal returned no usable key"}
+			continue
+		}
+		return key, nil
+	}
+	if lastErr == nil {
+		lastErr = &Error{Code: CodeRoutingKeyUnavailable, Message: "routing key reveal is unavailable"}
+	}
+	return "", lastErr
 }
 
 func (p *NewAPI) RefreshAccount(ctx context.Context, req RefreshAccountRequest) (AccountSnapshot, error) {
@@ -374,8 +466,7 @@ func (p *NewAPI) ListModels(ctx context.Context, req AccountRequest) ([]ModelSna
 func (p *NewAPI) ListModelsForRoutingKey(ctx context.Context, req AccountRequest, key RoutingKeySnapshot) ([]ModelSnapshot, error) {
 	path := "/api/user/models"
 	if group := strings.TrimSpace(key.Group); group != "" {
-		groups, _ := json.Marshal([]string{group})
-		path += "?groups=" + url.QueryEscape(string(groups))
+		path += "?group=" + url.QueryEscape(group)
 	}
 	return p.listManagementModels(ctx, req, path, "routing_group_models")
 }

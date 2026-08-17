@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -149,14 +150,75 @@ func TestNewAPIListRoutingKeysParsesStringAndMapModelLimits(t *testing.T) {
 	}
 }
 
+func TestNewAPIListRoutingKeysResolvesMaskedSecrets(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/token/":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"items":[{"id":27,"name":"coding","group":"coding","key":"abcd**********wxyz","status":1}]}}`))
+		case "/api/token/27/key":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method=%s", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"success":true,"data":{"key":"full-routing-secret"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	keys, err := NewNewAPI(ClientFactory{AllowPrivate: true}).ListRoutingKeys(context.Background(), AccountRequest{
+		BaseURL: server.URL, Credentials: Credentials{AccessToken: "management", UserID: 7},
+	})
+	if err != nil || len(keys) != 1 || keys[0].Key != "full-routing-secret" || keys[0].Group != "coding" {
+		t.Fatalf("keys=%+v err=%v", keys, err)
+	}
+}
+
+func TestNewAPIListRoutingKeysUsesOfficialBatchReveal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/token/":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"items":[{"id":27,"name":"coding","group":"coding","key":"abcd**********wxyz","status":1},{"id":28,"name":"general","group":"default","key":"efgh**********stuv","status":1}]}}`))
+		case "/api/token/batch/keys":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method=%s", r.Method)
+			}
+			var body struct {
+				IDs []int `json:"ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !reflect.DeepEqual(body.IDs, []int{27, 28}) {
+				t.Fatalf("body=%+v err=%v", body, err)
+			}
+			_, _ = w.Write([]byte(`{"success":true,"data":{"keys":{"27":"full-coding-secret","28":"full-general-secret"}}}`))
+		case "/api/token/27/key", "/api/token/28/key":
+			t.Fatalf("individual reveal should not run after batch success: %s", r.URL.Path)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	keys, err := NewNewAPI(ClientFactory{AllowPrivate: true}).ListRoutingKeys(context.Background(), AccountRequest{
+		BaseURL: server.URL, Credentials: Credentials{AccessToken: "management", UserID: 7},
+	})
+	if err != nil || len(keys) != 2 || keys[0].Key != "full-coding-secret" || keys[1].Key != "full-general-secret" {
+		t.Fatalf("keys=%+v err=%v", keys, err)
+	}
+}
+
 func TestNewAPIListModelsForRoutingKeyUsesManagementGroup(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/user/models" {
 			http.NotFound(w, r)
 			return
 		}
-		if got := r.URL.Query().Get("groups"); got != `["coding"]` {
-			t.Fatalf("groups=%q", got)
+		if got := r.URL.Query().Get("group"); got != "coding" {
+			t.Fatalf("group=%q", got)
+		}
+		if _, exists := r.URL.Query()["groups"]; exists {
+			t.Fatalf("unexpected groups query: %q", r.URL.RawQuery)
 		}
 		if r.Header.Get("Authorization") != "Bearer management-token" || r.Header.Get("New-API-User") != "42" {
 			t.Fatalf("management credential was not forwarded: %#v", r.Header)
