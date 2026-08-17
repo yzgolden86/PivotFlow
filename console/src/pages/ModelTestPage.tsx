@@ -56,29 +56,32 @@ export default function ModelTestPage() {
         getSiteInventory(signal),
         getSiteModels({}, signal),
       ])
-      const enabledChannels = channelResponse.data.filter((item) => item.enabled)
+      const availableChannels = channelResponse.data
       const enabledAccounts = inventory.accounts.filter((item) => item.enabled)
-      setChannels(enabledChannels)
+      setChannels(availableChannels)
       setSites(inventory.sites)
       setAccounts(enabledAccounts)
       setSiteModels(modelResponse.data)
 
       const requestedChannel = Number(params.get('channel'))
       const requestedAccount = Number(params.get('account'))
-      const selectedChannel = enabledChannels.find((item) => item.id === requestedChannel) || enabledChannels[0]
+      const requestedModel = (params.get('model') || '').trim()
+      const selectedChannel = availableChannels.find((item) => item.id === requestedChannel) || (!requestedChannel ? availableChannels[0] : undefined)
       const selectedAccount = enabledAccounts.find((item) => item.id === requestedAccount) || enabledAccounts.find((item) => modelResponse.data.some((fact) => fact.site_account_id === item.id && !fact.disabled))
-      setChannelId(selectedChannel?.id || 0)
+      setChannelId(selectedChannel?.id || (requestedChannel > 0 ? requestedChannel : 0))
       setAccountId(selectedAccount?.id || 0)
       if (params.has('account')) {
         setView('probe')
         setTarget('site_account')
-        setModel(firstSiteModel(modelResponse.data, selectedAccount?.id || 0))
+        const selectedModels = modelResponse.data.filter((item) => item.site_account_id === selectedAccount?.id && !item.disabled).map((item) => item.model)
+        setModel(requestedModel && selectedModels.includes(requestedModel) ? requestedModel : firstSiteModel(modelResponse.data, selectedAccount?.id || 0))
       } else {
         if (params.has('channel')) {
           setView('probe')
           setTarget('channel')
         }
-        setModel(selectedChannel ? firstChannelModel(selectedChannel) : firstSiteModel(modelResponse.data, selectedAccount?.id || 0))
+        const selectedModels = selectedChannel?.models.filter((item) => !item.disabled).map((item) => item.model) || []
+        setModel(requestedModel && selectedModels.includes(requestedModel) ? requestedModel : selectedChannel ? firstChannelModel(selectedChannel) : '')
       }
     } catch (reason) {
       if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '模型数据加载失败')
@@ -192,7 +195,7 @@ export default function ModelTestPage() {
             </div>
             <div className="form-grid">
               {target === 'channel' ? (
-                <label><span>渠道</span><select value={channelId} onChange={(event) => changeChannel(Number(event.target.value))}>{channels.map((item) => <option value={item.id} key={item.id}>{item.name} · P{item.priority}</option>)}</select></label>
+                <label><span>渠道</span><select value={channelId} onChange={(event) => changeChannel(Number(event.target.value))}>{channels.map((item) => <option value={item.id} key={item.id}>{item.name} · P{item.priority}{item.enabled ? '' : ' · 已停用'}</option>)}</select></label>
               ) : (
                 <label><span>站点账号</span><select value={accountId} onChange={(event) => changeAccount(Number(event.target.value))}>{availableAccounts.map((item) => <option value={item.id} key={item.id}>{siteMap.get(item.site_id)?.name || `站点 #${item.site_id}`} · {item.label}</option>)}</select></label>
               )}

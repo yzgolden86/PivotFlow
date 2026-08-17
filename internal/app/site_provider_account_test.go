@@ -708,7 +708,7 @@ func TestModelRefreshDiscoversModelsWithEachRoutingKey(t *testing.T) {
 	srv.siteControl.cipher = cipher
 	adapter := &multiKeyProjectionTestAdapter{
 		keys: []provider.RoutingKeySnapshot{
-			{ID: "free", Name: "Free", Group: "free", Key: "sk-free", Models: []string{"shared-management-model"}, Enabled: true},
+			{ID: "free", Name: "Free", Group: "free", Protocols: []string{"anthropic"}, Key: "sk-free", Models: []string{"shared-management-model"}, Enabled: true},
 			{ID: "pro", Name: "Pro", Group: "pro", Key: "sk-pro", Models: []string{"shared-management-model"}, Enabled: true},
 		},
 		modelsByKey: map[string][]string{
@@ -747,6 +747,9 @@ func TestModelRefreshDiscoversModelsWithEachRoutingKey(t *testing.T) {
 		}
 		if channel.URLs[0].RuntimeURL() != "https://grouped.example.com" {
 			t.Fatalf("routing url=%q", channel.URLs[0].RuntimeURL())
+		}
+		if keys[0].APIKey == "sk-free" && !slices.Equal(channel.URLs[0].Protocols, []string{"anthropic"}) {
+			t.Fatalf("routing protocols=%v", channel.URLs[0].Protocols)
 		}
 		got := make([]string, 0, len(channel.ModelEntries))
 		for _, entry := range channel.ModelEntries {
@@ -816,7 +819,7 @@ func TestModelRefreshContinuesAfterOneRoutingKeyModelFailure(t *testing.T) {
 			{ID: "bad", Name: "Bad", Group: "bad", Key: "sk-bad", Enabled: true},
 		},
 		modelsByKey: map[string][]string{"sk-good": {"gpt-good"}},
-		errorsByKey: map[string]error{"sk-bad": &provider.Error{Code: provider.CodeRequestFailed, Message: "upstream model endpoint failed"}},
+		errorsByKey: map[string]error{"sk-bad": &provider.Error{Code: provider.CodeExpired, Message: "provider credential was rejected"}},
 	}
 	srv.siteControl.registry = provider.NewRegistry(adapter)
 	ctx := context.Background()
@@ -832,6 +835,9 @@ func TestModelRefreshContinuesAfterOneRoutingKeyModelFailure(t *testing.T) {
 	srv.siteControl.refreshAccount(ctx, task, account.ID, true)
 	if task.Status != model.SiteTaskStatusPartial || !strings.Contains(task.Error, "bad") {
 		t.Fatalf("task=%+v", task)
+	}
+	if strings.Contains(task.Error, "expired") || !strings.Contains(task.Error, provider.CodeRequestFailed) {
+		t.Fatalf("routing-key rejection was misclassified as management credential expiry: %+v", task)
 	}
 	assertProjectedModelsByKey(t, ctx, srv, map[string][]string{"sk-good": {"gpt-good"}})
 }

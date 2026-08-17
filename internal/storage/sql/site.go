@@ -823,6 +823,11 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 				return err
 			}
 		} else {
+			// Projection channels are generated from upstream keys. Different keys
+			// frequently share the same display name, but channels.name is unique.
+			// Keep the user-facing name and append a stable key identity only when
+			// another channel already owns the requested name.
+			channel.Name = s.uniqueProjectionChannelNameTx(ctx, tx, channel.Name, input.SiteAccountID, input.ProjectionKey)
 			id, err := s.insertID(ctx, tx, "channels", "name,url,priority,rpm_limit,max_concurrency,auth_type,oauth_credential,websockets,protocol_transform_mode,enabled,scheduled_check_enabled,scheduled_check_model,daily_cost_limit,cost_multiplier,custom_request_rules,cooldown_detection_rules,proxy_url,retry_other_keys_on_failure,created_at,updated_at", []any{channel.Name, channel.URLs, 0, 0, 0, channel.AuthType, "", false, channel.ProtocolTransformMode, channel.Enabled, false, "", 0, 1, nil, nil, "", false, now, now})
 			if err != nil {
 				return err
@@ -867,6 +872,30 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 		return nil, err
 	}
 	return &model.SiteProjectionResult{Binding: &binding, Channel: loaded, Action: action}, nil
+}
+
+func (s *SQLStore) uniqueProjectionChannelNameTx(ctx context.Context, tx *sql.Tx, base string, accountID int64, projectionKey string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = fmt.Sprintf("site/account/%d/%s", accountID, projectionKey)
+	}
+	available := func(name string) bool {
+		var id int64
+		err := s.queryRowTx(ctx, tx, "SELECT id FROM channels WHERE name=?", name).Scan(&id)
+		return errors.Is(err, sql.ErrNoRows)
+	}
+	if available(base) {
+		return base
+	}
+	identity := strings.TrimSpace(strings.TrimPrefix(projectionKey, "key:"))
+	if identity == "" {
+		identity = model.HashToken(projectionKey)[:10]
+	}
+	candidate := fmt.Sprintf("%s / %s", base, identity)
+	if available(candidate) {
+		return candidate
+	}
+	return fmt.Sprintf("%s / %d-%s", base, accountID, model.HashToken(projectionKey)[:10])
 }
 
 func (s *SQLStore) execAPIKeyTx(ctx context.Context, tx *sql.Tx, channelID int64, apiKey string) error {

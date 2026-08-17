@@ -31,6 +31,7 @@ export default function SitesPage() {
   const [sites, setSites] = useState<Site[]>([])
   const [accounts, setAccounts] = useState<SiteAccount[]>([])
   const [search, setSearch] = useState(querySearch)
+  const [sort, setSort] = useState('newest')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [loading, setLoading] = useState(true)
@@ -59,7 +60,19 @@ export default function SitesPage() {
 
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
   useEffect(() => setSearch(querySearch), [querySearch])
-  const visible = useMemo(() => sites.filter((site) => !search.trim() || [site.name, site.base_url, site.platform].some((value) => value.toLowerCase().includes(search.trim().toLowerCase()))), [search, sites])
+  const visible = useMemo(() => {
+    const filtered = sites.filter((site) => !search.trim() || [site.name, site.base_url, site.platform].some((value) => value.toLowerCase().includes(search.trim().toLowerCase())))
+    return [...filtered].sort((left, right) => {
+      if (sort === 'name') return left.name.localeCompare(right.name, 'zh-CN')
+      if (sort === 'enabled') return Number(right.enabled) - Number(left.enabled) || left.name.localeCompare(right.name, 'zh-CN')
+      if (sort === 'health') {
+        const leftHealthy = accounts.filter((account) => account.site_id === left.id && account.status === 'healthy').length
+        const rightHealthy = accounts.filter((account) => account.site_id === right.id && account.status === 'healthy').length
+        return rightHealthy - leftHealthy || left.name.localeCompare(right.name, 'zh-CN')
+      }
+      return right.id - left.id
+    })
+  }, [accounts, search, sites, sort])
   const pagedVisible = useMemo(() => visible.slice((page - 1) * pageSize, page * pageSize), [page, pageSize, visible])
   const healthy = accounts.filter((account) => account.status === 'healthy').length
 
@@ -182,7 +195,7 @@ export default function SitesPage() {
       <div className="header-controls"><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新站点"><RefreshCw size={17} /></button></div>
     </header>
     <section className="compact-summary"><span><strong>{sites.length}</strong>站点总数</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>已启用</span><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{healthy}</strong>健康账号</span></section>
-    <div className="filter-bar"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部站点" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索站点、地址或平台" aria-label="搜索站点" /></label><span className="filter-count"><Globe2 size={14} />{visible.length} 个站点</span></div>
+    <div className="filter-bar"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部站点" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索站点、地址或平台" aria-label="搜索站点" /></label><select value={sort} onChange={(event) => { setSort(event.target.value); setPage(1) }} aria-label="站点排序"><option value="newest">新建优先</option><option value="name">名称 A-Z</option><option value="enabled">启用优先</option><option value="health">健康账号数</option></select><span className="filter-count"><Globe2 size={14} />{visible.length} 个站点</span></div>
     {selected.size > 0 && <div className="batch-toolbar" aria-label="站点批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('proxy_on')} disabled={batchBusy}><Network size={14} />开启系统代理</button><button type="button" onClick={() => void runBatch('proxy_off')} disabled={batchBusy}><Network size={14} />关闭系统代理</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
     {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}{error && sites.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
     {loading ? <LoadingState label="正在加载站点资产" /> : error && !sites.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={sites.length ? '没有匹配的站点' : '尚未添加站点'} /> : <div className="site-list">{pagedVisible.map((site) => <SiteRow key={site.id} site={site} accounts={accounts.filter((account) => account.site_id === site.id)} selected={selected.has(site.id)} busy={busyId === site.id || (batchBusy && selected.has(site.id))} focused={site.id === focusSiteId} rowRef={(node) => { if (node) rowRefs.current.set(site.id, node); else rowRefs.current.delete(site.id) }} select={() => toggleSelected(site.id)} copy={() => void copySite(site)} edit={() => openForm(site)} execute={(action) => void execute(site, action)} />)}</div>}

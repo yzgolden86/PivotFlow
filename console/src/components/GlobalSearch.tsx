@@ -13,7 +13,7 @@ interface SearchEntry {
 }
 
 const staticEntries: SearchEntry[] = [
-  { id: 'page-dashboard', label: '概览', detail: '余额、消耗、模型与客户端分布', href: '#/', kind: 'page', keywords: 'dashboard 首页' },
+  { id: 'page-dashboard', label: '系统概览', detail: '余额、消耗、模型与客户端分布', href: '#/', kind: 'page', keywords: 'dashboard 首页 概览' },
   { id: 'page-sites', label: '站点管理', detail: '站点地址、平台与关联账号', href: '#/sites', kind: 'page' },
   { id: 'page-accounts', label: '账号管理', detail: '凭证、余额、签到与路由同步', href: '#/accounts', kind: 'page' },
   { id: 'page-checkins', label: '签到中心', detail: '批量签到与结果历史', href: '#/checkins', kind: 'page' },
@@ -77,7 +77,7 @@ export default function GlobalSearch() {
       ...inventory.models.map((fact): SearchEntry => {
         const account = accountMap.get(fact.site_account_id)
         const site = siteMap.get(account?.site_id || 0)
-        return { id: `model-${fact.site_account_id}-${fact.model}`, label: fact.model, detail: `模型 · ${site?.name || '站点'} / ${account?.label || `账号 #${fact.site_account_id}`}`, href: `#/models?account=${fact.site_account_id}&view=probe`, kind: 'model', keywords: `${fact.route_type} ${fact.source}` }
+        return { id: `model-${fact.site_account_id}-${fact.model}`, label: fact.model, detail: `模型 · ${site?.name || '站点'} / ${account?.label || `账号 #${fact.site_account_id}`}`, href: `#/models?account=${fact.site_account_id}&model=${encodeURIComponent(fact.model)}&view=probe`, kind: 'model', keywords: `${fact.route_type} ${fact.source}` }
       }),
     ]
   }, [inventory])

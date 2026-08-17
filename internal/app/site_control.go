@@ -637,7 +637,7 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 			if strings.TrimSpace(item.Name) != "" && strings.TrimSpace(item.Name) != strings.TrimSpace(item.Group) && !strings.EqualFold(strings.TrimSpace(item.Name), strings.TrimSpace(account.Label)) {
 				name += " / " + strings.TrimSpace(item.Name)
 			}
-			if _, err := s.projectAccountWithModels(ctx, account, site, keyCreds, projectionKey, name, models, false); err != nil {
+			if _, err := s.projectAccountWithModelsForProtocols(ctx, account, site, keyCreds, projectionKey, name, item.Protocols, models, false); err != nil {
 				syncErrors = append(syncErrors, fmt.Sprintf("%s: %s", routingKeyLabel(item, projectionKey), siteTaskError(err)))
 			}
 		}
@@ -871,7 +871,13 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 		first := unresolved[0]
 		detail := routingKeyLabel(first.item, first.projectionKey)
 		if first.err != nil {
-			return modelsByProjection, siteAccountModelsFromProjection(account.ID, modelsByProjection), &provider.Error{Code: provider.ErrorCode(first.err), Message: fmt.Sprintf("unable to discover models for routing key %s: %s", detail, provider.ErrorMessage(first.err))}
+			code := provider.ErrorCode(first.err)
+			// A per-key /models request can return 401 even while the management
+			// session is valid. Do not surface that as an expired management token.
+			if code == provider.CodeExpired {
+				code = provider.CodeRequestFailed
+			}
+			return modelsByProjection, siteAccountModelsFromProjection(account.ID, modelsByProjection), &provider.Error{Code: code, Message: fmt.Sprintf("unable to discover models for routing key %s: %s", detail, provider.ErrorMessage(first.err))}
 		}
 		return modelsByProjection, siteAccountModelsFromProjection(account.ID, modelsByProjection), &provider.Error{Code: provider.CodeUnsupported, Message: fmt.Sprintf("routing key %s returned no models", detail)}
 	}
@@ -1007,6 +1013,10 @@ func (s *siteControlService) projectAccount(ctx context.Context, account *model.
 }
 
 func (s *siteControlService) projectAccountWithModels(ctx context.Context, account *model.SiteAccount, site *model.Site, creds provider.Credentials, projectionKey, name string, names []string, force bool) (*model.SiteProjectionResult, error) {
+	return s.projectAccountWithModelsForProtocols(ctx, account, site, creds, projectionKey, name, []string{"openai"}, names, force)
+}
+
+func (s *siteControlService) projectAccountWithModelsForProtocols(ctx context.Context, account *model.SiteAccount, site *model.Site, creds provider.Credentials, projectionKey, name string, protocols, names []string, force bool) (*model.SiteProjectionResult, error) {
 	filtered := make([]string, 0, len(names))
 	seen := map[string]struct{}{}
 	for _, item := range names {
@@ -1029,9 +1039,13 @@ func (s *siteControlService) projectAccountWithModels(ctx context.Context, accou
 	if strings.TrimSpace(name) == "" {
 		name = fmt.Sprintf("%s / %s", site.Name, account.Label)
 	}
+	protocols = normalizedModelNames(protocols)
+	if len(protocols) == 0 {
+		protocols = []string{"openai"}
+	}
 	baseURL := routingBaseURL(site.BaseURL)
-	sourceHash := model.SiteProjectionSourceHash(baseURL, []string{"openai"}, filtered, creds.APIKey, account.Enabled)
-	result, err := s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: baseURL, Protocols: []string{"openai"}, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, Enabled: account.Enabled, Force: force})
+	sourceHash := model.SiteProjectionSourceHash(baseURL, protocols, filtered, creds.APIKey, account.Enabled)
+	result, err := s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: baseURL, Protocols: protocols, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, Enabled: account.Enabled, Force: force})
 	if err != nil {
 		return nil, err
 	}

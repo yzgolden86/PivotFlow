@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -191,6 +193,29 @@ func TestSub2APIParsesStringSuccessCodeAndCollectionVariants(t *testing.T) {
 	models, err := adapter.ListModels(context.Background(), AccountRequest{BaseURL: server.URL, Credentials: Credentials{APIKey: keys[0].Key}})
 	if err != nil || len(models) != 1 || models[0].Model != "gpt-record" {
 		t.Fatalf("models=%+v err=%v", models, err)
+	}
+}
+
+func TestSub2APIRoutingKeyGroupObjectDoesNotSerializeMap(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/api/v1/keys" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"items":[{"id":8,"key":"Bearer sk-group","name":"token-8","group":{"id":8,"name":"付费兜底分组","platform":"anthropic","models":{"claude-sonnet":true,"gpt-5":true}},"status":"active"}]}}`))
+	}))
+	defer server.Close()
+
+	keys, err := NewSub2API(ClientFactory{AllowPrivate: true}).ListRoutingKeys(context.Background(), AccountRequest{BaseURL: server.URL, Credentials: Credentials{AccessToken: "jwt"}})
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("keys=%+v err=%v", keys, err)
+	}
+	if keys[0].Key != "sk-group" || keys[0].Group != "付费兜底分组" {
+		t.Fatalf("unexpected normalized key=%+v", keys[0])
+	}
+	if strings.Contains(keys[0].Group, "map[") || len(keys[0].Models) != 2 || !slices.Equal(keys[0].Protocols, []string{"anthropic"}) {
+		t.Fatalf("group object was not parsed safely: %+v", keys[0])
 	}
 }
 

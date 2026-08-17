@@ -175,6 +175,7 @@ export interface PaginatedResult<T> {
 export interface ChannelFilters {
   search?: string
   status?: string
+  sort?: string
   limit: number
   offset: number
 }

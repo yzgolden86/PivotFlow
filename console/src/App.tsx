@@ -54,7 +54,7 @@ interface NavGroup {
 const navigation: NavGroup[] = [
   {
     label: '工作台',
-    entries: [{ label: '概览', href: '/', icon: Gauge }],
+    entries: [{ label: '系统概览', href: '/', icon: Gauge }],
   },
   {
     label: '站点',

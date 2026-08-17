@@ -79,6 +79,7 @@ export default function AccountsPage() {
   const [search, setSearch] = useState(querySearch)
   const [siteFilter, setSiteFilter] = useState(querySite)
   const [status, setStatus] = useState('all')
+  const [sort, setSort] = useState('newest')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [loading, setLoading] = useState(true)
@@ -134,11 +135,21 @@ export default function AccountsPage() {
   }, [querySearch, querySite])
 
   const siteMap = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites])
-  const visible = useMemo(() => accounts.filter((account) => (
-    (!siteFilter || account.site_id === siteFilter)
-    && (status === 'all' || account.status === status)
-    && (!search.trim() || [account.label, siteMap.get(account.site_id)?.name || ''].some((value) => value.toLowerCase().includes(search.trim().toLowerCase())))
-  )), [accounts, search, siteFilter, siteMap, status])
+  const visible = useMemo(() => {
+    const filtered = accounts.filter((account) => (
+      (!siteFilter || account.site_id === siteFilter)
+      && (status === 'all' || account.status === status)
+      && (!search.trim() || [account.label, siteMap.get(account.site_id)?.name || ''].some((value) => value.toLowerCase().includes(search.trim().toLowerCase())))
+    ))
+    return [...filtered].sort((left, right) => {
+      if (sort === 'name') return left.label.localeCompare(right.label, 'zh-CN')
+      if (sort === 'site') return (siteMap.get(left.site_id)?.name || '').localeCompare(siteMap.get(right.site_id)?.name || '', 'zh-CN') || left.label.localeCompare(right.label, 'zh-CN')
+      if (sort === 'status') return left.status.localeCompare(right.status) || left.label.localeCompare(right.label, 'zh-CN')
+      if (sort === 'balance') return (right.balance || 0) - (left.balance || 0)
+      if (sort === 'updated') return (right.balance_updated_at || 0) - (left.balance_updated_at || 0)
+      return right.id - left.id
+    })
+  }, [accounts, search, siteFilter, siteMap, sort, status])
   const pagedVisible = useMemo(() => visible.slice((page - 1) * pageSize, page * pageSize), [page, pageSize, visible])
 
   useEffect(() => { setPage(1) }, [search, siteFilter, status])
@@ -409,7 +420,7 @@ export default function AccountsPage() {
       </div>
     </header>
     <section className="compact-summary"><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{accounts.filter((item) => item.status === 'healthy').length}</strong>健康</span><span><strong>{accounts.filter((item) => item.auto_checkin).length}</strong>自动签到</span><span><strong>{accounts.filter((item) => item.credential_configured).length}</strong>凭证已配置</span></section>
-    <div className="filter-bar filter-bar--wide"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部账号" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索账号或站点" aria-label="搜索账号" /></label><select value={siteFilter} onChange={(event) => setSiteFilter(Number(event.target.value))} aria-label="账号站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="账号状态"><option value="all">全部状态</option><option value="healthy">正常</option><option value="error">异常</option><option value="expired">已过期</option><option value="unknown">未知</option></select></div>
+    <div className="filter-bar filter-bar--wide"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部账号" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索账号或站点" aria-label="搜索账号" /></label><select value={siteFilter} onChange={(event) => setSiteFilter(Number(event.target.value))} aria-label="账号站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="账号状态"><option value="all">全部状态</option><option value="healthy">正常</option><option value="error">异常</option><option value="expired">已过期</option><option value="unknown">未知</option></select><select value={sort} onChange={(event) => { setSort(event.target.value); setPage(1) }} aria-label="账号排序"><option value="newest">新建优先</option><option value="name">账号名称 A-Z</option><option value="site">站点名称</option><option value="status">状态</option><option value="balance">余额高到低</option><option value="updated">最近更新</option></select></div>
     {selected.size > 0 && <div className="batch-toolbar" aria-label="账号批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('refresh')} disabled={batchBusy}><WalletCards size={14} />刷新余额</button><button type="button" onClick={() => void runBatch('model_refresh')} disabled={batchBusy}><RefreshCw size={14} />同步路由</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
     {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
     {error && accounts.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}

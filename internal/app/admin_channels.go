@@ -151,6 +151,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// 排序：健康度开启按 effective_priority 降序；关闭按 priority DESC, name ASC，
 	// 与前端 filterChannels 的排序键对齐，保证分页跨页顺序稳定。
 	priorityMap, successRateMap := s.sortChannelsByEffectivePriority(cfgs, healthEnabled)
+	applyRequestedChannelSort(cfgs, strings.TrimSpace(c.Query("sort")))
 
 	totalCount := len(cfgs)
 
@@ -301,6 +302,34 @@ func (s *Server) sortChannelsByEffectivePriority(cfgs []*model.Config, healthEna
 		})
 	}
 	return priorityMap, successRateMap
+}
+
+func applyRequestedChannelSort(cfgs []*model.Config, requested string) {
+	if requested == "" || requested == "priority" {
+		return
+	}
+	sort.SliceStable(cfgs, func(i, j int) bool {
+		left, right := cfgs[i], cfgs[j]
+		switch requested {
+		case "newest":
+			return left.ID > right.ID
+		case "name":
+			return strings.ToLower(left.Name) < strings.ToLower(right.Name)
+		case "enabled":
+			if left.Enabled != right.Enabled {
+				return left.Enabled
+			}
+			return strings.ToLower(left.Name) < strings.ToLower(right.Name)
+		case "models":
+			leftCount, rightCount := len(left.ModelEntries), len(right.ModelEntries)
+			if leftCount != rightCount {
+				return leftCount > rightCount
+			}
+			return strings.ToLower(left.Name) < strings.ToLower(right.Name)
+		default:
+			return false
+		}
+	})
 }
 
 // paginateChannels 按 query 中的 limit/offset 截取 cfgs。

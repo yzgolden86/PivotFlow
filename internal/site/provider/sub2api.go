@@ -239,7 +239,7 @@ func sub2SuccessCode(value any) bool {
 
 func (p *Sub2API) listModelsWithCredentials(ctx context.Context, req AccountRequest) ([]ModelSnapshot, error) {
 	var firstErr error
-	for _, endpoint := range []string{"/v1/models", "/api/v1/models", "/v1beta/models", "/antigravity/v1/models", "/models"} {
+	for _, endpoint := range []string{"/v1/models", "/api/v1/models", "/v1beta/models", "/antigravity/v1/models", "/antigravity/v1beta/models", "/models"} {
 		var payload any
 		if err := p.family.doJSON(ctx, req, http.MethodGet, endpoint, nil, &payload); err != nil {
 			if firstErr == nil {
@@ -324,7 +324,7 @@ func (p *Sub2API) ListRoutingKeys(ctx context.Context, req AccountRequest) ([]Ro
 		items := collectionItems(data)
 		out := make([]RoutingKeySnapshot, 0, len(items))
 		for index, item := range items {
-			key := firstSub2String(item, "key", "token", "api_key", "apiKey", "access_token", "accessToken")
+			key := normalizeSub2Token(firstSub2String(item, "key", "token", "api_key", "apiKey", "access_token", "accessToken"))
 			if key == "" {
 				continue
 			}
@@ -337,18 +337,100 @@ func (p *Sub2API) ListRoutingKeys(ctx context.Context, req AccountRequest) ([]Ro
 			if id == "<nil>" {
 				id = ""
 			}
-			group := firstSub2String(item, "group", "group_name", "groupName")
-			models := modelNames(itemMap["models"])
+			group, groupModels, protocols := sub2RoutingGroup(item)
+			models := groupModels
+			if len(models) == 0 {
+				models = modelNames(itemMap["models"])
+			}
 			if len(models) == 0 {
 				models = modelNames(itemMap["allowed_models"])
 			}
-			out = append(out, RoutingKeySnapshot{ID: id, Name: name, Group: group, Models: models, Key: key, Enabled: sub2RoutingKeyEnabled(item)})
+			out = append(out, RoutingKeySnapshot{ID: id, Name: name, Group: group, Protocols: protocols, Models: models, Key: key, Enabled: sub2RoutingKeyEnabled(item)})
 		}
 		if len(out) > 0 {
 			return out, nil
 		}
 	}
 	return nil, &Error{Code: CodeUnsupported, Message: "Sub2API has no usable API key for model discovery"}
+}
+
+// sub2RoutingGroup keeps the group identity readable and stable. Some Sub2API
+// deployments return group as a full object; formatting that object with
+// fmt.Sprint produces map[...] and later turns it into a bogus routing key.
+func sub2RoutingGroup(value any) (string, []string, []string) {
+	item, ok := value.(map[string]any)
+	if !ok {
+		return "", nil, nil
+	}
+	for _, key := range []string{"group_id", "groupId"} {
+		if raw, exists := item[key]; exists {
+			if id := scalarSub2String(raw); id != "" {
+				if group, ok := item["group"].(map[string]any); ok {
+					if label := firstSub2String(group, "name", "title", "label"); label != "" {
+						return label, sub2GroupModels(group), sub2GroupProtocols(group)
+					}
+				}
+				return id, nil, nil
+			}
+		}
+	}
+	if raw, exists := item["group"]; exists {
+		switch group := raw.(type) {
+		case string, float64, json.Number:
+			return scalarSub2String(group), nil, nil
+		case map[string]any:
+			label := firstSub2String(group, "name", "title", "label", "display_name", "displayName")
+			if label == "" {
+				label = firstSub2String(group, "id", "group_id", "groupId")
+			}
+			return label, sub2GroupModels(group), sub2GroupProtocols(group)
+		}
+	}
+	return firstSub2String(item, "group_name", "groupName"), nil, nil
+}
+
+func sub2GroupModels(group map[string]any) []string {
+	for _, key := range []string{"models", "allowed_models", "model_limits", "model_list", "modelList"} {
+		if models := modelNames(group[key]); len(models) > 0 {
+			return models
+		}
+	}
+	return nil
+}
+
+func sub2GroupProtocols(group map[string]any) []string {
+	platform := strings.ToLower(firstSub2String(group, "platform", "protocol", "provider_type", "providerType"))
+	switch platform {
+	case "anthropic", "claude":
+		return []string{"anthropic"}
+	case "gemini", "google", "antigravity":
+		return []string{"gemini"}
+	case "openai", "openai-compatible", "openai_compatible":
+		return []string{"openai"}
+	default:
+		return nil
+	}
+}
+
+func scalarSub2String(value any) string {
+	switch raw := value.(type) {
+	case string:
+		return strings.TrimSpace(raw)
+	case float64:
+		return strconv.FormatFloat(raw, 'f', -1, 64)
+	case json.Number:
+		return strings.TrimSpace(raw.String())
+	default:
+		return ""
+	}
+}
+
+func normalizeSub2Token(value string) string {
+	value = strings.TrimSpace(value)
+	for strings.HasPrefix(strings.ToLower(value), "bearer ") {
+		value = strings.TrimSpace(value[len("Bearer "):])
+	}
+	return value
 }
 
 func firstSub2String(value any, keys ...string) string {

@@ -112,6 +112,7 @@ export async function getChannels(filters: ChannelFilters, signal?: AbortSignal)
   })
   if (filters.search) params.set('search', filters.search)
   if (filters.status && filters.status !== 'all') params.set('status', filters.status)
+  if (filters.sort) params.set('sort', filters.sort)
   const payload = await requestEnvelope<Channel[]>(`/admin/channels?${params}`, { signal })
   return { data: payload.data, count: payload.count ?? payload.data.length }
 }
