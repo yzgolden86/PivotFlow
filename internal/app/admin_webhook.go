@@ -25,18 +25,28 @@ type webhookSecret struct {
 	URL string `json:"url"`
 }
 
+type telegramSecret struct {
+	Value string `json:"value"`
+}
+
 type webhookConfigView struct {
 	*model.WebhookConfig
-	URLMasked string `json:"url_masked"`
+	URLMasked          string `json:"url_masked"`
+	TelegramChatMasked string `json:"telegram_chat_masked,omitempty"`
 }
 
 type webhookUpdateRequest struct {
-	Enabled               *bool    `json:"enabled"`
-	URL                   *string  `json:"url"`
-	LowBalanceEnabled     *bool    `json:"low_balance_enabled"`
-	LowBalanceThreshold   *float64 `json:"low_balance_threshold"`
-	CheckinFailureEnabled *bool    `json:"checkin_failure_enabled"`
-	CooldownMinutes       *int     `json:"cooldown_minutes"`
+	Enabled                *bool    `json:"enabled"`
+	URL                    *string  `json:"url"`
+	TelegramEnabled        *bool    `json:"telegram_enabled"`
+	TelegramBotToken       *string  `json:"telegram_bot_token"`
+	TelegramChatID         *string  `json:"telegram_chat_id"`
+	TelegramUseSystemProxy *bool    `json:"telegram_use_system_proxy"`
+	TelegramClear          *bool    `json:"telegram_clear"`
+	LowBalanceEnabled      *bool    `json:"low_balance_enabled"`
+	LowBalanceThreshold    *float64 `json:"low_balance_threshold"`
+	CheckinFailureEnabled  *bool    `json:"checkin_failure_enabled"`
+	CooldownMinutes        *int     `json:"cooldown_minutes"`
 }
 
 type webhookPayload struct {
@@ -51,12 +61,13 @@ type webhookPayload struct {
 
 func defaultWebhookConfig() *model.WebhookConfig {
 	return &model.WebhookConfig{
-		ID:                    1,
-		LowBalanceEnabled:     true,
-		LowBalanceThreshold:   10,
-		CheckinFailureEnabled: true,
-		CooldownMinutes:       360,
-		LastDeliveryStatus:    "never",
+		ID:                     1,
+		LowBalanceEnabled:      true,
+		LowBalanceThreshold:    10,
+		CheckinFailureEnabled:  true,
+		CooldownMinutes:        360,
+		LastDeliveryStatus:     "never",
+		TelegramUseSystemProxy: true,
 	}
 }
 
@@ -102,7 +113,38 @@ func (s *siteControlService) webhookView(config *model.WebhookConfig) webhookCon
 	if endpoint, err := s.webhookEndpoint(config); err == nil {
 		view.URLMasked = maskedWebhookURL(endpoint)
 	}
+	if _, chatID, err := s.telegramCredentials(config); err == nil {
+		view.TelegramChatMasked = maskSecretTail(chatID)
+	}
 	return view
+}
+
+func maskSecretTail(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 4 {
+		return "****"
+	}
+	return "****" + value[len(value)-4:]
+}
+
+func (s *siteControlService) telegramCredentials(config *model.WebhookConfig) (string, string, error) {
+	if config == nil || strings.TrimSpace(config.TelegramBotCiphertext) == "" || strings.TrimSpace(config.TelegramChatCiphertext) == "" {
+		return "", "", errors.New("telegram_not_configured")
+	}
+	if s.locked() {
+		return "", "", credential.ErrCredentialLocked
+	}
+	var botToken, chatID telegramSecret
+	if err := s.cipher.Open(config.TelegramBotCiphertext, &botToken); err != nil {
+		return "", "", err
+	}
+	if err := s.cipher.Open(config.TelegramChatCiphertext, &chatID); err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(botToken.Value) == "" || strings.TrimSpace(chatID.Value) == "" {
+		return "", "", errors.New("telegram_not_configured")
+	}
+	return strings.TrimSpace(botToken.Value), strings.TrimSpace(chatID.Value), nil
 }
 
 func (s *siteControlService) handleWebhook(c *gin.Context) {
@@ -136,6 +178,49 @@ func (s *siteControlService) updateWebhook(c *gin.Context) {
 	}
 	if request.Enabled != nil {
 		config.Enabled = *request.Enabled
+	}
+	if request.TelegramEnabled != nil {
+		config.TelegramEnabled = *request.TelegramEnabled
+	}
+	if request.TelegramUseSystemProxy != nil {
+		config.TelegramUseSystemProxy = *request.TelegramUseSystemProxy
+	}
+	if request.TelegramClear != nil && *request.TelegramClear {
+		config.TelegramEnabled = false
+		config.TelegramBotCiphertext, config.TelegramBotKeyVersion = "", ""
+		config.TelegramChatCiphertext, config.TelegramChatKeyVersion = "", ""
+	}
+	if request.TelegramBotToken != nil || request.TelegramChatID != nil {
+		botToken := ""
+		chatID := ""
+		if request.TelegramBotToken != nil {
+			botToken = strings.TrimSpace(*request.TelegramBotToken)
+		}
+		if request.TelegramChatID != nil {
+			chatID = strings.TrimSpace(*request.TelegramChatID)
+		}
+		if botToken != "" || chatID != "" {
+			if botToken == "" || chatID == "" || len(botToken) > 512 || len(chatID) > 128 {
+				RespondErrorMsg(c, http.StatusBadRequest, "invalid_telegram_credentials")
+				return
+			}
+			if s.locked() {
+				RespondErrorMsg(c, http.StatusLocked, "credential_locked")
+				return
+			}
+			sealedBot, sealErr := s.cipher.Seal(telegramSecret{Value: botToken})
+			if sealErr != nil {
+				RespondErrorMsg(c, http.StatusInternalServerError, "telegram_encrypt_failed")
+				return
+			}
+			sealedChat, sealErr := s.cipher.Seal(telegramSecret{Value: chatID})
+			if sealErr != nil {
+				RespondErrorMsg(c, http.StatusInternalServerError, "telegram_encrypt_failed")
+				return
+			}
+			config.TelegramBotCiphertext, config.TelegramBotKeyVersion = sealedBot, s.cipher.Version()
+			config.TelegramChatCiphertext, config.TelegramChatKeyVersion = sealedChat, s.cipher.Version()
+		}
 	}
 	if request.LowBalanceEnabled != nil {
 		config.LowBalanceEnabled = *request.LowBalanceEnabled
@@ -185,6 +270,11 @@ func (s *siteControlService) updateWebhook(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "webhook_not_configured")
 		return
 	}
+	config.TelegramConfigured = strings.TrimSpace(config.TelegramBotCiphertext) != "" && strings.TrimSpace(config.TelegramChatCiphertext) != ""
+	if config.TelegramEnabled && !config.TelegramConfigured {
+		RespondErrorMsg(c, http.StatusBadRequest, "telegram_not_configured")
+		return
+	}
 	if err := s.store.UpsertWebhookConfig(c.Request.Context(), config); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -200,22 +290,29 @@ func (s *siteControlService) handleWebhookTest(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	endpoint, err := s.webhookEndpoint(config)
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
-		return
-	}
 	now := time.Now()
 	payload := webhookPayload{
 		SchemaVersion: 1,
 		EventType:     "test",
 		EventKey:      fmt.Sprintf("test:%d", now.UnixNano()),
 		OccurredAt:    now.UTC().Format(time.RFC3339),
-		Title:         "CC Fusion webhook test",
-		Message:       "Webhook delivery is configured correctly.",
+		Title:         "PivotFlow 通知测试",
+		Message:       "通知通道配置正确，可以正常接收消息。",
 		Data:          map[string]any{},
 	}
-	attempts, sendErr := s.webhookSender.Send(c.Request.Context(), endpoint, payload)
+	target := strings.ToLower(strings.TrimSpace(c.Query("target")))
+	var attempts int
+	var sendErr error
+	if target == "telegram" {
+		attempts, sendErr = s.sendTelegram(c.Request.Context(), config, payload)
+	} else {
+		endpoint, endpointErr := s.webhookEndpoint(config)
+		if endpointErr != nil {
+			RespondErrorMsg(c, http.StatusBadRequest, endpointErr.Error())
+			return
+		}
+		attempts, sendErr = s.webhookSender.Send(c.Request.Context(), endpoint, payload)
+	}
 	config.LastDeliveryAt = time.Now().UnixMilli()
 	config.LastDeliveryStatus, config.LastError = "success", ""
 	if sendErr != nil {
@@ -229,6 +326,27 @@ func (s *siteControlService) handleWebhookTest(c *gin.Context) {
 		return
 	}
 	RespondJSON(c, http.StatusOK, gin.H{"status": "success", "attempts": attempts})
+}
+
+func (s *siteControlService) sendTelegram(ctx context.Context, config *model.WebhookConfig, payload webhookPayload) (int, error) {
+	botToken, chatID, err := s.telegramCredentials(config)
+	if err != nil {
+		return 0, err
+	}
+	endpoint := "https://api.telegram.org/bot" + url.PathEscape(botToken) + "/sendMessage"
+	proxyURL := ""
+	if !config.TelegramUseSystemProxy {
+		proxyURL = provider.DirectProxyURL
+	}
+	message := strings.TrimSpace(payload.Title)
+	if detail := strings.TrimSpace(payload.Message); detail != "" {
+		message += "\n" + detail
+	}
+	return s.webhookSender.SendWithProxy(ctx, endpoint, gin.H{"chat_id": chatID, "text": message, "disable_web_page_preview": true}, proxyURL)
+}
+
+func notificationConfigActive(config *model.WebhookConfig) bool {
+	return config != nil && ((config.Enabled && config.URLConfigured) || (config.TelegramEnabled && config.TelegramConfigured))
 }
 
 func (s *siteControlService) dispatchWebhookEvent(config *model.WebhookConfig, eventKey, eventType string, accountID int64, payload webhookPayload) {
@@ -245,20 +363,48 @@ func (s *siteControlService) dispatchWebhookEvent(config *model.WebhookConfig, e
 	}
 	state.Status, state.LastAttemptAt, state.LastError = "sending", now.UnixMilli(), ""
 	_ = s.store.UpsertWebhookEventState(s.baseCtx, state)
-	endpoint, err := s.webhookEndpoint(config)
 	attempts := 0
-	if err == nil {
-		notifyCtx, cancel := context.WithTimeout(s.baseCtx, 20*time.Second)
-		attempts, err = s.webhookSender.Send(notifyCtx, endpoint, payload)
-		cancel()
+	var deliveryErrors []string
+	delivered := 0
+	notifyCtx, cancel := context.WithTimeout(s.baseCtx, 20*time.Second)
+	defer cancel()
+	if config.Enabled && config.URLConfigured {
+		endpoint, endpointErr := s.webhookEndpoint(config)
+		if endpointErr == nil {
+			count, sendErr := s.webhookSender.Send(notifyCtx, endpoint, payload)
+			attempts += count
+			if sendErr == nil {
+				delivered++
+			} else {
+				deliveryErrors = append(deliveryErrors, sanitizeWebhookError(sendErr))
+			}
+		} else {
+			deliveryErrors = append(deliveryErrors, sanitizeWebhookError(endpointErr))
+		}
+	}
+	if config.TelegramEnabled && config.TelegramConfigured {
+		count, sendErr := s.sendTelegram(notifyCtx, config, payload)
+		attempts += count
+		if sendErr == nil {
+			delivered++
+		} else {
+			deliveryErrors = append(deliveryErrors, sanitizeWebhookError(sendErr))
+		}
+	}
+	var deliveryErr error
+	if len(deliveryErrors) > 0 {
+		deliveryErr = errors.New(strings.Join(deliveryErrors, "; "))
+	}
+	if delivered == 0 && deliveryErr == nil {
+		deliveryErr = errors.New("notification_not_configured")
 	}
 	state.Attempts += attempts
 	config.LastDeliveryAt = time.Now().UnixMilli()
-	if err == nil {
+	if deliveryErr == nil {
 		state.Status, state.DeliveredAt, state.LastError = "delivered", config.LastDeliveryAt, ""
 		config.LastDeliveryStatus, config.LastError = "success", ""
 	} else {
-		state.Status, state.LastError = "failed", sanitizeWebhookError(err)
+		state.Status, state.LastError = "failed", sanitizeWebhookError(deliveryErr)
 		config.LastDeliveryStatus, config.LastError = "failed", state.LastError
 	}
 	_ = s.store.UpsertWebhookEventState(s.baseCtx, state)
@@ -270,7 +416,7 @@ func (s *siteControlService) evaluateLowBalance(account *model.SiteAccount, site
 		return
 	}
 	config, err := s.loadWebhookConfig(s.baseCtx)
-	if err != nil || !config.Enabled || !config.LowBalanceEnabled || !config.URLConfigured {
+	if err != nil || !notificationConfigActive(config) || !config.LowBalanceEnabled {
 		return
 	}
 	eventKey := fmt.Sprintf("low_balance:%d", account.ID)
@@ -303,7 +449,7 @@ func (s *siteControlService) notifyCheckinFailure(account *model.SiteAccount, si
 		return
 	}
 	config, err := s.loadWebhookConfig(s.baseCtx)
-	if err != nil || !config.Enabled || !config.CheckinFailureEnabled || !config.URLConfigured {
+	if err != nil || !notificationConfigActive(config) || !config.CheckinFailureEnabled {
 		return
 	}
 	eventKey := fmt.Sprintf("checkin_failed:%d:%s", account.ID, localDay)

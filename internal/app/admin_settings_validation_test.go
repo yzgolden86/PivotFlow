@@ -70,6 +70,10 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "string_auto_update_channel_preview", key: "auto_update_channel", valueType: "string", value: "preview", wantErr: false},
 		{name: "string_auto_update_channel_reject_beta", key: "auto_update_channel", valueType: "string", value: "beta", wantErr: true},
 		{name: "string_auto_update_channel_reject_empty", key: "auto_update_channel", valueType: "string", value: "", wantErr: true},
+		{name: "string_daily_checkin_time_ok", key: "site_daily_checkin_time", valueType: "string", value: "09:30", wantErr: false},
+		{name: "string_daily_checkin_time_reject", key: "site_daily_checkin_time", valueType: "string", value: "9:75", wantErr: true},
+		{name: "json_array_ok", key: "antigravity_sensitive_words", valueType: "json", value: `["API","proxy"]`, wantErr: false},
+		{name: "json_invalid_reject", key: "antigravity_sensitive_words", valueType: "json", value: `["API",`, wantErr: true},
 
 		{name: "unknown_type_reject", key: "k", valueType: "wtf", value: "x", wantErr: true},
 	}

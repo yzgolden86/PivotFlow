@@ -59,7 +59,7 @@ def main():
         page.wait_for_url("**/web/console/")
         page.wait_for_load_state("networkidle")
 
-        expect(page.get_by_role("heading", name="概览", exact=True)).to_be_visible()
+        expect(page.get_by_role("heading", name="系统概览", exact=True)).to_be_visible()
         expect(page.locator(".metric-card")).to_have_count(4)
         expect(page.locator(".tool-card")).to_have_count(4)
         expect(page.locator(".sidebar")).to_be_visible()
@@ -137,6 +137,17 @@ def main():
             route_checks.append({"route": route, "overflow": overflow, "legacy_links": legacy_links})
             page.screenshot(path=screenshot_path, full_page=True)
 
+        page.get_by_role("tab", name="导入导出", exact=True).click()
+        expect(page.get_by_role("heading", name="导出配置", exact=True)).to_be_visible()
+        expect(page.get_by_role("heading", name="从文件导入", exact=True)).to_be_visible()
+        expect(page.get_by_role("heading", name="WebDAV 备份", exact=True)).to_be_visible()
+        expect(page.locator(".backup-type-card strong", has_text="完整备份")).to_be_visible()
+        expect(page.get_by_placeholder("https://dav.example.com/PivotFlow/backup.json")).to_be_visible()
+        backup_overflow = page.evaluate(
+            "document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"
+        )
+        page.screenshot(path=system_path, full_page=True)
+
         page.get_by_role("navigation", name="主导航").get_by_role("link", name="模型测试", exact=True).click()
         page.wait_for_url("**/#/models")
         expect(page.get_by_role("tab", name="模型清单")).to_have_attribute("aria-selected", "true")
@@ -171,7 +182,7 @@ def main():
         page.get_by_role("button", name="其他来源", exact=True).click()
         page.get_by_role("menuitem", name="手工渠道", exact=True).click()
         expect(page.get_by_role("dialog", name="添加渠道")).to_be_visible()
-        expect(page.get_by_text("模型映射", exact=True)).to_be_visible()
+        expect(page.get_by_text("渠道模型", exact=True)).to_be_visible()
         page.get_by_role("button", name="关闭弹窗").click()
 
         page.get_by_role("navigation", name="主导航").get_by_role("link", name="令牌管理", exact=True).click()
@@ -236,6 +247,8 @@ def main():
         page.goto(f"{BASE_URL}/web/console/#/system")
         page.wait_for_load_state("networkidle")
         expect(page.get_by_role("heading", name="系统设置", exact=True)).to_be_visible()
+        page.get_by_role("tab", name="导入导出", exact=True).click()
+        expect(page.get_by_role("heading", name="WebDAV 备份", exact=True)).to_be_visible()
         page.wait_for_timeout(300)
         settings_mobile_overflow = page.evaluate(
             "document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"
@@ -261,6 +274,7 @@ def main():
         "desktop_overflow": desktop_overflow,
         "mobile_overflow": mobile_overflow,
         "settings_mobile_overflow": settings_mobile_overflow,
+        "backup_overflow": backup_overflow,
         "route_checks": route_checks,
         "console_errors": console_errors,
         "failed_responses": failed_responses,
@@ -269,7 +283,7 @@ def main():
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
     failures = []
-    if desktop_overflow or mobile_overflow or settings_mobile_overflow:
+    if desktop_overflow or mobile_overflow or settings_mobile_overflow or backup_overflow:
         failures.append("horizontal overflow detected")
     if any(check["overflow"] for check in route_checks):
         failures.append("console route overflow detected")

@@ -20,7 +20,8 @@ PivotFlow is the product and the routing foundation is integrated into the same 
 - Run check-ins and retain account-level history.
 - Discover models and test a model directly with a site account.
 - Aggregate announcements and track read state.
-- Send generic webhooks for low balances and check-in failures.
+- Schedule daily check-ins in each account or site timezone.
+- Send generic Webhook or Telegram alerts for low balances and check-in failures.
 - Project site accounts into idempotently managed routing channels.
 
 ### PivotFlow routing data plane
@@ -41,7 +42,8 @@ PivotFlow is the product and the routing foundation is integrated into the same 
 - Recoverable access tokens with model, channel, cost, and concurrency restrictions.
 - Codex OAuth, Antigravity OAuth, and credential-file import.
 - SQLite, MySQL, PostgreSQL, and hybrid primary-database/SQLite storage.
-- Themes, routing, cooldown, logging, notification, and read-only upstream version settings.
+- Themes, routing, cooldown, logging, notification, scheduled check-in, and read-only upstream version settings.
+- Portable JSON import/export for all configuration, connections and routing, or system settings, with optional scheduled WebDAV backups.
 
 ## Four concepts
 
@@ -102,13 +104,13 @@ The default port is `8080`; set `PORT` to change it. Go `1.26` and Node.js `24` 
 
 ## First setup
 
-1. Review storage, request limits, cooldowns, and logs under **System settings**.
+1. Review automatic check-in time, notifications, backup, request limits, cooldowns, and logs under **System settings**.
 2. Add an upstream under **Sites** and optionally create its first account in the same form.
 3. Verify the credential, refresh the balance, and synchronize models under **Accounts**.
 4. Run one manual check-in under **Check-in center**.
 5. Use **Sync site channels** under **Channels and routing**, then inspect URL, model, key count, and priority.
-6. Create a token under **Downstream keys** and configure it in your client.
-7. Run one account or channel probe under **Models and testing** before real traffic.
+6. Create a token under **Token management** and configure it in your client.
+7. Run one account or channel probe under **Model testing** before real traffic.
 
 ## Proxy endpoints
 

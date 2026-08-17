@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, Copy, KeyRound, Pencil, Plus, Power, RefreshCw, Search, Trash2, WalletCards } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, Copy, KeyRound, Pencil, Plus, Power, RefreshCw, Search, Trash2, WalletCards } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 import {
   createSiteAccount,
@@ -33,6 +33,9 @@ type CreateAccountForm = CredentialForm & {
   auto_checkin: boolean
   auto_refresh: boolean
 }
+
+type AccountSort = 'newest' | 'name' | 'site' | 'status' | 'balance' | 'checkin' | 'automation' | 'updated'
+type SortDirection = 'asc' | 'desc'
 
 type MetadataForm = {
   label: string
@@ -79,7 +82,8 @@ export default function AccountsPage() {
   const [search, setSearch] = useState(querySearch)
   const [siteFilter, setSiteFilter] = useState(querySite)
   const [status, setStatus] = useState('all')
-  const [sort, setSort] = useState('newest')
+  const [sort, setSort] = useState<AccountSort>('newest')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [loading, setLoading] = useState(true)
@@ -142,17 +146,33 @@ export default function AccountsPage() {
       && (!search.trim() || [account.label, siteMap.get(account.site_id)?.name || ''].some((value) => value.toLowerCase().includes(search.trim().toLowerCase())))
     ))
     return [...filtered].sort((left, right) => {
-      if (sort === 'name') return left.label.localeCompare(right.label, 'zh-CN')
-      if (sort === 'site') return (siteMap.get(left.site_id)?.name || '').localeCompare(siteMap.get(right.site_id)?.name || '', 'zh-CN') || left.label.localeCompare(right.label, 'zh-CN')
-      if (sort === 'status') return left.status.localeCompare(right.status) || left.label.localeCompare(right.label, 'zh-CN')
-      if (sort === 'balance') return (right.balance || 0) - (left.balance || 0)
-      if (sort === 'updated') return (right.balance_updated_at || 0) - (left.balance_updated_at || 0)
-      return right.id - left.id
+      let compared = 0
+      if (sort === 'name') compared = left.label.localeCompare(right.label, 'zh-CN')
+      else if (sort === 'site') compared = (siteMap.get(left.site_id)?.name || '').localeCompare(siteMap.get(right.site_id)?.name || '', 'zh-CN') || left.label.localeCompare(right.label, 'zh-CN')
+      else if (sort === 'status') compared = left.status.localeCompare(right.status) || left.label.localeCompare(right.label, 'zh-CN')
+      else if (sort === 'balance') compared = (left.balance ?? Number.NEGATIVE_INFINITY) - (right.balance ?? Number.NEGATIVE_INFINITY)
+      else if (sort === 'checkin') compared = (left.last_checkin_at || 0) - (right.last_checkin_at || 0)
+      else if (sort === 'automation') compared = Number(left.auto_checkin) + Number(left.auto_refresh) - Number(right.auto_checkin) - Number(right.auto_refresh)
+      else if (sort === 'updated') compared = (left.balance_updated_at || 0) - (right.balance_updated_at || 0)
+      else compared = left.id - right.id
+      return (sortDirection === 'asc' ? compared : -compared) || left.label.localeCompare(right.label, 'zh-CN')
     })
-  }, [accounts, search, siteFilter, siteMap, sort, status])
+  }, [accounts, search, siteFilter, siteMap, sort, sortDirection, status])
   const pagedVisible = useMemo(() => visible.slice((page - 1) * pageSize, page * pageSize), [page, pageSize, visible])
 
   useEffect(() => { setPage(1) }, [search, siteFilter, status])
+
+  const chooseSort = (next: AccountSort) => {
+    setSort(next)
+    setSortDirection(['name', 'site', 'status'].includes(next) ? 'asc' : 'desc')
+    setPage(1)
+  }
+
+  const toggleSort = (next: AccountSort) => {
+    if (sort === next) setSortDirection((current) => current === 'asc' ? 'desc' : 'asc')
+    else chooseSort(next)
+    setPage(1)
+  }
   useEffect(() => {
     const pages = Math.max(1, Math.ceil(visible.length / pageSize))
     if (page > pages) setPage(pages)
@@ -420,11 +440,11 @@ export default function AccountsPage() {
       </div>
     </header>
     <section className="compact-summary"><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{accounts.filter((item) => item.status === 'healthy').length}</strong>健康</span><span><strong>{accounts.filter((item) => item.auto_checkin).length}</strong>自动签到</span><span><strong>{accounts.filter((item) => item.credential_configured).length}</strong>凭证已配置</span></section>
-    <div className="filter-bar filter-bar--wide"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部账号" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索账号或站点" aria-label="搜索账号" /></label><select value={siteFilter} onChange={(event) => setSiteFilter(Number(event.target.value))} aria-label="账号站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="账号状态"><option value="all">全部状态</option><option value="healthy">正常</option><option value="error">异常</option><option value="expired">已过期</option><option value="unknown">未知</option></select><select value={sort} onChange={(event) => { setSort(event.target.value); setPage(1) }} aria-label="账号排序"><option value="newest">新建优先</option><option value="name">账号名称 A-Z</option><option value="site">站点名称</option><option value="status">状态</option><option value="balance">余额高到低</option><option value="updated">最近更新</option></select></div>
+    <div className="filter-bar filter-bar--wide"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部账号" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索账号或站点" aria-label="搜索账号" /></label><select value={siteFilter} onChange={(event) => setSiteFilter(Number(event.target.value))} aria-label="账号站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="账号状态"><option value="all">全部状态</option><option value="healthy">正常</option><option value="error">异常</option><option value="expired">已过期</option><option value="unknown">未知</option></select><select value={sort} onChange={(event) => chooseSort(event.target.value as AccountSort)} aria-label="账号排序"><option value="newest">新建优先</option><option value="name">账号名称</option><option value="site">站点名称</option><option value="status">状态</option><option value="balance">余额</option><option value="checkin">最近签到</option><option value="updated">最近更新</option></select></div>
     {selected.size > 0 && <div className="batch-toolbar" aria-label="账号批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('refresh')} disabled={batchBusy}><WalletCards size={14} />刷新余额</button><button type="button" onClick={() => void runBatch('model_refresh')} disabled={batchBusy}><RefreshCw size={14} />同步路由</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
     {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
     {error && accounts.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
-    {loading ? <LoadingState label="正在加载账号" /> : error && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? accounts.length ? <EmptyState label="没有匹配的账号" /> : <div className="content-state content-state--empty"><strong>还没有账号</strong><button className="secondary-button" type="button" onClick={() => void openCreate()} disabled={!sites.length}><Plus size={15} />添加账号</button></div> : <div className="account-records records-panel"><div className="record-head account-grid"><span>账号 / 站点</span><span>状态</span><span>余额</span><span>最近签到</span><span>自动任务</span><span>操作</span></div>{pagedVisible.map((account) => <AccountRow key={account.id} account={account} site={siteMap.get(account.site_id)} latestCheckin={latestCheckins[account.id]} selected={selected.has(account.id)} busyKind={busy.get(account.id)} focused={account.id === focusAccountId} rowRef={(node) => { if (node) rowRefs.current.set(account.id, node); else rowRefs.current.delete(account.id) }} select={() => toggleSelected(account.id)} task={(kind) => void task(account, kind)} copy={() => void copyAccount(account)} edit={() => openMetadata(account)} credential={() => openCredential(account)} remove={() => void remove(account)} />)}</div>}
+    {loading ? <LoadingState label="正在加载账号" /> : error && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? accounts.length ? <EmptyState label="没有匹配的账号" /> : <div className="content-state content-state--empty"><strong>还没有账号</strong><button className="secondary-button" type="button" onClick={() => void openCreate()} disabled={!sites.length}><Plus size={15} />添加账号</button></div> : <div className="account-records records-panel"><div className="record-head account-grid"><SortableHead label="账号 / 站点" sortKey="name" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="状态" sortKey="status" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="余额" sortKey="balance" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="最近签到" sortKey="checkin" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="自动任务" sortKey="automation" active={sort} direction={sortDirection} choose={toggleSort} /><span>操作</span></div>{pagedVisible.map((account) => <AccountRow key={account.id} account={account} site={siteMap.get(account.site_id)} latestCheckin={latestCheckins[account.id]} selected={selected.has(account.id)} busyKind={busy.get(account.id)} focused={account.id === focusAccountId} rowRef={(node) => { if (node) rowRefs.current.set(account.id, node); else rowRefs.current.delete(account.id) }} select={() => toggleSelected(account.id)} task={(kind) => void task(account, kind)} copy={() => void copyAccount(account)} edit={() => openMetadata(account)} credential={() => openCredential(account)} remove={() => void remove(account)} />)}</div>}
     <Pagination page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[20, 50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
 
     {creating && <Modal title="添加账号" close={() => setCreating(false)}>{error && <div className="inline-error modal-error">{error}</div>}<CreateAccountFormView form={createForm} setForm={setCreateForm} sites={sites} saving={openingCreate} submit={saveCreate} /></Modal>}
@@ -454,11 +474,16 @@ function AccountRow({ account, site, latestCheckin, selected, busyKind, focused,
   return <article ref={rowRef} data-account-id={account.id} className={`record-row account-grid${selected ? ' row-selected' : ''}${focused ? ' row-focus-highlight' : ''}`}>
     <div className="account-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${account.label}`} /><div><a className="entity-link" href={`#/accounts?focus_account_id=${account.id}`}><strong>{account.label}</strong></a><a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a><span>{credentialLabel(account.credential_type, site?.platform)}{site?.platform === 'sub2api' && account.credential_refresh_configured ? ` · 自动续期${account.credential_expires_at ? `至 ${formatTime(account.credential_expires_at)}` : ''}` : ''}</span></div></div>
     <div><StatusBadge status={account.enabled ? account.status : 'disabled'} />{needsCredential ? <button className="inline-entity-action" type="button" onClick={credential} title={account.last_error}>{account.last_error ? siteErrorMessage(account.last_error) : '需要更新凭证'}</button> : <span>{account.consecutive_failures} 次连续失败</span>}</div>
-    <div><strong>{formatAccountBalance(account)}</strong>{latestCheckin?.balance_delta !== undefined && Math.abs(latestCheckin.balance_delta) > 0.000001 && <em className={latestCheckin.balance_delta > 0 ? 'balance-delta balance-delta--gain' : 'balance-delta balance-delta--loss'}>{latestCheckin.balance_delta > 0 ? '+' : ''}{latestCheckin.balance_delta.toFixed(2)} {latestCheckin.balance_currency || account.balance_currency}</em>}<span>{apiKeyOnly ? 'API Key 不读取余额' : account.balance_updated_at ? formatTime(account.balance_updated_at) : '尚未同步'}</span></div>
+    <div><strong className="account-balance-amount">{formatAccountBalance(account)}</strong>{latestCheckin?.balance_delta !== undefined && Math.abs(latestCheckin.balance_delta) > 0.000001 && <em className={latestCheckin.balance_delta > 0 ? 'balance-delta balance-delta--gain' : 'balance-delta balance-delta--loss'}>{latestCheckin.balance_delta > 0 ? '+' : ''}{latestCheckin.balance_delta.toFixed(2)} {latestCheckin.balance_currency || account.balance_currency}</em>}<span>{apiKeyOnly ? 'API Key 不读取余额' : account.balance_updated_at ? formatTime(account.balance_updated_at) : '尚未同步'}</span></div>
     <div><StatusBadge status={apiKeyOnly ? 'unsupported' : account.last_checkin_status} /><span>{apiKeyOnly ? '需要登录凭证' : account.last_checkin_at ? formatTime(account.last_checkin_at) : '尚无记录'}</span></div>
     <div><strong>{account.auto_checkin ? '签到' : '—'} / {account.auto_refresh ? '刷新' : '—'}</strong><span>{account.timezone || site?.timezone || '站点时区'}</span></div>
     <div className="account-actions"><button className="account-task-button" type="button" onClick={() => task('checkin')} disabled={busy || apiKeyOnly}>{busyKind === 'checkin' && <RefreshCw className="spin" size={14} />}签到</button><button className="account-task-button" type="button" onClick={() => task('refresh')} disabled={busy || apiKeyOnly}>{busyKind === 'refresh' ? <RefreshCw className="spin" size={14} /> : <WalletCards size={14} />}余额</button><button className="account-task-button account-task-button--route" type="button" onClick={() => task('model_refresh')} disabled={busy} title="刷新模型并更新对应路由渠道"><RefreshCw className={busyKind === 'model_refresh' ? 'spin' : ''} size={14} />同步路由</button><button type="button" onClick={credential} disabled={busy}><KeyRound size={14} />凭证</button><button className="icon-button icon-button--surface" type="button" onClick={copy} aria-label={`复制 ${account.label} 信息`} title="复制账号信息"><Copy size={15} /></button><button className="icon-button icon-button--surface" type="button" onClick={edit} disabled={busy} aria-label={`编辑 ${account.label}`}><Pencil size={15} /></button><button className="icon-button icon-button--surface danger-button" type="button" onClick={remove} disabled={busy} aria-label={`删除 ${account.label}`}><Trash2 size={15} /></button></div>
   </article>
+}
+
+function SortableHead({ label, sortKey, active, direction, choose }: { label: string; sortKey: AccountSort; active: AccountSort; direction: SortDirection; choose: (key: AccountSort) => void }) {
+  const Icon = active === sortKey ? direction === 'asc' ? ArrowUp : ArrowDown : ArrowUpDown
+  return <button className={`sortable-head${active === sortKey ? ' is-active' : ''}`} type="button" onClick={() => choose(sortKey)} aria-label={`按${label}${active === sortKey && direction === 'asc' ? '降序' : '升序'}排列`}>{label}<Icon size={13} /></button>
 }
 
 function CreateAccountFormView({ form, setForm, sites, saving, submit }: { form: CreateAccountForm; setForm: React.Dispatch<React.SetStateAction<CreateAccountForm>>; sites: Site[]; saving: boolean; submit: (event: React.FormEvent) => void }) {

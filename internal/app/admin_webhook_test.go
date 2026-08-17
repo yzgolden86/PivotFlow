@@ -104,3 +104,52 @@ func TestWebhookUpdateRejectsPrivateEndpoint(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestTelegramConfigIsEncryptedMaskedAndClearable(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "telegram-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	botToken := "123456:AA-super-secret-bot-token"
+	chatID := "-1001234567890"
+	c, recorder := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/webhook", map[string]any{
+		"telegram_enabled":          true,
+		"telegram_bot_token":        botToken,
+		"telegram_chat_id":          chatID,
+		"telegram_use_system_proxy": true,
+	}))
+	srv.siteControl.handleWebhook(c)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	for _, secret := range []string{botToken, chatID, "telegram_bot_ciphertext", "telegram_chat_ciphertext"} {
+		if strings.Contains(recorder.Body.String(), secret) {
+			t.Fatalf("response leaked %q: %s", secret, recorder.Body.String())
+		}
+	}
+	if !strings.Contains(recorder.Body.String(), "****7890") {
+		t.Fatalf("response does not contain masked chat ID: %s", recorder.Body.String())
+	}
+	stored, err := srv.store.GetWebhookConfig(srv.baseCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.TelegramBotCiphertext == "" || stored.TelegramChatCiphertext == "" || strings.Contains(stored.TelegramBotCiphertext, botToken) {
+		t.Fatalf("telegram credentials were not encrypted: %+v", stored)
+	}
+
+	c, recorder = newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/webhook", map[string]any{"telegram_clear": true}))
+	srv.siteControl.handleWebhook(c)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clear status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	stored, err = srv.store.GetWebhookConfig(srv.baseCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.TelegramEnabled || stored.TelegramBotCiphertext != "" || stored.TelegramChatCiphertext != "" {
+		t.Fatalf("telegram credentials were not cleared: %+v", stored)
+	}
+}

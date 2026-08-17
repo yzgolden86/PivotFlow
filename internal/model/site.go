@@ -201,20 +201,27 @@ type SiteTaskLease struct {
 // WebhookConfig is the single notification endpoint used by a personal
 // deployment. The encrypted URL is never serialized by admin APIs.
 type WebhookConfig struct {
-	ID                    int64   `json:"id"`
-	Enabled               bool    `json:"enabled"`
-	URLCiphertext         string  `json:"-"`
-	URLKeyVersion         string  `json:"-"`
-	URLConfigured         bool    `json:"url_configured"`
-	LowBalanceEnabled     bool    `json:"low_balance_enabled"`
-	LowBalanceThreshold   float64 `json:"low_balance_threshold"`
-	CheckinFailureEnabled bool    `json:"checkin_failure_enabled"`
-	CooldownMinutes       int     `json:"cooldown_minutes"`
-	LastDeliveryStatus    string  `json:"last_delivery_status"`
-	LastDeliveryAt        int64   `json:"last_delivery_at,omitempty"`
-	LastError             string  `json:"last_error,omitempty"`
-	CreatedAt             int64   `json:"created_at"`
-	UpdatedAt             int64   `json:"updated_at"`
+	ID                     int64   `json:"id"`
+	Enabled                bool    `json:"enabled"`
+	URLCiphertext          string  `json:"-"`
+	URLKeyVersion          string  `json:"-"`
+	URLConfigured          bool    `json:"url_configured"`
+	TelegramEnabled        bool    `json:"telegram_enabled"`
+	TelegramBotCiphertext  string  `json:"-"`
+	TelegramBotKeyVersion  string  `json:"-"`
+	TelegramChatCiphertext string  `json:"-"`
+	TelegramChatKeyVersion string  `json:"-"`
+	TelegramConfigured     bool    `json:"telegram_configured"`
+	TelegramUseSystemProxy bool    `json:"telegram_use_system_proxy"`
+	LowBalanceEnabled      bool    `json:"low_balance_enabled"`
+	LowBalanceThreshold    float64 `json:"low_balance_threshold"`
+	CheckinFailureEnabled  bool    `json:"checkin_failure_enabled"`
+	CooldownMinutes        int     `json:"cooldown_minutes"`
+	LastDeliveryStatus     string  `json:"last_delivery_status"`
+	LastDeliveryAt         int64   `json:"last_delivery_at,omitempty"`
+	LastError              string  `json:"last_error,omitempty"`
+	CreatedAt              int64   `json:"created_at"`
+	UpdatedAt              int64   `json:"updated_at"`
 }
 
 // WebhookEventState provides cooldown deduplication without storing payloads.

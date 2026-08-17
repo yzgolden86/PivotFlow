@@ -350,6 +350,12 @@ func DefineWebhookEndpointsTable() *TableBuilder {
 		Column("enabled TINYINT NOT NULL DEFAULT 0").
 		Column("url_ciphertext TEXT NOT NULL").
 		Column("url_key_version VARCHAR(32) NOT NULL").
+		Column("telegram_enabled TINYINT NOT NULL DEFAULT 0").
+		Column("telegram_bot_ciphertext TEXT NOT NULL").
+		Column("telegram_bot_key_version VARCHAR(32) NOT NULL").
+		Column("telegram_chat_ciphertext TEXT NOT NULL").
+		Column("telegram_chat_key_version VARCHAR(32) NOT NULL").
+		Column("telegram_use_system_proxy TINYINT NOT NULL DEFAULT 1").
 		Column("low_balance_enabled TINYINT NOT NULL DEFAULT 1").
 		Column("low_balance_threshold DOUBLE NOT NULL DEFAULT 10").
 		Column("checkin_failure_enabled TINYINT NOT NULL DEFAULT 1").
@@ -375,6 +381,24 @@ func DefineWebhookEventStatesTable() *TableBuilder {
 		Column("updated_at BIGINT NOT NULL").
 		Index("idx_webhook_event_states_updated", "updated_at").
 		Index("idx_webhook_event_states_account", "site_account_id")
+}
+
+// DefineBackupSettingsTable stores one encrypted WebDAV backup target.
+func DefineBackupSettingsTable() *TableBuilder {
+	return NewTable("backup_settings").
+		Column("id INT PRIMARY KEY").
+		Column("enabled TINYINT NOT NULL DEFAULT 0").
+		Column("file_url TEXT NOT NULL").
+		Column("username VARCHAR(255) NOT NULL DEFAULT ''").
+		Column("password_ciphertext TEXT NOT NULL").
+		Column("password_key_version VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("export_type VARCHAR(32) NOT NULL DEFAULT 'all'").
+		Column("auto_sync_enabled TINYINT NOT NULL DEFAULT 0").
+		Column("auto_sync_interval_hours INT NOT NULL DEFAULT 24").
+		Column("last_sync_at BIGINT NOT NULL DEFAULT 0").
+		Column("last_error TEXT NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL")
 }
 
 // DefineSchemaMigrationsTable 定义schema_migrations表结构（迁移版本控制）

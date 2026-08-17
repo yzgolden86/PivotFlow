@@ -2,7 +2,7 @@
 
 ## 凭证主密钥
 
-站点账号凭证和 Webhook URL 使用主密钥加密。个人 SQLite 未显式提供密钥时，服务会在 SQLite 路径同目录生成权限受限的 `fusion-master.key`。
+站点账号凭证、Webhook URL、Telegram 凭证和 WebDAV 密码使用主密钥加密。个人 SQLite 未显式提供密钥时，服务会在 SQLite 路径同目录生成权限受限的 `fusion-master.key`。
 
 主密钥丢失时，数据库中的密文不能恢复。恢复数据库时必须同时恢复同一主密钥和 `FUSION_MASTER_KEY_VERSION`（如有设置）。
 
@@ -15,6 +15,10 @@ data/fusion-master.key
 ```
 
 备份前停止写入或使用 SQLite 快照机制。不要把备份文件上传到公开仓库或截图工具。
+
+控制台“导入导出”生成的是可迁移 JSON。完整备份和连接备份会包含解密后的账号凭证、上游 Key、OAuth 凭证和下游令牌；系统设置备份可能包含通知与 WebDAV 凭证。因此备份文件本身必须按明文密钥材料保护，只保存到可信设备或受控 WebDAV 空间。导入到另一实例时，敏感字段会使用目标实例的主密钥重新加密。
+
+WebDAV 自动备份仅支持明确配置的 `http://` 或 `https://` 文件地址，并允许访问个人 NAS 等内网目标。请使用独立的低权限 WebDAV 账号、HTTPS 和专用目录，不要指向公共分享链接。
 
 ## OAuth 和 API 密钥
 
