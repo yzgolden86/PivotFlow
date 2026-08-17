@@ -20,6 +20,7 @@ import (
 	"github.com/yzgolden86/PivotFlow/internal/codexauth"
 	"github.com/yzgolden86/PivotFlow/internal/model"
 	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/site/credential"
 	"github.com/yzgolden86/PivotFlow/internal/storage"
 	"github.com/yzgolden86/PivotFlow/internal/util"
 
@@ -6032,6 +6033,103 @@ func TestProxy_KeyRetry_On401(t *testing.T) {
 	}
 	if callCount < 2 {
 		t.Fatalf("expected at least 2 upstream calls (key retry), got %d", callCount)
+	}
+}
+
+func TestProxy_GeneratedDownstreamTokenFailsOverAfterUpstream401(t *testing.T) {
+	t.Parallel()
+
+	var rejectedCalls atomic.Int32
+	rejected := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rejectedCalls.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-upstream-rejected" {
+			t.Fatalf("rejected upstream authorization=%q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"message":"invalid token","type":"authentication_error"}}`)
+	}))
+	defer rejected.Close()
+
+	var healthyCalls atomic.Int32
+	healthy := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		healthyCalls.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-upstream-healthy" {
+			t.Fatalf("healthy upstream authorization=%q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"fallback-ok","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer healthy.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "rejected", models: "DeepSeek-V4-Flash-0731", apiKey: "sk-upstream-rejected", priority: 100},
+		{name: "healthy", models: "DeepSeek-V4-Flash-0731", apiKey: "sk-upstream-healthy", priority: 50},
+	}, map[int]string{0: rejected.URL, 1: healthy.URL})
+
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "proxy-generated-token-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.server.siteControl.cipher = cipher
+	createContext, createRecorder := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
+		"description": "proxy test",
+	}))
+	env.server.HandleCreateAuthToken(createContext)
+	if createRecorder.Code != http.StatusOK {
+		t.Fatalf("create token status=%d body=%s", createRecorder.Code, createRecorder.Body.String())
+	}
+	created := mustParseAPIResponse[struct {
+		Token string `json:"token"`
+	}](t, createRecorder.Body.Bytes())
+	if !strings.HasPrefix(created.Data.Token, "sk-pf-") {
+		t.Fatalf("generated downstream token=%q", created.Data.Token)
+	}
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model":    "DeepSeek-V4-Flash-0731",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, map[string]string{"Authorization": "Bearer " + created.Data.Token})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "fallback-ok") {
+		t.Fatalf("status=%d body=%s, want successful fallback", response.Code, response.Body.String())
+	}
+	if rejectedCalls.Load() != 1 || healthyCalls.Load() != 1 {
+		t.Fatalf("upstream calls rejected=%d healthy=%d, want one attempt each", rejectedCalls.Load(), healthyCalls.Load())
+	}
+}
+
+func TestProxy_SamePriorityChannelsUseSmoothRoundRobin(t *testing.T) {
+	t.Parallel()
+
+	var firstCalls atomic.Int32
+	first := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"first","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer first.Close()
+	var secondCalls atomic.Int32
+	second := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"second","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer second.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "round-robin-a", models: "gpt-round-robin", priority: 100},
+		{name: "round-robin-b", models: "gpt-round-robin", priority: 100},
+	}, map[int]string{0: first.URL, 1: second.URL})
+	for range 12 {
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": "gpt-round-robin", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	if firstCalls.Load() == 0 || secondCalls.Load() == 0 {
+		t.Fatalf("round robin did not distribute requests: first=%d second=%d", firstCalls.Load(), secondCalls.Load())
 	}
 }
 

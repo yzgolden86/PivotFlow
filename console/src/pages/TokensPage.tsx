@@ -86,7 +86,23 @@ export default function TokensPage() {
   }
 
   const copyValue = async (value: string, id?: number | 'created') => {
-    await navigator.clipboard.writeText(value)
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value)
+      } else {
+        const textarea = document.createElement('textarea')
+        textarea.value = value
+        textarea.setAttribute('readonly', 'true')
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        if (!document.execCommand('copy')) throw new Error('clipboard unavailable')
+        textarea.remove()
+      }
+    } catch {
+      throw new Error('复制失败，请检查浏览器剪贴板权限')
+    }
     if (id === undefined) return
     setCopiedId(id)
     window.setTimeout(() => setCopiedId((current) => current === id ? null : current), 1800)

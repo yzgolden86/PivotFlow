@@ -39,6 +39,9 @@ func TestAuthTokenRevealLifecycle(t *testing.T) {
 		t.Fatalf("unexpected create response: %+v", created)
 	}
 	plain := created.Data.Token
+	if !strings.HasPrefix(plain, "sk-pf-") {
+		t.Fatalf("created token=%q, want sk-pf- prefix", plain)
+	}
 	hash := model.HashToken(plain)
 	stored, err := server.store.GetAuthToken(context.Background(), created.Data.ID)
 	if err != nil {

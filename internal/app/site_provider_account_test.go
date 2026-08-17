@@ -124,6 +124,10 @@ type groupFallbackProjectionTestAdapter struct {
 	modelsByGroup map[string][]string
 }
 
+type sub2ProjectionTestAdapter struct{ multiKeyProjectionTestAdapter }
+
+func (*sub2ProjectionTestAdapter) ID() string { return model.SitePlatformSub2API }
+
 func (a *groupFallbackProjectionTestAdapter) ListModelsForRoutingKey(_ context.Context, req provider.AccountRequest, key provider.RoutingKeySnapshot) ([]provider.ModelSnapshot, error) {
 	if req.Credentials.AccessToken == "" {
 		return nil, &provider.Error{Code: provider.CodeUnsupported, Message: "management credential is required"}
@@ -966,6 +970,84 @@ func TestModelRefreshPrefersManagementGroupModelsOverSharedKeyEndpoint(t *testin
 	assertProjectedModelsByKey(t, ctx, srv, map[string][]string{
 		"sk-coding":  {"claude-coding", "gpt-coding"},
 		"sk-general": {"gpt-general"},
+	})
+}
+
+func TestModelRefreshPrefersManagementGroupModelsWhenTokenSnapshotsAreAlsoUnscoped(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "group-snapshot-scope-sync-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	shared := []string{"gpt-coding", "claude-coding", "gpt-general", "extra-1", "extra-2"}
+	adapter := &groupFallbackProjectionTestAdapter{
+		multiKeyProjectionTestAdapter: multiKeyProjectionTestAdapter{
+			keys: []provider.RoutingKeySnapshot{
+				{ID: "coding", Group: "coding", Models: shared, Key: "sk-coding", Enabled: true},
+				{ID: "general", Group: "default", Models: shared, Key: "sk-general", Enabled: true},
+			},
+			modelsByKey: map[string][]string{"sk-coding": shared, "sk-general": shared},
+		},
+		modelsByGroup: map[string][]string{
+			"coding":  {"claude-coding", "gpt-coding"},
+			"default": {"gpt-general"},
+		},
+	}
+	srv.siteControl.registry = provider.NewRegistry(adapter)
+	ctx := context.Background()
+	site, err := srv.store.CreateSite(ctx, &model.Site{Name: "Scoped snapshots", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://group-snapshot.example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := srv.siteControl.createAccount(ctx, site.ID, accountCreateRequest{Label: "admin", CredentialType: model.CredentialTypeAccessToken, Credential: provider.Credentials{AccessToken: "system-token", UserID: 42}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &model.SiteTask{ID: newSiteTaskID(), Kind: "model_refresh", Status: model.SiteTaskStatusRunning}
+	srv.siteControl.refreshAccount(ctx, task, account.ID, true)
+	if task.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("task=%+v", task)
+	}
+	assertProjectedModelsByKey(t, ctx, srv, map[string][]string{
+		"sk-coding":  {"claude-coding", "gpt-coding"},
+		"sk-general": {"gpt-general"},
+	})
+}
+
+func TestSub2APIModelRefreshKeepsTokenGroupModelsWhenKeyEndpointsAreShared(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "sub2-group-scope-sync-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	shared := []string{"gpt-5-codex", "claude-code", "gpt-image-1"}
+	adapter := &sub2ProjectionTestAdapter{multiKeyProjectionTestAdapter{
+		keys: []provider.RoutingKeySnapshot{
+			{ID: "11", Group: "Coding", Models: []string{"gpt-5-codex", "claude-code"}, Key: "sk-sub2-coding", Enabled: true},
+			{ID: "12", Group: "Image", Models: []string{"gpt-image-1"}, Key: "sk-sub2-image", Enabled: true},
+		},
+		modelsByKey: map[string][]string{"sk-sub2-coding": shared, "sk-sub2-image": shared},
+	}}
+	srv.siteControl.registry = provider.NewRegistry(adapter)
+	ctx := context.Background()
+	site, err := srv.store.CreateSite(ctx, &model.Site{Name: "Sub2 scoped", Platform: model.SitePlatformSub2API, BaseURL: "https://sub2-scope.example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := srv.siteControl.createAccount(ctx, site.ID, accountCreateRequest{Label: "admin", CredentialType: model.CredentialTypeAccessToken, Credential: provider.Credentials{AccessToken: "sub2-jwt"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &model.SiteTask{ID: newSiteTaskID(), Kind: "model_refresh", Status: model.SiteTaskStatusRunning}
+	srv.siteControl.refreshAccount(ctx, task, account.ID, true)
+	if task.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("task=%+v", task)
+	}
+	assertProjectedModelsByKey(t, ctx, srv, map[string][]string{
+		"sk-sub2-coding": {"claude-code", "gpt-5-codex"},
+		"sk-sub2-image":  {"gpt-image-1"},
 	})
 }
 
