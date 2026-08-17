@@ -158,6 +158,14 @@ func (s *siteControlService) adapter(site *model.Site) (provider.SiteAdapter, er
 	if id == "new-api" || id == "newapi" || id == "new-api-family" || id == "one-api" || id == "oneapi" || id == "one-hub" || id == "onehub" || id == "done-hub" || id == "donehub" || id == "voapi" || id == "axon-hub" || id == "axonhub" {
 		id = model.SitePlatformNewAPIFamily
 	}
+	if id == model.SitePlatformNewAPIFamily && site != nil {
+		if parsed, err := url.Parse(strings.TrimSpace(site.BaseURL)); err == nil {
+			host := strings.ToLower(parsed.Hostname())
+			if strings.Contains(host, "anyrouter") || strings.Contains(host, "agentrouter") || strings.Contains(host, "air-outer") {
+				id = model.SitePlatformAnyRouter
+			}
+		}
+	}
 	if id == "any-router" {
 		id = model.SitePlatformAnyRouter
 	}
@@ -287,16 +295,24 @@ func (s *siteControlService) operationCredentials(ctx context.Context, account *
 
 func normalizeSiteURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
-	if err := provider.ValidateBaseURL(raw, false); err != nil {
-		return "", err
-	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", err
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
+	// Users commonly paste a panel page such as /console/personal instead of
+	// the upstream origin. Management APIs and projected routes belong to the
+	// origin, so discard known web-console paths while preserving deployments
+	// hosted below an ordinary reverse-proxy prefix.
+	if index := strings.Index(strings.ToLower(u.Path), "/console"); index >= 0 {
+		u.Path = strings.TrimRight(u.Path[:index], "/")
+	}
 	u.RawQuery, u.Fragment = "", ""
-	return strings.TrimRight(u.String(), "/"), nil
+	normalized := strings.TrimRight(u.String(), "/")
+	if err := provider.ValidateBaseURL(normalized, false); err != nil {
+		return "", err
+	}
+	return normalized, nil
 }
 
 func (s *siteControlService) createSite(ctx context.Context, req siteCreateRequest) (*model.Site, error) {
@@ -585,7 +601,7 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 	}
 	adapter, err := s.adapter(site)
 	if err != nil {
-		s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", provider.ErrorCode(err))
+		s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
 		return
 	}
 	creds, err := s.operationCredentials(ctx, account, site, adapter)
@@ -637,11 +653,14 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 			if strings.TrimSpace(item.Name) != "" && strings.TrimSpace(item.Name) != strings.TrimSpace(item.Group) && !strings.EqualFold(strings.TrimSpace(item.Name), strings.TrimSpace(account.Label)) {
 				name += " / " + strings.TrimSpace(item.Name)
 			}
-			if _, err := s.projectAccountWithModelsForProtocols(ctx, account, site, keyCreds, projectionKey, name, item.Protocols, models, false); err != nil {
+			// "Sync route" is an explicit reconciliation operation. Projected
+			// channels follow the upstream key name, URL, credential and models;
+			// manual channels are protected by ownership checks in the store.
+			if _, err := s.projectAccountWithModelsForProtocols(ctx, account, site, keyCreds, projectionKey, name, item.Protocols, models, true); err != nil {
 				syncErrors = append(syncErrors, fmt.Sprintf("%s: %s", routingKeyLabel(item, projectionKey), siteTaskError(err)))
 			}
 		}
-		if err := s.store.DeactivateSiteProjectionsExcept(ctx, account.ID, activeProjectionKeys); err != nil {
+		if err := s.store.PruneSiteProjectionsExcept(ctx, account.ID, activeProjectionKeys); err != nil {
 			s.updateTask(ctx, task, model.SiteTaskStatusPartial, fmt.Sprintf("site_account:%d", accountID), siteTaskError(err))
 			return
 		}
@@ -679,7 +698,7 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 		}
 		account.ConsecutiveFailures++
 		_, _ = s.store.UpdateSiteAccount(ctx, account.ID, account)
-		s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", provider.ErrorCode(err))
+		s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
 		return
 	}
 	account.LastRefreshStatus, account.Status, account.LastError, account.ConsecutiveFailures = "success", model.SiteAccountStatusHealthy, "", 0
@@ -736,7 +755,10 @@ func (s *siteControlService) routingSnapshots(ctx context.Context, account *mode
 		}
 	}
 	if len(filtered) == 0 {
-		return nil, &provider.Error{Code: provider.CodeRoutingKeyUnavailable, Message: "no enabled routing API key found"}
+		// The upstream successfully returned an empty/disabled key set. During an
+		// explicit route sync this is authoritative and must prune stale projected
+		// channels. Request and authentication failures have already returned above.
+		return []provider.RoutingKeySnapshot{}, nil
 	}
 	return filtered, nil
 }
@@ -1059,6 +1081,9 @@ func routingBaseURL(raw string) string {
 		return strings.TrimRight(strings.TrimSpace(raw), "/")
 	}
 	cleanPath := strings.TrimRight(u.Path, "/")
+	if index := strings.Index(strings.ToLower(cleanPath), "/console"); index >= 0 {
+		cleanPath = strings.TrimRight(cleanPath[:index], "/")
+	}
 	if strings.HasSuffix(cleanPath, "/v1/models") {
 		cleanPath = strings.TrimSuffix(cleanPath, "/models")
 	}
@@ -1238,6 +1263,9 @@ func (s *siteControlService) refreshAnnouncements(ctx context.Context, siteID in
 	if err != nil {
 		return err
 	}
+	if !adapter.Capabilities().Announcements {
+		return &provider.Error{Code: provider.CodeUnsupported, Message: "该站点不提供公告接口"}
+	}
 	request := provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site)}
 	var selectedAccount *model.SiteAccount
 	accounts, listErr := s.store.ListSiteAccounts(ctx, siteID, false)
@@ -1269,9 +1297,36 @@ func (s *siteControlService) refreshAnnouncements(ctx context.Context, siteID in
 	now := time.Now().UnixMilli()
 	out := make([]model.SiteAnnouncement, 0, len(items))
 	for _, item := range items {
-		out = append(out, model.SiteAnnouncement{SiteID: siteID, SourceKey: item.SourceKey, Title: item.Title, ContentMarkdown: item.ContentMarkdown, Level: item.Level, SourceURL: item.SourceURL, UpstreamCreatedAt: item.UpstreamAt, FirstSeenAt: now, LastSeenAt: now, ContentHash: item.ContentHash})
+		out = append(out, model.SiteAnnouncement{SiteID: siteID, SourceKey: item.SourceKey, Title: item.Title, ContentMarkdown: item.ContentMarkdown, Level: item.Level, SourceURL: resolveAnnouncementSourceURL(site.BaseURL, item.SourceURL), UpstreamCreatedAt: item.UpstreamAt, FirstSeenAt: now, LastSeenAt: now, ContentHash: item.ContentHash})
 	}
 	return s.store.UpsertSiteAnnouncements(ctx, out)
+}
+
+func resolveAnnouncementSourceURL(baseURL, sourceURL string) string {
+	sourceURL = strings.TrimSpace(sourceURL)
+	if sourceURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(sourceURL)
+	if err != nil {
+		return ""
+	}
+	if parsed.IsAbs() {
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return ""
+		}
+		return parsed.String()
+	}
+	base, err := url.Parse(strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/")
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return ""
+	}
+	// Provider announcement endpoints return JSON rather than a readable page.
+	// Link to the upstream site itself when no public announcement page exists.
+	if strings.HasPrefix(parsed.Path, "/api/") {
+		return strings.TrimRight(base.String(), "/")
+	}
+	return base.ResolveReference(parsed).String()
 }
 
 func (s *siteControlService) handleSites(c *gin.Context) {

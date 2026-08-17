@@ -349,8 +349,18 @@ export async function getAnnouncements(filters: {
   const params = new URLSearchParams({ limit: String(filters.limit), offset: String(filters.offset) })
   if (filters.site_id) params.set('site_id', String(filters.site_id))
   if (filters.unread) params.set('unread', 'true')
-  const payload = await requestEnvelope<SiteAnnouncement[]>(`/admin/announcements?${params}`, { signal })
-  return { data: payload.data, count: payload.count ?? payload.data.length }
+  let lastError: unknown
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const payload = await requestEnvelope<SiteAnnouncement[]>(`/admin/announcements?${params}`, { signal })
+      return { data: payload.data, count: payload.count ?? payload.data.length }
+    } catch (reason) {
+      lastError = reason
+      if (signal?.aborted || (reason instanceof Error && /登录状态已失效/.test(reason.message))) throw reason
+      if (attempt === 0) await abortableDelay(250, signal)
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || '公告请求失败'))
 }
 
 export function refreshAnnouncements(siteId = 0): Promise<{ task_id: string }> {

@@ -804,7 +804,7 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 				binding.LastSyncError = "projected channel changed outside site control"
 				_, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET last_sync_status='conflict',last_sync_error=?,updated_at=? WHERE id=?", binding.LastSyncError, now, binding.ID)
 				return err
-			} else if actualHash == binding.LastProjectedHash && input.SourceHash == binding.LastProjectedHash {
+			} else if actualHash == binding.LastProjectedHash && input.SourceHash == binding.LastProjectedHash && !input.Force {
 				action = "unchanged"
 				binding.LastSyncStatus = "success"
 				binding.LastSyncError = ""
@@ -813,8 +813,15 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 			}
 		}
 		if channel.ID > 0 {
-			if _, err := s.execTx(ctx, tx, `UPDATE channels SET url=?,auth_type=?,enabled=?,protocol_transform_mode=?,updated_at=? WHERE id=?`, channel.URLs, channel.AuthType, channel.Enabled, channel.ProtocolTransformMode, now, channel.ID); err != nil {
-				return err
+			if input.Force {
+				channel.Name = s.uniqueProjectionChannelNameTx(ctx, tx, channel.Name, input.SiteAccountID, input.ProjectionKey, channel.ID)
+				if _, err := s.execTx(ctx, tx, `UPDATE channels SET name=?,url=?,auth_type=?,enabled=?,protocol_transform_mode=?,updated_at=? WHERE id=?`, channel.Name, channel.URLs, channel.AuthType, channel.Enabled, channel.ProtocolTransformMode, now, channel.ID); err != nil {
+					return err
+				}
+			} else {
+				if _, err := s.execTx(ctx, tx, `UPDATE channels SET url=?,auth_type=?,enabled=?,protocol_transform_mode=?,updated_at=? WHERE id=?`, channel.URLs, channel.AuthType, channel.Enabled, channel.ProtocolTransformMode, now, channel.ID); err != nil {
+					return err
+				}
 			}
 			if err := s.saveModelEntriesTx(ctx, tx, channel.ID, channel.ModelEntries); err != nil {
 				return err
@@ -874,7 +881,7 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 	return &model.SiteProjectionResult{Binding: &binding, Channel: loaded, Action: action}, nil
 }
 
-func (s *SQLStore) uniqueProjectionChannelNameTx(ctx context.Context, tx *sql.Tx, base string, accountID int64, projectionKey string) string {
+func (s *SQLStore) uniqueProjectionChannelNameTx(ctx context.Context, tx *sql.Tx, base string, accountID int64, projectionKey string, currentID ...int64) string {
 	base = strings.TrimSpace(base)
 	if base == "" {
 		base = fmt.Sprintf("site/account/%d/%s", accountID, projectionKey)
@@ -882,7 +889,13 @@ func (s *SQLStore) uniqueProjectionChannelNameTx(ctx context.Context, tx *sql.Tx
 	available := func(name string) bool {
 		var id int64
 		err := s.queryRowTx(ctx, tx, "SELECT id FROM channels WHERE name=?", name).Scan(&id)
-		return errors.Is(err, sql.ErrNoRows)
+		if errors.Is(err, sql.ErrNoRows) {
+			return true
+		}
+		if len(currentID) > 0 && currentID[0] > 0 && err == nil && id == currentID[0] {
+			return true
+		}
+		return false
 	}
 	if available(base) {
 		return base
@@ -948,4 +961,58 @@ func (s *SQLStore) DeactivateSiteProjectionsExcept(ctx context.Context, siteAcco
 		}
 		return nil
 	})
+}
+
+// PruneSiteProjectionsExcept removes projected channels whose upstream key no
+// longer exists. Manual channels and manual bindings are deliberately left
+// untouched. This is used by an explicit route synchronization, where the
+// upstream account is the source of truth for projected channels.
+func (s *SQLStore) PruneSiteProjectionsExcept(ctx context.Context, siteAccountID int64, activeProjectionKeys []string) error {
+	active := make(map[string]struct{}, len(activeProjectionKeys))
+	for _, key := range activeProjectionKeys {
+		active[strings.TrimSpace(key)] = struct{}{}
+	}
+	rows, err := s.QueryContext(ctx, "SELECT id,projection_key,COALESCE(channel_id,0),ownership FROM site_channel_bindings WHERE site_account_id=?", siteAccountID)
+	if err != nil {
+		return err
+	}
+	type item struct {
+		bindingID, channelID int64
+		key, ownership       string
+	}
+	items := make([]item, 0)
+	for rows.Next() {
+		var value item
+		if err := rows.Scan(&value.bindingID, &value.key, &value.channelID, &value.ownership); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		items = append(items, value)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, value := range items {
+		if value.ownership != "projected" {
+			continue
+		}
+		if _, ok := active[value.key]; ok {
+			continue
+		}
+		if value.channelID > 0 {
+			var references int
+			if err := s.QueryRowContext(ctx, "SELECT COUNT(1) FROM site_channel_bindings WHERE channel_id=? AND id<>?", value.channelID, value.bindingID).Scan(&references); err != nil {
+				return err
+			}
+			if references == 0 {
+				if err := s.DeleteConfig(ctx, value.channelID); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err := s.ExecContext(ctx, "DELETE FROM site_channel_bindings WHERE id=? AND ownership='projected'", value.bindingID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
