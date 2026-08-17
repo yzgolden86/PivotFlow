@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Check, Copy, KeyRound, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2 } from 'lucide-react'
+import { Check, Copy, KeyRound, Pencil, Play, Plus, Power, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { createAuthToken, deleteAuthToken, getAuthTokens, getChannels, getSiteModels, revealAuthToken, updateAuthToken } from '../api'
 import type { AuthToken, Channel, DashboardRange } from '../types'
 import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, OperationNotice } from './shared'
@@ -30,6 +30,7 @@ export default function TokensPage() {
   const [editing, setEditing] = useState<AuthToken | 'new' | null>(null)
   const [createdToken, setCreatedToken] = useState('')
   const [revealed, setRevealed] = useState<{ id: number; value: string } | null>(null)
+  const [copiedId, setCopiedId] = useState<number | 'created' | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
 
   const load = useCallback(async (signal?: AbortSignal) => {
@@ -79,13 +80,16 @@ export default function TokensPage() {
     try {
       const result = await revealAuthToken(token.id)
       setRevealed({ id: token.id, value: result.token })
-      await copyValue(result.token)
+      await copyValue(result.token, token.id)
     } catch (reason) { setError(reason instanceof Error ? reason.message : '令牌恢复失败') }
     finally { setBusyId(null) }
   }
 
-  const copyValue = async (value: string) => {
+  const copyValue = async (value: string, id?: number | 'created') => {
     await navigator.clipboard.writeText(value)
+    if (id === undefined) return
+    setCopiedId(id)
+    window.setTimeout(() => setCopiedId((current) => current === id ? null : current), 1800)
   }
 
   return <div className="workspace-page tokens-page">
@@ -115,13 +119,14 @@ export default function TokensPage() {
       {visible.map((token) => <article className="token-row" key={token.id}>
         <span className={`token-icon${token.is_active ? '' : ' token-icon--off'}`}><KeyRound size={17} /></span>
         <div className="token-identity"><strong>{token.description}</strong><span>#{token.id} · {token.token || '已安全存储'}</span></div>
-        <div className="token-secret-cell"><code>{revealed?.id === token.id ? revealed.value : (token.token_hint || token.token || '不可恢复')}</code><button className="icon-button icon-button--surface" type="button" onClick={() => revealed?.id === token.id ? void copyValue(revealed.value) : void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={revealed?.id === token.id ? '复制令牌' : token.token_recoverable ? '显示并复制令牌' : '历史令牌不可恢复'}><Copy size={15} /></button></div>
+        <div className="token-secret-cell"><code>{revealed?.id === token.id ? revealed.value : (token.token_hint || token.token || '不可恢复')}</code><button className="icon-button icon-button--surface" type="button" onClick={() => revealed?.id === token.id ? void copyValue(revealed.value, token.id) : void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={revealed?.id === token.id ? '复制令牌' : token.token_recoverable ? '显示并复制令牌' : '历史令牌不可恢复'}>{copiedId === token.id ? <Check size={15} /> : <Copy size={15} />}</button></div>
         <div><strong>{formatNumber(token.success_count + token.failure_count)}</strong><span>{token.failure_count} 次失败</span></div>
         <div><strong>{formatMoney(token.effective_cost_usd)}</strong><span>{formatNumber((token.prompt_tokens_total || 0) + (token.completion_tokens_total || 0))} tokens</span></div>
         <div><strong>{token.max_concurrency || '不限'}</strong><span>{token.cost_limit_usd ? `限额 ${formatMoney(token.cost_limit_usd)}` : '无费用限额'}</span></div>
-        <div><strong>{token.last_used_at ? formatDate(token.last_used_at) : '未使用'}</strong><span>{token.expires_at ? `到期 ${formatDate(token.expires_at)}` : '永不过期'}</span></div>
+        <div><strong>{formatDate(createdTimestamp(token))}</strong><span>创建时间</span></div>
+        <div><strong>{token.last_used_at ? formatDate(token.last_used_at) : '未使用'}</strong><span>{token.expires_at ? `到期 ${formatDate(token.expires_at)}` : '最后使用时间'}</span></div>
         <div className="row-actions">
-          <button className={`icon-button icon-button--surface${token.is_active ? ' is-on' : ''}`} type="button" onClick={() => void toggle(token)} disabled={busyId === token.id} aria-label={token.is_active ? `停用 ${token.description}` : `启用 ${token.description}`} title={token.is_active ? '停用' : '启用'}>{token.is_active ? <Check size={16} /> : <ShieldCheck size={16} />}</button>
+          <button className={`icon-button icon-button--surface${token.is_active ? ' is-on' : ''}`} type="button" onClick={() => void toggle(token)} disabled={busyId === token.id} aria-label={token.is_active ? `停用 ${token.description}` : `启用 ${token.description}`} title={token.is_active ? '停用' : '启用'}>{token.is_active ? <Power size={16} /> : <Play size={16} />}</button>
           <button className="icon-button icon-button--surface" type="button" onClick={() => setEditing(token)} aria-label={`编辑 ${token.description}`} title="编辑"><Pencil size={16} /></button>
           <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => void remove(token)} disabled={busyId === token.id} aria-label={`删除 ${token.description}`} title="删除"><Trash2 size={16} /></button>
         </div>
@@ -132,7 +137,7 @@ export default function TokensPage() {
       setEditing(null); if (plain) setCreatedToken(plain)
       setTokens((items) => editing === 'new' ? [token, ...items] : items.map((item) => item.id === token.id ? { ...item, ...token } : item))
     }} />}
-    {createdToken && <Modal title="令牌已创建" close={() => setCreatedToken('')}><div className="secret-reveal"><p>令牌已安全保存，之后可在列表中复制。</p><code>{createdToken}</code><button className="primary-button" type="button" onClick={() => void copyValue(createdToken)}><Copy size={15} />复制令牌</button></div></Modal>}
+    {createdToken && <Modal title="令牌已创建" close={() => setCreatedToken('')}><div className="secret-reveal"><p>令牌已安全保存，之后可在列表中复制。</p><code>{createdToken}</code><button className="primary-button" type="button" onClick={() => void copyValue(createdToken, 'created')}>{copiedId === 'created' ? <Check size={15} /> : <Copy size={15} />}{copiedId === 'created' ? '已复制' : '复制令牌'}</button></div></Modal>}
   </div>
 }
 

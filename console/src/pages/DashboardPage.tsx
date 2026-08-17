@@ -78,7 +78,7 @@ export default function DashboardPage() {
   return (
     <div className="dashboard-page">
       <header className="page-header dashboard-header">
-        <h1>概览</h1>
+        <h1>系统概览</h1>
         <div className="header-controls">
           <div className="range-control" role="radiogroup" aria-label="统计时间范围">
             {rangeOptions.map((option) => (

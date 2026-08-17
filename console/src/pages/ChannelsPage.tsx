@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Copy, FileUp, FlaskConical, MoreHorizontal, Pencil, Plus, Power, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
+import { Copy, FileUp, FlaskConical, Layers3, Pencil, Plus, Power, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
 import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, getChannelEditor, getChannels, getSiteChannelBindings, getSiteInventory, importOAuthCredentials, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
 import type { Channel, ChannelEditorSnapshot, ChannelModel, ChannelMutation, ChannelURL, Site, SiteAccount, SiteChannelBinding } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, Pagination } from './shared'
@@ -16,6 +16,7 @@ export default function ChannelsPage() {
   const [searchDraft, setSearchDraft] = useState(querySearch)
   const [search, setSearch] = useState(querySearch)
   const [status, setStatus] = useState('all')
+  const [sort, setSort] = useState('priority')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -31,7 +32,7 @@ export default function ChannelsPage() {
     setLoading(true)
     setError('')
     try {
-      const result = await getChannels({ search, status, limit: pageSize, offset: (page - 1) * pageSize }, signal)
+      const result = await getChannels({ search, status, sort, limit: pageSize, offset: (page - 1) * pageSize }, signal)
       setChannels(result.data)
       setTotal(result.count)
       setSelected((current) => new Set([...current].filter((id) => result.data.some((channel) => channel.id === id))))
@@ -40,7 +41,7 @@ export default function ChannelsPage() {
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [page, pageSize, search, status])
+  }, [page, pageSize, search, sort, status])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -132,7 +133,7 @@ export default function ChannelsPage() {
         <h1>渠道分发</h1>
         <div className="header-controls">
           <input ref={importInput} className="visually-hidden" type="file" accept="application/json,.json" multiple onChange={(event) => void importCredentials(event.target.files)} />
-		  <div className="source-menu"><button className="secondary-button" type="button" aria-haspopup="menu" aria-expanded={sourceMenuOpen} onClick={() => setSourceMenuOpen((open) => !open)}><MoreHorizontal size={16} />其他来源</button>{sourceMenuOpen && <div className="source-menu-popover" role="menu"><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); importInput.current?.click() }}><FileUp size={15} />导入 OAuth</button><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); setEditing('new') }}><Plus size={15} />手工渠道</button></div>}</div>
+		  <div className="source-menu"><button className="secondary-button" type="button" aria-haspopup="menu" aria-expanded={sourceMenuOpen} onClick={() => setSourceMenuOpen((open) => !open)}><Layers3 size={16} />其他来源</button>{sourceMenuOpen && <div className="source-menu-popover" role="menu"><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); importInput.current?.click() }}><FileUp size={15} />导入 OAuth</button><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); setEditing('new') }}><Plus size={15} />手工渠道</button></div>}</div>
 		  <button className="primary-button" type="button" onClick={() => setSyncOpen(true)}><RefreshCw size={16} />同步站点渠道</button>
           <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新渠道" title="刷新渠道"><RefreshCw size={17} /></button>
         </div>
@@ -149,6 +150,9 @@ export default function ChannelsPage() {
         <label className="search-field"><Search size={16} /><input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="搜索渠道名称" aria-label="搜索渠道名称" /></label>
         <select value={status} onChange={(event) => { setPage(1); setStatus(event.target.value) }} aria-label="渠道状态">
           <option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option><option value="cooldown">冷却中</option>
+        </select>
+        <select value={sort} onChange={(event) => { setPage(1); setSort(event.target.value) }} aria-label="渠道排序">
+          <option value="priority">优先级</option><option value="newest">新建优先</option><option value="name">名称 A-Z</option><option value="enabled">启用优先</option><option value="models">模型数量</option>
         </select>
         <button className="primary-button" type="submit"><Search size={15} />筛选</button>
       </form>
@@ -282,7 +286,7 @@ function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remov
       <div className="channel-models"><strong>{activeModels.length} 模型</strong><span title={activeModels.map((item) => item.model).join(', ')}>{activeModels.slice(0, 2).map((item) => item.model).join(' · ') || '未配置'}</span></div>
       <div className="channel-limits"><span>RPM {channel.rpm_limit || '不限'}</span><span>并发 {channel.max_concurrency || '不限'}</span>{cooling && <small className="text-warning">存在冷却</small>}</div>
       <div className="row-actions">
-        <a className="icon-button icon-button--surface" href={`#/models?channel=${channel.id}&view=probe`} aria-label={`测试 ${channel.name}`} title="模型测试"><FlaskConical size={16} /></a>
+        <a className="icon-button icon-button--surface" href={`#/models?channel=${channel.id}&model=${encodeURIComponent(activeModels[0]?.model || '')}&view=probe`} aria-label={`测试 ${channel.name}`} title="模型测试"><FlaskConical size={16} /></a>
         <button className={`icon-button icon-button--surface ${channel.enabled ? 'is-on' : ''}`} type="button" onClick={toggle} disabled={busy} aria-label={channel.enabled ? `停用 ${channel.name}` : `启用 ${channel.name}`} title={channel.enabled ? '停用渠道' : '启用渠道'}><Power className={busy ? 'spin' : ''} size={16} /></button>
         <button className="icon-button icon-button--surface" type="button" onClick={copy} disabled={busy} aria-label={`复制 ${channel.name}`} title="复制渠道"><Copy size={16} /></button>
         <button className="icon-button icon-button--surface" type="button" onClick={edit} aria-label={`编辑 ${channel.name}`} title="编辑"><Pencil size={16} /></button>

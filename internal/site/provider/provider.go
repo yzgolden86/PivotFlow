@@ -182,12 +182,13 @@ type LoginRequest struct {
 }
 
 type RoutingKeySnapshot struct {
-	ID      string
-	Name    string
-	Group   string
-	Models  []string
-	Key     string
-	Enabled bool
+	ID        string
+	Name      string
+	Group     string
+	Protocols []string
+	Models    []string
+	Key       string
+	Enabled   bool
 }
 
 type CheckinResult struct {

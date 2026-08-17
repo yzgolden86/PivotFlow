@@ -104,6 +104,46 @@ func TestSiteControlSQLiteCRUDAndProjection(t *testing.T) {
 	}
 }
 
+func TestSiteProjectionUsesStableNamesForDuplicateUpstreamKeys(t *testing.T) {
+	store, err := CreateSQLiteStore(t.TempDir() + "/site-duplicate-projection.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	site, err := store.CreateSite(ctx, &model.Site{Name: "duplicate", Platform: model.SitePlatformSub2API, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "main", CredentialType: model.CredentialTypeAccessToken, CredentialCiphertext: "fc1.test", CredentialKeyVersion: "v1", Enabled: true, Status: "healthy", BalanceCurrency: "USD", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := model.SiteProjectionInput{SiteAccountID: account.ID, Name: "付费分组", BaseURL: site.BaseURL, Protocols: []string{"openai"}, Models: []string{"gpt-5"}, Enabled: true}
+	first := base
+	first.ProjectionKey, first.APIKey = "key:8", "sk-eight"
+	second := base
+	second.ProjectionKey, second.APIKey = "key:9", "sk-nine"
+	createdFirst, err := store.UpsertSiteProjection(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdSecond, err := store.UpsertSiteProjection(ctx, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if createdFirst.Channel.Name != "付费分组" || createdSecond.Channel.Name == createdFirst.Channel.Name {
+		t.Fatalf("duplicate projection names were not separated: first=%q second=%q", createdFirst.Channel.Name, createdSecond.Channel.Name)
+	}
+	if createdSecond.Channel.ID == createdFirst.Channel.ID {
+		t.Fatalf("duplicate projection reused channel: first=%d second=%d", createdFirst.Channel.ID, createdSecond.Channel.ID)
+	}
+	again, err := store.UpsertSiteProjection(ctx, second)
+	if err != nil || again.Channel.Name != createdSecond.Channel.Name || again.Action != "unchanged" {
+		t.Fatalf("second projection was not idempotent: result=%+v err=%v", again, err)
+	}
+}
+
 func TestDeletedSiteNameCanBeReused(t *testing.T) {
 	store, err := CreateSQLiteStore(t.TempDir() + "/site-recreate.db")
 	if err != nil {
