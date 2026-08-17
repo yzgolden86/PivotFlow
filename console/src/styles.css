@@ -1208,6 +1208,10 @@ a:focus-visible {
 
 .compact-summary > span:last-child { border-right: 0; }
 .compact-summary strong { color: var(--text); font-family: Bahnschrift, sans-serif; font-size: 18px; }
+.compact-summary > span:nth-child(1) strong { color: var(--green); }
+.compact-summary > span:nth-child(2) strong { color: var(--blue); }
+.compact-summary > span:nth-child(3) strong { color: var(--amber); }
+.compact-summary > span:nth-child(4) strong { color: var(--coral); }
 
 .filter-bar {
   display: flex;
@@ -1835,12 +1839,15 @@ a:focus-visible {
 .model-discovery-action strong { color: var(--text); font-size: 13px; }
 .model-discovery-action span { color: var(--text-muted); font-size: 12px; line-height: 18px; }
 .model-discovery-action .secondary-button { flex: 0 0 auto; }
-.discovered-model-panel { gap: 10px; }
+.discovered-model-panel { gap: 10px; border-left: 3px solid var(--blue); background: color-mix(in srgb, var(--blue-soft) 34%, var(--surface-muted)); }
+.model-list-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.danger-text-button { color: var(--coral) !important; }
 .discovered-model-list { display: flex; min-height: 42px; max-height: 150px; flex-wrap: wrap; align-content: flex-start; gap: 7px; overflow: auto; }
 .discovered-model-list code { max-width: 100%; overflow: hidden; padding: 5px 8px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 5px; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .editable-model-list { display: grid; gap: 7px; max-height: 230px; overflow-y: auto; }
-.editable-model-row { display: grid; grid-template-columns: minmax(120px, 1fr) auto minmax(150px, 1fr) auto; align-items: center; gap: 7px; }
+.editable-model-row { display: grid; grid-template-columns: 24px minmax(120px, 1fr) auto minmax(150px, 1fr) auto; align-items: center; gap: 7px; }
 .editable-model-row input { min-width: 0; }
+.editable-model-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--blue); }
 .editable-model-row > span { color: var(--text-muted); font-size: 12px; }
 .editable-model-row .icon-button { width: 30px; height: 30px; }
 
@@ -2641,10 +2648,13 @@ a:focus-visible {
   .selection-list { grid-template-columns: 1fr; }
   .selection-panel > header { align-items: flex-start; flex-direction: column; }
   .selection-actions { align-self: flex-end; }
-  .editable-model-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .model-list-actions { align-self: flex-end; }
+  .editable-model-row { grid-template-columns: 24px minmax(0, 1fr) auto; }
   .editable-model-row > span { display: none; }
-  .editable-model-row input:nth-of-type(2) { grid-column: 1; }
-  .editable-model-row .icon-button { grid-column: 2; grid-row: 1 / span 2; }
+  .editable-model-row input:not([type="checkbox"]):nth-of-type(2) { grid-column: 2; grid-row: 1; }
+  .editable-model-row input:not([type="checkbox"]):nth-of-type(3) { grid-column: 2; grid-row: 2; }
+  .editable-model-row input[type="checkbox"] { grid-column: 1; grid-row: 1; }
+  .editable-model-row .icon-button { grid-column: 3; grid-row: 1 / span 2; }
 }
 
 /* Readability pass: keep the compact workbench density without sub-11px body copy. */
@@ -2742,7 +2752,7 @@ body { font-size: 14px; line-height: 1.5; }
 .source-menu-popover button { font-size: 13px; line-height: 20px; }
 .token-row .row-actions { flex-direction: row; justify-content: flex-end; }
 .token-secret-cell { display: flex !important; min-width: 0; flex-direction: row !important; align-items: center; justify-content: flex-end; gap: 7px; }
-.token-secret-cell code { min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.token-secret-cell code { min-width: 0; overflow: visible; color: var(--text-secondary); font-size: 11px; line-height: 16px; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
 .token-secret-cell .icon-button { width: 30px; height: 30px; flex: 0 0 30px; }
 
 /* Settings V2: task-oriented groups with readable controls. */

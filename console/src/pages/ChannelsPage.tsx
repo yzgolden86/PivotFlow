@@ -427,10 +427,23 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
 }
 
 function EditableModelList({ models, onChange }: { models: ChannelModel[]; onChange: (models: ChannelModel[]) => void }) {
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  useEffect(() => {
+    setSelected((current) => new Set([...current].filter((index) => index >= 0 && index < models.length)))
+  }, [models.length])
   const update = (index: number, patch: Partial<ChannelModel>) => onChange(models.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
-  const remove = (index: number) => onChange(models.filter((_, itemIndex) => itemIndex !== index))
+  const remove = (index: number) => {
+    onChange(models.filter((_, itemIndex) => itemIndex !== index))
+    setSelected((current) => new Set([...current].filter((itemIndex) => itemIndex !== index).map((itemIndex) => itemIndex > index ? itemIndex - 1 : itemIndex)))
+  }
+  const removeSelected = () => {
+    if (!selected.size) return
+    onChange(models.filter((_, index) => !selected.has(index)))
+    setSelected(new Set())
+  }
   const add = () => onChange([...models, { model: '', redirect_model: '' }])
-  return <section className="selection-panel discovered-model-panel"><header><div><strong>渠道模型</strong><span>{models.length ? `${models.length} 个模型，可删减或配置映射` : '尚未配置模型'}</span></div><button className="text-button" type="button" onClick={add}><Plus size={14} />添加模型</button></header>{models.length ? <div className="editable-model-list">{models.map((item, index) => <div className="editable-model-row" key={`${item.model}-${index}`}><input value={item.model} onChange={(event) => update(index, { model: event.target.value })} placeholder="对外模型名" aria-label={`第 ${index + 1} 个对外模型`} /><span aria-hidden="true">→</span><input value={item.redirect_model || ''} onChange={(event) => update(index, { redirect_model: event.target.value })} placeholder="映射到上游模型（可选）" aria-label={`第 ${index + 1} 个上游映射`} /><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除模型 ${item.model || index + 1}`} title="删除模型"><Trash2 size={15} /></button></div>)}</div> : <span className="selection-empty">填写 URL 和 API Key 后点击“获取模型”，也可以直接添加模型。</span>}</section>
+  const allSelected = models.length > 0 && selected.size === models.length
+  return <section className="selection-panel discovered-model-panel"><header><div><strong>渠道模型</strong><span>{models.length ? `${models.length} 个模型，可删减或配置映射${selected.size ? `，已选 ${selected.size} 个` : ''}` : '尚未配置模型'}</span></div><div className="model-list-actions"><button className="text-button" type="button" onClick={() => setSelected(allSelected ? new Set() : new Set(models.map((_, index) => index)))} disabled={!models.length}>{allSelected ? '取消全选' : '全选'}</button>{selected.size > 0 && <button className="text-button danger-text-button" type="button" onClick={removeSelected}><Trash2 size={14} />删除所选 ({selected.size})</button>}<button className="text-button" type="button" onClick={add}><Plus size={14} />添加模型</button></div></header>{models.length ? <div className="editable-model-list">{models.map((item, index) => <div className="editable-model-row" key={`${item.model}-${index}`}><input type="checkbox" checked={selected.has(index)} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(index)) next.delete(index); else next.add(index); return next })} aria-label={`选择模型 ${item.model || index + 1}`} /><input value={item.model} onChange={(event) => update(index, { model: event.target.value })} placeholder="对外模型名" aria-label={`第 ${index + 1} 个对外模型`} /><span aria-hidden="true">→</span><input value={item.redirect_model || ''} onChange={(event) => update(index, { redirect_model: event.target.value })} placeholder="映射到上游模型（可选）" aria-label={`第 ${index + 1} 个上游映射`} /><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除模型 ${item.model || index + 1}`} title="删除模型"><Trash2 size={15} /></button></div>)}</div> : <span className="selection-empty">填写 URL 和 API Key 后点击“获取模型”，也可以直接添加模型。</span>}</section>
 }
 
 function mergeDiscoveredModels(existing: ChannelModel[], discovered: ChannelModel[]): ChannelModel[] {

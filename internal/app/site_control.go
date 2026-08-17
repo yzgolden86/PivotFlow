@@ -822,10 +822,11 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 	if modelProvider, ok := adapter.(provider.RoutingModelProvider); ok {
 		for index, item := range keys {
 			// A missing endpoint needs a management fallback. An identical model
-			// list across keys is also ambiguous; when the key has a group, ask
-			// the management API for that exact group instead of projecting the
-			// shared site-wide list into every channel.
-			needsFallback := len(keyNames[index]) == 0 || (!endpointVaries && strings.TrimSpace(item.Group) != "" && len(snapshotNames[index]) == 0)
+			// list across grouped keys is ambiguous even when the token snapshot
+			// also contains models: several New API forks serialize the site-wide
+			// model list into every token. Ask the management API for the exact
+			// group and treat that result as authoritative when available.
+			needsFallback := len(keyNames[index]) == 0 || (!endpointVaries && strings.TrimSpace(item.Group) != "")
 			if !needsFallback {
 				continue
 			}
@@ -853,17 +854,20 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 		// keys return the same list, treat explicit management-side model limits
 		// as authoritative; otherwise a shared unscoped /models response leaks
 		// every model into every group.
+		snapshotIsScoped := len(snapshotNames[index]) > 0 && (len(keyNames[index]) == 0 || modelNamesSignature(snapshotNames[index]) != modelNamesSignature(keyNames[index]))
 		if !endpointVaries {
-			if len(snapshotNames[index]) > 0 {
+			if len(managementNames[index]) > 0 {
+				names = managementNames[index]
+			} else if len(snapshotNames[index]) > 0 && (!managementAttempted[index] || snapshotIsScoped) {
 				names = snapshotNames[index]
 			} else if managementAttempted[index] {
 				// Do not fall back to a known-unscoped endpoint after a grouped
 				// management lookup failed; an incomplete sync is safer than
 				// routing a key to models its group cannot use.
-				names = managementNames[index]
+				names = nil
 			}
 		}
-		if len(names) == 0 && len(snapshotNames[index]) > 0 {
+		if len(names) == 0 && len(snapshotNames[index]) > 0 && (endpointVaries || !managementAttempted[index] || snapshotIsScoped) {
 			names = snapshotNames[index]
 		}
 		if len(names) == 0 && len(managementNames[index]) > 0 {

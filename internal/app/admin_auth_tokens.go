@@ -185,14 +185,15 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 		return
 	}
 
-	// 生成安全令牌(64字符十六进制)
+	// Generate a recognizable OpenAI-compatible downstream token. Authentication
+	// still stores and compares only the SHA-256 hash of the complete value.
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		log.Print("[ERROR] 生成令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	tokenPlain := hex.EncodeToString(tokenBytes)
+	tokenPlain := "sk-pf-" + hex.EncodeToString(tokenBytes)
 
 	// 计算SHA256哈希用于存储
 	tokenHash := model.HashToken(tokenPlain)

@@ -226,6 +226,31 @@ func TestSub2APIRoutingKeyGroupObjectDoesNotSerializeMap(t *testing.T) {
 	}
 }
 
+func TestSub2APIListRoutingKeysKeepsModelsScopedToEachTokenGroup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/api/v1/keys" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"items":[{"id":11,"key":"sk-coding","name":"coding-key","group":{"id":3,"name":"Coding","platform":"openai","models":["gpt-5-codex","claude-code"]},"status":"active"},{"id":12,"key":"sk-image","name":"image-key","group":{"id":4,"name":"Image","platform":"openai","allowed_models":{"gpt-image-1":true}},"status":"active"}]}}`))
+	}))
+	defer server.Close()
+
+	keys, err := NewSub2API(ClientFactory{AllowPrivate: true}).ListRoutingKeys(context.Background(), AccountRequest{
+		BaseURL: server.URL, Credentials: Credentials{AccessToken: "jwt"},
+	})
+	if err != nil || len(keys) != 2 {
+		t.Fatalf("keys=%+v err=%v", keys, err)
+	}
+	if keys[0].Group != "Coding" || !slices.Equal(keys[0].Models, []string{"gpt-5-codex", "claude-code"}) {
+		t.Fatalf("coding key lost group model scope: %+v", keys[0])
+	}
+	if keys[1].Group != "Image" || !slices.Equal(keys[1].Models, []string{"gpt-image-1"}) {
+		t.Fatalf("image key lost group model scope: %+v", keys[1])
+	}
+}
+
 func TestSub2APIRefreshCredentialsRotatesManagedTokens(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/auth/refresh" || r.Method != http.MethodPost {
