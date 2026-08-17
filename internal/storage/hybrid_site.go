@@ -114,6 +114,12 @@ func (h *HybridStore) GetWebhookEventState(ctx context.Context, key string) (*mo
 func (h *HybridStore) UpsertWebhookEventState(ctx context.Context, v *model.WebhookEventState) error {
 	return h.mysql.UpsertWebhookEventState(ctx, v)
 }
+func (h *HybridStore) GetBackupConfig(ctx context.Context) (*model.BackupConfig, error) {
+	return h.mysql.GetBackupConfig(ctx)
+}
+func (h *HybridStore) UpsertBackupConfig(ctx context.Context, v *model.BackupConfig) error {
+	return h.mysql.UpsertBackupConfig(ctx, v)
+}
 func (h *HybridStore) GetSiteChannelBinding(ctx context.Context, id int64, key string) (*model.SiteChannelBinding, error) {
 	return h.mysql.GetSiteChannelBinding(ctx, id, key)
 }

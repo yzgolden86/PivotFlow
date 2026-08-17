@@ -13,9 +13,21 @@ const (
 	siteSchedulerTick        = time.Minute
 	siteRefreshInterval      = 6 * time.Hour
 	siteTaskLeaseDuration    = 90 * time.Second
-	siteDailyCheckinHour     = 8
 	siteSchedulerConcurrency = 4
+	siteDailyCheckinTime     = "08:00"
 )
+
+func (s *siteControlService) dailyCheckinMinute() int {
+	value := siteDailyCheckinTime
+	if s != nil && s.configService != nil {
+		value = s.configService.GetString("site_daily_checkin_time", siteDailyCheckinTime)
+	}
+	parsed, err := time.Parse("15:04", value)
+	if err != nil {
+		parsed, _ = time.Parse("15:04", siteDailyCheckinTime)
+	}
+	return parsed.Hour()*60 + parsed.Minute()
+}
 
 func (s *Server) startSiteScheduler() {
 	if s.siteControl == nil {
@@ -47,6 +59,7 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 		return
 	}
 	sem := make(chan struct{}, siteSchedulerConcurrency)
+	checkinMinute := s.dailyCheckinMinute()
 	var wg sync.WaitGroup
 	for _, site := range sites {
 		if site == nil || !site.Enabled {
@@ -66,7 +79,7 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 				loc := loadSiteLocation(account.Timezone, site.Timezone)
 				localNow := now.In(loc)
 				day := localNow.Format("2006-01-02")
-				if account.AutoCheckin && localNow.Hour() >= siteDailyCheckinHour {
+				if account.AutoCheckin && dailyCheckinDue(localNow, checkinMinute) {
 					done, err := s.store.HasDailyCheckinAttempt(ctx, account.ID, day)
 					if err == nil && !done {
 						s.runScheduledAccountTask(ctx, sem, site, account, "checkin")
@@ -79,6 +92,10 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 		}(site, accounts)
 	}
 	wg.Wait()
+}
+
+func dailyCheckinDue(localNow time.Time, scheduledMinute int) bool {
+	return localNow.Hour()*60+localNow.Minute() >= scheduledMinute
 }
 
 func (s *siteControlService) runScheduledAccountTask(ctx context.Context, sem chan struct{}, site *model.Site, account *model.SiteAccount, kind string) {

@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, BellRing, CheckCircle2, Clock3, ExternalLink, FileClock, Gauge, Network,
-  RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
+  Activity, BellRing, CalendarClock, CheckCircle2, Clock3, ExternalLink, FileClock, Gauge, Network,
+  DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
   SlidersHorizontal, TimerReset, Wrench,
 } from 'lucide-react'
 import { checkForUpdates, getSystemSettings, resetSystemSetting, updateSystemSettings } from '../api'
 import type { SystemSetting } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice } from './shared'
 import { WebhookSettingsPanel } from './SettingsPage'
+import { BackupSettingsPanel } from './BackupSettingsPanel'
 import { applyTheme, readThemePreference } from '../theme'
 import type { ThemePreference } from '../theme'
 
 const groups = [
   { key: 'appearance', label: '外观', description: '主题与显示偏好', icon: Sun },
+  { key: 'automation', label: '自动任务', description: '签到与后台任务时间', icon: CalendarClock },
   { key: 'routing', label: '路由策略', description: '重试、兜底与模型匹配', icon: Route },
   { key: 'timeouts', label: '请求超时', description: '连接、首字与总时限', icon: Clock3 },
   { key: 'cooldown', label: '故障冷却', description: '异常退避与恢复节奏', icon: TimerReset },
@@ -27,7 +29,7 @@ const groups = [
 type GroupKey = typeof groups[number]['key']
 
 export default function SystemSettingsPageV2() {
-  const [section, setSection] = useState<'runtime' | 'notifications'>('runtime')
+  const [section, setSection] = useState<'runtime' | 'notifications' | 'backup'>('runtime')
   const [settings, setSettings] = useState<SystemSetting[]>([])
   const [values, setValues] = useState<Record<string, string>>({})
   const [dirty, setDirty] = useState<Set<string>>(new Set())
@@ -155,9 +157,10 @@ export default function SystemSettingsPageV2() {
     <div className="view-tabs system-settings-tabs" role="tablist" aria-label="系统设置分类">
       <button type="button" role="tab" aria-selected={section === 'runtime'} className={section === 'runtime' ? 'is-active' : ''} onClick={() => setSection('runtime')}><SlidersHorizontal size={17} />运行设置</button>
       <button type="button" role="tab" aria-selected={section === 'notifications'} className={section === 'notifications' ? 'is-active' : ''} onClick={() => setSection('notifications')}><BellRing size={17} />通知设置</button>
+      <button type="button" role="tab" aria-selected={section === 'backup'} className={section === 'backup' ? 'is-active' : ''} onClick={() => setSection('backup')}><DatabaseBackup size={17} />导入导出</button>
     </div>
 
-    {section === 'notifications' ? <WebhookSettingsPanel /> : <>
+    {section === 'notifications' ? <WebhookSettingsPanel /> : section === 'backup' ? <BackupSettingsPanel /> : <>
       {notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={16} />{notice}</OperationNotice>}
       {error && <OperationNotice tone="error">{error}</OperationNotice>}
       <div className="settings-layout">
@@ -225,6 +228,7 @@ function UpdatePanel({ info, checking, check }: { info: { version: string; lates
 
 function SettingInput({ setting, value, change }: { setting: SystemSetting; value: string; change: (value: string) => void }) {
   if (setting.value_type === 'bool') return <button className={`setting-switch${normalizeBool(value) === 'true' ? ' is-on' : ''}`} type="button" role="switch" aria-checked={normalizeBool(value) === 'true'} onClick={() => change(normalizeBool(value) === 'true' ? 'false' : 'true')} disabled={!setting.editable}><span>{normalizeBool(value) === 'true' ? '已启用' : '已停用'}</span><i /></button>
+  if (setting.key === 'site_daily_checkin_time') return <input type="time" step="60" value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
   const options = settingOptions(setting.key)
   if (options) return <select value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable}>{options.map(([optionValue, label]) => <option value={optionValue} key={optionValue}>{label}</option>)}</select>
   if (setting.value_type === 'json') return <textarea rows={4} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} spellCheck={false} />
@@ -235,6 +239,7 @@ function SettingInput({ setting, value, change }: { setting: SystemSetting; valu
 function normalizeBool(value: string): string { return value === 'true' || value === '1' ? 'true' : 'false' }
 
 function settingGroup(key: string): GroupKey {
+  if (key === 'site_daily_checkin_time') return 'automation'
   if (key === 'cooldown_fallback_enabled') return 'routing'
   if (/^cooldown_|global_cooldown/.test(key)) return 'cooldown'
   if (/timeout|connection_reuse/.test(key)) return 'timeouts'
@@ -254,6 +259,7 @@ const labels: Record<string, string> = {
   cooldown_auth_seconds: '认证错误冷却', cooldown_server_seconds: '上游服务错误冷却', cooldown_timeout_seconds: '请求超时冷却', cooldown_rate_limit_seconds: '限流错误冷却', cooldown_max_seconds: '冷却时间上限', cooldown_min_seconds: '冷却时间下限', global_cooldown_detection_rules: '全局冷却识别规则',
   max_concurrency: '最大并发请求数', max_body_bytes: '普通请求体上限', max_image_body_bytes: '图片请求体上限',
   channel_test_content: '健康检测提示词', channel_check_interval_hours: '自动健康检测间隔', enable_health_score: '按渠道健康度动态排序', success_rate_penalty_weight: '失败率惩罚权重', health_score_window_minutes: '健康度统计窗口', health_score_update_interval: '健康度刷新间隔', health_min_confident_sample: '健康度可信样本量', enable_ttfb_score: '加入首字延迟评分', ttfb_penalty_weight: '首字延迟惩罚权重', ttfb_max_slow_ratio: '首字慢速比上限', ttfb_min_confident_sample: '首字评分可信样本量',
+  site_daily_checkin_time: '每日自动签到时间',
   log_retention_days: '请求日志保留时间', debug_log_enabled: '记录上游原始报文', debug_log_retention_minutes: '原始报文保留时间', auto_refresh_interval_seconds: '页面自动刷新间隔', log_channel_click_action: '日志中的渠道点击行为', channel_stats_range: '渠道统计默认范围',
   responses_ws_max_sessions: '最大执行会话数', responses_ws_session_ttl_minutes: '空闲会话保留时间', responses_ws_max_transcript_bytes: '会话内容总容量', responses_ws_max_connections: '最大长连接数', responses_ws_max_connections_per_token: '单密钥最大长连接数',
   model_catalog_sync_interval_hours: '模型价格目录同步间隔', auto_update_interval_hours: '上游检查间隔', auto_update_channel: '上游检查通道', antigravity_sensitive_words: 'Antigravity 敏感词兼容',
@@ -262,6 +268,7 @@ const labels: Record<string, string> = {
 const helps: Record<string, string> = {
   max_key_retries: '一次请求在同一渠道内最多尝试多少把上游密钥。', model_fuzzy_match: '精确匹配失败后尝试兼容带日期或版本后缀的模型名。', cooldown_fallback_enabled: '所有渠道都在冷却时，仍选择当前最优渠道进行最后一次尝试。',
   channel_test_content: '自动巡检渠道时发送的最小测试内容。', channel_check_interval_hours: '设为 0 可关闭定时巡检，小数支持分钟级间隔。', enable_health_score: '根据近期成功率动态调整同优先级渠道的顺序。', enable_ttfb_score: '在健康度排序中考虑首字响应速度。',
+  site_daily_checkin_time: '到达该时间后，为当天尚未执行过的账号触发签到；分别按账号或站点时区计算。',
   debug_log_enabled: '会记录上游请求与响应原文，仅建议排障时短暂开启。', auto_refresh_interval_seconds: '设为 0 关闭；打开弹窗时不会打断当前操作。', model_catalog_sync_interval_hours: '从 models.dev 更新价格信息，不影响站点模型列表。', auto_update_interval_hours: '仅非容器部署生效，设为 0 关闭后台检查；融合版不会自动替换程序。',
   antigravity_sensitive_words: '使用零宽字符处理特定 systemInstruction 关键词。', global_cooldown_detection_rules: '没有渠道专属规则时使用的状态码与错误文本识别规则。',
 }

@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
-import { BellRing, CheckCircle2, RefreshCw, Send, Trash2, WalletCards } from 'lucide-react'
+import { BellRing, Bot, CheckCircle2, RefreshCw, Send, Trash2, WalletCards } from 'lucide-react'
 import { getWebhookConfig, testWebhook, updateWebhookConfig } from '../api'
 import type { WebhookConfig } from '../types'
 import { ErrorState, LoadingState, OperationNotice, formatTime } from './shared'
 import { siteErrorMessage, StatusBadge } from './siteShared'
 
 type FormState = Pick<WebhookConfig,
-  'enabled' | 'low_balance_enabled' | 'low_balance_threshold' | 'checkin_failure_enabled' | 'cooldown_minutes'
+  'enabled' | 'telegram_enabled' | 'telegram_use_system_proxy' | 'low_balance_enabled' | 'low_balance_threshold' | 'checkin_failure_enabled' | 'cooldown_minutes'
 >
 
 const defaults: FormState = {
   enabled: false,
+  telegram_enabled: false,
+  telegram_use_system_proxy: true,
   low_balance_enabled: true,
   low_balance_threshold: 10,
   checkin_failure_enabled: true,
@@ -21,6 +23,8 @@ export function WebhookSettingsPanel() {
   const [config, setConfig] = useState<WebhookConfig | null>(null)
   const [form, setForm] = useState<FormState>(defaults)
   const [endpoint, setEndpoint] = useState('')
+  const [telegramBotToken, setTelegramBotToken] = useState('')
+  const [telegramChatId, setTelegramChatId] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -34,6 +38,8 @@ export function WebhookSettingsPanel() {
       setConfig(data)
       setForm({
         enabled: data.enabled,
+        telegram_enabled: data.telegram_enabled,
+        telegram_use_system_proxy: data.telegram_use_system_proxy,
         low_balance_enabled: data.low_balance_enabled,
         low_balance_threshold: data.low_balance_threshold,
         checkin_failure_enabled: data.checkin_failure_enabled,
@@ -55,8 +61,8 @@ export function WebhookSettingsPanel() {
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); setSaving(true); setError(''); setNotice('')
     try {
-      const data = await updateWebhookConfig({ ...form, ...(endpoint.trim() ? { url: endpoint.trim() } : {}) })
-      setConfig(data); setEndpoint(''); setNotice('通知设置已保存')
+      const data = await updateWebhookConfig({ ...form, ...(endpoint.trim() ? { url: endpoint.trim() } : {}), ...(telegramBotToken.trim() ? { telegram_bot_token: telegramBotToken.trim() } : {}), ...(telegramChatId.trim() ? { telegram_chat_id: telegramChatId.trim() } : {}) })
+      setConfig(data); setEndpoint(''); setTelegramBotToken(''); setTelegramChatId(''); setNotice('通知设置已保存')
     } catch (reason) { setError(siteErrorMessage(reason)) }
     finally { setSaving(false) }
   }
@@ -71,11 +77,22 @@ export function WebhookSettingsPanel() {
     finally { setSaving(false) }
   }
 
-  const sendTest = async () => {
+  const clearTelegram = async () => {
+    if (!window.confirm('移除 Telegram 凭证并停用该通知通道？')) return
+    setSaving(true); setError(''); setNotice('')
+    try {
+      const nextForm = { ...form, telegram_enabled: false }
+      const data = await updateWebhookConfig({ ...nextForm, telegram_clear: true })
+      setConfig(data); setForm(nextForm); setTelegramBotToken(''); setTelegramChatId(''); setNotice('Telegram 凭证已移除')
+    } catch (reason) { setError(siteErrorMessage(reason)) }
+    finally { setSaving(false) }
+  }
+
+  const sendTest = async (target: 'webhook' | 'telegram') => {
     setTesting(true); setError(''); setNotice('')
     try {
-      const result = await testWebhook()
-      setNotice(`测试通知发送成功${result.attempts > 1 ? `，第 ${result.attempts} 次送达` : ''}`)
+      const result = await testWebhook(target)
+      setNotice(`${target === 'telegram' ? 'Telegram' : 'Webhook'} 测试通知发送成功${result.attempts > 1 ? `，第 ${result.attempts} 次送达` : ''}`)
       await load()
     } catch (reason) { setError(siteErrorMessage(reason)) }
     finally { setTesting(false) }
@@ -91,13 +108,21 @@ export function WebhookSettingsPanel() {
     <form className="webhook-settings" onSubmit={save}>
       <header className="settings-section-header">
         <span className="settings-section-icon"><BellRing size={19} /></span>
-        <div><h2>通用 Webhook</h2><p>{config?.url_configured ? config.url_masked || '地址已加密保存' : '尚未配置接收地址'}</p></div>
-        <div className="settings-header-status"><StatusBadge status={config?.last_delivery_status} /><Toggle checked={form.enabled} setChecked={(value) => setForm((current) => ({ ...current, enabled: value }))} label="启用 Webhook" /></div>
+        <div><h2>通知通道</h2><p>余额与签到告警会发送到已启用的通道</p></div>
+        <div className="settings-header-status"><StatusBadge status={config?.last_delivery_status} /></div>
       </header>
 
-      <div className="webhook-endpoint-row">
-        <label><span>接收地址</span><input type="url" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="https://hooks.example.com/..." /></label>
-        {config?.url_configured && <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => void clearEndpoint()} disabled={saving} aria-label="移除 Webhook 地址" title="移除地址"><Trash2 size={16} /></button>}
+      <div className="notification-channels">
+        <section className="notification-channel-card">
+          <header><span className="notification-channel-icon"><Send size={18} /></span><div><strong>通用 Webhook</strong><small>{config?.url_configured ? config.url_masked || '地址已加密保存' : '尚未配置接收地址'}</small></div><Toggle checked={form.enabled} setChecked={(value) => setForm((current) => ({ ...current, enabled: value }))} label="启用 Webhook" /></header>
+          <div className="webhook-endpoint-row"><label><span>接收地址</span><input type="url" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="https://hooks.example.com/..." /></label>{config?.url_configured && <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => void clearEndpoint()} disabled={saving} aria-label="移除 Webhook 地址" title="移除地址"><Trash2 size={16} /></button>}</div>
+          <footer><button className="secondary-button" type="button" onClick={() => void sendTest('webhook')} disabled={!config?.url_configured || testing}><Send size={15} />测试 Webhook</button></footer>
+        </section>
+        <section className="notification-channel-card notification-channel-card--telegram">
+          <header><span className="notification-channel-icon"><Bot size={18} /></span><div><strong>Telegram</strong><small>{config?.telegram_configured ? `Chat ID ${config.telegram_chat_masked || '已保存'}` : '填写 Bot Token 与 Chat ID'}</small></div><Toggle checked={form.telegram_enabled} setChecked={(value) => setForm((current) => ({ ...current, telegram_enabled: value }))} label="启用 Telegram" /></header>
+          <div className="telegram-fields"><label><span>Bot Token</span><input type="password" autoComplete="off" value={telegramBotToken} onChange={(event) => setTelegramBotToken(event.target.value)} placeholder={config?.telegram_configured ? '留空保持现有凭证' : '123456:AA...'} /></label><label><span>Chat ID</span><input value={telegramChatId} onChange={(event) => setTelegramChatId(event.target.value)} placeholder={config?.telegram_configured ? config.telegram_chat_masked || '留空保持现有凭证' : '-1001234567890'} /></label></div>
+          <footer><label className="inline-check"><input type="checkbox" checked={form.telegram_use_system_proxy} onChange={(event) => setForm((current) => ({ ...current, telegram_use_system_proxy: event.target.checked }))} /><span>使用系统代理</span></label><div><button className="secondary-button" type="button" onClick={() => void sendTest('telegram')} disabled={!config?.telegram_configured || testing}><Send size={15} />测试 Telegram</button>{config?.telegram_configured && <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => void clearTelegram()} disabled={saving} aria-label="移除 Telegram 凭证" title="移除凭证"><Trash2 size={16} /></button>}</div></footer>
+        </section>
       </div>
 
       <div className="notification-rules">
@@ -120,7 +145,7 @@ export function WebhookSettingsPanel() {
           <span>通知冷却</span><select value={form.cooldown_minutes} onChange={(event) => setForm((current) => ({ ...current, cooldown_minutes: Number(event.target.value) }))}><option value={30}>30 分钟</option><option value={60}>1 小时</option><option value={360}>6 小时</option><option value={720}>12 小时</option><option value={1440}>24 小时</option></select>
           <span className="delivery-last">{config?.last_delivery_at ? `最近发送 ${formatTime(config.last_delivery_at)}` : '尚无发送记录'}{config?.last_error ? ` · ${config.last_error}` : ''}</span>
         </div>
-        <div><button className="secondary-button" type="button" onClick={() => void sendTest()} disabled={!config?.url_configured || testing}><Send size={15} />{testing ? '发送中' : '测试'}</button><button className="primary-button" type="submit" disabled={saving}>{saving ? <RefreshCw className="spin" size={15} /> : null}{saving ? '保存中' : '保存设置'}</button></div>
+        <div><button className="primary-button" type="submit" disabled={saving}>{saving ? <RefreshCw className="spin" size={15} /> : null}{saving ? '保存中' : '保存设置'}</button></div>
       </footer>
 	</form>
 	</section>

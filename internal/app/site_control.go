@@ -25,6 +25,7 @@ import (
 
 type siteControlService struct {
 	store               storage.Store
+	configService       *ConfigService
 	cipher              *credential.Cipher
 	registry            *provider.Registry
 	baseCtx             context.Context

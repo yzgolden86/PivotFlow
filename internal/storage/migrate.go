@@ -79,6 +79,7 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineSiteTaskLeasesTable,
 		schema.DefineWebhookEndpointsTable,
 		schema.DefineWebhookEventStatesTable,
+		schema.DefineBackupSettingsTable,
 		schema.DefineLogsTable,
 		schema.DefineDebugLogsTable,
 		schema.DefineModelFingerprintsTable,
@@ -135,6 +136,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		if tb.Name() == "sites" {
 			if err := ensureSitesUseSystemProxy(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate sites use_system_proxy: %w", err)
+			}
+		}
+		if tb.Name() == "webhook_endpoints" {
+			if err := ensureWebhookNotificationColumns(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate webhook notification columns: %w", err)
 			}
 		}
 
@@ -587,6 +593,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
 		{"channel_check_interval_hours", "5", "float", "渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭)", "5"},
+		{"site_daily_checkin_time", "08:00", "string", "站点账号每日自动签到时间(HH:MM,按账号或站点时区)", "08:00"},
 		{"model_catalog_sync_interval_hours", "6", "float", "从 models.dev 同步官方模型定价目录的间隔（小时，支持小数）；0 仅关闭网络同步，继续使用最近缓存或内置定价；不影响渠道模型列表", "6"},
 		{"auto_update_interval_hours", "12", "int", "非容器部署的上游版本检查间隔（整数小时；0=关闭检查；启用时最低1小时；融合版只读）", "12"},
 		{"auto_update_channel", "stable", "string", "非容器部署的版本检查渠道（stable=稳定版，preview=稳定版和测试版；融合版只读检查）", "stable"},

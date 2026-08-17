@@ -72,6 +72,7 @@ type Server struct {
 	antigravityService            *antigravityauth.Service
 	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning atomic.Bool
+	backupExportRunning           atomic.Bool
 
 	// 异步统计（有界队列，避免每请求起goroutine）
 	tokenStatsCh        chan tokenStatsUpdate
@@ -303,6 +304,7 @@ func NewServer(store storage.Store) *Server {
 		store, // 传入store用于热更新令牌
 	)
 	s.siteControl = newSiteControlService(store, s.baseCtx, &s.wg)
+	s.siteControl.configService = configService
 	s.siteControl.onProjectionChanged = func() {
 		s.InvalidateChannelListCache()
 		s.InvalidateAllAPIKeysCache()
@@ -311,6 +313,7 @@ func NewServer(store storage.Store) *Server {
 	// 启动后台 worker（Token 统计 / Token 清理 / 状态清理）
 	s.startBackgroundWorkers()
 	s.startSiteScheduler()
+	s.startBackupScheduler()
 
 	channelCheckIntervalHours := normalizeChannelCheckIntervalHours(
 		configService.GetFloat("channel_check_interval_hours", defaultChannelCheckIntervalHours),
@@ -1120,6 +1123,12 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/webhook", s.siteControl.handleWebhook)
 		admin.PUT("/webhook", s.siteControl.handleWebhook)
 		admin.POST("/webhook/test", s.siteControl.handleWebhookTest)
+		admin.GET("/backup/export", s.HandleBackupExport)
+		admin.POST("/backup/import", s.HandleBackupImport)
+		admin.GET("/backup/webdav", s.HandleBackupWebDAV)
+		admin.PUT("/backup/webdav", s.HandleBackupWebDAV)
+		admin.POST("/backup/webdav/export", s.HandleBackupWebDAVExport)
+		admin.POST("/backup/webdav/import", s.HandleBackupWebDAVImport)
 
 		// 统计分析
 		admin.GET("/dashboard", s.HandleAdminDashboard)

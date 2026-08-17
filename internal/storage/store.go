@@ -125,6 +125,8 @@ type Store interface {
 	ListAllSettings(ctx context.Context) ([]*model.SystemSetting, error)
 	UpdateSetting(ctx context.Context, key, value string) error
 	BatchUpdateSettings(ctx context.Context, updates map[string]string) error
+	GetBackupConfig(ctx context.Context) (*model.BackupConfig, error)
+	UpsertBackupConfig(ctx context.Context, config *model.BackupConfig) error
 
 	// === Model Fingerprint Management ===
 	ListModelFingerprints(ctx context.Context) ([]*model.ModelFingerprint, error)

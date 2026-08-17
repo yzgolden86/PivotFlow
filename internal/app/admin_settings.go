@@ -1,12 +1,14 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
 	"github.com/yzgolden86/PivotFlow/internal/version"
@@ -326,6 +328,10 @@ func validateSettingValue(key, valueType, value string) error {
 
 	case "string":
 		switch key {
+		case "site_daily_checkin_time":
+			if _, err := time.Parse("15:04", value); err != nil {
+				return fmt.Errorf("site_daily_checkin_time must use HH:MM")
+			}
 		case "log_channel_click_action":
 			if value != "edit" && value != "navigate" {
 				return fmt.Errorf("log_channel_click_action must be edit or navigate")
@@ -333,6 +339,11 @@ func validateSettingValue(key, valueType, value string) error {
 		case "auto_update_channel":
 			_, err := version.ParseReleaseChannel(value)
 			return err
+		}
+
+	case "json":
+		if !json.Valid([]byte(value)) {
+			return fmt.Errorf("not valid JSON")
 		}
 
 	default:

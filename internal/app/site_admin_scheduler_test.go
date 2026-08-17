@@ -199,3 +199,21 @@ func TestSiteSchedulerLimitsGlobalConcurrencyAndSerializesEachSite(t *testing.T)
 		}
 	}
 }
+
+func TestDailyCheckinTimeBoundaries(t *testing.T) {
+	srv := newInMemoryServerWithSettings(t, map[string]string{"site_daily_checkin_time": "09:30"})
+	if got := srv.siteControl.dailyCheckinMinute(); got != 9*60+30 {
+		t.Fatalf("daily check-in minute=%d, want %d", got, 9*60+30)
+	}
+	before := time.Date(2026, 8, 18, 9, 29, 0, 0, time.UTC)
+	atTime := time.Date(2026, 8, 18, 9, 30, 0, 0, time.UTC)
+	if dailyCheckinDue(before, srv.siteControl.dailyCheckinMinute()) {
+		t.Fatal("09:29 must not trigger a 09:30 check-in")
+	}
+	if !dailyCheckinDue(atTime, srv.siteControl.dailyCheckinMinute()) {
+		t.Fatal("09:30 must trigger a 09:30 check-in")
+	}
+	if dailyCheckinDue(time.Date(2026, 8, 18, 7, 59, 0, 0, time.UTC), 8*60) {
+		t.Fatal("07:59 must not trigger the default 08:00 check-in")
+	}
+}

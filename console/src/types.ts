@@ -450,6 +450,10 @@ export interface WebhookConfig {
 	enabled: boolean
 	url_configured: boolean
 	url_masked?: string
+	telegram_enabled: boolean
+	telegram_configured: boolean
+	telegram_chat_masked?: string
+	telegram_use_system_proxy: boolean
 	low_balance_enabled: boolean
 	low_balance_threshold: number
 	checkin_failure_enabled: boolean
@@ -503,6 +507,41 @@ export interface SystemSetting {
   updated_at: number
   editable: boolean
   disabled_reason?: string
+}
+
+export type BackupType = 'all' | 'connections' | 'settings'
+
+export interface BackupDocument {
+  version: string
+  exported_at: number
+  type: BackupType
+  warnings?: string[]
+  [key: string]: unknown
+}
+
+export interface BackupImportResult {
+  sites: number
+  accounts: number
+  channels: number
+  tokens: number
+  settings: number
+  restart_required: boolean
+}
+
+export interface BackupWebDAVConfig {
+  id: number
+  enabled: boolean
+  file_url: string
+  username: string
+  password_configured: boolean
+  password_masked?: string
+  export_type: BackupType
+  auto_sync_enabled: boolean
+  auto_sync_interval_hours: number
+  last_sync_at?: number
+  last_error?: string
+  created_at?: number
+  updated_at?: number
 }
 
 export interface VersionInfo {

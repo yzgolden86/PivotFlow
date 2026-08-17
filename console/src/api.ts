@@ -32,6 +32,10 @@ import type {
   FingerprintTestRecord,
   ModelFingerprint,
   SystemSetting,
+  BackupDocument,
+  BackupImportResult,
+  BackupType,
+  BackupWebDAVConfig,
   VersionInfo,
 } from './types'
 
@@ -382,6 +386,11 @@ export function getWebhookConfig(signal?: AbortSignal): Promise<WebhookConfig> {
 export function updateWebhookConfig(payload: {
 	enabled: boolean
 	url?: string
+	telegram_enabled: boolean
+	telegram_bot_token?: string
+	telegram_chat_id?: string
+	telegram_use_system_proxy: boolean
+	telegram_clear?: boolean
 	low_balance_enabled: boolean
 	low_balance_threshold: number
 	checkin_failure_enabled: boolean
@@ -390,8 +399,8 @@ export function updateWebhookConfig(payload: {
 	return apiMutation<WebhookConfig>('/admin/webhook', payload, 'PUT')
 }
 
-export function testWebhook(): Promise<{ status: string; attempts: number }> {
-	return apiMutation('/admin/webhook/test')
+export function testWebhook(target: 'webhook' | 'telegram' = 'webhook'): Promise<{ status: string; attempts: number }> {
+	return apiMutation(`/admin/webhook/test?target=${target}`)
 }
 
 export function getAuthTokens(range: DashboardRange, signal?: AbortSignal): Promise<AuthTokenList> {
@@ -442,6 +451,39 @@ export function updateSystemSettings(values: Record<string, string>): Promise<{ 
 
 export function resetSystemSetting(key: string): Promise<{ key: string; value: string }> {
   return apiMutation(`/admin/settings/${encodeURIComponent(key)}/reset`)
+}
+
+export function exportBackup(type: BackupType): Promise<BackupDocument> {
+  return apiRequest<BackupDocument>(`/admin/backup/export?type=${encodeURIComponent(type)}`)
+}
+
+export function importBackup(data: BackupDocument): Promise<BackupImportResult> {
+  return apiMutation<BackupImportResult>('/admin/backup/import', { data })
+}
+
+export function getBackupWebDAV(signal?: AbortSignal): Promise<BackupWebDAVConfig> {
+  return apiRequest<BackupWebDAVConfig>('/admin/backup/webdav', signal)
+}
+
+export function updateBackupWebDAV(payload: {
+  enabled: boolean
+  file_url: string
+  username: string
+  password?: string
+  clear_password?: boolean
+  export_type: BackupType
+  auto_sync_enabled: boolean
+  auto_sync_interval_hours: number
+}): Promise<BackupWebDAVConfig> {
+  return apiMutation<BackupWebDAVConfig>('/admin/backup/webdav', payload, 'PUT')
+}
+
+export function uploadBackupToWebDAV(type: BackupType): Promise<{ status: string; file_url: string; last_sync_at: number }> {
+  return apiMutation('/admin/backup/webdav/export', { type })
+}
+
+export function restoreBackupFromWebDAV(): Promise<BackupImportResult> {
+  return apiMutation('/admin/backup/webdav/import')
 }
 
 export async function getActiveRequests(signal?: AbortSignal): Promise<ActiveRequest[]> {

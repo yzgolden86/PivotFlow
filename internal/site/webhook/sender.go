@@ -24,6 +24,12 @@ type Sender struct {
 // Send posts a JSON event and retries only transient network, rate-limit, and
 // upstream failures. It never includes the endpoint URL in returned errors.
 func (s Sender) Send(ctx context.Context, endpoint string, payload any) (int, error) {
+	return s.SendWithProxy(ctx, endpoint, payload, "")
+}
+
+// SendWithProxy allows notification integrations to explicitly opt out of the
+// process proxy while preserving the same bounded retry behavior.
+func (s Sender) SendWithProxy(ctx context.Context, endpoint string, payload any, proxyURL string) (int, error) {
 	if err := provider.ValidateBaseURL(endpoint, s.Clients.AllowPrivate); err != nil {
 		return 0, errors.New("invalid webhook endpoint")
 	}
@@ -31,7 +37,7 @@ func (s Sender) Send(ctx context.Context, endpoint string, payload any) (int, er
 	if err != nil {
 		return 0, errors.New("encode webhook payload")
 	}
-	client, err := s.Clients.New("")
+	client, err := s.Clients.New(proxyURL)
 	if err != nil {
 		return 0, errors.New("create webhook client")
 	}

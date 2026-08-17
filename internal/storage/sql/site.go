@@ -588,9 +588,9 @@ func (s *SQLStore) ReleaseSiteTaskLease(ctx context.Context, key, owner string) 
 
 func (s *SQLStore) GetWebhookConfig(ctx context.Context) (*model.WebhookConfig, error) {
 	var config model.WebhookConfig
-	var enabled, lowBalanceEnabled, checkinFailureEnabled int
-	err := s.QueryRowContext(ctx, `SELECT id,enabled,url_ciphertext,url_key_version,low_balance_enabled,low_balance_threshold,checkin_failure_enabled,cooldown_minutes,last_delivery_status,last_delivery_at,last_error,created_at,updated_at FROM webhook_endpoints WHERE id=1`).Scan(
-		&config.ID, &enabled, &config.URLCiphertext, &config.URLKeyVersion, &lowBalanceEnabled, &config.LowBalanceThreshold, &checkinFailureEnabled, &config.CooldownMinutes, &config.LastDeliveryStatus, &config.LastDeliveryAt, &config.LastError, &config.CreatedAt, &config.UpdatedAt,
+	var enabled, telegramEnabled, telegramUseSystemProxy, lowBalanceEnabled, checkinFailureEnabled int
+	err := s.QueryRowContext(ctx, `SELECT id,enabled,url_ciphertext,url_key_version,telegram_enabled,telegram_bot_ciphertext,telegram_bot_key_version,telegram_chat_ciphertext,telegram_chat_key_version,telegram_use_system_proxy,low_balance_enabled,low_balance_threshold,checkin_failure_enabled,cooldown_minutes,last_delivery_status,last_delivery_at,last_error,created_at,updated_at FROM webhook_endpoints WHERE id=1`).Scan(
+		&config.ID, &enabled, &config.URLCiphertext, &config.URLKeyVersion, &telegramEnabled, &config.TelegramBotCiphertext, &config.TelegramBotKeyVersion, &config.TelegramChatCiphertext, &config.TelegramChatKeyVersion, &telegramUseSystemProxy, &lowBalanceEnabled, &config.LowBalanceThreshold, &checkinFailureEnabled, &config.CooldownMinutes, &config.LastDeliveryStatus, &config.LastDeliveryAt, &config.LastError, &config.CreatedAt, &config.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errors.New("not found")
@@ -599,6 +599,9 @@ func (s *SQLStore) GetWebhookConfig(ctx context.Context) (*model.WebhookConfig, 
 		return nil, err
 	}
 	config.Enabled = enabled != 0
+	config.TelegramEnabled = telegramEnabled != 0
+	config.TelegramUseSystemProxy = telegramUseSystemProxy != 0
+	config.TelegramConfigured = strings.TrimSpace(config.TelegramBotCiphertext) != "" && strings.TrimSpace(config.TelegramChatCiphertext) != ""
 	config.LowBalanceEnabled = lowBalanceEnabled != 0
 	config.CheckinFailureEnabled = checkinFailureEnabled != 0
 	config.URLConfigured = strings.TrimSpace(config.URLCiphertext) != ""
@@ -617,12 +620,12 @@ func (s *SQLStore) UpsertWebhookConfig(ctx context.Context, config *model.Webhoo
 		config.CreatedAt = now
 	}
 	config.UpdatedAt = now
-	args := []any{1, config.Enabled, config.URLCiphertext, config.URLKeyVersion, config.LowBalanceEnabled, config.LowBalanceThreshold, config.CheckinFailureEnabled, config.CooldownMinutes, config.LastDeliveryStatus, config.LastDeliveryAt, config.LastError, config.CreatedAt, config.UpdatedAt}
-	query := `INSERT INTO webhook_endpoints(id,enabled,url_ciphertext,url_key_version,low_balance_enabled,low_balance_threshold,checkin_failure_enabled,cooldown_minutes,last_delivery_status,last_delivery_at,last_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	args := []any{1, config.Enabled, config.URLCiphertext, config.URLKeyVersion, config.TelegramEnabled, config.TelegramBotCiphertext, config.TelegramBotKeyVersion, config.TelegramChatCiphertext, config.TelegramChatKeyVersion, config.TelegramUseSystemProxy, config.LowBalanceEnabled, config.LowBalanceThreshold, config.CheckinFailureEnabled, config.CooldownMinutes, config.LastDeliveryStatus, config.LastDeliveryAt, config.LastError, config.CreatedAt, config.UpdatedAt}
+	query := `INSERT INTO webhook_endpoints(id,enabled,url_ciphertext,url_key_version,telegram_enabled,telegram_bot_ciphertext,telegram_bot_key_version,telegram_chat_ciphertext,telegram_chat_key_version,telegram_use_system_proxy,low_balance_enabled,low_balance_threshold,checkin_failure_enabled,cooldown_minutes,last_delivery_status,last_delivery_at,last_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	if s.IsMySQL() {
-		query += ` ON DUPLICATE KEY UPDATE enabled=VALUES(enabled),url_ciphertext=VALUES(url_ciphertext),url_key_version=VALUES(url_key_version),low_balance_enabled=VALUES(low_balance_enabled),low_balance_threshold=VALUES(low_balance_threshold),checkin_failure_enabled=VALUES(checkin_failure_enabled),cooldown_minutes=VALUES(cooldown_minutes),last_delivery_status=VALUES(last_delivery_status),last_delivery_at=VALUES(last_delivery_at),last_error=VALUES(last_error),updated_at=VALUES(updated_at)`
+		query += ` ON DUPLICATE KEY UPDATE enabled=VALUES(enabled),url_ciphertext=VALUES(url_ciphertext),url_key_version=VALUES(url_key_version),telegram_enabled=VALUES(telegram_enabled),telegram_bot_ciphertext=VALUES(telegram_bot_ciphertext),telegram_bot_key_version=VALUES(telegram_bot_key_version),telegram_chat_ciphertext=VALUES(telegram_chat_ciphertext),telegram_chat_key_version=VALUES(telegram_chat_key_version),telegram_use_system_proxy=VALUES(telegram_use_system_proxy),low_balance_enabled=VALUES(low_balance_enabled),low_balance_threshold=VALUES(low_balance_threshold),checkin_failure_enabled=VALUES(checkin_failure_enabled),cooldown_minutes=VALUES(cooldown_minutes),last_delivery_status=VALUES(last_delivery_status),last_delivery_at=VALUES(last_delivery_at),last_error=VALUES(last_error),updated_at=VALUES(updated_at)`
 	} else {
-		query += ` ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,url_ciphertext=excluded.url_ciphertext,url_key_version=excluded.url_key_version,low_balance_enabled=excluded.low_balance_enabled,low_balance_threshold=excluded.low_balance_threshold,checkin_failure_enabled=excluded.checkin_failure_enabled,cooldown_minutes=excluded.cooldown_minutes,last_delivery_status=excluded.last_delivery_status,last_delivery_at=excluded.last_delivery_at,last_error=excluded.last_error,updated_at=excluded.updated_at`
+		query += ` ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,url_ciphertext=excluded.url_ciphertext,url_key_version=excluded.url_key_version,telegram_enabled=excluded.telegram_enabled,telegram_bot_ciphertext=excluded.telegram_bot_ciphertext,telegram_bot_key_version=excluded.telegram_bot_key_version,telegram_chat_ciphertext=excluded.telegram_chat_ciphertext,telegram_chat_key_version=excluded.telegram_chat_key_version,telegram_use_system_proxy=excluded.telegram_use_system_proxy,low_balance_enabled=excluded.low_balance_enabled,low_balance_threshold=excluded.low_balance_threshold,checkin_failure_enabled=excluded.checkin_failure_enabled,cooldown_minutes=excluded.cooldown_minutes,last_delivery_status=excluded.last_delivery_status,last_delivery_at=excluded.last_delivery_at,last_error=excluded.last_error,updated_at=excluded.updated_at`
 	}
 	_, err := s.ExecContext(ctx, query, args...)
 	return err

@@ -46,8 +46,8 @@ export function statusLabel(status?: string): string {
 export function formatAccountBalance(account: SiteAccount): string {
   if (account.balance == null) return '—'
   try {
-    return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: account.balance_currency || 'CNY', maximumFractionDigits: 2 }).format(account.balance)
-  } catch { return `${account.balance.toFixed(2)} ${account.balance_currency || ''}` }
+    return new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(account.balance)
+  } catch { return account.balance.toFixed(2) }
 }
 
 export function siteErrorMessage(reason: unknown): string {

@@ -133,7 +133,7 @@ export default function TokensPage() {
       {visible.map((token) => <article className="token-row" key={token.id}>
         <span className={`token-icon${token.is_active ? '' : ' token-icon--off'}`}><KeyRound size={17} /></span>
         <div className="token-identity"><strong>{token.description}</strong><span>令牌 #{token.id}</span></div>
-        <div className="token-secret-cell"><span>{token.token_recoverable ? '安全存储' : '不可恢复'}</span><button className="icon-button icon-button--surface" type="button" onClick={() => void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={token.token_recoverable ? '复制令牌' : '历史令牌不可恢复'}>{copiedId === token.id ? <Check size={15} /> : <Copy size={15} />}</button></div>
+        <div className="token-secret-cell"><code>{token.token_hint || token.token || '****'}</code><button className="icon-button icon-button--surface" type="button" onClick={() => void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={token.token_recoverable ? '复制令牌' : '历史令牌不可恢复'}>{copiedId === token.id ? <Check size={15} /> : <Copy size={15} />}</button></div>
         <div><strong>{formatNumber(token.success_count + token.failure_count)}</strong><span>{token.failure_count} 次失败</span></div>
         <div><strong>{formatMoney(token.effective_cost_usd)}</strong><span>{formatNumber((token.prompt_tokens_total || 0) + (token.completion_tokens_total || 0))} tokens</span></div>
         <div><strong>{token.max_concurrency || '不限'}</strong><span>{token.cost_limit_usd ? `限额 ${formatMoney(token.cost_limit_usd)}` : '无费用限额'}</span></div>

@@ -24,6 +24,7 @@ var sqliteMigratableTables = map[string]bool{
 	"schema_migrations":        true,
 	"checkin_attempts":         true,
 	"sites":                    true,
+	"webhook_endpoints":        true,
 }
 
 type sqliteColumnDef struct {
@@ -173,6 +174,27 @@ func ensureCheckinAttemptBalanceColumns(ctx context.Context, db *sql.DB, dialect
 	}
 	for _, column := range columns {
 		if err := ensureColumn(ctx, db, dialect, "checkin_attempts", column.name, column.mysqlDef, column.sqliteDef); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureWebhookNotificationColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	columns := []struct {
+		name      string
+		mysqlDef  string
+		sqliteDef string
+	}{
+		{"telegram_enabled", "TINYINT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"},
+		{"telegram_bot_ciphertext", "TEXT NOT NULL", "TEXT NOT NULL DEFAULT ''"},
+		{"telegram_bot_key_version", "VARCHAR(32) NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''"},
+		{"telegram_chat_ciphertext", "TEXT NOT NULL", "TEXT NOT NULL DEFAULT ''"},
+		{"telegram_chat_key_version", "VARCHAR(32) NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''"},
+		{"telegram_use_system_proxy", "TINYINT NOT NULL DEFAULT 1", "INTEGER NOT NULL DEFAULT 1"},
+	}
+	for _, column := range columns {
+		if err := ensureColumn(ctx, db, dialect, "webhook_endpoints", column.name, column.mysqlDef, column.sqliteDef); err != nil {
 			return err
 		}
 	}
