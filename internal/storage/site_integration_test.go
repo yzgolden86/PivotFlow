@@ -144,6 +144,58 @@ func TestSiteProjectionUsesStableNamesForDuplicateUpstreamKeys(t *testing.T) {
 	}
 }
 
+func TestPruneSiteProjectionsDeletesOnlyRemovedProjectedChannels(t *testing.T) {
+	store, err := CreateSQLiteStore(t.TempDir() + "/site-prune-projection.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	site, err := store.CreateSite(ctx, &model.Site{Name: "prune", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "main", CredentialType: model.CredentialTypeAccessToken, CredentialCiphertext: "fc1.test", CredentialKeyVersion: "v1", Enabled: true, Status: "healthy", BalanceCurrency: "USD", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep, err := store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: "key:keep", Name: "keep", BaseURL: site.BaseURL, Protocols: []string{"openai"}, Models: []string{"gpt-5"}, APIKey: "sk-keep", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remove, err := store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: "key:remove", Name: "remove", BaseURL: site.BaseURL, Protocols: []string{"openai"}, Models: []string{"gpt-4"}, APIKey: "sk-remove", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manual, err := store.CreateConfig(ctx, &model.Config{Name: "manual", URLs: model.ChannelURLs{{URL: site.BaseURL}}, ModelEntries: []model.ModelEntry{{Model: "manual-model"}}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execStore := store.(interface {
+		ExecContext(context.Context, string, ...any) (sql.Result, error)
+	})
+	now := time.Now().UnixMilli()
+	if _, err := execStore.ExecContext(ctx, "INSERT INTO site_channel_bindings(site_account_id,projection_key,channel_id,ownership,status,last_projected_hash,last_sync_status,last_sync_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", account.ID, "manual", manual.ID, "manual", "active", "", "success", "", now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PruneSiteProjectionsExcept(ctx, account.ID, []string{"key:keep"}); err != nil {
+		t.Fatal(err)
+	}
+	bindings, err := store.ListSiteChannelBindings(ctx)
+	if err != nil || len(bindings) != 2 {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+	if _, err := store.GetConfig(ctx, keep.Channel.ID); err != nil {
+		t.Fatalf("kept projection was deleted: %v", err)
+	}
+	if removed, err := store.GetConfig(ctx, remove.Channel.ID); err == nil {
+		t.Fatalf("removed projection channel still exists: %+v", removed)
+	}
+	if _, err := store.GetConfig(ctx, manual.ID); err != nil {
+		t.Fatalf("manual channel was deleted: %v", err)
+	}
+}
+
 func TestDeletedSiteNameCanBeReused(t *testing.T) {
 	store, err := CreateSQLiteStore(t.TempDir() + "/site-recreate.db")
 	if err != nil {

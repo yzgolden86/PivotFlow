@@ -4,8 +4,25 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
+
+func TestDecodeProviderJSONAcceptsBOMAndXSSIPrefix(t *testing.T) {
+	for _, raw := range [][]byte{
+		append([]byte{0xef, 0xbb, 0xbf}, []byte(`{"success":true,"data":{"quota":500000}}`)...),
+		[]byte(")]}'\n{\"success\":true,\"data\":{\"quota\":500000}}"),
+	} {
+		var payload envelope
+		if err := decodeProviderJSON(raw, &payload); err != nil {
+			t.Fatal(err)
+		}
+		quota, ok := numberValue(payload.Data, "quota")
+		if !payload.Success || !ok || !reflect.DeepEqual(quota, float64(500000)) {
+			t.Fatalf("payload=%+v", payload)
+		}
+	}
+}
 
 func TestNewAPIRefreshModelsCheckinAndNotice(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

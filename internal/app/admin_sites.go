@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
@@ -436,18 +438,57 @@ func (s *siteControlService) handleAnnouncementsRefresh(c *gin.Context) {
 			if e != nil {
 				refreshErr = e
 			} else {
+				var (
+					failures  []string
+					refreshed int
+					mu        sync.Mutex
+					wg        sync.WaitGroup
+				)
+				semaphore := make(chan struct{}, 4)
 				for _, site := range sites {
 					if !site.Enabled {
 						continue
 					}
-					if e := s.refreshAnnouncements(ctx, site.ID); e != nil {
-						refreshErr = e
+					site := site
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						select {
+						case semaphore <- struct{}{}:
+						case <-ctx.Done():
+							return
+						}
+						defer func() { <-semaphore }()
+						if e := s.refreshAnnouncements(ctx, site.ID); e != nil {
+							if provider.ErrorCode(e) == provider.CodeUnsupported {
+								return
+							}
+							mu.Lock()
+							failures = append(failures, fmt.Sprintf("%s: %s", site.Name, siteTaskError(e)))
+							mu.Unlock()
+							return
+						}
+						mu.Lock()
+						refreshed++
+						mu.Unlock()
+					}()
+				}
+				wg.Wait()
+				if len(failures) > 1 {
+					// Concurrent refreshes finish in arbitrary order; keep task messages stable.
+					slices.Sort(failures)
+				}
+				if len(failures) > 0 {
+					refreshErr = fmt.Errorf("%s", strings.Join(failures, "; "))
+					if refreshed > 0 {
+						s.updateTask(ctx, task, model.SiteTaskStatusPartial, "announcements", refreshErr.Error())
+						return
 					}
 				}
 			}
 		}
 		if refreshErr != nil {
-			s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", provider.ErrorCode(refreshErr))
+			s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(refreshErr))
 			return
 		}
 		s.updateTask(ctx, task, model.SiteTaskStatusSuccess, "announcements", "")

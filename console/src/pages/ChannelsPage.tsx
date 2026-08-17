@@ -182,6 +182,7 @@ function SiteChannelSyncModal({ close, synced }: { close: () => void; synced: ()
   const [syncing, setSyncing] = useState(false)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
   const [error, setError] = useState('')
+  const [accountSearch, setAccountSearch] = useState('')
 
   const loadData = useCallback(async (signal?: AbortSignal) => {
     setLoading(true); setError('')
@@ -207,8 +208,26 @@ function SiteChannelSyncModal({ close, synced }: { close: () => void; synced: ()
     }
     return next
   }, [bindings])
+  const filteredAccounts = useMemo(() => {
+    const needle = accountSearch.trim().toLowerCase()
+    if (!needle) return accounts
+    return accounts.filter((account) => {
+      const site = siteMap.get(account.site_id)
+      return [account.label, account.credential_type, site?.name, site?.base_url]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(needle))
+    })
+  }, [accountSearch, accounts, siteMap])
   const toggle = (id: number) => setSelected((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next })
-  const selectAll = () => setSelected(new Set(accounts.filter((account) => account.enabled).map((account) => account.id)))
+  const selectAll = () => setSelected((current) => {
+    const available = filteredAccounts.filter((account) => account.enabled).map((account) => account.id)
+    if (available.length > 0 && available.every((id) => current.has(id))) {
+      const next = new Set(current)
+      available.forEach((id) => next.delete(id))
+      return next
+    }
+    return new Set([...current, ...available])
+  })
 
   const sync = async () => {
     const targets = accounts.filter((account) => selected.has(account.id))
@@ -240,11 +259,12 @@ function SiteChannelSyncModal({ close, synced }: { close: () => void; synced: ()
         <div className="site-sync-dialog">
           <div className="site-sync-toolbar">
             <span>选择账号后，系统会刷新模型，并用模型 API Key 创建或更新对应路由渠道。</span>
-            <div><button className="text-button" type="button" onClick={selectAll}>全选可用账号</button><button className="text-button" type="button" onClick={() => setSelected(new Set())}>清空</button></div>
+            <div><button className="text-button" type="button" onClick={selectAll}>{filteredAccounts.some((account) => account.enabled) && filteredAccounts.filter((account) => account.enabled).every((account) => selected.has(account.id)) ? '取消全选' : '全选搜索结果'}</button><button className="text-button" type="button" onClick={() => setSelected(new Set())}>清空</button></div>
           </div>
+          <label className="search-field site-sync-search"><Search size={15} /><input value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} placeholder="搜索账号、站点名称或网址" aria-label="搜索站点账号" /><span>{filteredAccounts.length}/{accounts.length}</span></label>
           {!accounts.length ? <EmptyState label="还没有站点账号" /> : (
             <div className="site-sync-list">
-              {accounts.map((account) => {
+              {!filteredAccounts.length ? <EmptyState label="没有匹配的站点账号" /> : filteredAccounts.map((account) => {
                 const site = siteMap.get(account.site_id)
                 const accountBindings = bindingMap.get(account.id) || []
                 const activeBindings = accountBindings.filter((item) => item.status === 'active')
@@ -281,7 +301,7 @@ function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remov
         <span className={`status-dot ${channel.enabled ? cooling ? 'status-dot--warning' : 'status-dot--success' : 'status-dot--muted'}`} />
         <div><div className="channel-name"><strong title={channel.name}>{channel.name}</strong><small>#{channel.id}</small></div><span>{channel.auth_type === 'api_key' ? `${channel.key_count} Keys · ${channel.key_strategy || 'sequential'}` : channel.auth_type}</span></div>
       </div>
-      <div className="channel-endpoints"><strong title={channel.urls.map((item) => item.url).join('\n')}>{channel.urls[0]?.url || '未配置 URL'}</strong><span>{channel.urls.length} URL · {protocols.join(' / ')}</span></div>
+      <div className="channel-endpoints">{channel.urls[0]?.url ? <a className="site-base-link" href={channel.urls[0].url} target="_blank" rel="noreferrer" title={`在新标签页打开 ${channel.urls[0].url}`}><strong>{channel.urls[0].url}</strong></a> : <strong>未配置 URL</strong>}<span title={channel.urls.map((item) => item.url).join('\n')}>{channel.urls.length} URL · {protocols.join(' / ')}</span></div>
       <div className="channel-routing"><span>优先级 <strong>{channel.priority}</strong></span><span>倍率 <strong>{channel.cost_multiplier || 1}x</strong></span><small>{protocolMode(channel.protocol_transform_mode)}</small></div>
       <div className="channel-models"><strong>{activeModels.length} 模型</strong><span title={activeModels.map((item) => item.model).join(', ')}>{activeModels.slice(0, 2).map((item) => item.model).join(' · ') || '未配置'}</span></div>
       <div className="channel-limits"><span>RPM {channel.rpm_limit || '不限'}</span><span>并发 {channel.max_concurrency || '不限'}</span>{cooling && <small className="text-warning">存在冷却</small>}</div>
@@ -346,9 +366,10 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); setSaving(true); setError('')
     try {
+      const models = normalizeEditorModels(form.models)
       const payload: ChannelMutation = {
         name: form.name.trim(), auth_type: form.authType,
-        urls: parseURLs(form.urls), models: form.models, api_keys: form.authType === 'api_key' ? parseKeys(form.keys) : [],
+        urls: parseURLs(form.urls), models, api_keys: form.authType === 'api_key' ? parseKeys(form.keys) : [],
         key_strategy: form.keyStrategy, priority: Number(form.priority) || 0, rpm_limit: Number(form.rpmLimit) || 0,
         max_concurrency: Number(form.maxConcurrency) || 0, enabled: form.enabled, websockets: form.websockets,
         protocol_transform_mode: form.protocolMode, scheduled_check_enabled: snapshot?.channel.scheduled_check_enabled || false,
@@ -357,7 +378,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
         custom_request_rules: snapshot?.channel.custom_request_rules, cooldown_detection_rules: snapshot?.channel.cooldown_detection_rules,
       }
       if (!payload.urls.length) throw new Error('至少填写一个上游 URL')
-      if (!payload.models.filter((item) => item.model.trim()).length) throw new Error('至少选择一个模型')
+      if (!payload.models.some((item) => item.model && !item.disabled)) throw new Error('至少保留一个启用模型')
       if (form.authType === 'api_key' && !payload.api_keys.length) throw new Error('至少填写一个 API Key')
       if (channelId) await updateChannel(channelId, payload); else await createChannel(payload)
       saved()
@@ -374,7 +395,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
       const result = await fetchChannelModelsPreview({ urls, api_keys: keys })
       const models = result.models.filter((item) => item.model.trim())
       if (!models.length) throw new Error('上游没有返回可用模型')
-      setForm((current) => ({ ...current, models }))
+      setForm((current) => ({ ...current, models: mergeDiscoveredModels(current.models, models) }))
     } catch (reason) { setError(reason instanceof Error ? reason.message : '模型获取失败') }
     finally { setDiscovering(false) }
   }
@@ -398,15 +419,44 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
       <label className="textarea-field">上游 URL<textarea required rows={3} value={form.urls} onChange={(event) => setForm({ ...form, urls: event.target.value })} placeholder="每行一个；可写 URL | anthropic, openai" /></label>
       {form.authType === 'api_key' ? <label className="textarea-field">API Keys<textarea required rows={4} value={form.keys} onChange={(event) => setForm({ ...form, keys: event.target.value })} placeholder="每行一个；可写 key | 备注" /></label> : <div className="form-help">OAuth 渠道不在这里手填密钥，请使用顶部“导入凭证”导入 Codex 或 Antigravity 凭证文件。</div>}
       {form.authType === 'api_key' && <div className="model-discovery-action"><div><strong>自动获取模型</strong><span>使用上方 URL 和 Key 请求模型列表，获取结果会直接用于渠道。</span></div><button className="secondary-button" type="button" onClick={() => void discoverModels()} disabled={discovering || !form.urls.trim() || !form.keys.trim()}>{discovering ? <RefreshCw className="spin" size={15} /> : <Sparkles size={15} />}{discovering ? '获取中' : '获取模型'}</button></div>}
-      <DiscoveredModelList models={form.models} />
+      <EditableModelList models={form.models} onChange={(models) => setForm((current) => ({ ...current, models }))} />
       <div className="checkbox-grid"><label className="checkbox-field"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用渠道</label><label className="checkbox-field"><input type="checkbox" checked={form.websockets} onChange={(event) => setForm({ ...form, websockets: event.target.checked })} />WebSocket</label><label className="checkbox-field"><input type="checkbox" checked={form.retryOtherKeys} onChange={(event) => setForm({ ...form, retryOtherKeys: event.target.checked })} />失败时尝试其他 Key</label></div>
       <footer><button className="secondary-button" type="button" onClick={close}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving ? <RefreshCw className="spin" size={15} /> : null}{saving ? '保存中' : '保存渠道'}</button></footer>
     </form>}
   </Modal>
 }
 
-function DiscoveredModelList({ models }: { models: ChannelModel[] }) {
-  return <section className="selection-panel discovered-model-panel"><header><div><strong>渠道模型</strong><span>{models.length ? `已自动获取 ${models.length} 个模型` : '尚未获取模型'}</span></div></header><div className="discovered-model-list">{models.length ? models.map((item) => <code title={item.redirect_model ? `${item.model} → ${item.redirect_model}` : item.model} key={item.model}>{item.model}{item.redirect_model ? ` → ${item.redirect_model}` : ''}</code>) : <span className="selection-empty">填写 URL 和 API Key 后点击“获取模型”。</span>}</div></section>
+function EditableModelList({ models, onChange }: { models: ChannelModel[]; onChange: (models: ChannelModel[]) => void }) {
+  const update = (index: number, patch: Partial<ChannelModel>) => onChange(models.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
+  const remove = (index: number) => onChange(models.filter((_, itemIndex) => itemIndex !== index))
+  const add = () => onChange([...models, { model: '', redirect_model: '' }])
+  return <section className="selection-panel discovered-model-panel"><header><div><strong>渠道模型</strong><span>{models.length ? `${models.length} 个模型，可删减或配置映射` : '尚未配置模型'}</span></div><button className="text-button" type="button" onClick={add}><Plus size={14} />添加模型</button></header>{models.length ? <div className="editable-model-list">{models.map((item, index) => <div className="editable-model-row" key={`${item.model}-${index}`}><input value={item.model} onChange={(event) => update(index, { model: event.target.value })} placeholder="对外模型名" aria-label={`第 ${index + 1} 个对外模型`} /><span aria-hidden="true">→</span><input value={item.redirect_model || ''} onChange={(event) => update(index, { redirect_model: event.target.value })} placeholder="映射到上游模型（可选）" aria-label={`第 ${index + 1} 个上游映射`} /><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除模型 ${item.model || index + 1}`} title="删除模型"><Trash2 size={15} /></button></div>)}</div> : <span className="selection-empty">填写 URL 和 API Key 后点击“获取模型”，也可以直接添加模型。</span>}</section>
+}
+
+function mergeDiscoveredModels(existing: ChannelModel[], discovered: ChannelModel[]): ChannelModel[] {
+  const result = [...existing]
+  const seen = new Set(existing.map((item) => item.model.trim().toLowerCase()).filter(Boolean))
+  for (const item of discovered) {
+    const model = item.model.trim()
+    if (!model || seen.has(model.toLowerCase())) continue
+    seen.add(model.toLowerCase())
+    result.push({ model, redirect_model: item.redirect_model || '' })
+  }
+  return result
+}
+
+function normalizeEditorModels(models: ChannelModel[]): ChannelModel[] {
+  const seen = new Set<string>()
+  return models.map((item) => ({
+    model: item.model.trim(),
+    redirect_model: item.redirect_model?.trim() || '',
+    disabled: Boolean(item.disabled),
+  })).filter((item) => {
+    const key = item.model.toLowerCase()
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 function parseURLs(value: string): ChannelURL[] { return splitRows(value).map((row) => { const [url, protocolText] = row.split('|').map((item) => item.trim()); return { url, ...(protocolText ? { protocols: protocolText.split(',').map((item) => item.trim()).filter(Boolean) } : {}) } }).filter((item) => item.url) }

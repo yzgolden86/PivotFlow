@@ -537,7 +537,7 @@ func (p *NewAPI) doJSONWithResponseHeaders(ctx context.Context, req AccountReque
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &Error{Code: CodeRequestFailed, StatusCode: resp.StatusCode, Message: "provider returned HTTP " + strconv.Itoa(resp.StatusCode)}
 	}
-	if err := json.Unmarshal(raw, out); err != nil {
+	if err := decodeProviderJSON(raw, out); err != nil {
 		return nil, &Error{Code: CodeInvalidResponse, Message: "provider returned invalid JSON"}
 	}
 	return resp.Header.Clone(), nil
@@ -560,7 +560,28 @@ func applyAuth(req *http.Request, c Credentials) {
 }
 func looksLikeChallenge(contentType string, raw []byte) bool {
 	text := strings.ToLower(string(raw))
-	return strings.Contains(strings.ToLower(contentType), "text/html") && (strings.Contains(text, "turnstile") || strings.Contains(text, "cf-chl-") || strings.Contains(text, "cloudflare") || strings.Contains(text, "acw_sc__v2"))
+	// Management endpoints should always return JSON. Treat an HTML response as
+	// a browser/WAF challenge even when the vendor's challenge page uses a
+	// custom title and does not contain Cloudflare's usual markers.
+	return strings.Contains(strings.ToLower(contentType), "text/html") && (strings.Contains(text, "turnstile") || strings.Contains(text, "cf-chl-") || strings.Contains(text, "cloudflare") || strings.Contains(text, "acw_sc__v2") || strings.Contains(text, "<html"))
+}
+
+func decodeProviderJSON(raw []byte, out any) error {
+	raw = bytes.TrimSpace(bytes.TrimPrefix(raw, []byte{0xef, 0xbb, 0xbf}))
+	if err := json.Unmarshal(raw, out); err == nil {
+		return nil
+	}
+	// A few reverse proxies prepend an anti-XSSI marker. Strip it only when a
+	// complete JSON object/array remains; never attempt to parse arbitrary HTML.
+	if bytes.HasPrefix(raw, []byte(")]}'")) {
+		if index := bytes.IndexAny(raw, "{["); index >= 0 {
+			trimmed := bytes.TrimSpace(raw[index:])
+			if err := json.Unmarshal(trimmed, out); err == nil {
+				return nil
+			}
+		}
+	}
+	return errors.New("invalid provider JSON")
 }
 func parseRetryAfter(raw string) time.Time {
 	seconds, err := strconv.Atoi(strings.TrimSpace(raw))

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight, RefreshCw, X } from 'lucide-react'
 
-export function OperationNotice({ children, persistent = false, onDismiss, tone = 'success' }: { children: ReactNode; persistent?: boolean; onDismiss?: () => void; tone?: 'success' | 'error' }) {
+export function OperationNotice({ children, persistent = false, onDismiss, tone = 'success' }: { children: ReactNode; persistent?: boolean; onDismiss?: () => void; tone?: 'success' | 'warning' | 'error' }) {
   const [visible, setVisible] = useState(true)
   const onDismissRef = useRef(onDismiss)
 

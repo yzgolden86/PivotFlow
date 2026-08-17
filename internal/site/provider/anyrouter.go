@@ -27,7 +27,8 @@ func (p *AnyRouter) Capabilities() ProviderCapabilities {
 
 func (p *AnyRouter) Detect(ctx context.Context, baseURL string) (DetectionResult, error) {
 	parsed, _ := url.Parse(baseURL)
-	if strings.Contains(strings.ToLower(parsed.Hostname()), "anyrouter") {
+	host := strings.ToLower(parsed.Hostname())
+	if strings.Contains(host, "anyrouter") || strings.Contains(host, "agentrouter") || strings.Contains(host, "air-outer") {
 		return DetectionResult{Matched: true, ProviderID: p.ID(), SystemName: "AnyRouter", Capabilities: p.Capabilities()}, nil
 	}
 	var payload envelope
@@ -36,7 +37,8 @@ func (p *AnyRouter) Detect(ctx context.Context, baseURL string) (DetectionResult
 	}
 	name, _ := stringValue(payload.Data, "system_name")
 	version, _ := stringValue(payload.Data, "version")
-	matched := strings.Contains(strings.ToLower(name+" "+version), "anyrouter")
+	compact := strings.NewReplacer(" ", "", "-", "", "_", "").Replace(strings.ToLower(name + " " + version))
+	matched := strings.Contains(compact, "anyrouter") || strings.Contains(compact, "agentrouter")
 	return DetectionResult{Matched: matched, ProviderID: p.ID(), SystemName: name, Capabilities: p.Capabilities()}, nil
 }
 

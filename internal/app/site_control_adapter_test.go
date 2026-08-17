@@ -25,6 +25,22 @@ func TestSiteControlAdapterMapsNewAPIFamilyAliases(t *testing.T) {
 	}
 }
 
+func TestSiteControlAdapterUsesAnyRouterForAgentRouterHost(t *testing.T) {
+	service := &siteControlService{
+		registry: provider.NewRegistry(
+			provider.NewAnyRouter(provider.ClientFactory{}),
+			provider.NewNewAPI(provider.ClientFactory{}),
+		),
+	}
+	adapter, err := service.adapter(&model.Site{Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://agentrouter.org/console/personal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.ID() != model.SitePlatformAnyRouter {
+		t.Fatalf("adapter.ID() = %q", adapter.ID())
+	}
+}
+
 func TestSiteControlAdapterMapsOpenAICompatibleAliases(t *testing.T) {
 	service := &siteControlService{
 		registry: provider.NewRegistry(provider.NewOpenAICompatible(provider.ClientFactory{})),
@@ -59,5 +75,18 @@ func TestSiteProxyURLPriority(t *testing.T) {
 				t.Fatalf("siteProxyURL() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeSiteURLRemovesConsolePage(t *testing.T) {
+	got, err := normalizeSiteURL("https://agentrouter.org/console/personal?tab=security#token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://agentrouter.org" {
+		t.Fatalf("normalizeSiteURL() = %q", got)
+	}
+	if route := routingBaseURL("https://agentrouter.org/console/personal"); route != "https://agentrouter.org" {
+		t.Fatalf("routingBaseURL() = %q", route)
 	}
 }

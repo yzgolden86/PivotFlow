@@ -127,3 +127,7 @@ func (h *HybridStore) UpsertSiteProjection(ctx context.Context, v model.SiteProj
 func (h *HybridStore) DeactivateSiteProjectionsExcept(ctx context.Context, siteAccountID int64, activeProjectionKeys []string) error {
 	return h.mysql.DeactivateSiteProjectionsExcept(ctx, siteAccountID, activeProjectionKeys)
 }
+
+func (h *HybridStore) PruneSiteProjectionsExcept(ctx context.Context, siteAccountID int64, activeProjectionKeys []string) error {
+	return h.mysql.PruneSiteProjectionsExcept(ctx, siteAccountID, activeProjectionKeys)
+}

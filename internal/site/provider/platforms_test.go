@@ -13,6 +13,13 @@ import (
 	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
+func TestAnyRouterDetectsAgentRouterConsoleURL(t *testing.T) {
+	result, err := NewAnyRouter(ClientFactory{}).Detect(context.Background(), "https://agentrouter.org/console/personal")
+	if err != nil || !result.Matched || result.ProviderID != model.SitePlatformAnyRouter {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 func TestAnyRouterCheckinContract(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/user/sign_in" || r.Method != http.MethodPost {

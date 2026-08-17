@@ -58,4 +58,5 @@ type SiteStore interface {
 	ListSiteChannelBindings(ctx context.Context) ([]*model.SiteChannelBinding, error)
 	UpsertSiteProjection(ctx context.Context, input model.SiteProjectionInput) (*model.SiteProjectionResult, error)
 	DeactivateSiteProjectionsExcept(ctx context.Context, siteAccountID int64, activeProjectionKeys []string) error
+	PruneSiteProjectionsExcept(ctx context.Context, siteAccountID int64, activeProjectionKeys []string) error
 }

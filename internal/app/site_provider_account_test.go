@@ -611,7 +611,7 @@ func TestModelRefreshDoesNotRepeatManagementModelProbeWithRoutingKey(t *testing.
 	}
 }
 
-func TestModelRefreshProjectsEachRoutingKeyAndDeactivatesRemovedKeys(t *testing.T) {
+func TestModelRefreshProjectsEachRoutingKeyAndPrunesRemovedKeys(t *testing.T) {
 	srv := newInMemoryServer(t)
 	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "multi-key-projection-test")
 	if err != nil {
@@ -673,29 +673,72 @@ func TestModelRefreshProjectsEachRoutingKeyAndDeactivatesRemovedKeys(t *testing.
 	if err != nil || len(bindingsAgain) != 2 {
 		t.Fatalf("second sync bindings=%+v err=%v", bindingsAgain, err)
 	}
+	var alphaChannelID int64
+	for _, binding := range bindingsAgain {
+		if binding.ProjectionKey == "key:alpha" {
+			alphaChannelID = binding.ChannelID
+		}
+	}
+	if alphaChannelID == 0 {
+		t.Fatal("alpha projection channel was not recorded")
+	}
+
+	adapter.keys[0].Name = "Alpha renamed"
+	adapter.keys[0].Group = "team-a-renamed"
+	adapter.keys[0].Models = []string{"gpt-5.1"}
+	adapter.keys[0].Key = "sk-alpha-updated"
+	if task := refresh(); task.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("update refresh task=%+v", task)
+	}
+	updatedAlpha, err := srv.store.GetConfig(ctx, alphaChannelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedAlpha.Name != "Multi / admin / team-a-renamed / Alpha renamed" {
+		t.Fatalf("updated alpha name=%q", updatedAlpha.Name)
+	}
+	if len(updatedAlpha.ModelEntries) != 1 || updatedAlpha.ModelEntries[0].Model != "gpt-5.1" {
+		t.Fatalf("updated alpha models=%+v", updatedAlpha.ModelEntries)
+	}
+	updatedAlphaKeys, err := srv.store.GetAPIKeys(ctx, alphaChannelID)
+	if err != nil || len(updatedAlphaKeys) != 1 || updatedAlphaKeys[0].APIKey != "sk-alpha-updated" {
+		t.Fatalf("updated alpha keys=%+v err=%v", updatedAlphaKeys, err)
+	}
 
 	adapter.keys = adapter.keys[:1]
 	if task := refresh(); task.Status != model.SiteTaskStatusSuccess {
 		t.Fatalf("removal refresh task=%+v", task)
 	}
 	bindingsAfterRemoval, err := srv.store.ListSiteChannelBindings(ctx)
-	if err != nil || len(bindingsAfterRemoval) != 2 {
-		t.Fatalf("after removal bindings=%+v err=%v", bindingsAfterRemoval, err)
+	if err != nil || len(bindingsAfterRemoval) != 1 {
+		t.Fatalf("after removal bindings=%+v err=%v, want only the active projection", bindingsAfterRemoval, err)
 	}
-	for _, binding := range bindingsAfterRemoval {
-		if binding.ProjectionKey != "key:beta" {
-			continue
+	if bindingsAfterRemoval[0].ProjectionKey != "key:alpha" {
+		t.Fatalf("remaining binding=%+v", bindingsAfterRemoval[0])
+	}
+	var removedChannelID int64
+	for _, binding := range bindings {
+		if binding.ProjectionKey == "key:beta" {
+			removedChannelID = binding.ChannelID
 		}
-		if binding.Status != "inactive" || binding.ChannelID == 0 {
-			t.Fatalf("removed key binding=%+v", binding)
-		}
-		channel, getErr := srv.store.GetConfig(ctx, binding.ChannelID)
-		if getErr != nil {
-			t.Fatal(getErr)
-		}
-		if channel.Enabled {
-			t.Fatalf("removed key channel remains enabled: %+v", channel)
-		}
+	}
+	if removedChannelID == 0 {
+		t.Fatal("removed key channel was not recorded")
+	}
+	if channel, getErr := srv.store.GetConfig(ctx, removedChannelID); getErr == nil {
+		t.Fatalf("removed key channel still exists: %+v", channel)
+	}
+
+	adapter.keys = nil
+	if task := refresh(); task.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("empty upstream refresh task=%+v", task)
+	}
+	bindingsAfterEmpty, err := srv.store.ListSiteChannelBindings(ctx)
+	if err != nil || len(bindingsAfterEmpty) != 0 {
+		t.Fatalf("after empty upstream bindings=%+v err=%v, want no projected channels", bindingsAfterEmpty, err)
+	}
+	if channel, getErr := srv.store.GetConfig(ctx, bindingsAfterRemoval[0].ChannelID); getErr == nil {
+		t.Fatalf("last removed key channel still exists: %+v", channel)
 	}
 }
 
