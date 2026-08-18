@@ -607,38 +607,11 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 
 	s.markChannelDeleted(id)
 
-	// 显式删除关联数据，不依赖驱动或 DSN 是否正确启用外键级联。
 	var deletedRowsForVacuum int64
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		if _, err := s.execTx(ctx, tx, `DELETE FROM api_keys WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel api keys: %w", err)
-		}
-		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_models WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel models: %w", err)
-		}
-		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_model_cooldowns WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel model cooldowns: %w", err)
-		}
-		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_url_states WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel url states: %w", err)
-		}
-		if _, err := s.execTx(ctx, tx, `UPDATE model_fingerprints SET channel_id = NULL WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("clear fingerprint channel_id: %w", err)
-		}
-		if result, err := s.execTx(ctx, tx, `DELETE FROM debug_logs WHERE log_id IN (SELECT id FROM logs WHERE channel_id = ?)`, id); err != nil {
-			return fmt.Errorf("delete channel debug logs: %w", err)
-		} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
-			deletedRowsForVacuum += affected
-		}
-		if result, err := s.execTx(ctx, tx, `DELETE FROM logs WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel logs: %w", err)
-		} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
-			deletedRowsForVacuum += affected
-		}
-		if _, err := s.execTx(ctx, tx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel: %w", err)
-		}
-		return nil
+		var err error
+		deletedRowsForVacuum, err = s.deleteConfigTx(ctx, tx, id)
+		return err
 	})
 	if err != nil {
 		s.unmarkChannelDeleted(id)
@@ -647,6 +620,44 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 
 	s.runSQLiteIncrementalVacuum(ctx, deletedRowsForVacuum)
 	return nil
+}
+
+// deleteConfigTx removes one channel and all channel-owned data inside an
+// existing transaction. Callers are responsible for router invalidation.
+func (s *SQLStore) deleteConfigTx(ctx context.Context, tx *sql.Tx, id int64) (int64, error) {
+	var deletedRowsForVacuum int64
+	if _, err := s.execTx(ctx, tx, `DELETE FROM site_channel_bindings WHERE channel_id = ?`, id); err != nil {
+		return 0, fmt.Errorf("delete channel site bindings: %w", err)
+	}
+	if _, err := s.execTx(ctx, tx, `DELETE FROM api_keys WHERE channel_id = ?`, id); err != nil {
+		return 0, fmt.Errorf("delete channel api keys: %w", err)
+	}
+	if _, err := s.execTx(ctx, tx, `DELETE FROM channel_models WHERE channel_id = ?`, id); err != nil {
+		return 0, fmt.Errorf("delete channel models: %w", err)
+	}
+	if _, err := s.execTx(ctx, tx, `DELETE FROM channel_model_cooldowns WHERE channel_id = ?`, id); err != nil {
+		return 0, fmt.Errorf("delete channel model cooldowns: %w", err)
+	}
+	if _, err := s.execTx(ctx, tx, `DELETE FROM channel_url_states WHERE channel_id = ?`, id); err != nil {
+		return 0, fmt.Errorf("delete channel url states: %w", err)
+	}
+	if _, err := s.execTx(ctx, tx, `UPDATE model_fingerprints SET channel_id = NULL WHERE channel_id = ?`, id); err != nil {
+		return 0, fmt.Errorf("clear fingerprint channel_id: %w", err)
+	}
+	if result, err := s.execTx(ctx, tx, `DELETE FROM debug_logs WHERE log_id IN (SELECT id FROM logs WHERE channel_id = ?)`, id); err != nil {
+		return 0, fmt.Errorf("delete channel debug logs: %w", err)
+	} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
+		deletedRowsForVacuum += affected
+	}
+	if result, err := s.execTx(ctx, tx, `DELETE FROM logs WHERE channel_id = ?`, id); err != nil {
+		return 0, fmt.Errorf("delete channel logs: %w", err)
+	} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
+		deletedRowsForVacuum += affected
+	}
+	if _, err := s.execTx(ctx, tx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
+		return 0, fmt.Errorf("delete channel: %w", err)
+	}
+	return deletedRowsForVacuum, nil
 }
 
 // BatchUpdatePriority 批量更新渠道优先级

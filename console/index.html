@@ -13,15 +13,23 @@
       .console-boot div { display: flex; align-items: center; gap: 12px; }
       .console-boot img { width: 38px; height: 38px; border-radius: 11px; }
       .console-boot i { width: 18px; height: 18px; border: 2px solid #b9cbc3; border-top-color: #278e73; border-radius: 50%; animation: console-spin .75s linear infinite; }
+      :root[data-theme="dark"] .console-boot { background: #111513; color: #dce7e1; }
+      :root[data-theme="dark"] .console-boot i { border-color: #405048; border-top-color: #55b690; }
       @keyframes console-spin { to { transform: rotate(360deg); } }
     </style>
     <script>
       (() => {
         try {
-          const preference = localStorage.getItem('fusion_theme')
+          let appearance = {}
+          try { appearance = JSON.parse(localStorage.getItem('pivotflow_appearance') || '{}') || {} } catch (_) {}
+          const preference = localStorage.getItem('pivotflow_theme') || appearance.preference || localStorage.getItem('fusion_theme') || 'system'
           const dark = preference === 'dark' ||
             (preference !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
-          document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+          const root = document.documentElement
+          root.dataset.theme = dark ? 'dark' : 'light'
+          root.dataset.themePreset = ['jade', 'ocean', 'coral'].includes(appearance.preset) ? appearance.preset : 'jade'
+          root.dataset.themeFont = ['modern', 'system', 'serif'].includes(appearance.font) ? appearance.font : 'modern'
+          root.dataset.themeRadius = ['compact', 'balanced', 'soft'].includes(appearance.radius) ? appearance.radius : 'balanced'
         } catch (_) {}
 
         const token = localStorage.getItem('pivotflow_token')

@@ -143,7 +143,7 @@ export default function SitesPage() {
   }
 
   const execute = async (site: Site, action: 'probe' | 'toggle' | 'delete') => {
-    if (action === 'delete' && !window.confirm(`删除站点“${site.name}”？关联账号和投影渠道将被禁用。`)) return
+    if (action === 'delete' && !window.confirm(`永久删除站点“${site.name}”、全部账号及同步生成的渠道？手工渠道不受影响，此操作无法撤销。`)) return
     setBusyId(site.id); setError(''); setNotice('')
     try {
       if (action === 'probe') { const result = await probeSite(site.id); setNotice(result.matched ? '站点探测成功' : '未识别到受支持的平台') }
@@ -169,7 +169,7 @@ export default function SitesPage() {
   const runBatch = async (action: 'proxy_on' | 'proxy_off' | 'enable' | 'disable' | 'delete') => {
     const targets = sites.filter((site) => selected.has(site.id))
     if (!targets.length) return
-    if (action === 'delete' && !window.confirm(`删除选中的 ${targets.length} 个站点？关联账号和投影渠道将被禁用。`)) return
+    if (action === 'delete' && !window.confirm(`永久删除选中的 ${targets.length} 个站点、全部账号及同步生成的渠道？手工渠道不受影响，此操作无法撤销。`)) return
     setBatchBusy(true); setError(''); setNotice('')
     let failed = 0
     await runLimited(targets, async (site) => {

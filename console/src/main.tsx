@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { HashRouter } from 'react-router-dom'
 import App from './App'
+import { applyTheme, readThemePreference } from './theme'
 import './styles.css'
 
 declare global {
@@ -12,6 +13,8 @@ declare global {
 
 const TOKEN_KEY = 'pivotflow_token'
 const EXPIRY_KEY = 'pivotflow_token_expiry'
+
+applyTheme(readThemePreference())
 
 function loginURL(error?: string): string {
   const redirect = `${window.location.pathname}${window.location.search}${window.location.hash}`
