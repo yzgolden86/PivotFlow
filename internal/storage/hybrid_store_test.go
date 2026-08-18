@@ -21,6 +21,57 @@ func createTestSQLiteStore(t *testing.T) *sqlstore.SQLStore {
 	return store.(*sqlstore.SQLStore)
 }
 
+func TestHybridStore_DeleteSiteAccountRemovesProjectedChannelFromBothStores(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	defer func() {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+	}()
+	hybrid := NewHybridStore(sqlite, mysql)
+	defer func() { _ = hybrid.Close() }()
+	ctx := context.Background()
+	site, err := hybrid.CreateSite(ctx, &model.Site{Name: "hybrid cascade", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := hybrid.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "main", CredentialType: model.CredentialTypeAccessToken, CredentialCiphertext: "fc1.test", CredentialKeyVersion: "v1", Enabled: true, Status: "healthy", BalanceCurrency: "USD", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := hybrid.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: "key:main", Name: "hybrid projected", BaseURL: site.BaseURL, Protocols: []string{"openai"}, Models: []string{"gpt-hybrid"}, APIKey: "sk-hybrid", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectedConfig, err := mysql.GetConfig(ctx, projection.Channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlite.CreateConfig(ctx, projectedConfig); err != nil {
+		t.Fatal(err)
+	}
+	manual, err := hybrid.CreateConfig(ctx, &model.Config{Name: "hybrid manual", URLs: model.ChannelURLs{{URL: site.BaseURL}}, ModelEntries: []model.ModelEntry{{Model: "manual-model"}}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	if _, err := mysql.ExecContext(ctx, "INSERT INTO site_channel_bindings(site_account_id,projection_key,channel_id,ownership,status,last_projected_hash,last_sync_status,last_sync_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", account.ID, "manual", manual.ID, "manual", "active", "", "success", "", now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := hybrid.DeleteSiteAccount(ctx, account.ID); err != nil {
+		t.Fatal(err)
+	}
+	if config, err := mysql.GetConfig(ctx, projection.Channel.ID); err == nil {
+		t.Fatalf("primary projected channel still exists: %+v", config)
+	}
+	if config, err := sqlite.GetConfig(ctx, projection.Channel.ID); err == nil {
+		t.Fatalf("SQLite projected channel still exists: %+v", config)
+	}
+	if _, err := hybrid.GetConfig(ctx, manual.ID); err != nil {
+		t.Fatalf("manual channel was removed from the read store: %v", err)
+	}
+}
+
 func TestHybridStore_BasicOperations(t *testing.T) {
 	// 创建两个独立的 SQLite：一个模拟 MySQL（主存储），一个作为 SQLite 缓存
 	mysql := createTestSQLiteStore(t)  // 用 SQLite 模拟 MySQL（主存储）

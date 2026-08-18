@@ -377,7 +377,7 @@ export default function AccountsPage() {
   }
 
   const remove = async (account: SiteAccount) => {
-    if (!window.confirm(`删除账号“${account.label}”？对应投影渠道将被禁用。`)) return
+    if (!window.confirm(`永久删除账号“${account.label}”及其同步生成的渠道？手工渠道不受影响，此操作无法撤销。`)) return
     setBusy((current) => new Map(current).set(account.id, 'delete'))
     try {
       await deleteSiteAccount(account.id)
@@ -405,7 +405,7 @@ export default function AccountsPage() {
   const runBatch = async (action: 'refresh' | 'model_refresh' | 'enable' | 'disable' | 'delete') => {
     const selectedAccounts = accounts.filter((account) => selected.has(account.id))
     if (!selectedAccounts.length) return
-    if (action === 'delete' && !window.confirm(`删除选中的 ${selectedAccounts.length} 个账号？对应投影渠道将被禁用。`)) return
+    if (action === 'delete' && !window.confirm(`永久删除选中的 ${selectedAccounts.length} 个账号及其同步生成的渠道？手工渠道不受影响，此操作无法撤销。`)) return
     const targets = action === 'refresh' ? selectedAccounts.filter((account) => account.credential_type !== 'api_key') : selectedAccounts
     const skipped = selectedAccounts.length - targets.length
     setBatchBusy(true); setError(''); setNotice('')

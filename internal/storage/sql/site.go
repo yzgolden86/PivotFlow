@@ -136,20 +136,60 @@ func (s *SQLStore) UpdateSite(ctx context.Context, id int64, site *model.Site) (
 }
 
 func (s *SQLStore) DeleteSite(ctx context.Context, id int64) error {
-	now := siteNow()
-	return s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		if _, err := s.execTx(ctx, tx, "UPDATE sites SET name=?,enabled=0,deleted_at=?,updated_at=? WHERE id=? AND deleted_at=0", deletedSiteName(id, now), now, now, id); err != nil {
+	candidates, err := s.projectedChannelIDsForSite(ctx, id)
+	if err != nil {
+		return err
+	}
+	for _, channelID := range candidates {
+		s.markChannelDeleted(channelID)
+	}
+
+	var deletedChannels []int64
+	var deletedRowsForVacuum int64
+	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		deletedChannels = deletedChannels[:0]
+		deletedRowsForVacuum = 0
+		var exists int
+		if err := s.queryRowTx(ctx, tx, "SELECT COUNT(1) FROM sites WHERE id=?", id).Scan(&exists); err != nil {
 			return err
 		}
-		if _, err := s.execTx(ctx, tx, "UPDATE site_accounts SET enabled=0, status=?, updated_at=? WHERE site_id=? AND deleted_at=0", model.SiteAccountStatusDisabled, now, id); err != nil {
+		if exists == 0 {
+			return errors.New("not found")
+		}
+
+		accountIDs, err := s.selectInt64sTx(ctx, tx, "SELECT id FROM site_accounts WHERE site_id=? ORDER BY id", id)
+		if err != nil {
 			return err
 		}
-		if _, err := s.execTx(ctx, tx, "UPDATE channels SET enabled=0, updated_at=? WHERE id IN (SELECT b.channel_id FROM site_channel_bindings b JOIN site_accounts a ON a.id=b.site_account_id WHERE a.site_id=? AND b.channel_id IS NOT NULL)", now, id); err != nil {
+		for _, accountID := range accountIDs {
+			removed, vacuumRows, err := s.deleteSiteAccountTx(ctx, tx, accountID)
+			deletedChannels = append(deletedChannels, removed...)
+			deletedRowsForVacuum += vacuumRows
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := s.execTx(ctx, tx, "DELETE FROM site_announcements WHERE site_id=?", id); err != nil {
 			return err
 		}
-		_, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET status='disabled', last_sync_status='success', last_sync_error='', updated_at=? WHERE site_account_id IN (SELECT id FROM site_accounts WHERE site_id=?)", now, id)
+		if _, err := s.execTx(ctx, tx, "DELETE FROM site_tasks WHERE site_id=?", id); err != nil {
+			return err
+		}
+		if _, err := s.execTx(ctx, tx, "DELETE FROM site_task_leases WHERE task_key LIKE ?", fmt.Sprintf("site:%d:%%", id)); err != nil {
+			return err
+		}
+		_, err = s.execTx(ctx, tx, "DELETE FROM sites WHERE id=?", id)
 		return err
 	})
+	if err != nil {
+		for _, channelID := range candidates {
+			s.unmarkChannelDeleted(channelID)
+		}
+		return err
+	}
+	s.unmarkRetainedChannelCandidates(candidates, deletedChannels)
+	s.runSQLiteIncrementalVacuum(ctx, deletedRowsForVacuum)
+	return nil
 }
 
 func deletedSiteName(id, deletedAt int64) string {
@@ -288,17 +328,145 @@ func (s *SQLStore) UpdateSiteAccountCredential(ctx context.Context, id int64, cr
 }
 
 func (s *SQLStore) DeleteSiteAccount(ctx context.Context, id int64) error {
-	now := siteNow()
-	return s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		if _, err := s.execTx(ctx, tx, "UPDATE site_accounts SET enabled=0, status=?, deleted_at=?, updated_at=? WHERE id=? AND deleted_at=0", model.SiteAccountStatusDisabled, now, now, id); err != nil {
-			return err
-		}
-		if _, err := s.execTx(ctx, tx, "UPDATE channels SET enabled=0, updated_at=? WHERE id IN (SELECT channel_id FROM site_channel_bindings WHERE site_account_id=? AND channel_id IS NOT NULL)", now, id); err != nil {
-			return err
-		}
-		_, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET status='disabled', updated_at=? WHERE site_account_id=?", now, id)
+	candidates, err := s.projectedChannelIDsForAccount(ctx, id)
+	if err != nil {
+		return err
+	}
+	for _, channelID := range candidates {
+		s.markChannelDeleted(channelID)
+	}
+
+	var deletedChannels []int64
+	var deletedRowsForVacuum int64
+	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		deletedChannels = deletedChannels[:0]
+		deletedRowsForVacuum = 0
+		var err error
+		deletedChannels, deletedRowsForVacuum, err = s.deleteSiteAccountTx(ctx, tx, id)
 		return err
 	})
+	if err != nil {
+		for _, channelID := range candidates {
+			s.unmarkChannelDeleted(channelID)
+		}
+		return err
+	}
+	s.unmarkRetainedChannelCandidates(candidates, deletedChannels)
+	s.runSQLiteIncrementalVacuum(ctx, deletedRowsForVacuum)
+	return nil
+}
+
+func (s *SQLStore) deleteSiteAccountTx(ctx context.Context, tx *sql.Tx, id int64) ([]int64, int64, error) {
+	var siteID int64
+	if err := s.queryRowTx(ctx, tx, "SELECT site_id FROM site_accounts WHERE id=?", id).Scan(&siteID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, 0, errors.New("not found")
+		}
+		return nil, 0, err
+	}
+
+	projectedChannelIDs, err := s.selectInt64sTx(ctx, tx, "SELECT DISTINCT channel_id FROM site_channel_bindings WHERE site_account_id=? AND ownership='projected' AND channel_id IS NOT NULL", id)
+	if err != nil {
+		return nil, 0, err
+	}
+	runIDs, err := s.selectInt64sTx(ctx, tx, "SELECT DISTINCT run_id FROM checkin_attempts WHERE site_account_id=?", id)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{"DELETE FROM site_channel_bindings WHERE site_account_id=?", []any{id}},
+		{"DELETE FROM site_account_models WHERE site_account_id=?", []any{id}},
+		{"DELETE FROM checkin_attempts WHERE site_account_id=?", []any{id}},
+		{"DELETE FROM site_tasks WHERE site_account_id=?", []any{id}},
+		{"DELETE FROM webhook_event_states WHERE site_account_id=?", []any{id}},
+		{"DELETE FROM site_task_leases WHERE task_key LIKE ?", []any{fmt.Sprintf("site:%d:account:%d:%%", siteID, id)}},
+	}
+	for _, statement := range statements {
+		if _, err := s.execTx(ctx, tx, statement.query, statement.args...); err != nil {
+			return nil, 0, err
+		}
+	}
+	if _, err := s.execTx(ctx, tx, "DELETE FROM site_accounts WHERE id=?", id); err != nil {
+		return nil, 0, err
+	}
+	for _, runID := range runIDs {
+		if _, err := s.execTx(ctx, tx, "DELETE FROM checkin_runs WHERE id=? AND NOT EXISTS (SELECT 1 FROM checkin_attempts WHERE run_id=?)", runID, runID); err != nil {
+			return nil, 0, err
+		}
+	}
+
+	deletedChannels := make([]int64, 0, len(projectedChannelIDs))
+	var deletedRowsForVacuum int64
+	for _, channelID := range projectedChannelIDs {
+		var references int
+		if err := s.queryRowTx(ctx, tx, "SELECT COUNT(1) FROM site_channel_bindings WHERE channel_id=?", channelID).Scan(&references); err != nil {
+			return deletedChannels, deletedRowsForVacuum, err
+		}
+		if references > 0 {
+			continue
+		}
+		vacuumRows, err := s.deleteConfigTx(ctx, tx, channelID)
+		if err != nil {
+			return deletedChannels, deletedRowsForVacuum, err
+		}
+		deletedChannels = append(deletedChannels, channelID)
+		deletedRowsForVacuum += vacuumRows
+	}
+	return deletedChannels, deletedRowsForVacuum, nil
+}
+
+func (s *SQLStore) projectedChannelIDsForAccount(ctx context.Context, accountID int64) ([]int64, error) {
+	return s.selectInt64s(ctx, "SELECT DISTINCT channel_id FROM site_channel_bindings WHERE site_account_id=? AND ownership='projected' AND channel_id IS NOT NULL", accountID)
+}
+
+func (s *SQLStore) projectedChannelIDsForSite(ctx context.Context, siteID int64) ([]int64, error) {
+	return s.selectInt64s(ctx, "SELECT DISTINCT b.channel_id FROM site_channel_bindings b JOIN site_accounts a ON a.id=b.site_account_id WHERE a.site_id=? AND b.ownership='projected' AND b.channel_id IS NOT NULL", siteID)
+}
+
+func (s *SQLStore) selectInt64s(ctx context.Context, query string, args ...any) ([]int64, error) {
+	rows, err := s.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanInt64Rows(rows)
+}
+
+func (s *SQLStore) selectInt64sTx(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, s.q(query), normalizeSQLArgs(args)...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanInt64Rows(rows)
+}
+
+func scanInt64Rows(rows *sql.Rows) ([]int64, error) {
+	values := make([]int64, 0)
+	for rows.Next() {
+		var value int64
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+func (s *SQLStore) unmarkRetainedChannelCandidates(candidates, deleted []int64) {
+	deletedSet := make(map[int64]struct{}, len(deleted))
+	for _, channelID := range deleted {
+		deletedSet[channelID] = struct{}{}
+	}
+	for _, channelID := range candidates {
+		if _, ok := deletedSet[channelID]; !ok {
+			s.unmarkChannelDeleted(channelID)
+		}
+	}
 }
 
 func (s *SQLStore) ReplaceSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error {

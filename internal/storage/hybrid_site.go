@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"log"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
 )
@@ -22,7 +23,23 @@ func (h *HybridStore) UpdateSite(ctx context.Context, id int64, v *model.Site) (
 	return h.mysql.UpdateSite(ctx, id, v)
 }
 func (h *HybridStore) DeleteSite(ctx context.Context, id int64) error {
-	return h.mysql.DeleteSite(ctx, id)
+	accounts, err := h.mysql.ListSiteAccounts(ctx, id, true)
+	if err != nil {
+		return err
+	}
+	accountIDs := make(map[int64]struct{}, len(accounts))
+	for _, account := range accounts {
+		accountIDs[account.ID] = struct{}{}
+	}
+	candidates, err := h.projectedChannelIDs(ctx, accountIDs)
+	if err != nil {
+		return err
+	}
+	if err := h.mysql.DeleteSite(ctx, id); err != nil {
+		return err
+	}
+	h.deleteProjectedSQLiteCopies(ctx, candidates)
+	return nil
 }
 func (h *HybridStore) ListSiteAccounts(ctx context.Context, id int64, d bool) ([]*model.SiteAccount, error) {
 	return h.mysql.ListSiteAccounts(ctx, id, d)
@@ -40,7 +57,59 @@ func (h *HybridStore) UpdateSiteAccountCredential(ctx context.Context, id int64,
 	return h.mysql.UpdateSiteAccountCredential(ctx, id, credentialType, ciphertext, keyVersion)
 }
 func (h *HybridStore) DeleteSiteAccount(ctx context.Context, id int64) error {
-	return h.mysql.DeleteSiteAccount(ctx, id)
+	candidates, err := h.projectedChannelIDs(ctx, map[int64]struct{}{id: {}})
+	if err != nil {
+		return err
+	}
+	if err := h.mysql.DeleteSiteAccount(ctx, id); err != nil {
+		return err
+	}
+	h.deleteProjectedSQLiteCopies(ctx, candidates)
+	return nil
+}
+
+func (h *HybridStore) projectedChannelIDs(ctx context.Context, accountIDs map[int64]struct{}) ([]int64, error) {
+	bindings, err := h.mysql.ListSiteChannelBindings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[int64]struct{})
+	result := make([]int64, 0)
+	for _, binding := range bindings {
+		if _, ok := accountIDs[binding.SiteAccountID]; !ok || binding.Ownership != "projected" || binding.ChannelID <= 0 {
+			continue
+		}
+		if _, ok := seen[binding.ChannelID]; ok {
+			continue
+		}
+		seen[binding.ChannelID] = struct{}{}
+		result = append(result, binding.ChannelID)
+	}
+	return result, nil
+}
+
+func (h *HybridStore) deleteProjectedSQLiteCopies(ctx context.Context, candidates []int64) {
+	if len(candidates) == 0 {
+		return
+	}
+	remaining, err := h.mysql.ListConfigs(ctx)
+	if err != nil {
+		log.Printf("[WARN] failed to verify projected channel deletion in primary store: %v", err)
+		return
+	}
+	retained := make(map[int64]struct{}, len(remaining))
+	for _, channel := range remaining {
+		retained[channel.ID] = struct{}{}
+	}
+	for _, channelID := range candidates {
+		if _, ok := retained[channelID]; ok {
+			continue
+		}
+		id := channelID
+		h.syncToSQLite("DeleteProjectedChannel", func() error {
+			return h.sqlite.DeleteConfig(ctx, id)
+		})
+	}
 }
 func (h *HybridStore) ReplaceSiteAccountModels(ctx context.Context, id int64, v []model.SiteAccountModel) error {
 	return h.mysql.ReplaceSiteAccountModels(ctx, id, v)

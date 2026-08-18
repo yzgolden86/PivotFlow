@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -95,12 +96,182 @@ func TestSiteControlSQLiteCRUDAndProjection(t *testing.T) {
 	if err := store.DeleteSiteAccount(ctx, account.ID); err != nil {
 		t.Fatal(err)
 	}
-	disabledChannel, err := store.GetConfig(ctx, result.Channel.ID)
+	if deletedChannel, err := store.GetConfig(ctx, result.Channel.ID); err == nil {
+		t.Fatalf("projected channel still exists after account deletion: %+v", deletedChannel)
+	}
+}
+
+func TestDeleteSiteAccountAndSiteRemoveOnlyOwnedProjectedChannels(t *testing.T) {
+	store, err := CreateSQLiteStore(t.TempDir() + "/site-delete-cascade.db")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if disabledChannel.Enabled {
-		t.Fatal("projected channel remained enabled after account deletion")
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	site, err := store.CreateSite(ctx, &model.Site{Name: "cascade", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createAccount := func(label string) *model.SiteAccount {
+		t.Helper()
+		account, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: label, CredentialType: model.CredentialTypeAccessToken, CredentialCiphertext: "fc1.test", CredentialKeyVersion: "v1", Enabled: true, Status: "healthy", BalanceCurrency: "USD", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return account
+	}
+	firstAccount := createAccount("first")
+	secondAccount := createAccount("second")
+	firstProjection, err := store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: firstAccount.ID, ProjectionKey: "key:first", Name: "first projected", BaseURL: site.BaseURL, Protocols: []string{"openai"}, Models: []string{"gpt-first"}, APIKey: "sk-first", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondProjection, err := store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: secondAccount.ID, ProjectionKey: "key:second", Name: "second projected", BaseURL: site.BaseURL, Protocols: []string{"openai"}, Models: []string{"gpt-second"}, APIKey: "sk-second", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manual, err := store.CreateConfig(ctx, &model.Config{Name: "manual retained", URLs: model.ChannelURLs{{URL: site.BaseURL}}, ModelEntries: []model.ModelEntry{{Model: "manual-model"}}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execStore := store.(interface {
+		ExecContext(context.Context, string, ...any) (sql.Result, error)
+	})
+	now := time.Now().UnixMilli()
+	if _, err := execStore.ExecContext(ctx, "INSERT INTO site_channel_bindings(site_account_id,projection_key,channel_id,ownership,status,last_projected_hash,last_sync_status,last_sync_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", firstAccount.ID, "manual", manual.ID, "manual", "active", "", "success", "", now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceSiteAccountModels(ctx, firstAccount.ID, []model.SiteAccountModel{{Model: "gpt-history", RouteType: "openai_chat", Source: "models_endpoint"}}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.CreateCheckinRun(ctx, &model.CheckinRun{Trigger: "manual", LocalDay: "2026-08-18", Timezone: "Asia/Shanghai", Status: model.SiteTaskStatusSuccess, Total: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateCheckinAttempt(ctx, &model.CheckinAttempt{RunID: run.ID, SiteAccountID: firstAccount.ID, ProviderID: "test", LocalDay: "2026-08-18", TriggerScope: "manual", Status: "success", StartedAt: now, FinishedAt: now + 1, AttemptNo: 1}); err != nil {
+		t.Fatal(err)
+	}
+	task := &model.SiteTask{ID: "st_delete_cascade", Kind: "refresh", Status: model.SiteTaskStatusSuccess, SiteID: site.ID, SiteAccountID: firstAccount.ID, ProgressJSON: `{}`, CreatedAt: now, FinishedAt: now + 1}
+	if err := store.CreateSiteTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	webhookState := &model.WebhookEventState{EventKey: "delete-cascade:first", EventType: "low_balance", SiteAccountID: firstAccount.ID, Status: "delivered", Attempts: 1, LastAttemptAt: now, DeliveredAt: now}
+	if err := store.UpsertWebhookEventState(ctx, webhookState); err != nil {
+		t.Fatal(err)
+	}
+	leaseKey := fmt.Sprintf("site:%d:account:%d:refresh", site.ID, firstAccount.ID)
+	acquired, err := store.AcquireSiteTaskLease(ctx, leaseKey, task.ID, now, now+60_000)
+	if err != nil || !acquired {
+		t.Fatalf("create account task lease = (%v, %v)", acquired, err)
+	}
+
+	if err := store.DeleteSiteAccount(ctx, firstAccount.ID); err != nil {
+		t.Fatal(err)
+	}
+	if account, err := store.GetSiteAccount(ctx, firstAccount.ID); err == nil {
+		t.Fatalf("deleted account still exists: %+v", account)
+	}
+	if channel, err := store.GetConfig(ctx, firstProjection.Channel.ID); err == nil {
+		t.Fatalf("deleted account projected channel still exists: %+v", channel)
+	}
+	if _, err := store.GetConfig(ctx, secondProjection.Channel.ID); err != nil {
+		t.Fatalf("another account projected channel was deleted: %v", err)
+	}
+	if _, err := store.GetConfig(ctx, manual.ID); err != nil {
+		t.Fatalf("manual channel was deleted with its account binding: %v", err)
+	}
+	bindings, err := store.ListSiteChannelBindings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range bindings {
+		if binding.SiteAccountID == firstAccount.ID {
+			t.Fatalf("deleted account binding still exists: %+v", binding)
+		}
+	}
+	models, err := store.ListSiteAccountModels(ctx, model.SiteModelFilter{SiteAccountID: firstAccount.ID, IncludeDisabled: true})
+	if err != nil || len(models) != 0 {
+		t.Fatalf("deleted account models=%+v err=%v", models, err)
+	}
+	attempts, err := store.ListCheckinAttempts(ctx, firstAccount.ID, 10)
+	if err != nil || len(attempts) != 0 {
+		t.Fatalf("deleted account check-in attempts=%+v err=%v", attempts, err)
+	}
+	if storedTask, err := store.GetSiteTask(ctx, task.ID); err == nil {
+		t.Fatalf("deleted account task still exists: %+v", storedTask)
+	}
+	if state, err := store.GetWebhookEventState(ctx, webhookState.EventKey); err == nil {
+		t.Fatalf("deleted account webhook state still exists: %+v", state)
+	}
+	if storedRun, err := store.GetCheckinRun(ctx, run.ID); err == nil {
+		t.Fatalf("orphaned check-in run still exists: %+v", storedRun)
+	}
+	reacquired, err := store.AcquireSiteTaskLease(ctx, leaseKey, "replacement", now+1, now+60_001)
+	if err != nil || !reacquired {
+		t.Fatalf("deleted account task lease still exists = (%v, %v)", reacquired, err)
+	}
+	if err := store.ReleaseSiteTaskLease(ctx, leaseKey, "replacement"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteSite(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	if deletedSite, err := store.GetSite(ctx, site.ID); err == nil {
+		t.Fatalf("deleted site still exists: %+v", deletedSite)
+	}
+	if account, err := store.GetSiteAccount(ctx, secondAccount.ID); err == nil {
+		t.Fatalf("site account still exists after site deletion: %+v", account)
+	}
+	if channel, err := store.GetConfig(ctx, secondProjection.Channel.ID); err == nil {
+		t.Fatalf("site projected channel still exists after site deletion: %+v", channel)
+	}
+	if _, err := store.GetConfig(ctx, manual.ID); err != nil {
+		t.Fatalf("manual channel was deleted with the site: %v", err)
+	}
+}
+
+func TestDeleteSiteAccountRetainsProjectedChannelReferencedByAnotherAccount(t *testing.T) {
+	store, err := CreateSQLiteStore(t.TempDir() + "/site-delete-shared.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	site, err := store.CreateSite(ctx, &model.Site{Name: "shared", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "first", CredentialType: model.CredentialTypeAccessToken, CredentialCiphertext: "fc1.test", CredentialKeyVersion: "v1", Enabled: true, Status: "healthy", BalanceCurrency: "USD", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "second", CredentialType: model.CredentialTypeAccessToken, CredentialCiphertext: "fc1.test", CredentialKeyVersion: "v1", Enabled: true, Status: "healthy", BalanceCurrency: "USD", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: first.ID, ProjectionKey: "shared:first", Name: "shared projected", BaseURL: site.BaseURL, Protocols: []string{"openai"}, Models: []string{"gpt-shared"}, APIKey: "sk-shared", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execStore := store.(interface {
+		ExecContext(context.Context, string, ...any) (sql.Result, error)
+	})
+	now := time.Now().UnixMilli()
+	if _, err := execStore.ExecContext(ctx, "INSERT INTO site_channel_bindings(site_account_id,projection_key,channel_id,ownership,status,last_projected_hash,last_sync_status,last_sync_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", second.ID, "shared:second", projection.Channel.ID, "projected", "active", "", "success", "", now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteSiteAccount(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetConfig(ctx, projection.Channel.ID); err != nil {
+		t.Fatalf("shared projected channel was deleted while still referenced: %v", err)
+	}
+	if err := store.DeleteSiteAccount(ctx, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if channel, err := store.GetConfig(ctx, projection.Channel.ID); err == nil {
+		t.Fatalf("unreferenced projected channel still exists: %+v", channel)
 	}
 }
 

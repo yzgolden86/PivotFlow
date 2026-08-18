@@ -272,7 +272,7 @@ function App() {
                 {!collapsed && <span>{themePreference === 'system' ? '跟随系统' : themePreference === 'dark' ? '暗色' : '亮色'}</span>}
               </button>
               {themePickerOpen && <div className="theme-picker" role="menu" aria-label="界面主题">
-                {([['system', '跟随系统', Monitor], ['light', '亮色', Sun], ['dark', '暗色', Moon]] as const).map(([value, label, Icon]) => <button className={themePreference === value ? 'is-selected' : ''} type="button" role="menuitemradio" aria-checked={themePreference === value} onClick={() => { setThemePreference(value); setThemePickerOpen(false) }} key={value}><Icon size={16} /><span>{label}</span>{themePreference === value && <i />}</button>)}
+                {([['system', '跟随系统', Monitor], ['light', '亮色', Sun], ['dark', '暗色', Moon]] as const).map(([value, label, Icon]) => <button className={themePreference === value ? 'is-selected' : ''} type="button" role="menuitemradio" aria-checked={themePreference === value} onClick={() => { setThemePreference(value); setThemePickerOpen(false); window.dispatchEvent(new CustomEvent('fusion:theme-changed', { detail: value })) }} key={value}><Icon size={16} /><span>{label}</span>{themePreference === value && <i />}</button>)}
               </div>}
             </div>
             <button

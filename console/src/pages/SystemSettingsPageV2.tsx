@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, BellRing, CalendarClock, CheckCircle2, Clock3, ExternalLink, FileClock, Gauge, Network,
+  Activity, BellRing, CalendarClock, Check, CheckCircle2, Clock3, ExternalLink, FileClock, Gauge, Network,
   DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
-  SlidersHorizontal, TimerReset, Wrench,
+  Palette, PanelsTopLeft, SlidersHorizontal, TimerReset, Type, Wrench,
 } from 'lucide-react'
 import { checkForUpdates, getSystemSettings, resetSystemSetting, updateSystemSettings } from '../api'
 import type { SystemSetting } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice } from './shared'
 import { WebhookSettingsPanel } from './SettingsPage'
 import { BackupSettingsPanel } from './BackupSettingsPanel'
-import { applyTheme, readThemePreference } from '../theme'
-import type { ThemePreference } from '../theme'
+import { applyThemeCustomization, readThemeCustomization, resetThemeCustomization } from '../theme'
+import type { ThemeCustomization, ThemeFont, ThemePreference, ThemePreset, ThemeRadius } from '../theme'
 
 const groups = [
   { key: 'appearance', label: '外观', description: '主题与显示偏好', icon: Sun },
@@ -39,7 +39,7 @@ export default function SystemSettingsPageV2() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference)
+  const [appearance, setAppearance] = useState<ThemeCustomization>(readThemeCustomization)
   const [versionInfo, setVersionInfo] = useState<{ version: string; latest_version?: string; has_update?: boolean; release_url?: string; last_check?: string; message?: string; error?: string } | null>(null)
   const [checkingVersion, setCheckingVersion] = useState(false)
 
@@ -63,6 +63,12 @@ export default function SystemSettingsPageV2() {
     void load(controller.signal)
     return () => controller.abort()
   }, [load])
+
+  useEffect(() => {
+    const update = () => setAppearance(readThemeCustomization())
+    window.addEventListener('fusion:theme-changed', update)
+    return () => window.removeEventListener('fusion:theme-changed', update)
+  }, [])
 
   const counts = useMemo(() => Object.fromEntries(groups.map(({ key }) => [key, settings.filter((item) => settingGroup(item.key) === key).length])), [settings])
   const activeGroup = groups.find((item) => item.key === group) || groups[0]
@@ -119,11 +125,19 @@ export default function SystemSettingsPageV2() {
     }
   }
 
-  const chooseTheme = (preference: ThemePreference) => {
-    setThemePreference(preference)
-    applyTheme(preference)
-    window.dispatchEvent(new CustomEvent('fusion:theme-changed', { detail: preference }))
-    setNotice(`已切换为${preference === 'system' ? '跟随系统' : preference === 'dark' ? '暗色' : '亮色'}主题`)
+  const changeAppearance = (patch: Partial<ThemeCustomization>, label: string) => {
+    const next = { ...appearance, ...patch }
+    setAppearance(next)
+    applyThemeCustomization(next)
+    window.dispatchEvent(new CustomEvent('fusion:theme-changed', { detail: next.preference }))
+    setNotice(`已应用${label}`)
+  }
+
+  const resetAppearance = () => {
+    const next = resetThemeCustomization()
+    setAppearance(next)
+    window.dispatchEvent(new CustomEvent('fusion:theme-changed', { detail: next.preference }))
+    setNotice('外观已恢复默认')
   }
 
   const checkUpdates = async () => {
@@ -148,7 +162,7 @@ export default function SystemSettingsPageV2() {
   return <div className="workspace-page system-settings-page system-settings-page--v2">
     <header className="page-header">
       <h1>系统设置</h1>
-      {section === 'runtime' && <div className="header-controls">
+      {section === 'runtime' && group !== 'appearance' && <div className="header-controls">
         <button className="primary-button" type="button" onClick={() => void save()} disabled={!dirty.size || saving}><Save size={17} />{saving ? '保存中' : `保存${dirty.size ? ` (${dirty.size})` : ''}`}</button>
         <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新系统设置" title="刷新"><RefreshCw size={18} /></button>
       </div>}
@@ -181,7 +195,7 @@ export default function SystemSettingsPageV2() {
             <label className="search-field settings-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索全部设置" /></label>
           </div>
 
-          {group === 'appearance' && !query.trim() ? <AppearancePanel preference={themePreference} choose={chooseTheme} /> : <>
+          {group === 'appearance' && !query.trim() ? <AppearancePanel customization={appearance} change={changeAppearance} reset={resetAppearance} /> : <>
           {group === 'advanced' && !query.trim() && <div className="settings-risk-note"><ShieldAlert size={17} /><span>这些设置用于特殊兼容场景。不了解具体影响时请保持默认值。</span></div>}
 
           {!visible.length ? <EmptyState label="没有符合条件的设置" /> : <div className="setting-list">
@@ -205,15 +219,63 @@ export default function SystemSettingsPageV2() {
   </div>
 }
 
-function AppearancePanel({ preference, choose }: { preference: ThemePreference; choose: (value: ThemePreference) => void }) {
-  const choices: Array<[ThemePreference, string, string, typeof Sun]> = [
-    ['system', '跟随系统', '根据操作系统的明暗模式自动切换', Monitor],
-    ['light', '亮色', '清爽明亮，适合白天长时间管理', Sun],
-    ['dark', '暗色', '降低亮度，适合夜间查看日志与路由', Moon],
+function AppearancePanel({ customization, change, reset }: { customization: ThemeCustomization; change: (patch: Partial<ThemeCustomization>, label: string) => void; reset: () => void }) {
+  const modes: Array<[ThemePreference, string, typeof Sun]> = [
+    ['system', '跟随系统', Monitor],
+    ['light', '亮色', Sun],
+    ['dark', '暗色', Moon],
+  ]
+  const presets: Array<[ThemePreset, string, string[]]> = [
+    ['jade', '松石绿', ['#10865d', '#3271c8', '#bd7914']],
+    ['ocean', '海湾蓝', ['#14758f', '#436fbd', '#c07a20']],
+    ['coral', '珊瑚红', ['#b9533f', '#2d7b78', '#bc741b']],
+  ]
+  const fonts: Array<[ThemeFont, string, string]> = [
+    ['modern', '现代无衬线', '枢衡 PivotFlow 0123'],
+    ['system', '系统原生', '枢衡 PivotFlow 0123'],
+    ['serif', '人文宋体', '枢衡 PivotFlow 0123'],
+  ]
+  const radii: Array<[ThemeRadius, string]> = [
+    ['compact', '利落'],
+    ['balanced', '均衡'],
+    ['soft', '柔和'],
   ]
   return <div className="appearance-panel">
-    <div className="appearance-intro"><strong>界面主题</strong><p>只影响当前浏览器的控制台显示，不会改变站点请求、路由策略或服务端参数。</p></div>
-    <div className="theme-choice-grid">{choices.map(([value, label, description, Icon]) => <button className={preference === value ? 'is-selected' : ''} type="button" onClick={() => choose(value)} key={value}><span><Icon size={21} /></span><strong>{label}</strong><small>{description}</small>{preference === value && <i>当前</i>}</button>)}</div>
+    <div className="appearance-intro"><div><strong>外观偏好</strong><span>保存在当前浏览器</span></div><button className="secondary-button" type="button" onClick={reset}><RotateCcw size={15} />恢复默认</button></div>
+
+    <div className="appearance-workbench">
+      <div className="appearance-controls">
+        <section className="appearance-control-group">
+          <header><span><PanelsTopLeft size={17} /></span><strong>明暗模式</strong></header>
+          <div className="appearance-segmented">{modes.map(([value, label, Icon]) => <button className={customization.preference === value ? 'is-selected' : ''} type="button" aria-pressed={customization.preference === value} onClick={() => change({ preference: value }, label)} key={value}><Icon size={16} />{label}</button>)}</div>
+        </section>
+
+        <section className="appearance-control-group">
+          <header><span><Palette size={17} /></span><strong>主题配色</strong></header>
+          <div className="appearance-option-list">{presets.map(([value, label, colors]) => <button className={customization.preset === value ? 'is-selected' : ''} type="button" aria-pressed={customization.preset === value} onClick={() => change({ preset: value }, label)} key={value}><span className="theme-swatches">{colors.map((color) => <i style={{ background: color }} key={color} />)}</span><strong>{label}</strong>{customization.preset === value && <Check size={16} />}</button>)}</div>
+        </section>
+
+        <section className="appearance-control-group">
+          <header><span><Type size={17} /></span><strong>字体风格</strong></header>
+          <div className="appearance-font-list">{fonts.map(([value, label, sample]) => <button className={`${customization.font === value ? 'is-selected ' : ''}theme-font-sample theme-font-sample--${value}`} type="button" aria-pressed={customization.font === value} onClick={() => change({ font: value }, label)} key={value}><span>{sample}</span><strong>{label}</strong>{customization.font === value && <Check size={16} />}</button>)}</div>
+        </section>
+
+        <section className="appearance-control-group">
+          <header><span><PanelsTopLeft size={17} /></span><strong>边角风格</strong></header>
+          <div className="appearance-radius-list">{radii.map(([value, label]) => <button className={customization.radius === value ? 'is-selected' : ''} type="button" aria-pressed={customization.radius === value} onClick={() => change({ radius: value }, label)} key={value}><i className={`radius-shape radius-shape--${value}`} /><strong>{label}</strong>{customization.radius === value && <Check size={16} />}</button>)}</div>
+        </section>
+      </div>
+
+      <div className="appearance-preview" aria-label="主题预览">
+        <aside><span className="appearance-preview-mark">P</span><i /><i /><i /><i /></aside>
+        <main>
+          <header><div><small>系统概览</small><strong>运行状态</strong></div><span><Sun size={15} /></span></header>
+          <div className="appearance-preview-metrics"><article><small>站点余额</small><strong>$ 286.40</strong><em>+ 12.8</em></article><article><small>今日请求</small><strong>1,284</strong><em>99.6%</em></article></div>
+          <div className="appearance-preview-chart"><span /><span /><span /><span /><span /><span /><span /><span /></div>
+          <footer><span>智能路由</span><strong>状态正常</strong></footer>
+        </main>
+      </div>
+    </div>
   </div>
 }
 
