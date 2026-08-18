@@ -72,6 +72,9 @@ func (h *HybridStore) GetCheckinRun(ctx context.Context, id int64) (*model.Check
 func (h *HybridStore) ListCheckinAttempts(ctx context.Context, id int64, limit int) ([]*model.CheckinAttempt, error) {
 	return h.mysql.ListCheckinAttempts(ctx, id, limit)
 }
+func (h *HybridStore) ListCheckinAttemptsBatch(ctx context.Context, ids []int64, limit int) ([]*model.CheckinAttempt, error) {
+	return h.mysql.ListCheckinAttemptsBatch(ctx, ids, limit)
+}
 func (h *HybridStore) CreateCheckinAttempt(ctx context.Context, v *model.CheckinAttempt) (*model.CheckinAttempt, error) {
 	return h.mysql.CreateCheckinAttempt(ctx, v)
 }

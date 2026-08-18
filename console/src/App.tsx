@@ -23,22 +23,55 @@ import {
   X,
 } from 'lucide-react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { getCheckinAttemptsBatch, getSiteInventory } from './api'
 import GlobalSearch from './components/GlobalSearch'
 import { applyTheme, readThemePreference, resolveTheme } from './theme'
 import type { ResolvedTheme, ThemePreference } from './theme'
 
-const DashboardPage = lazy(() => import('./pages/DashboardPage'))
-const ChannelsPage = lazy(() => import('./pages/ChannelsPage'))
-const LogsPage = lazy(() => import('./pages/LogsPage'))
-const StatsPage = lazy(() => import('./pages/StatsPage'))
-const ModelTestPage = lazy(() => import('./pages/ModelTestPage'))
-const SitesPage = lazy(() => import('./pages/SitesPage'))
-const AccountsPage = lazy(() => import('./pages/AccountsPageV2'))
-const CheckinsPage = lazy(() => import('./pages/CheckinsPage'))
-const AnnouncementsPage = lazy(() => import('./pages/AnnouncementsPage'))
-const TokensPage = lazy(() => import('./pages/TokensPage'))
-const TrendPage = lazy(() => import('./pages/TrendPage'))
-const SystemSettingsPage = lazy(() => import('./pages/SystemSettingsPageV2'))
+const loadDashboardPage = () => import('./pages/DashboardPage')
+const loadChannelsPage = () => import('./pages/ChannelsPage')
+const loadLogsPage = () => import('./pages/LogsPage')
+const loadStatsPage = () => import('./pages/StatsPage')
+const loadModelTestPage = () => import('./pages/ModelTestPage')
+const loadSitesPage = () => import('./pages/SitesPage')
+const loadAccountsPage = () => import('./pages/AccountsPageV2')
+const loadCheckinsPage = () => import('./pages/CheckinsPage')
+const loadAnnouncementsPage = () => import('./pages/AnnouncementsPage')
+const loadTokensPage = () => import('./pages/TokensPage')
+const loadTrendPage = () => import('./pages/TrendPage')
+const loadSystemSettingsPage = () => import('./pages/SystemSettingsPageV2')
+
+const DashboardPage = lazy(loadDashboardPage)
+const ChannelsPage = lazy(loadChannelsPage)
+const LogsPage = lazy(loadLogsPage)
+const StatsPage = lazy(loadStatsPage)
+const ModelTestPage = lazy(loadModelTestPage)
+const SitesPage = lazy(loadSitesPage)
+const AccountsPage = lazy(loadAccountsPage)
+const CheckinsPage = lazy(loadCheckinsPage)
+const AnnouncementsPage = lazy(loadAnnouncementsPage)
+const TokensPage = lazy(loadTokensPage)
+const TrendPage = lazy(loadTrendPage)
+const SystemSettingsPage = lazy(loadSystemSettingsPage)
+
+const pageLoaders: Record<string, () => Promise<unknown>> = {
+  '/': loadDashboardPage,
+  '/channels': loadChannelsPage,
+  '/logs': loadLogsPage,
+  '/stats': loadStatsPage,
+  '/models': loadModelTestPage,
+  '/sites': loadSitesPage,
+  '/accounts': loadAccountsPage,
+  '/checkins': loadCheckinsPage,
+  '/announcements': loadAnnouncementsPage,
+  '/tokens': loadTokensPage,
+  '/trend': loadTrendPage,
+  '/system': loadSystemSettingsPage,
+}
+
+function preloadPage(path: string) {
+  void pageLoaders[path]?.().catch(() => undefined)
+}
 
 interface NavEntry {
   label: string
@@ -128,6 +161,20 @@ function App() {
     window.scrollTo({ top: 0, behavior: 'auto' })
   }, [location.pathname])
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void Promise.allSettled([
+        loadSitesPage(),
+        loadAccountsPage(),
+        loadCheckinsPage(),
+        loadChannelsPage(),
+        getSiteInventory(),
+        getCheckinAttemptsBatch(100),
+      ])
+    }, 600)
+    return () => window.clearTimeout(timer)
+  }, [])
+
   const shellClass = useMemo(
     () => `app-shell${collapsed ? ' app-shell--collapsed' : ''}`,
     [collapsed],
@@ -204,7 +251,7 @@ function App() {
                   </>
                 )
 
-                return <a className={`nav-item${active ? ' nav-item--active' : ''}`} href={`#${entry.href}`} key={entry.label} title={collapsed ? entry.label : undefined}>{content}</a>
+                return <a className={`nav-item${active ? ' nav-item--active' : ''}`} href={`#${entry.href}`} key={entry.label} title={collapsed ? entry.label : undefined} onMouseEnter={() => preloadPage(entry.href)} onFocus={() => preloadPage(entry.href)}>{content}</a>
               })}
             </div>
           ))}

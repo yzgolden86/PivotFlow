@@ -41,6 +41,65 @@ import type {
 
 const TOKEN_KEY = 'pivotflow_token'
 const EXPIRY_KEY = 'pivotflow_token_expiry'
+const SITE_INVENTORY_TTL_MS = 45_000
+const CHECKIN_ATTEMPTS_TTL_MS = 30_000
+const CHANNELS_TTL_MS = 30_000
+
+type CacheEntry<T> = { value: T; fetchedAt: number }
+let siteInventoryCache: CacheEntry<SiteInventory> | null = null
+let siteInventoryInFlight: Promise<SiteInventory> | null = null
+let siteInventoryGeneration = 0
+const checkinAttemptsCache = new Map<number, CacheEntry<CheckinAttempt[]>>()
+const checkinAttemptsInFlight = new Map<number, Promise<CheckinAttempt[]>>()
+const channelsCache = new Map<string, CacheEntry<PaginatedResult<Channel>>>()
+const channelsInFlight = new Map<string, Promise<PaginatedResult<Channel>>>()
+let channelsGeneration = 0
+
+function abortError(): Error {
+  const error = new Error('请求已取消')
+  error.name = 'AbortError'
+  return error
+}
+
+function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(abortError())
+  return new Promise<T>((resolve, reject) => {
+    const aborted = () => reject(abortError())
+    signal.addEventListener('abort', aborted, { once: true })
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted))
+  })
+}
+
+function endpointMissing(reason: unknown): boolean {
+  const message = reason instanceof Error ? reason.message.toLowerCase() : ''
+  return message === 'not_found' || message.startsWith('not_found:') || message.includes('(404)')
+}
+
+export function peekSiteInventory(): SiteInventory | undefined {
+  return siteInventoryCache?.value
+}
+
+export function peekCheckinAttempts(limit = 100): CheckinAttempt[] | undefined {
+  return checkinAttemptsCache.get(limit)?.value
+}
+
+export function invalidateSiteInventory(): void {
+  siteInventoryGeneration += 1
+  siteInventoryCache = null
+  siteInventoryInFlight = null
+}
+
+export function invalidateCheckinAttempts(): void {
+  checkinAttemptsCache.clear()
+  checkinAttemptsInFlight.clear()
+}
+
+export function invalidateChannels(): void {
+  channelsGeneration += 1
+  channelsCache.clear()
+  channelsInFlight.clear()
+}
 
 function loginURL(): string {
   const redirect = `${window.location.pathname}${window.location.search}${window.location.hash}`
@@ -109,7 +168,7 @@ export function checkForUpdates(): Promise<VersionInfo> {
 }
 
 
-export async function getChannels(filters: ChannelFilters, signal?: AbortSignal): Promise<PaginatedResult<Channel>> {
+function channelParams(filters: ChannelFilters): URLSearchParams {
   const params = new URLSearchParams({
     limit: String(filters.limit),
     offset: String(filters.offset),
@@ -117,16 +176,43 @@ export async function getChannels(filters: ChannelFilters, signal?: AbortSignal)
   if (filters.search) params.set('search', filters.search)
   if (filters.status && filters.status !== 'all') params.set('status', filters.status)
   if (filters.sort) params.set('sort', filters.sort)
-  const payload = await requestEnvelope<Channel[]>(`/admin/channels?${params}`, { signal })
-  return { data: payload.data, count: payload.count ?? payload.data.length }
+  return params
 }
 
-export function setChannelsEnabled(channelIds: number[], enabled: boolean): Promise<unknown> {
-  return apiMutation('/admin/channels/batch-enabled', { channel_ids: channelIds, enabled })
+export function peekChannels(filters: ChannelFilters): PaginatedResult<Channel> | undefined {
+  return channelsCache.get(channelParams(filters).toString())?.value
 }
 
-export function deleteChannels(channelIds: number[]): Promise<unknown> {
-  return apiMutation('/admin/channels/batch-delete', { channel_ids: channelIds })
+export function getChannels(filters: ChannelFilters, signal?: AbortSignal, options: { force?: boolean } = {}): Promise<PaginatedResult<Channel>> {
+  const params = channelParams(filters)
+  const key = params.toString()
+  const cached = channelsCache.get(key)
+  if (!options.force && cached && Date.now() - cached.fetchedAt < CHANNELS_TTL_MS) {
+    return waitWithSignal(Promise.resolve(cached.value), signal)
+  }
+  let request = channelsInFlight.get(key)
+  if (!request) {
+    const generation = channelsGeneration
+    request = requestEnvelope<Channel[]>(`/admin/channels?${params}`).then((payload) => {
+      const result = { data: payload.data, count: payload.count ?? payload.data.length }
+      if (generation === channelsGeneration) channelsCache.set(key, { value: result, fetchedAt: Date.now() })
+      return result
+    }).finally(() => channelsInFlight.delete(key))
+    channelsInFlight.set(key, request)
+  }
+  return waitWithSignal(request, signal)
+}
+
+export async function setChannelsEnabled(channelIds: number[], enabled: boolean): Promise<unknown> {
+  const result = await apiMutation('/admin/channels/batch-enabled', { channel_ids: channelIds, enabled })
+  invalidateChannels()
+  return result
+}
+
+export async function deleteChannels(channelIds: number[]): Promise<unknown> {
+  const result = await apiMutation('/admin/channels/batch-delete', { channel_ids: channelIds })
+  invalidateChannels()
+  return result
 }
 
 export function fetchChannelModelsPreview(payload: {
@@ -141,16 +227,22 @@ export function getChannelEditor(channelId: number, signal?: AbortSignal): Promi
   return apiRequest<ChannelEditorSnapshot>(`/admin/channels/${channelId}/editor`, signal)
 }
 
-export function createChannel(payload: ChannelMutation): Promise<Channel> {
-  return apiMutation<Channel>('/admin/channels', payload)
+export async function createChannel(payload: ChannelMutation): Promise<Channel> {
+  const result = await apiMutation<Channel>('/admin/channels', payload)
+  invalidateChannels()
+  return result
 }
 
-export function updateChannel(channelId: number, payload: ChannelMutation): Promise<Channel> {
-  return apiMutation<Channel>(`/admin/channels/${channelId}`, payload, 'PUT')
+export async function updateChannel(channelId: number, payload: ChannelMutation): Promise<Channel> {
+  const result = await apiMutation<Channel>(`/admin/channels/${channelId}`, payload, 'PUT')
+  invalidateChannels()
+  return result
 }
 
-export function deleteChannel(channelId: number): Promise<{ id: number }> {
-  return apiMutation(`/admin/channels/${channelId}`, undefined, 'DELETE')
+export async function deleteChannel(channelId: number): Promise<{ id: number }> {
+  const result = await apiMutation<{ id: number }>(`/admin/channels/${channelId}`, undefined, 'DELETE')
+  invalidateChannels()
+  return result
 }
 
 export async function importOAuthCredentials(files: File[]): Promise<{ created: number; skipped: number; failed: number }> {
@@ -203,7 +295,7 @@ export function getSites(signal?: AbortSignal): Promise<Site[]> {
   return apiRequest<Site[]>('/admin/sites', signal)
 }
 
-export function createSite(payload: {
+export async function createSite(payload: {
   name: string
   base_url: string
   platform: string
@@ -222,34 +314,69 @@ export function createSite(payload: {
 		timezone?: string
 	}
 }): Promise<Site> {
-  return apiMutation<Site>('/admin/sites', payload)
+  const result = await apiMutation<Site>('/admin/sites', payload)
+  invalidateSiteInventory()
+  invalidateCheckinAttempts()
+  return result
 }
 
-export function updateSite(siteId: number, payload: Partial<Pick<Site,
+export async function updateSite(siteId: number, payload: Partial<Pick<Site,
   'name' | 'base_url' | 'platform' | 'timezone' | 'use_system_proxy' | 'proxy_url' | 'external_checkin_url' | 'enabled'
 >>): Promise<Site> {
-  return apiMutation<Site>(`/admin/sites/${siteId}`, payload, 'PATCH')
+  const result = await apiMutation<Site>(`/admin/sites/${siteId}`, payload, 'PATCH')
+  invalidateSiteInventory()
+  return result
 }
 
-export function deleteSite(siteId: number): Promise<{ id: number; deleted: boolean }> {
-  return apiMutation(`/admin/sites/${siteId}`, undefined, 'DELETE')
+export async function deleteSite(siteId: number): Promise<{ id: number; deleted: boolean }> {
+  const result = await apiMutation<{ id: number; deleted: boolean }>(`/admin/sites/${siteId}`, undefined, 'DELETE')
+  invalidateSiteInventory()
+  invalidateCheckinAttempts()
+  invalidateChannels()
+  return result
 }
 
-export function probeSite(siteId: number): Promise<{ matched: boolean; provider_id: string; system_name?: string }> {
-  return apiMutation(`/admin/sites/${siteId}/probe`)
+export async function probeSite(siteId: number): Promise<{ matched: boolean; provider_id: string; system_name?: string }> {
+  const result = await apiMutation<{ matched: boolean; provider_id: string; system_name?: string }>(`/admin/sites/${siteId}/probe`)
+  invalidateSiteInventory()
+  return result
 }
 
 export function getSiteAccounts(siteId: number, signal?: AbortSignal): Promise<SiteAccount[]> {
   return apiRequest<SiteAccount[]>(`/admin/sites/${siteId}/accounts`, signal)
 }
 
-export async function getSiteInventory(signal?: AbortSignal): Promise<SiteInventory> {
-  const sites = await getSites(signal)
-  const groups = await Promise.all(sites.map((site) => getSiteAccounts(site.id, signal)))
-  return { sites, accounts: groups.flat() }
+async function fetchSiteInventory(): Promise<SiteInventory> {
+  try {
+    return await apiRequest<SiteInventory>('/admin/site-inventory')
+  } catch (reason) {
+    if (!endpointMissing(reason)) throw reason
+    const sites = await getSites()
+    const groups = await Promise.all(sites.map((site) => getSiteAccounts(site.id)))
+    return { sites, accounts: groups.flat() }
+  }
 }
 
-export function createSiteAccount(siteId: number, payload: {
+export function getSiteInventory(signal?: AbortSignal, options: { force?: boolean } = {}): Promise<SiteInventory> {
+  const now = Date.now()
+  if (!options.force && siteInventoryCache && now - siteInventoryCache.fetchedAt < SITE_INVENTORY_TTL_MS) {
+    return waitWithSignal(Promise.resolve(siteInventoryCache.value), signal)
+  }
+  if (!siteInventoryInFlight) {
+    const generation = siteInventoryGeneration
+    const request = fetchSiteInventory().then((value) => {
+      if (generation === siteInventoryGeneration) siteInventoryCache = { value, fetchedAt: Date.now() }
+      return value
+    })
+    const tracked = request.finally(() => {
+      if (siteInventoryInFlight === tracked) siteInventoryInFlight = null
+    })
+    siteInventoryInFlight = tracked
+  }
+  return waitWithSignal(siteInventoryInFlight, signal)
+}
+
+export async function createSiteAccount(siteId: number, payload: {
   label: string
   credential_type: string
 	credential: { api_key?: string; access_token?: string; refresh_token?: string; expires_at?: number; cookie?: string; user_id?: number; username?: string; password?: string }
@@ -258,13 +385,18 @@ export function createSiteAccount(siteId: number, payload: {
   auto_refresh: boolean
   timezone?: string
 }): Promise<SiteAccount> {
-  return apiMutation<SiteAccount>(`/admin/sites/${siteId}/accounts`, payload)
+  const result = await apiMutation<SiteAccount>(`/admin/sites/${siteId}/accounts`, payload)
+  invalidateSiteInventory()
+  invalidateCheckinAttempts()
+  return result
 }
 
-export function updateSiteAccount(accountId: number, payload: Partial<Pick<SiteAccount,
+export async function updateSiteAccount(accountId: number, payload: Partial<Pick<SiteAccount,
   'label' | 'enabled' | 'auto_checkin' | 'auto_refresh' | 'timezone' | 'credential_type'
 >> & { credential?: { api_key?: string; access_token?: string; refresh_token?: string; expires_at?: number; cookie?: string; user_id?: number; username?: string; password?: string } }): Promise<SiteAccount> {
-  return apiMutation<SiteAccount>(`/admin/site-accounts/${accountId}`, payload, 'PATCH')
+  const result = await apiMutation<SiteAccount>(`/admin/site-accounts/${accountId}`, payload, 'PATCH')
+  invalidateSiteInventory()
+  return result
 }
 
 export function verifySiteAccountCredential(accountId: number, payload: {
@@ -278,8 +410,12 @@ export function getSiteChannelBindings(signal?: AbortSignal): Promise<import('./
   return apiRequest<import('./types').SiteChannelBinding[]>('/admin/site-channel-bindings', signal)
 }
 
-export function deleteSiteAccount(accountId: number): Promise<{ id: number; deleted: boolean }> {
-  return apiMutation(`/admin/site-accounts/${accountId}`, undefined, 'DELETE')
+export async function deleteSiteAccount(accountId: number): Promise<{ id: number; deleted: boolean }> {
+  const result = await apiMutation<{ id: number; deleted: boolean }>(`/admin/site-accounts/${accountId}`, undefined, 'DELETE')
+  invalidateSiteInventory()
+  invalidateCheckinAttempts()
+  invalidateChannels()
+  return result
 }
 
 export function startAccountTask(accountId: number, kind: 'checkin' | 'refresh' | 'model_refresh'): Promise<{ task_id: string }> {
@@ -328,20 +464,54 @@ export async function waitForSiteTask(taskId: string, signal?: AbortSignal, time
 
 export async function runAccountTask(accountId: number, kind: 'checkin' | 'refresh' | 'model_refresh', signal?: AbortSignal): Promise<SiteTask> {
   const queued = await startAccountTask(accountId, kind)
-  return waitForSiteTask(queued.task_id, signal)
+  const result = await waitForSiteTask(queued.task_id, signal)
+  invalidateSiteInventory()
+  if (kind === 'checkin') invalidateCheckinAttempts()
+  if (kind === 'model_refresh') invalidateChannels()
+  return result
 }
 
 export async function getCheckinAttempts(accountId: number, signal?: AbortSignal): Promise<CheckinAttempt[]> {
   return apiRequest<CheckinAttempt[]>(`/admin/site-accounts/${accountId}/checkin-runs?limit=100`, signal)
 }
 
-export function projectSiteAccount(accountId: number, payload: {
+async function fetchCheckinAttemptsBatch(limit: number): Promise<CheckinAttempt[]> {
+  try {
+    return await apiRequest<CheckinAttempt[]>(`/admin/checkin-attempts?limit=${limit}`)
+  } catch (reason) {
+    if (!endpointMissing(reason)) throw reason
+    const inventory = await getSiteInventory()
+    const groups = await Promise.all(inventory.accounts.map((account) => getCheckinAttempts(account.id)))
+    return groups.flat()
+  }
+}
+
+export function getCheckinAttemptsBatch(limit = 100, signal?: AbortSignal, options: { force?: boolean } = {}): Promise<CheckinAttempt[]> {
+  const now = Date.now()
+  const cached = checkinAttemptsCache.get(limit)
+  if (!options.force && cached && now - cached.fetchedAt < CHECKIN_ATTEMPTS_TTL_MS) {
+    return waitWithSignal(Promise.resolve(cached.value), signal)
+  }
+  let request = checkinAttemptsInFlight.get(limit)
+  if (!request) {
+    request = fetchCheckinAttemptsBatch(limit).then((value) => {
+      checkinAttemptsCache.set(limit, { value, fetchedAt: Date.now() })
+      return value
+    }).finally(() => checkinAttemptsInFlight.delete(limit))
+    checkinAttemptsInFlight.set(limit, request)
+  }
+  return waitWithSignal(request, signal)
+}
+
+export async function projectSiteAccount(accountId: number, payload: {
   projection_key: string
   name?: string
   api_key?: string
   force: boolean
 }): Promise<SiteProjectionResult> {
-  return apiMutation<SiteProjectionResult>(`/admin/site-accounts/${accountId}/project`, payload)
+  const result = await apiMutation<SiteProjectionResult>(`/admin/site-accounts/${accountId}/project`, payload)
+  invalidateChannels()
+  return result
 }
 
 export async function getAnnouncements(filters: {

@@ -5,7 +5,9 @@ import {
   createSiteAccount,
   deleteSiteAccount,
   getCheckinAttempts,
+  getCheckinAttemptsBatch,
   getSiteInventory,
+  peekSiteInventory,
   runAccountTask as executeAccountTask,
   updateSiteAccount,
   verifySiteAccountCredential,
@@ -68,6 +70,7 @@ const emptyAccount = (siteId = 0): CreateAccountForm => ({
 })
 
 export default function AccountsPage() {
+  const initialInventory = peekSiteInventory()
   const location = useLocation()
   const query = useMemo(() => new URLSearchParams(location.search), [location.search])
   const querySearch = query.get('search') || ''
@@ -76,9 +79,9 @@ export default function AccountsPage() {
   const createIntent = query.get('create') === '1'
   const credentialIntent = query.get('open_credential') === '1'
 
-  const [sites, setSites] = useState<Site[]>([])
-  const [accounts, setAccounts] = useState<SiteAccount[]>([])
-  const [latestCheckins, setLatestCheckins] = useState<Record<number, CheckinAttempt>>({})
+  const [sites, setSites] = useState<Site[]>(() => initialInventory?.sites || [])
+  const [accounts, setAccounts] = useState<SiteAccount[]>(() => initialInventory?.accounts || [])
+  const [latestCheckins, setLatestCheckins] = useState<Record<number, CheckinAttempt>>(() => initialInventory?.latest_checkins || {})
   const [search, setSearch] = useState(querySearch)
   const [siteFilter, setSiteFilter] = useState(querySite)
   const [status, setStatus] = useState('all')
@@ -86,7 +89,7 @@ export default function AccountsPage() {
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!initialInventory)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState<Map<number, AccountTaskKind>>(new Map())
@@ -107,19 +110,19 @@ export default function AccountsPage() {
   const handledIntent = useRef('')
   const rowRefs = useRef(new Map<number, HTMLElement>())
 
-  const load = useCallback(async (signal?: AbortSignal, options: { silent?: boolean } = {}) => {
-    if (!options.silent) setLoading(true)
+  const load = useCallback(async (signal?: AbortSignal, options: { silent?: boolean; force?: boolean } = {}) => {
+    if (!options.silent && !peekSiteInventory()) setLoading(true)
     setError('')
     try {
-      const data = await getSiteInventory(signal)
+      const data = await getSiteInventory(signal, { force: options.force })
       setSites(data.sites)
       setAccounts(data.accounts)
       setSelected((current) => new Set([...current].filter((id) => data.accounts.some((account) => account.id === id))))
-      const attempts = await Promise.all(data.accounts.map(async (account) => {
-        try { return [account.id, (await getCheckinAttempts(account.id, signal))[0]] as const }
-        catch { return [account.id, undefined] as const }
-      }))
-      setLatestCheckins(Object.fromEntries(attempts.filter((entry): entry is readonly [number, CheckinAttempt] => Boolean(entry[1]))))
+      if (data.latest_checkins) setLatestCheckins(data.latest_checkins)
+      else {
+        const attempts = await getCheckinAttemptsBatch(1, signal, { force: options.force })
+        setLatestCheckins(Object.fromEntries(attempts.map((attempt) => [attempt.site_account_id, attempt])))
+      }
     } catch (reason) {
       if (!signal?.aborted) setError(siteErrorMessage(reason))
     } finally {
@@ -189,7 +192,7 @@ export default function AccountsPage() {
     setError('')
     try {
       // Always refresh here so a site created moments ago is immediately selectable.
-      const data = await getSiteInventory()
+      const data = await getSiteInventory(undefined, { force: true })
       setSites(data.sites)
       setAccounts(data.accounts)
       const selectedSite = data.sites.some((site) => site.id === preferredSiteId)
@@ -272,7 +275,7 @@ export default function AccountsPage() {
       })
       setCreating(false)
       setNotice('账号已添加')
-      await load()
+      await load(undefined, { silent: true, force: true })
     } catch (reason) {
       setError(siteErrorMessage(reason))
     } finally {
@@ -295,7 +298,7 @@ export default function AccountsPage() {
       setEditing(null)
       setMetadata(null)
       setNotice('账号设置已更新')
-      await load()
+      await load(undefined, { silent: true, force: true })
     } catch (reason) {
       setError(siteErrorMessage(reason))
     } finally {
@@ -339,7 +342,7 @@ export default function AccountsPage() {
       setCredentialAccount(null)
       setVerification(null)
       setNotice('登录凭证已更新并验证')
-      await load()
+      await load(undefined, { silent: true, force: true })
     } catch (reason) {
       setCredentialError(siteErrorMessage(reason))
     } finally {
@@ -379,7 +382,7 @@ export default function AccountsPage() {
     try {
       await deleteSiteAccount(account.id)
       setNotice('账号已删除')
-      await load()
+      await load(undefined, { silent: true, force: true })
     } catch (reason) {
       setError(siteErrorMessage(reason))
     } finally {
@@ -421,7 +424,7 @@ export default function AccountsPage() {
     const succeeded = targets.length - failed
     setNotice(`批量操作完成：成功 ${succeeded}${skipped ? `，跳过 ${skipped} 个纯 API Key 账号` : ''}${failed ? `，失败 ${failed}` : ''}`)
     if (action === 'delete') setSelected(new Set())
-    await load(undefined, { silent: true })
+    await load(undefined, { silent: true, force: true })
     setBatchBusy(false)
   }
 
@@ -436,7 +439,7 @@ export default function AccountsPage() {
       <h1>账号管理</h1>
       <div className="header-controls">
         <button className="primary-button" type="button" onClick={() => void openCreate(siteFilter)} disabled={!sites.length || openingCreate}><Plus size={16} />添加账号</button>
-        <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新账号"><RefreshCw size={17} /></button>
+        <button className="icon-button icon-button--surface" type="button" onClick={() => void load(undefined, { silent: true, force: true })} aria-label="刷新账号"><RefreshCw size={17} /></button>
       </div>
     </header>
     <section className="compact-summary"><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{accounts.filter((item) => item.status === 'healthy').length}</strong>健康</span><span><strong>{accounts.filter((item) => item.auto_checkin).length}</strong>自动签到</span><span><strong>{accounts.filter((item) => item.credential_configured).length}</strong>凭证已配置</span></section>

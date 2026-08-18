@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CalendarCheck2, ExternalLink, History, Play, RefreshCw, Users } from 'lucide-react'
-import { getCheckinAttempts, getSiteInventory, runAccountTask as executeAccountTask } from '../api'
+import { getCheckinAttemptsBatch, getSiteInventory, peekCheckinAttempts, peekSiteInventory, runAccountTask as executeAccountTask } from '../api'
 import type { CheckinAttempt, Site, SiteAccount } from '../types'
 import { EmptyState, ErrorState, formatTime, LoadingState, OperationNotice } from './shared'
 import { siteErrorMessage, StatusBadge } from './siteShared'
@@ -8,23 +8,41 @@ import { siteErrorMessage, StatusBadge } from './siteShared'
 type CheckinView = 'accounts' | 'history'
 
 export default function CheckinsPage() {
-  const [sites, setSites] = useState<Site[]>([]); const [accounts, setAccounts] = useState<SiteAccount[]>([]); const [attempts, setAttempts] = useState<CheckinAttempt[]>([])
-  const [view, setView] = useState<CheckinView>('accounts'); const [siteFilter, setSiteFilter] = useState(0); const [status, setStatus] = useState('all'); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [notice, setNotice] = useState('')
+  const initialInventory = peekSiteInventory()
+  const initialAttempts = peekCheckinAttempts(100)
+  const [sites, setSites] = useState<Site[]>(() => initialInventory?.sites || []); const [accounts, setAccounts] = useState<SiteAccount[]>(() => initialInventory?.accounts || []); const [attempts, setAttempts] = useState<CheckinAttempt[]>(() => initialAttempts || [])
+  const [view, setView] = useState<CheckinView>('accounts'); const [siteFilter, setSiteFilter] = useState(0); const [status, setStatus] = useState('all'); const [loading, setLoading] = useState(!initialInventory); const [error, setError] = useState(''); const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState<Set<number>>(new Set()); const [bulk, setBulk] = useState<{ done: number; total: number; success: number } | null>(null)
 
-  const load = useCallback(async (signal?: AbortSignal) => { setLoading(true); setError(''); try { const inventory = await getSiteInventory(signal); const histories = await Promise.all(inventory.accounts.map((account) => getCheckinAttempts(account.id, signal))); setSites(inventory.sites); setAccounts(inventory.accounts); setAttempts(histories.flat().sort((a, b) => (b.finished_at || b.started_at || 0) - (a.finished_at || a.started_at || 0))) } catch (reason) { if (!signal?.aborted) setError(siteErrorMessage(reason)) } finally { if (!signal?.aborted) setLoading(false) } }, [])
+  const load = useCallback(async (signal?: AbortSignal, options: { silent?: boolean; force?: boolean } = {}) => {
+    if (!options.silent && !peekSiteInventory()) setLoading(true)
+    setError('')
+    try {
+      const [inventory, histories] = await Promise.all([
+        getSiteInventory(signal, { force: options.force }),
+        getCheckinAttemptsBatch(100, signal, { force: options.force }),
+      ])
+      setSites(inventory.sites)
+      setAccounts(inventory.accounts)
+      setAttempts([...histories].sort((a, b) => (b.finished_at || b.started_at || 0) - (a.finished_at || a.started_at || 0)))
+    } catch (reason) {
+      if (!signal?.aborted) setError(siteErrorMessage(reason))
+    } finally {
+      if (!signal?.aborted && !options.silent) setLoading(false)
+    }
+  }, [])
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
   const siteMap = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites]); const accountMap = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts])
   const visibleAccounts = useMemo(() => accounts.filter((account) => !siteFilter || account.site_id === siteFilter), [accounts, siteFilter])
   const visibleAttempts = useMemo(() => attempts.filter((attempt) => { const account = accountMap.get(attempt.site_account_id); return (!siteFilter || account?.site_id === siteFilter) && (status === 'all' || attempt.status === status) }), [accountMap, attempts, siteFilter, status])
   const targets = useMemo(() => accounts.filter((account) => account.enabled && account.credential_type !== 'api_key'), [accounts])
 
-  const runOne = async (account: SiteAccount, quiet = false) => { setBusy((current) => new Set(current).add(account.id)); setError(''); try { const result = await executeAccountTask(account.id, 'checkin'); if (!['success', 'partial'].includes(result.status)) throw new Error(result.error || result.status); if (!quiet) { setNotice(`${account.label} 签到完成`); await load() } return true } catch (reason) { if (!quiet) setError(siteErrorMessage(reason)); return false } finally { setBusy((current) => { const next = new Set(current); next.delete(account.id); return next }) } }
-  const runBulk = async () => { if (!targets.length) { setError('没有可执行签到的账号'); return } setBulk({ done: 0, total: targets.length, success: 0 }); setError(''); setNotice(''); let cursor = 0; let done = 0; let success = 0; const worker = async () => { while (cursor < targets.length) { const account = targets[cursor++]; if (await runOne(account, true)) success++; done++; setBulk({ done, total: targets.length, success }) } }; await Promise.all(Array.from({ length: Math.min(4, targets.length) }, worker)); setNotice(`签到完成：${success}/${done} 个账号成功`); setBulk(null); await load() }
+  const runOne = async (account: SiteAccount, quiet = false) => { setBusy((current) => new Set(current).add(account.id)); setError(''); try { const result = await executeAccountTask(account.id, 'checkin'); if (!['success', 'partial'].includes(result.status)) throw new Error(result.error || result.status); if (!quiet) { setNotice(`${account.label} 签到完成`); await load(undefined, { silent: true, force: true }) } return true } catch (reason) { if (!quiet) setError(siteErrorMessage(reason)); return false } finally { setBusy((current) => { const next = new Set(current); next.delete(account.id); return next }) } }
+  const runBulk = async () => { if (!targets.length) { setError('没有可执行签到的账号'); return } setBulk({ done: 0, total: targets.length, success: 0 }); setError(''); setNotice(''); let cursor = 0; let done = 0; let success = 0; const worker = async () => { while (cursor < targets.length) { const account = targets[cursor++]; if (await runOne(account, true)) success++; done++; setBulk({ done, total: targets.length, success }) } }; await Promise.all(Array.from({ length: Math.min(4, targets.length) }, worker)); setNotice(`签到完成：${success}/${done} 个账号成功`); setBulk(null); await load(undefined, { silent: true, force: true }) }
   const successCount = attempts.filter((item) => item.status === 'success').length; const alreadyCount = attempts.filter((item) => item.status === 'already_checked').length; const attentionCount = accounts.filter((item) => ['expired', 'error'].includes(item.status) || ['failed', 'browser_required'].includes(item.last_checkin_status)).length
 
   return <div className="workspace-page">
-    <header className="page-header"><h1>签到中心</h1><div className="header-controls"><button className="primary-button" type="button" disabled={Boolean(bulk) || !targets.length} onClick={() => void runBulk()}>{bulk ? <RefreshCw className="spin" size={16} /> : <Play size={16} />}{bulk ? `${bulk.done}/${bulk.total}` : '全部签到'}</button><button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新签到数据"><RefreshCw size={17} /></button></div></header>
+    <header className="page-header"><h1>签到中心</h1><div className="header-controls"><button className="primary-button" type="button" disabled={Boolean(bulk) || !targets.length} onClick={() => void runBulk()}>{bulk ? <RefreshCw className="spin" size={16} /> : <Play size={16} />}{bulk ? `${bulk.done}/${bulk.total}` : '全部签到'}</button><button className="icon-button icon-button--surface" type="button" onClick={() => void load(undefined, { silent: true, force: true })} aria-label="刷新签到数据"><RefreshCw size={17} /></button></div></header>
     <section className="compact-summary"><span><strong>{targets.length}</strong>可签到账号</span><span><strong>{successCount}</strong>成功记录</span><span><strong>{alreadyCount}</strong>已签到记录</span><span><strong>{attentionCount}</strong>需要处理</span></section>
     <div className="filter-bar checkin-toolbar"><div className="segmented-control" aria-label="签到视图"><button className={view === 'accounts' ? 'is-active' : ''} type="button" onClick={() => setView('accounts')}><Users size={14} />账号</button><button className={view === 'history' ? 'is-active' : ''} type="button" onClick={() => setView('history')}><History size={14} />记录</button></div><select value={siteFilter} onChange={(event) => setSiteFilter(Number(event.target.value))} aria-label="签到站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select>{view === 'history' && <select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="签到状态"><option value="all">全部结果</option><option value="success">成功</option><option value="already_checked">已签到</option><option value="browser_required">需浏览器</option><option value="unsupported">不支持</option><option value="failed">失败</option></select>}<span className="filter-count"><CalendarCheck2 size={14} />{view === 'accounts' ? `${visibleAccounts.length} 个账号` : `${visibleAttempts.length} 条记录`}</span></div>
     {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}{error && accounts.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}

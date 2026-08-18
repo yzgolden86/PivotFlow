@@ -1911,6 +1911,10 @@ a:focus-visible {
 .model-discovery-action .secondary-button { flex: 0 0 auto; }
 .discovered-model-panel { gap: 10px; border-left: 3px solid var(--blue); background: color-mix(in srgb, var(--blue-soft) 34%, var(--surface-muted)); }
 .model-list-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.model-selection-toolbar { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; }
+.model-selection-toolbar .selection-search { width: min(420px, 100%); }
+.model-selection-toolbar .selection-search > span { flex: 0 0 auto; color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.model-selection-toolbar > small { flex: 0 0 auto; color: var(--blue); font-size: 10px; font-weight: 700; }
 .danger-text-button { color: var(--coral) !important; }
 .discovered-model-list { display: flex; min-height: 42px; max-height: 150px; flex-wrap: wrap; align-content: flex-start; gap: 7px; overflow: auto; }
 .discovered-model-list code { max-width: 100%; overflow: hidden; padding: 5px 8px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 5px; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
@@ -2738,6 +2742,9 @@ a:focus-visible {
   .selection-panel > header { align-items: flex-start; flex-direction: column; }
   .selection-actions { align-self: flex-end; }
   .model-list-actions { align-self: flex-end; }
+  .model-selection-toolbar { width: 100%; align-items: stretch; flex-direction: column; }
+  .model-selection-toolbar .selection-search { width: 100%; }
+  .model-selection-toolbar > small { padding-left: 2px; }
   .editable-model-row { grid-template-columns: 24px minmax(0, 1fr) auto; }
   .editable-model-row > span { display: none; }
   .editable-model-row input:not([type="checkbox"]):nth-of-type(2) { grid-column: 2; grid-row: 1; }

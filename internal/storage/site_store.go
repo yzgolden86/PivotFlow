@@ -36,6 +36,7 @@ type SiteStore interface {
 	UpdateCheckinRun(ctx context.Context, run *model.CheckinRun) error
 	GetCheckinRun(ctx context.Context, id int64) (*model.CheckinRun, error)
 	ListCheckinAttempts(ctx context.Context, accountID int64, limit int) ([]*model.CheckinAttempt, error)
+	ListCheckinAttemptsBatch(ctx context.Context, accountIDs []int64, perAccountLimit int) ([]*model.CheckinAttempt, error)
 	CreateCheckinAttempt(ctx context.Context, attempt *model.CheckinAttempt) (*model.CheckinAttempt, error)
 	UpdateCheckinAttempt(ctx context.Context, attempt *model.CheckinAttempt) error
 	HasDailyCheckinAttempt(ctx context.Context, accountID int64, localDay string) (bool, error)

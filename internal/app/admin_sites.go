@@ -143,6 +143,41 @@ func (s *siteControlService) handleSiteAccounts(c *gin.Context) {
 	}
 }
 
+type siteInventoryResponse struct {
+	Sites          []*model.Site                   `json:"sites"`
+	Accounts       []*model.SiteAccount            `json:"accounts"`
+	LatestCheckins map[int64]*model.CheckinAttempt `json:"latest_checkins"`
+}
+
+func (s *siteControlService) handleSiteInventory(c *gin.Context) {
+	ctx := c.Request.Context()
+	sites, err := s.store.ListSites(ctx, model.SiteListFilter{})
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	accounts, err := s.store.ListSiteAccounts(ctx, 0, false)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	accountIDs := make([]int64, 0, len(accounts))
+	for _, account := range accounts {
+		s.decorateAccountCredentialMetadata(account)
+		accountIDs = append(accountIDs, account.ID)
+	}
+	latestAttempts, err := s.store.ListCheckinAttemptsBatch(ctx, accountIDs, 1)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	latest := make(map[int64]*model.CheckinAttempt, len(latestAttempts))
+	for _, attempt := range latestAttempts {
+		latest[attempt.SiteAccountID] = attempt
+	}
+	RespondJSON(c, http.StatusOK, siteInventoryResponse{Sites: sites, Accounts: accounts, LatestCheckins: latest})
+}
+
 func (s *siteControlService) handleSiteAccountByID(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {
@@ -395,6 +430,28 @@ func (s *siteControlService) handleAccountCheckinRuns(c *gin.Context) {
 		return
 	}
 	RespondJSONWithCount(c, 200, items, len(items))
+}
+
+func (s *siteControlService) handleCheckinAttempts(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	accounts, err := s.store.ListSiteAccounts(c.Request.Context(), 0, false)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	accountIDs := make([]int64, 0, len(accounts))
+	for _, account := range accounts {
+		accountIDs = append(accountIDs, account.ID)
+	}
+	items, err := s.store.ListCheckinAttemptsBatch(c.Request.Context(), accountIDs, limit)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	RespondJSONWithCount(c, http.StatusOK, items, len(items))
 }
 
 type announcementsRefreshRequest struct {
