@@ -179,6 +179,7 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, requestRawJSON []byte
 				item, _ = sjson.SetBytes(item, "input", unwrapCustomToolInput(args))
 				item, _ = sjson.SetBytes(item, "call_id", callID)
 				item, _ = sjson.SetBytes(item, "name", name)
+				item = applyResponsesFunctionCallNamespaceFields(item, requestRawJSON, name, "")
 				outputItems = append(outputItems, completedOutputItem{index: st.FuncOutputIx[key], raw: item})
 				continue
 			}
@@ -337,6 +338,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			o, _ = sjson.SetBytes(o, "item.id", fmt.Sprintf("ctc_%s", callID))
 			o, _ = sjson.SetBytes(o, "item.call_id", callID)
 			o, _ = sjson.SetBytes(o, "item.name", name)
+			o = applyResponsesFunctionCallNamespaceFields(o, requestForNamespace, name, "item")
 			out = append(out, emitRespEvent("response.output_item.added", o))
 		} else {
 			o := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"in_progress","arguments":"","call_id":"","name":""}}`)
@@ -683,6 +685,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 							itemDone, _ = sjson.SetBytes(itemDone, "item.input", input)
 							itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", callID)
 							itemDone, _ = sjson.SetBytes(itemDone, "item.name", st.FuncNames[key])
+							itemDone = applyResponsesFunctionCallNamespaceFields(itemDone, requestForNamespace, st.FuncNames[key], "item")
 							out = append(out, emitRespEvent("response.output_item.done", itemDone))
 							st.FuncItemDone[key] = true
 							st.FuncArgsDone[key] = true
@@ -888,6 +891,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 							item, _ = sjson.SetBytes(item, "input", unwrapCustomToolInput(args))
 							item, _ = sjson.SetBytes(item, "call_id", callID)
 							item, _ = sjson.SetBytes(item, "name", name)
+							item = applyResponsesFunctionCallNamespaceFields(item, requestForNamespace, name, "")
 							outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, "arr.-1", item)
 							return true
 						}

@@ -493,6 +493,35 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_FlattensNamespaceC
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_QualifiesNamespaceCustomToolCallHistory(t *testing.T) {
+	raw := []byte(`{
+		"input":[
+			{"type":"custom_tool_call","call_id":"call_exec","name":"exec","namespace":"functions","input":"Get-Location"},
+			{"type":"custom_tool_call_output","call_id":"call_exec","output":"E:\\\\Dev"}
+		],
+		"tools":[{
+			"type":"namespace",
+			"name":"functions",
+			"tools":[{"type":"custom","name":"exec"}]
+		}]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-5.4", raw, false)
+
+	gotHistoryName := gjson.GetBytes(out, "messages.0.tool_calls.0.function.name").String()
+	gotDeclaredName := gjson.GetBytes(out, "tools.0.function.name").String()
+	if gotHistoryName != "functions__exec" {
+		t.Fatalf("history custom tool name = %q, want functions__exec; output=%s", gotHistoryName, out)
+	}
+	if gotHistoryName != gotDeclaredName {
+		t.Fatalf("history custom tool name = %q, declared custom tool name = %q; output=%s", gotHistoryName, gotDeclaredName, out)
+	}
+	arguments := gjson.GetBytes(out, "messages.0.tool_calls.0.function.arguments").String()
+	if got := gjson.Get(arguments, "input").String(); got != "Get-Location" {
+		t.Fatalf("history custom tool input = %q, want Get-Location; output=%s", got, out)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesStructuredToolChoice(t *testing.T) {
 	raw := []byte(`{
 		"input": [

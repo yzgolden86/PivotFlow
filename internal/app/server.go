@@ -1094,6 +1094,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.DELETE("/channels/:id/keys/:keyIndex", s.HandleDeleteAPIKey)
 
 		// 站点控制面
+		admin.GET("/site-inventory", s.siteControl.handleSiteInventory)
 		admin.GET("/sites", s.siteControl.handleSites)
 		admin.POST("/sites", s.siteControl.handleSites)
 		admin.GET("/sites/:id", s.siteControl.handleSiteByID)
@@ -1109,6 +1110,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/site-accounts/:id/refresh", s.siteControl.handleAccountRefresh)
 		admin.POST("/site-accounts/:id/checkin", s.siteControl.handleAccountCheckin)
 		admin.GET("/site-accounts/:id/checkin-runs", s.siteControl.handleAccountCheckinRuns)
+		admin.GET("/checkin-attempts", s.siteControl.handleCheckinAttempts)
 		admin.POST("/site-accounts/:id/models/refresh", s.siteControl.handleAccountModelsRefresh)
 		admin.POST("/site-accounts/:id/model-probe", s.HandleSiteAccountModelProbe)
 		admin.POST("/site-accounts/:id/project", s.siteControl.handleAccountProjection)

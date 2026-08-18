@@ -354,6 +354,7 @@ export interface SiteAccount {
 export interface SiteInventory {
   sites: Site[]
   accounts: SiteAccount[]
+  latest_checkins?: Record<number, CheckinAttempt>
 }
 
 export interface SiteCredentialVerification {

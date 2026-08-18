@@ -483,21 +483,57 @@ func (s *SQLStore) ListCheckinAttempts(ctx context.Context, accountID int64, lim
 	defer func() { _ = rows.Close() }()
 	out := make([]*model.CheckinAttempt, 0)
 	for rows.Next() {
-		a := new(model.CheckinAttempt)
-		var balanceBefore, balanceAfter, balanceDelta sql.NullFloat64
-		if err := rows.Scan(&a.ID, &a.RunID, &a.SiteAccountID, &a.ProviderID, &a.LocalDay, &a.TriggerScope, &a.Status, &a.RewardText, &balanceBefore, &balanceAfter, &balanceDelta, &a.BalanceCurrency, &a.Message, &a.ErrorCode, &a.RetryAfterAt, &a.StartedAt, &a.FinishedAt, &a.AttemptNo); err != nil {
+		a, err := scanCheckinAttempt(rows)
+		if err != nil {
 			return nil, err
 		}
-		if balanceBefore.Valid {
-			a.BalanceBefore = &balanceBefore.Float64
-		}
-		if balanceAfter.Valid {
-			a.BalanceAfter = &balanceAfter.Float64
-		}
-		if balanceDelta.Valid {
-			a.BalanceDelta = &balanceDelta.Float64
-		}
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func scanCheckinAttempt(scanner interface{ Scan(...any) error }) (*model.CheckinAttempt, error) {
+	a := new(model.CheckinAttempt)
+	var balanceBefore, balanceAfter, balanceDelta sql.NullFloat64
+	if err := scanner.Scan(&a.ID, &a.RunID, &a.SiteAccountID, &a.ProviderID, &a.LocalDay, &a.TriggerScope, &a.Status, &a.RewardText, &balanceBefore, &balanceAfter, &balanceDelta, &a.BalanceCurrency, &a.Message, &a.ErrorCode, &a.RetryAfterAt, &a.StartedAt, &a.FinishedAt, &a.AttemptNo); err != nil {
+		return nil, err
+	}
+	if balanceBefore.Valid {
+		a.BalanceBefore = &balanceBefore.Float64
+	}
+	if balanceAfter.Valid {
+		a.BalanceAfter = &balanceAfter.Float64
+	}
+	if balanceDelta.Valid {
+		a.BalanceDelta = &balanceDelta.Float64
+	}
+	return a, nil
+}
+
+func (s *SQLStore) ListCheckinAttemptsBatch(ctx context.Context, accountIDs []int64, perAccountLimit int) ([]*model.CheckinAttempt, error) {
+	if len(accountIDs) == 0 || perAccountLimit <= 0 {
+		return []*model.CheckinAttempt{}, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(accountIDs)), ",")
+	columns := "id,run_id,site_account_id,provider_id,local_day,trigger_scope,status,reward_text,balance_before,balance_after,balance_delta,balance_currency,message,error_code,retry_after_at,started_at,finished_at,attempt_no"
+	query := "SELECT " + columns + " FROM (SELECT " + columns + ", ROW_NUMBER() OVER (PARTITION BY site_account_id ORDER BY id DESC) AS row_num FROM checkin_attempts WHERE site_account_id IN (" + placeholders + ")) ranked WHERE row_num<=? ORDER BY id DESC"
+	args := make([]any, 0, len(accountIDs)+1)
+	for _, id := range accountIDs {
+		args = append(args, id)
+	}
+	args = append(args, perAccountLimit)
+	rows, err := s.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]*model.CheckinAttempt, 0)
+	for rows.Next() {
+		attempt, scanErr := scanCheckinAttempt(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, attempt)
 	}
 	return out, rows.Err()
 }

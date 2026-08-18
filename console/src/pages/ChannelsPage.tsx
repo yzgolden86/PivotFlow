@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Copy, FileUp, FlaskConical, Layers3, Pencil, Plus, Power, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
-import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, getChannelEditor, getChannels, getSiteChannelBindings, getSiteInventory, importOAuthCredentials, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
+import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, getChannelEditor, getChannels, getSiteChannelBindings, getSiteInventory, importOAuthCredentials, peekChannels, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
 import type { Channel, ChannelEditorSnapshot, ChannelModel, ChannelMutation, ChannelURL, Site, SiteAccount, SiteChannelBinding } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
@@ -9,15 +9,16 @@ import { Modal, siteErrorMessage, StatusBadge } from './siteShared'
 export default function ChannelsPage() {
   const location = useLocation()
   const querySearch = useMemo(() => new URLSearchParams(location.search).get('search') || '', [location.search])
-  const [channels, setChannels] = useState<Channel[]>([])
-  const [total, setTotal] = useState(0)
+  const initialResult = peekChannels({ search: querySearch, status: 'all', sort: 'priority', limit: 20, offset: 0 })
+  const [channels, setChannels] = useState<Channel[]>(() => initialResult?.data || [])
+  const [total, setTotal] = useState(() => initialResult?.count || 0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [searchDraft, setSearchDraft] = useState(querySearch)
   const [search, setSearch] = useState(querySearch)
   const [status, setStatus] = useState('all')
   const [sort, setSort] = useState('priority')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!initialResult)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busyId, setBusyId] = useState<number | null>(null)
@@ -28,18 +29,24 @@ export default function ChannelsPage() {
   const [syncOpen, setSyncOpen] = useState(false)
   const importInput = useRef<HTMLInputElement>(null)
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true)
+  const load = useCallback(async (signal?: AbortSignal, options: { silent?: boolean; force?: boolean } = {}) => {
+    const filters = { search, status, sort, limit: pageSize, offset: (page - 1) * pageSize }
+    const cached = peekChannels(filters)
+    if (cached) {
+      setChannels(cached.data)
+      setTotal(cached.count)
+    }
+    if (!options.silent) setLoading(!cached)
     setError('')
     try {
-      const result = await getChannels({ search, status, sort, limit: pageSize, offset: (page - 1) * pageSize }, signal)
+      const result = await getChannels(filters, signal, { force: options.force })
       setChannels(result.data)
       setTotal(result.count)
       setSelected((current) => new Set([...current].filter((id) => result.data.some((channel) => channel.id === id))))
     } catch (reason) {
       if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '渠道加载失败')
     } finally {
-      if (!signal?.aborted) setLoading(false)
+      if (!signal?.aborted && !options.silent) setLoading(false)
     }
   }, [page, pageSize, search, sort, status])
 
@@ -76,7 +83,7 @@ export default function ChannelsPage() {
   const removeChannel = async (channel: Channel) => {
     if (!window.confirm(`删除渠道“${channel.name}”？该渠道将立即退出路由。`)) return
     setBusyId(channel.id); setError('')
-    try { await deleteChannel(channel.id); await load() }
+    try { await deleteChannel(channel.id); await load(undefined, { silent: true, force: true }) }
     catch (reason) { setError(reason instanceof Error ? reason.message : '渠道删除失败') }
     finally { setBusyId(null) }
   }
@@ -99,7 +106,7 @@ export default function ChannelsPage() {
       else await setChannelsEnabled(ids, action === 'enable')
       setNotice(action === 'delete' ? `已删除 ${ids.length} 个渠道` : `已${action === 'enable' ? '启用' : '禁用'} ${ids.length} 个渠道`)
       setSelected(new Set())
-      await load()
+      await load(undefined, { silent: true, force: true })
     } catch (reason) { setError(reason instanceof Error ? reason.message : '批量操作失败') }
     finally { setBatchBusy(false) }
   }
@@ -111,7 +118,7 @@ export default function ChannelsPage() {
       const payload = snapshotToMutation(snapshot, `${channel.name} 副本`)
       await createChannel(payload)
       setNotice(`已复制渠道“${channel.name}”`)
-      await load()
+      await load(undefined, { silent: true, force: true })
     } catch (reason) { setError(reason instanceof Error ? reason.message : '渠道复制失败') }
     finally { setBusyId(null) }
   }
@@ -122,7 +129,7 @@ export default function ChannelsPage() {
     try {
       const result = await importOAuthCredentials(Array.from(files))
       setNotice(`凭证导入完成：新建 ${result.created || 0}，跳过 ${result.skipped || 0}，失败 ${result.failed || 0}`)
-      await load()
+      await load(undefined, { silent: true, force: true })
     } catch (reason) { setError(reason instanceof Error ? reason.message : '凭证导入失败') }
     finally { if (importInput.current) importInput.current.value = '' }
   }
@@ -135,7 +142,7 @@ export default function ChannelsPage() {
           <input ref={importInput} className="visually-hidden" type="file" accept="application/json,.json" multiple onChange={(event) => void importCredentials(event.target.files)} />
 		  <div className="source-menu"><button className="secondary-button" type="button" aria-haspopup="menu" aria-expanded={sourceMenuOpen} onClick={() => setSourceMenuOpen((open) => !open)}><Layers3 size={16} />其他来源</button>{sourceMenuOpen && <div className="source-menu-popover" role="menu"><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); importInput.current?.click() }}><FileUp size={15} />导入 OAuth</button><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); setEditing('new') }}><Plus size={15} />手工渠道</button></div>}</div>
 		  <button className="primary-button" type="button" onClick={() => setSyncOpen(true)}><RefreshCw size={16} />同步站点渠道</button>
-          <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新渠道" title="刷新渠道"><RefreshCw size={17} /></button>
+          <button className="icon-button icon-button--surface" type="button" onClick={() => void load(undefined, { silent: true, force: true })} aria-label="刷新渠道" title="刷新渠道"><RefreshCw size={17} /></button>
         </div>
       </header>
 
@@ -166,8 +173,8 @@ export default function ChannelsPage() {
         </div>
       )}
       <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} pageSizes={[20, 50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
-      {editing && <ChannelEditor channelId={editing === 'new' ? undefined : editing} close={() => setEditing(null)} saved={() => { setEditing(null); void load() }} />}
-      {syncOpen && <SiteChannelSyncModal close={() => setSyncOpen(false)} synced={() => void load()} />}
+      {editing && <ChannelEditor channelId={editing === 'new' ? undefined : editing} close={() => setEditing(null)} saved={() => { setEditing(null); void load(undefined, { silent: true, force: true }) }} />}
+      {syncOpen && <SiteChannelSyncModal close={() => setSyncOpen(false)} synced={() => void load(undefined, { silent: true, force: true })} />}
     </div>
   )
 }
@@ -428,9 +435,17 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
 
 function EditableModelList({ models, onChange }: { models: ChannelModel[]; onChange: (models: ChannelModel[]) => void }) {
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [query, setQuery] = useState('')
   useEffect(() => {
     setSelected((current) => new Set([...current].filter((index) => index >= 0 && index < models.length)))
   }, [models.length])
+  const visibleIndexes = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    return models.reduce<number[]>((indexes, item, index) => {
+      if (!needle || item.model.toLowerCase().includes(needle) || (item.redirect_model || '').toLowerCase().includes(needle)) indexes.push(index)
+      return indexes
+    }, [])
+  }, [models, query])
   const update = (index: number, patch: Partial<ChannelModel>) => onChange(models.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
   const remove = (index: number) => {
     onChange(models.filter((_, itemIndex) => itemIndex !== index))
@@ -441,9 +456,18 @@ function EditableModelList({ models, onChange }: { models: ChannelModel[]; onCha
     onChange(models.filter((_, index) => !selected.has(index)))
     setSelected(new Set())
   }
-  const add = () => onChange([...models, { model: '', redirect_model: '' }])
-  const allSelected = models.length > 0 && selected.size === models.length
-  return <section className="selection-panel discovered-model-panel"><header><div><strong>渠道模型</strong><span>{models.length ? `${models.length} 个模型，可删减或配置映射${selected.size ? `，已选 ${selected.size} 个` : ''}` : '尚未配置模型'}</span></div><div className="model-list-actions"><button className="text-button" type="button" onClick={() => setSelected(allSelected ? new Set() : new Set(models.map((_, index) => index)))} disabled={!models.length}>{allSelected ? '取消全选' : '全选'}</button>{selected.size > 0 && <button className="text-button danger-text-button" type="button" onClick={removeSelected}><Trash2 size={14} />删除所选 ({selected.size})</button>}<button className="text-button" type="button" onClick={add}><Plus size={14} />添加模型</button></div></header>{models.length ? <div className="editable-model-list">{models.map((item, index) => <div className="editable-model-row" key={`${item.model}-${index}`}><input type="checkbox" checked={selected.has(index)} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(index)) next.delete(index); else next.add(index); return next })} aria-label={`选择模型 ${item.model || index + 1}`} /><input value={item.model} onChange={(event) => update(index, { model: event.target.value })} placeholder="对外模型名" aria-label={`第 ${index + 1} 个对外模型`} /><span aria-hidden="true">→</span><input value={item.redirect_model || ''} onChange={(event) => update(index, { redirect_model: event.target.value })} placeholder="映射到上游模型（可选）" aria-label={`第 ${index + 1} 个上游映射`} /><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除模型 ${item.model || index + 1}`} title="删除模型"><Trash2 size={15} /></button></div>)}</div> : <span className="selection-empty">填写 URL 和 API Key 后点击“获取模型”，也可以直接添加模型。</span>}</section>
+  const add = () => { setQuery(''); onChange([...models, { model: '', redirect_model: '' }]) }
+  const allVisibleSelected = visibleIndexes.length > 0 && visibleIndexes.every((index) => selected.has(index))
+  const toggleVisible = () => setSelected((current) => {
+    const next = new Set(current)
+    if (allVisibleSelected) visibleIndexes.forEach((index) => next.delete(index))
+    else visibleIndexes.forEach((index) => next.add(index))
+    return next
+  })
+  return <section className="selection-panel discovered-model-panel">
+    <header><div><strong>渠道模型</strong><span>{models.length ? `${models.length} 个模型，可删减或配置映射${selected.size ? `，累计已选 ${selected.size} 个` : ''}` : '尚未配置模型'}</span></div><div className="model-list-actions"><button className="text-button" type="button" onClick={toggleVisible} disabled={!visibleIndexes.length}>{allVisibleSelected ? '取消当前结果' : '全选搜索结果'}</button>{selected.size > 0 && <button className="text-button" type="button" onClick={() => setSelected(new Set())}>清空选择</button>}{selected.size > 0 && <button className="text-button danger-text-button" type="button" onClick={removeSelected}><Trash2 size={14} />删除所选 ({selected.size})</button>}<button className="text-button" type="button" onClick={add}><Plus size={14} />添加模型</button></div></header>
+    {models.length ? <><div className="model-selection-toolbar"><label className="search-field selection-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索模型或映射名称" aria-label="搜索渠道模型" /><span>{visibleIndexes.length}/{models.length}</span></label>{selected.size > 0 && <small>已跨搜索保留 {selected.size} 个选择</small>}</div>{visibleIndexes.length ? <div className="editable-model-list">{visibleIndexes.map((index) => { const item = models[index]; return <div className="editable-model-row" key={`${item.model}-${index}`}><input type="checkbox" checked={selected.has(index)} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(index)) next.delete(index); else next.add(index); return next })} aria-label={`选择模型 ${item.model || index + 1}`} /><input value={item.model} onChange={(event) => update(index, { model: event.target.value })} placeholder="对外模型名" aria-label={`第 ${index + 1} 个对外模型`} /><span aria-hidden="true">→</span><input value={item.redirect_model || ''} onChange={(event) => update(index, { redirect_model: event.target.value })} placeholder="映射到上游模型（可选）" aria-label={`第 ${index + 1} 个上游映射`} /><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除模型 ${item.model || index + 1}`} title="删除模型"><Trash2 size={15} /></button></div> })}</div> : <span className="selection-empty">没有匹配“{query.trim()}”的模型，已勾选的其他模型仍会保留。</span>}</> : <span className="selection-empty">填写 URL 和 API Key 后点击“获取模型”，也可以直接添加模型。</span>}
+  </section>
 }
 
 function mergeDiscoveredModels(existing: ChannelModel[], discovered: ChannelModel[]): ChannelModel[] {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Copy, ExternalLink, Globe2, Network, Pencil, Plus, Power, Radar, RefreshCw, Search, Trash2, UserPlus } from 'lucide-react'
-import { createSite, deleteSite, getSiteInventory, probeSite, updateSite } from '../api'
+import { createSite, deleteSite, getSiteInventory, peekSiteInventory, probeSite, updateSite } from '../api'
 import type { Site, SiteAccount } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, Pagination } from './shared'
 import { Modal, StatusBadge, siteErrorMessage } from './siteShared'
@@ -24,17 +24,18 @@ const PLATFORM_OPTIONS = [
 ] as const
 
 export default function SitesPage() {
+  const initialInventory = peekSiteInventory()
   const location = useLocation()
   const query = useMemo(() => new URLSearchParams(location.search), [location.search])
   const querySearch = query.get('search') || ''
   const focusSiteId = Number(query.get('focus_site_id') || 0)
-  const [sites, setSites] = useState<Site[]>([])
-  const [accounts, setAccounts] = useState<SiteAccount[]>([])
+  const [sites, setSites] = useState<Site[]>(() => initialInventory?.sites || [])
+  const [accounts, setAccounts] = useState<SiteAccount[]>(() => initialInventory?.accounts || [])
   const [search, setSearch] = useState(querySearch)
   const [sort, setSort] = useState('newest')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!initialInventory)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busyId, setBusyId] = useState<number | null>(null)
@@ -45,11 +46,11 @@ export default function SitesPage() {
   const [saving, setSaving] = useState(false)
   const rowRefs = useRef(new Map<number, HTMLElement>())
 
-  const load = useCallback(async (signal?: AbortSignal, options: { silent?: boolean } = {}) => {
-    if (!options.silent) setLoading(true)
+  const load = useCallback(async (signal?: AbortSignal, options: { silent?: boolean; force?: boolean } = {}) => {
+    if (!options.silent && !peekSiteInventory()) setLoading(true)
     setError('')
     try {
-      const data = await getSiteInventory(signal)
+      const data = await getSiteInventory(signal, { force: options.force })
       setSites(data.sites)
       setAccounts(data.accounts)
       setSelected((current) => new Set([...current].filter((id) => data.sites.some((site) => site.id === id))))
@@ -134,7 +135,7 @@ export default function SitesPage() {
 			} } : {}),
 		})
       }
-		setEditing(undefined); setNotice(editing ? '站点已更新' : form.addAccount ? '站点和主账号已添加' : '站点已添加'); await load()
+		setEditing(undefined); setNotice(editing ? '站点已更新' : form.addAccount ? '站点和主账号已添加' : '站点已添加'); await load(undefined, { silent: true, force: true })
     } catch (reason) {
       setError(siteErrorMessage(reason))
     }
@@ -148,7 +149,7 @@ export default function SitesPage() {
       if (action === 'probe') { const result = await probeSite(site.id); setNotice(result.matched ? '站点探测成功' : '未识别到受支持的平台') }
       if (action === 'toggle') { await updateSite(site.id, { enabled: !site.enabled }); setNotice(site.enabled ? '站点已停用' : '站点已启用') }
       if (action === 'delete') { await deleteSite(site.id); setNotice('站点已删除') }
-      await load(undefined, { silent: action === 'probe' || action === 'toggle' })
+      await load(undefined, { silent: true, force: true })
     } catch (reason) { setError(siteErrorMessage(reason)) }
     finally { setBusyId(null) }
   }
@@ -180,7 +181,7 @@ export default function SitesPage() {
     })
     setNotice(failed ? `批量操作完成，${targets.length - failed} 个成功，${failed} 个失败` : `已处理 ${targets.length} 个站点`)
     if (action === 'delete') setSelected(new Set())
-    await load(undefined, { silent: true })
+    await load(undefined, { silent: true, force: true })
     setBatchBusy(false)
   }
 
@@ -192,7 +193,7 @@ export default function SitesPage() {
   return <div className="workspace-page">
     <header className="page-header">
 	  <h1>站点管理</h1>
-      <div className="header-controls"><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新站点"><RefreshCw size={17} /></button></div>
+      <div className="header-controls"><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" onClick={() => void load(undefined, { silent: true, force: true })} aria-label="刷新站点"><RefreshCw size={17} /></button></div>
     </header>
     <section className="compact-summary"><span><strong>{sites.length}</strong>站点总数</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>已启用</span><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{healthy}</strong>健康账号</span></section>
     <div className="filter-bar"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部站点" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索站点、地址或平台" aria-label="搜索站点" /></label><select value={sort} onChange={(event) => { setSort(event.target.value); setPage(1) }} aria-label="站点排序"><option value="newest">新建优先</option><option value="name">名称 A-Z</option><option value="enabled">启用优先</option><option value="health">健康账号数</option></select><span className="filter-count"><Globe2 size={14} />{visible.length} 个站点</span></div>

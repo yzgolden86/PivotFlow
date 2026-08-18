@@ -654,6 +654,8 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_CustomToolNameArr
 				completed = data
 			case "response.function_call_arguments.delta", "response.function_call_arguments.done":
 				t.Fatalf("unexpected function call event %q: %s", event, chunk)
+			case "response.output_text.delta", "response.output_text.done":
+				t.Fatalf("custom tool call leaked into output text event %q: %s", event, chunk)
 			}
 		}
 	}
@@ -894,13 +896,13 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_RestoresAdditiona
 			"type":"additional_tools",
 			"tools":[{
 				"type":"namespace",
-				"name":"terminal",
+				"name":"functions",
 				"tools":[{"type":"custom","name":"exec"}]
 			}]
 		}]
 	}`)
 	chunks := []string{
-		`data: {"id":"chatcmpl_additional_namespace_custom_stream","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_exec","type":"function","function":{"name":"terminal__exec","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_additional_namespace_custom_stream","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_exec","type":"function","function":{"name":"functions__exec","arguments":""}}]},"finish_reason":null}]}`,
 		`data: {"id":"chatcmpl_additional_namespace_custom_stream","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"input\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}`,
 		`data: [DONE]`,
 	}
@@ -924,6 +926,8 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_RestoresAdditiona
 				completed = data
 			case "response.function_call_arguments.delta", "response.function_call_arguments.done":
 				t.Fatalf("unexpected function call event %q: %s", event, chunk)
+			case "response.output_text.delta", "response.output_text.done":
+				t.Fatalf("namespace custom tool call leaked into output text event %q: %s", event, chunk)
 			}
 		}
 	}
@@ -943,8 +947,11 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_RestoresAdditiona
 		if got := tc.got.Get(tc.path + ".type").String(); got != "custom_tool_call" {
 			t.Fatalf("%s type = %q, want custom_tool_call", tc.label, got)
 		}
-		if got := tc.got.Get(tc.path + ".name").String(); got != "terminal__exec" {
-			t.Fatalf("%s name = %q, want terminal__exec", tc.label, got)
+		if got := tc.got.Get(tc.path + ".name").String(); got != "exec" {
+			t.Fatalf("%s name = %q, want exec", tc.label, got)
+		}
+		if got := tc.got.Get(tc.path + ".namespace").String(); got != "functions" {
+			t.Fatalf("%s namespace = %q, want functions", tc.label, got)
 		}
 	}
 	if got := inputDone.Get("input").String(); got != "pwd" {
@@ -965,22 +972,28 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_Restores
 			"type":"additional_tools",
 			"tools":[{
 				"type":"namespace",
-				"name":"terminal",
+				"name":"functions",
 				"tools":[{"type":"custom","name":"exec"}]
 			}]
 		}]
 	}`)
-	raw := []byte(`{"id":"chatcmpl_additional_namespace_custom_nonstream","object":"chat.completion","created":1773896263,"model":"model","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_exec","type":"function","function":{"name":"terminal__exec","arguments":"{\"input\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}`)
+	raw := []byte(`{"id":"chatcmpl_additional_namespace_custom_nonstream","object":"chat.completion","created":1773896263,"model":"model","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_exec","type":"function","function":{"name":"functions__exec","arguments":"{\"input\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}`)
 
 	resp := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "model", originalRequest, nil, raw, nil)
 	data := gjson.ParseBytes(resp)
 	if got := data.Get("output.0.type").String(); got != "custom_tool_call" {
 		t.Fatalf("output type = %q, want custom_tool_call; response=%s", got, resp)
 	}
-	if got := data.Get("output.0.name").String(); got != "terminal__exec" {
-		t.Fatalf("output name = %q, want terminal__exec; response=%s", got, resp)
+	if got := data.Get("output.0.name").String(); got != "exec" {
+		t.Fatalf("output name = %q, want exec; response=%s", got, resp)
+	}
+	if got := data.Get("output.0.namespace").String(); got != "functions" {
+		t.Fatalf("output namespace = %q, want functions; response=%s", got, resp)
 	}
 	if got := data.Get("output.0.input").String(); got != "pwd" {
 		t.Fatalf("output input = %q, want pwd; response=%s", got, resp)
+	}
+	if got := data.Get("output.#").Int(); got != 1 {
+		t.Fatalf("output count = %d, want only the custom tool call; response=%s", got, resp)
 	}
 }
