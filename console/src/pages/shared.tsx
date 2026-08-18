@@ -73,7 +73,7 @@ export function formatNumber(value: number | undefined, digits = 0): string {
 
 export function formatMoney(value: number | undefined): string {
   return new Intl.NumberFormat('zh-CN', {
-    style: 'currency', currency: 'USD', maximumFractionDigits: (value || 0) >= 1 ? 2 : 4,
+    style: 'currency', currency: 'USD', currencyDisplay: 'narrowSymbol', maximumFractionDigits: (value || 0) >= 1 ? 2 : 4,
   }).format(value || 0)
 }
 
