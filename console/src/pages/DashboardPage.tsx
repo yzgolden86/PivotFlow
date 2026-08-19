@@ -323,16 +323,20 @@ function DistributionPanel({ items, emptyLabel }: { items: DashboardUsage[]; emp
   const colors = ['var(--green)', 'var(--blue)', 'var(--amber)', 'var(--coral)', '#6f7d77', '#9aa59f', '#c2cbc6']
   let offset = 0
   const segments = items.map((item, index) => {
+    const share = Math.max(0, Math.min(1, item.share || 0))
     const start = offset
-    offset += Math.max(0, item.share * 100)
-    return `${colors[index]} ${start}% ${offset}%`
+    offset += share * 100
+    return { item, color: colors[index] || 'var(--graphite)', start, share: share * 100 }
   })
-  if (offset < 100) segments.push(`var(--surface-strong) ${offset}% 100%`)
   return <div className="distribution-layout">
-    <div className="donut-chart" role="img" aria-label="模型消耗占比" style={{ background: `conic-gradient(${segments.join(', ')})` }}>
+    <div className="donut-chart" role="img" aria-label="模型消耗占比">
+      <svg className="donut-chart-svg" viewBox="0 0 100 100" aria-hidden="true">
+        <circle className="donut-chart-track" cx="50" cy="50" r="38" pathLength="100" />
+        {segments.map(({ item, color, start, share }) => <circle className="donut-chart-segment" cx="50" cy="50" r="38" pathLength="100" stroke={color} strokeDasharray={`${share} ${100 - share}`} strokeDashoffset={-start} key={item.key}><title>{`${item.label} · ${formatPercent(item.share)} · ${formatMoney(item.effective_cost)}`}</title></circle>)}
+      </svg>
       <div><strong>{formatMoney(items.reduce((sum, item) => sum + item.effective_cost, 0))}</strong><span>模型消耗</span></div>
     </div>
-    <div className="distribution-legend">{items.slice(0, 5).map((item, index) => <div key={item.key}><i style={{ background: colors[index] }} /><strong title={item.label}>{item.label}</strong><span>{formatPercent(item.share)}</span></div>)}</div>
+    <div className="distribution-legend">{items.slice(0, 5).map((item, index) => <div key={item.key} title={`${item.label} · ${formatPercent(item.share)}`}><i style={{ background: colors[index] }} /><strong>{item.label}</strong><span>{formatPercent(item.share)}</span></div>)}</div>
   </div>
 }
 
@@ -368,7 +372,7 @@ function TrendBars({ points }: { points: MetricPoint[] }) {
               className={point.error > point.success && total > 0 ? 'trend-bar trend-bar--warning' : 'trend-bar'}
               key={`${point.ts}-${index}`}
               style={{ height: `${height}%` }}
-              title={`${formatPointTime(point.ts)} · ${hasCost ? formatMoney(value) : `${formatCompact(value)} 请求`}`}
+              title={`${formatPointTime(point.ts)} · ${hasCost ? `费用 ${formatMoney(value)}` : `请求量 ${formatNumber(value)} 次`}`}
             />
           )
         })}
@@ -468,11 +472,9 @@ function formatNumber(value: number, digits = 0): string {
 }
 
 function formatMoney(value: number): string {
-  return new Intl.NumberFormat('zh-CN', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: value >= 100 ? 0 : value >= 1 ? 2 : 4,
-  }).format(value || 0)
+  const amount = value || 0
+  const digits = amount >= 100 ? 0 : amount >= 1 ? 2 : 4
+  return `$${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(amount)}`
 }
 
 function formatPercent(value: number): string {
@@ -503,7 +505,7 @@ function formatPointTime(value?: string): string {
 }
 
 function currencySymbol(currency: string): string {
-  if (currency === 'CNY' || currency === 'RMB') return '¥'
+  if (currency === 'CNY' || currency === 'RMB') return '￥'
   if (currency === 'EUR') return '€'
   if (currency === 'GBP') return '£'
   if (currency === 'JPY') return '¥'

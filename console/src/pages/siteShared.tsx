@@ -45,15 +45,9 @@ export function statusLabel(status?: string): string {
 
 export function formatAccountBalance(account: SiteAccount): string {
   if (account.balance == null) return '—'
-  try {
-    return new Intl.NumberFormat('zh-CN', {
-      style: 'currency',
-      currency: account.balance_currency || 'USD',
-      currencyDisplay: 'narrowSymbol',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(account.balance)
-  } catch { return `$${account.balance.toFixed(2)}` }
+  const currency = (account.balance_currency || 'USD').toUpperCase()
+  const symbol = currency === 'CNY' || currency === 'RMB' ? '￥' : currency === 'EUR' ? '€' : currency === 'GBP' ? '£' : currency === 'JPY' ? '¥' : currency === 'USD' || currency === 'USDT' ? '$' : `${currency} `
+  return `${symbol}${new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(account.balance)}`
 }
 
 export function siteErrorMessage(reason: unknown): string {
