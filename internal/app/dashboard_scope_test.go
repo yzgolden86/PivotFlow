@@ -20,6 +20,29 @@ type tokenLogMetadataErrorStore struct {
 	err error
 }
 
+func TestLogCostStatus(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		entry *model.LogEntry
+		want  string
+	}{
+		{name: "estimated", entry: &model.LogEntry{StatusCode: http.StatusOK, Cost: 0.25, CostMultiplier: 1}, want: "estimated"},
+		{name: "usage missing", entry: &model.LogEntry{StatusCode: http.StatusOK, CostMultiplier: 1}, want: "usage_missing"},
+		{name: "unpriced model", entry: &model.LogEntry{StatusCode: http.StatusOK, Model: "unknown-model-for-status", InputTokens: 10, CostMultiplier: 1}, want: "unpriced_model"},
+		{name: "free model", entry: &model.LogEntry{StatusCode: http.StatusOK, Model: "qwen3.6-plus:free", InputTokens: 10, CostMultiplier: 1}, want: "free_model"},
+		{name: "local free", entry: &model.LogEntry{StatusCode: http.StatusOK, CostMultiplier: 0}, want: "local_free"},
+		{name: "failed request", entry: &model.LogEntry{StatusCode: http.StatusBadGateway, Cost: 0.25, CostMultiplier: 1}, want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := logCostStatus(tc.entry); got != tc.want {
+				t.Fatalf("logCostStatus()=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func (s tokenLogMetadataErrorStore) GetAllAPIKeys(context.Context) (map[int64][]*model.APIKey, error) {
 	return nil, s.err
 }

@@ -152,6 +152,53 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 	}
 }
 
+func TestEnsureOpenAIStreamUsage(t *testing.T) {
+	t.Parallel()
+
+	t.Run("adds terminal usage request to OpenAI chat streams", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+		got := ensureOpenAIStreamUsage(protocol.OpenAI, "/v1/chat/completions", body)
+		if !gjson.GetBytes(got, "stream_options.include_usage").Bool() {
+			t.Fatalf("include_usage missing from %s", got)
+		}
+	})
+
+	t.Run("preserves caller preference", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false}}`)
+		got := ensureOpenAIStreamUsage(protocol.OpenAI, "/v1/chat/completions", body)
+		if gjson.GetBytes(got, "stream_options.include_usage").Bool() {
+			t.Fatalf("caller preference was overwritten: %s", got)
+		}
+	})
+
+	t.Run("preserves malformed caller stream options", func(t *testing.T) {
+		body := []byte("{\"model\":\"gpt-4o\",\"stream\":true,\"stream_options\":\"invalid\"}")
+		got := ensureOpenAIStreamUsage(protocol.OpenAI, "/v1/chat/completions", body)
+		if string(got) != string(body) || shouldAutoRequestOpenAIStreamUsage(protocol.OpenAI, "/v1/chat/completions", body) {
+			t.Fatalf("malformed caller value was treated as an injected option: %s", got)
+		}
+	})
+
+	t.Run("does not change other OpenAI surfaces", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","stream":true,"input":"hi"}`)
+		got := ensureOpenAIStreamUsage(protocol.OpenAI, "/v1/responses", body)
+		if string(got) != string(body) {
+			t.Fatalf("responses request was modified: %s", got)
+		}
+	})
+
+	t.Run("removes only the injected field", func(t *testing.T) {
+		body := []byte(`{"stream":true,"stream_options":{"include_usage":true,"include_obfuscation":true}}`)
+		got := removeAutoRequestedOpenAIStreamUsage(body)
+		if gjson.GetBytes(got, "stream_options.include_usage").Exists() {
+			t.Fatalf("include_usage still exists: %s", got)
+		}
+		if !gjson.GetBytes(got, "stream_options.include_obfuscation").Bool() {
+			t.Fatalf("sibling stream option was lost: %s", got)
+		}
+	})
+}
+
 func TestCodexOAuthNonStreamReassemblesTerminalResponse(t *testing.T) {
 	body := "event: response.output_item.done\n" +
 		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg-1","content":[{"type":"output_text","text":"ok"}]}}` + "\n\n" +

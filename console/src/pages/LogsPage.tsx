@@ -118,7 +118,7 @@ function ActiveRequestsView() {
 function LogRow({ entry }: { entry: LogEntry }) {
   const success = entry.status_code >= 200 && entry.status_code < 300
   const statusText = `${entry.status_code || 'ERR'} · ${success ? '成功' : '错误'}`
-  const effectiveCost = entry.cost * (entry.cost_multiplier > 0 ? entry.cost_multiplier : 1)
+  const effectiveCost = entry.cost * (entry.cost_multiplier >= 0 ? entry.cost_multiplier : 1)
   return (
     <article className="record-row log-grid">
       <div><strong>{formatTime(entry.time)}</strong><span>{sourceLabel(entry.log_source)}</span></div>
@@ -127,9 +127,17 @@ function LogRow({ entry }: { entry: LogEntry }) {
       <div className="log-status"><span className={`status-badge status-badge--${success ? 'success' : 'danger'}`}>{statusText}</span>{entry.message && <span className="record-message" title={entry.message}>{entry.message}</span>}</div>
       <div><strong>{entry.duration ? `${entry.duration.toFixed(2)}s` : '—'}</strong><span>首字 {entry.first_byte_time ? `${entry.first_byte_time.toFixed(2)}s` : '—'}</span></div>
       <div><strong>{formatNumber(entry.input_tokens)} / {formatNumber(entry.output_tokens)}</strong><span>输入 / 输出</span></div>
-      <div><strong>{formatMoney(effectiveCost)}</strong><span>{entry.is_streaming ? '流式' : '非流式'}</span></div>
+      <div><strong title={entry.cost_status ? costStatusLabel(entry.cost_status, entry.is_streaming) : undefined}>{formatMoney(effectiveCost)}</strong><span className={entry.cost_status ? `cost-status cost-status--${entry.cost_status}` : undefined}>{costStatusLabel(entry.cost_status, entry.is_streaming)}</span></div>
     </article>
   )
+}
+
+function costStatusLabel(status: LogEntry['cost_status'], isStreaming: boolean): string {
+  if (status === 'usage_missing') return '未获取上游用量'
+  if (status === 'unpriced_model') return '模型未识别定价'
+  if (status === 'free_model') return '免费模型'
+  if (status === 'local_free') return '本地免费渠道'
+  return isStreaming ? '本地估算 · 流式' : '本地估算 · 非流式'
 }
 
 function sourceLabel(source?: string): string {

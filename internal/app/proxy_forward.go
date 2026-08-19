@@ -203,6 +203,79 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	return body, nil
 }
 
+// ensureOpenAIStreamUsage asks OpenAI-compatible chat upstreams to include the
+// terminal usage frame. Most New API family gateways only emit usage in a
+// streaming response when this option is enabled. It is deliberately limited to
+// the Chat Completions surface so Responses, Codex and non-OpenAI protocols keep
+// their native wire contract.
+func ensureOpenAIStreamUsage(upstreamProtocol protocol.Protocol, requestPath string, body []byte) []byte {
+	if !shouldAutoRequestOpenAIStreamUsage(upstreamProtocol, requestPath, body) {
+		return body
+	}
+
+	streamOptions := gjson.GetBytes(body, "stream_options")
+	if streamOptions.Exists() && !streamOptions.IsObject() {
+		// Preserve a malformed/non-object caller value. Replacing it would change
+		// the request semantics and can hide a client-side integration error.
+		return body
+	}
+	if gjson.GetBytes(body, "stream_options.include_usage").Exists() {
+		return body
+	}
+
+	updated, err := sjson.SetBytes(body, "stream_options.include_usage", true)
+	if err != nil {
+		return body
+	}
+	return updated
+}
+
+func shouldAutoRequestOpenAIStreamUsage(upstreamProtocol protocol.Protocol, requestPath string, body []byte) bool {
+	if upstreamProtocol != protocol.OpenAI ||
+		protocol.DetectRequestFamily(requestPath) != protocol.RequestFamilyChatCompletions ||
+		!gjson.ValidBytes(body) ||
+		!gjson.GetBytes(body, "stream").Bool() ||
+		gjson.GetBytes(body, "stream_options.include_usage").Exists() {
+		return false
+	}
+	streamOptions := gjson.GetBytes(body, "stream_options")
+	return !streamOptions.Exists() || streamOptions.IsObject()
+}
+
+func removeAutoRequestedOpenAIStreamUsage(body []byte) []byte {
+	updated, err := sjson.DeleteBytes(body, "stream_options.include_usage")
+	if err != nil {
+		return body
+	}
+	if options := gjson.GetBytes(updated, "stream_options"); options.Exists() && options.IsObject() && len(options.Map()) == 0 {
+		withoutOptions, deleteErr := sjson.DeleteBytes(updated, "stream_options")
+		if deleteErr == nil {
+			return withoutOptions
+		}
+	}
+	return updated
+}
+
+func openAIStreamUsageOptionRejected(resp *http.Response) bool {
+	if resp == nil || resp.Body == nil || (resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusUnprocessableEntity) {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(config.DefaultMaxBodyBytes)))
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+
+	message := strings.ToLower(string(body))
+	mentionsUsageOption := strings.Contains(message, "include_usage") || strings.Contains(message, "stream_options")
+	mentionsUnsupportedField := strings.Contains(message, "unknown parameter") ||
+		strings.Contains(message, "unsupported") ||
+		strings.Contains(message, "invalid parameter") ||
+		strings.Contains(message, "unrecognized")
+	return mentionsUsageOption && mentionsUnsupportedField
+}
+
 func ensureCodexSessionHeader(headers http.Header, sessionID string) {
 	if headers == nil || sessionID == "" || headers.Get("Session_id") != "" || headers.Get("Session-Id") != "" {
 		return
@@ -1587,6 +1660,15 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		reqCtx.transformPlan = plan
 		reqCtx.translatedBody = translatedBody
 	}
+	// New API family upstreams often omit SSE usage unless include_usage is
+	// explicitly requested. Apply this after protocol translation so only the
+	// final OpenAI Chat Completions wire request is affected.
+	autoStreamUsage := shouldAutoRequestOpenAIStreamUsage(plan.UpstreamProtocol, plan.UpstreamPath, plan.TranslatedBody)
+	if autoStreamUsage {
+		plan.TranslatedBody = ensureOpenAIStreamUsage(plan.UpstreamProtocol, plan.UpstreamPath, plan.TranslatedBody)
+		reqCtx.transformPlan = plan
+		reqCtx.translatedBody = plan.TranslatedBody
+	}
 	reqCtx.codexOAuthNonStream = !plan.Streaming &&
 		isCodexOAuthResponsesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath)
 
@@ -1648,6 +1730,18 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
 		req = cloneRequestWithBody(req, sentBody)
 		resp, err = s.doUpstreamRequest(cfg, req)
+	}
+	if autoStreamUsage && native == nil && err == nil && openAIStreamUsageOptionRejected(resp) {
+		// Some legacy OpenAI-compatible endpoints reject stream_options outright.
+		// The response has not been exposed to the client yet, so retrying the same
+		// request once without the observability option is safe.
+		_ = resp.Body.Close()
+		sentBody = removeAutoRequestedOpenAIStreamUsage(sentBody)
+		req = cloneRequestWithBody(req.WithContext(reqCtx.ctx), sentBody)
+		resp, err = s.doUpstreamRequest(cfg, req)
+		if err == nil {
+			log.Printf("[INFO] 渠道 %d 不支持 OpenAI stream_options.include_usage，已回退为原始流式请求", cfg.ID)
+		}
 	}
 	if observer != nil && observer.OnUpstreamWebsocket != nil {
 		observer.OnUpstreamWebsocket(usedNativeWebsocket)
