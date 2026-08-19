@@ -88,7 +88,7 @@ export default function AccountsPage() {
   const [sort, setSort] = useState<AccountSort>('newest')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(20)
+  const [pageSize, setPageSize] = useState(50)
   const [loading, setLoading] = useState(!initialInventory)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -448,7 +448,7 @@ export default function AccountsPage() {
     {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
     {error && accounts.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
     {loading ? <LoadingState label="正在加载账号" /> : error && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? accounts.length ? <EmptyState label="没有匹配的账号" /> : <div className="content-state content-state--empty"><strong>还没有账号</strong><button className="secondary-button" type="button" onClick={() => void openCreate()} disabled={!sites.length}><Plus size={15} />添加账号</button></div> : <div className="account-records records-panel"><div className="record-head account-grid"><SortableHead label="账号 / 站点" sortKey="name" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="状态" sortKey="status" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="余额" sortKey="balance" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="最近签到" sortKey="checkin" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="自动任务" sortKey="automation" active={sort} direction={sortDirection} choose={toggleSort} /><span>操作</span></div>{pagedVisible.map((account) => <AccountRow key={account.id} account={account} site={siteMap.get(account.site_id)} latestCheckin={latestCheckins[account.id]} selected={selected.has(account.id)} busyKind={busy.get(account.id)} focused={account.id === focusAccountId} rowRef={(node) => { if (node) rowRefs.current.set(account.id, node); else rowRefs.current.delete(account.id) }} select={() => toggleSelected(account.id)} task={(kind) => void task(account, kind)} copy={() => void copyAccount(account)} edit={() => openMetadata(account)} credential={() => openCredential(account)} remove={() => void remove(account)} />)}</div>}
-    <Pagination page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[20, 50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
+    <Pagination page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
 
     {creating && <Modal title="添加账号" close={() => setCreating(false)}>{error && <div className="inline-error modal-error">{error}</div>}<CreateAccountFormView form={createForm} setForm={setCreateForm} sites={sites} saving={openingCreate} submit={saveCreate} /></Modal>}
     {editing && metadata && <Modal title="编辑账号" close={() => { setEditing(null); setMetadata(null) }}>{error && <div className="inline-error modal-error">{error}</div>}<MetadataFormView account={editing} site={siteMap.get(editing.site_id)} form={metadata} setForm={setMetadata} saving={savingMetadata} submit={saveMetadata} /></Modal>}

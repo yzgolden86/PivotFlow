@@ -99,9 +99,66 @@
   --amber-soft: #362a18;
 }
 
+:root[data-theme-preset="anthropic"] {
+  --bg: #f3f0e9;
+  --surface: #fbf9f5;
+  --surface-muted: #f0ebe3;
+  --surface-strong: #e8e1d7;
+  --text: #2d2925;
+  --text-secondary: #625b53;
+  --text-muted: #857c71;
+  --border: #ddd4c7;
+  --border-strong: #cbbdac;
+  --sidebar: #f8f5ef;
+  --sidebar-border: #ddd4c7;
+  --sidebar-text: #2d2925;
+  --sidebar-muted: #796f65;
+  --green: #a84c32;
+  --green-soft: #f1ded4;
+  --blue: #657a80;
+  --blue-soft: #e1e8e8;
+  --amber: #a66c20;
+  --amber-soft: #f3e6cf;
+  --coral: #aa5145;
+  --coral-soft: #f2dfda;
+  --graphite: #615a53;
+  --shadow: 0 10px 30px rgba(70, 55, 42, .08);
+}
+
+:root[data-theme="dark"][data-theme-preset="anthropic"] {
+  --bg: #1d1b18;
+  --surface: #27231f;
+  --surface-muted: #2d2924;
+  --surface-strong: #37312b;
+  --text: #f2ede5;
+  --text-secondary: #c2b8aa;
+  --text-muted: #92877b;
+  --border: #403931;
+  --border-strong: #554a40;
+  --sidebar: #211e1a;
+  --sidebar-border: #403931;
+  --sidebar-text: #f2ede5;
+  --sidebar-muted: #9b9083;
+  --green: #e08a6a;
+  --green-soft: #472c23;
+  --blue: #91a9ae;
+  --blue-soft: #29383a;
+  --amber: #d4a057;
+  --amber-soft: #40321f;
+  --coral: #df8476;
+  --coral-soft: #442a26;
+  --graphite: #beb5aa;
+  --shadow: 0 12px 32px rgba(0, 0, 0, .22);
+}
+
+:root[data-theme-font="modern"] {
+  --font-ui: DengXian, "等线", Aptos, "Avenir Next", "HarmonyOS Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-display: DengXian, "等线", "Aptos Display", "Avenir Next", "HarmonyOS Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+}
+
 :root[data-theme-font="system"] {
-  --font-ui: "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
-  --font-display: "Segoe UI Semibold", "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-display: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
 }
 
 :root[data-theme-font="serif"] {
@@ -1426,8 +1483,9 @@ a:focus-visible {
 .pagination > div { display: flex; align-items: center; gap: 10px; }
 .pagination strong { min-width: 48px; color: var(--text-secondary); text-align: center; }
 .pagination-meta { gap: 14px !important; }
-.pagination-meta label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.pagination-meta select { min-height: 28px; padding: 3px 22px 3px 7px; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; font-size: 12px; }
+.pagination-meta label { display: inline-flex; min-height: 34px; align-items: center; gap: 5px; padding: 4px 8px 4px 10px; color: var(--text-muted); background: color-mix(in srgb, var(--surface-strong) 58%, var(--surface)); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 2px 8px rgba(25, 46, 38, .05); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pagination-meta select { min-height: 25px; padding: 2px 5px; color: var(--green); background: var(--surface); border: 1px solid color-mix(in srgb, var(--green) 35%, var(--border)); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; outline: 0; }
+.pagination-meta select:focus-visible { border-color: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 15%, transparent); }
 
 .channel-list {
   display: grid;
@@ -3108,7 +3166,8 @@ body { font-size: 14px; line-height: 1.5; }
 .appearance-segmented button { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 7px; padding: 7px 10px; color: var(--text-secondary); background: transparent; border: 0; border-radius: calc(var(--radius-control) - 2px); cursor: pointer; font-size: 13px; }
 .appearance-segmented button:hover { color: var(--text); }
 .appearance-segmented button.is-selected { color: var(--green); background: var(--surface); box-shadow: 0 2px 8px rgba(25, 46, 38, .08); font-weight: 650; }
-.appearance-option-list, .appearance-radius-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.appearance-option-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.appearance-radius-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
 .appearance-option-list button, .appearance-radius-list button { display: grid; min-height: 52px; grid-template-columns: auto minmax(0, 1fr) 18px; align-items: center; gap: 9px; padding: 9px 11px; color: var(--text-muted); background: var(--surface-muted); border: 1px solid var(--border); border-radius: var(--radius-control); cursor: pointer; text-align: left; transition: border-color 140ms ease, background 140ms ease, transform 140ms ease; }
 .appearance-option-list button:hover, .appearance-radius-list button:hover, .appearance-font-list button:hover { background: var(--surface-strong); border-color: var(--border-strong); transform: translateY(-1px); }
 .appearance-option-list button.is-selected, .appearance-radius-list button.is-selected, .appearance-font-list button.is-selected { color: var(--green); background: color-mix(in srgb, var(--green-soft) 72%, var(--surface)); border-color: color-mix(in srgb, var(--green) 42%, var(--border)); }
@@ -3122,8 +3181,8 @@ body { font-size: 14px; line-height: 1.5; }
 .appearance-font-list button > span { overflow: hidden; color: var(--text); font-size: 15px; line-height: 22px; text-overflow: ellipsis; white-space: nowrap; }
 .appearance-font-list button > strong { font-size: 12px; font-weight: 600; }
 .appearance-font-list button > svg { position: absolute; top: 12px; right: 11px; }
-.theme-font-sample--modern > span { font-family: "Segoe UI Variable Text", "Noto Sans SC", "Microsoft YaHei UI", sans-serif; }
-.theme-font-sample--system > span { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif; }
+.theme-font-sample--modern > span { font-family: DengXian, "等线", Aptos, "Avenir Next", "HarmonyOS Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif; font-weight: 600; }
+.theme-font-sample--system > span { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif; font-weight: 450; }
 .theme-font-sample--serif > span { font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif; }
 .radius-shape { display: block; width: 31px; height: 25px; background: var(--green-soft); border: 1px solid color-mix(in srgb, var(--green) 35%, var(--border)); }
 .radius-shape--compact { border-radius: 3px; }
@@ -3337,7 +3396,7 @@ body { font-size: 14px; line-height: 1.5; }
 
 @media (min-width: 641px) and (max-width: 760px) {
   .appearance-workbench { grid-template-columns: 1fr; }
-  .appearance-option-list, .appearance-font-list, .appearance-radius-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .appearance-option-list, .appearance-font-list, .appearance-radius-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .appearance-preview { position: static; width: min(100%, 420px); }
 }
 

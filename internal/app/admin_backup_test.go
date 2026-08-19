@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -156,6 +157,44 @@ func TestWebDAVBackupUsesBasicAuthAndMasksStoredPassword(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "password_configured") || !strings.Contains(recorder.Body.String(), "********") {
 		t.Fatalf("WebDAV response is missing masked password state: %s", recorder.Body.String())
+	}
+}
+
+func TestWebDAVHTTPErrorProvidesSafeActionableDetails(t *testing.T) {
+	tests := []struct {
+		status    int
+		operation string
+		contains  string
+	}{
+		{http.StatusUnauthorized, "upload", "认证失败"},
+		{http.StatusNotFound, "upload", "父目录不存在"},
+		{http.StatusNotFound, "download", "没有找到备份文件"},
+		{http.StatusMethodNotAllowed, "upload", "完整文件地址"},
+		{http.StatusInsufficientStorage, "upload", "存储空间不足"},
+	}
+	for _, test := range tests {
+		err := webDAVHTTPError(test.status, test.operation)
+		if !strings.Contains(err.Error(), fmt.Sprintf("webdav_http_%d", test.status)) || !strings.Contains(err.Error(), test.contains) {
+			t.Fatalf("status=%d operation=%s error=%q", test.status, test.operation, err)
+		}
+		if strings.Contains(err.Error(), "Authorization") || strings.Contains(err.Error(), "password") {
+			t.Fatalf("error contains sensitive implementation details: %q", err)
+		}
+	}
+}
+
+func TestWebDAVHTMLResponseOnlyMatchesWebPages(t *testing.T) {
+	for _, contentType := range []string{"text/html; charset=utf-8", "application/xhtml+xml"} {
+		response := &http.Response{Header: make(http.Header)}
+		response.Header.Set("Content-Type", contentType)
+		if !webDAVHTMLResponse(response) {
+			t.Fatalf("content type %q was not detected as HTML", contentType)
+		}
+	}
+	response := &http.Response{Header: make(http.Header)}
+	response.Header.Set("Content-Type", "application/json")
+	if webDAVHTMLResponse(response) {
+		t.Fatal("JSON response was detected as HTML")
 	}
 }
 

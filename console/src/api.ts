@@ -135,7 +135,22 @@ async function requestEnvelope<T>(path: string, init: RequestInit = {}): Promise
     throw new Error('登录状态已失效')
   }
 
-  const payload = (await response.json()) as APIResponse<T>
+  const responseText = await response.text()
+  let payload: APIResponse<T>
+  try {
+    payload = JSON.parse(responseText) as APIResponse<T>
+  } catch {
+    const contentType = (response.headers.get('content-type') || '').toLowerCase()
+    const looksLikeHTML = contentType.includes('text/html') || /^\s*(?:<!doctype\s+html|<html\b)/i.test(responseText)
+    const status = `HTTP ${response.status}`
+    if (looksLikeHTML) {
+      throw new Error(`服务返回了 HTML 页面（${status}，接口 ${path}），请检查反向代理路由以及当前运行的后端版本`)
+    }
+    throw new Error(`服务返回了无法识别的数据（${status}，接口 ${path}）`)
+  }
+  if (!payload || typeof payload !== 'object' || typeof payload.success !== 'boolean') {
+    throw new Error(`服务返回了不完整的数据（HTTP ${response.status}，接口 ${path}）`)
+  }
   if (!response.ok || !payload.success) {
 	const details = payload.data as unknown as { message?: string } | null
 	const code = payload.error || `请求失败 (${response.status})`
