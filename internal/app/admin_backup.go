@@ -726,6 +726,43 @@ func (s *Server) webDAVPassword(config *model.BackupConfig) (string, error) {
 	return secret.Value, nil
 }
 
+func webDAVHTTPError(statusCode int, operation string) error {
+	detail := "WebDAV 服务返回了非成功状态"
+	switch statusCode {
+	case http.StatusUnauthorized:
+		detail = "WebDAV 认证失败，请检查用户名、应用密码和完整文件地址"
+	case http.StatusForbidden:
+		detail = "WebDAV 拒绝访问，请检查账号是否有目标目录的读写权限"
+	case http.StatusNotFound:
+		if operation == "download" {
+			detail = "WebDAV 中没有找到备份文件，请先上传备份并检查完整文件地址"
+		} else {
+			detail = "WebDAV 文件地址或父目录不存在，请填写已创建目录下的完整文件地址"
+		}
+	case http.StatusMethodNotAllowed:
+		detail = "WebDAV 不允许当前文件操作，请确认地址是 WebDAV 的完整文件地址而不是网页登录地址"
+	case http.StatusConflict:
+		detail = "WebDAV 目标父目录不存在，请先在存储服务中创建目录"
+	case http.StatusLocked:
+		detail = "WebDAV 目标文件已被锁定"
+	case http.StatusInsufficientStorage:
+		detail = "WebDAV 存储空间不足"
+	default:
+		if statusCode >= 500 {
+			detail = "WebDAV 服务暂时不可用，请稍后重试"
+		}
+	}
+	return fmt.Errorf("webdav_http_%d: %s", statusCode, detail)
+}
+
+func webDAVHTMLResponse(response *http.Response) bool {
+	if response == nil {
+		return false
+	}
+	contentType := strings.ToLower(response.Header.Get("Content-Type"))
+	return strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml+xml")
+}
+
 func (s *Server) exportToWebDAV(ctx context.Context, requestedType string) (*model.BackupConfig, error) {
 	if !s.backupExportRunning.CompareAndSwap(false, true) {
 		return nil, errors.New("backup_in_progress")
@@ -771,10 +808,14 @@ func (s *Server) exportToWebDAV(ctx context.Context, requestedType string) (*mod
 		return config, errors.New("webdav_request_failed")
 	}
 	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return config, fmt.Errorf("webdav_http_%d", response.StatusCode)
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+		return config, webDAVHTTPError(response.StatusCode, "upload")
 	}
+	if webDAVHTMLResponse(response) {
+		return config, errors.New("webdav_html_response")
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 	config.LastSyncAt, config.LastError = time.Now().UnixMilli(), ""
 	_ = s.store.UpsertBackupConfig(context.Background(), config)
 	return config, nil
@@ -810,7 +851,11 @@ func (s *Server) importFromWebDAV(ctx context.Context) (backupImportResult, *mod
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return result, config, fmt.Errorf("webdav_http_%d", response.StatusCode)
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+		return result, config, webDAVHTTPError(response.StatusCode, "download")
+	}
+	if webDAVHTMLResponse(response) {
+		return result, config, errors.New("webdav_html_response")
 	}
 	if response.ContentLength > backupMaxImportBytes {
 		return result, config, errors.New("backup_too_large")

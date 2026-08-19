@@ -229,9 +229,10 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
     ['jade', '松石绿', ['#10865d', '#3271c8', '#bd7914']],
     ['ocean', '海湾蓝', ['#14758f', '#436fbd', '#c07a20']],
     ['coral', '珊瑚红', ['#b9533f', '#2d7b78', '#bc741b']],
+    ['anthropic', 'Anthropic', ['#a84c32', '#657a80', '#b0782c']],
   ]
   const fonts: Array<[ThemeFont, string, string]> = [
-    ['modern', '现代无衬线', '枢衡 PivotFlow 0123'],
+    ['modern', '几何无衬线', '枢衡 PivotFlow 0123'],
     ['system', '系统原生', '枢衡 PivotFlow 0123'],
     ['serif', '人文宋体', '枢衡 PivotFlow 0123'],
   ]

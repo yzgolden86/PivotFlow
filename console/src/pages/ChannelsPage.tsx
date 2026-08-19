@@ -9,11 +9,11 @@ import { Modal, siteErrorMessage, StatusBadge } from './siteShared'
 export default function ChannelsPage() {
   const location = useLocation()
   const querySearch = useMemo(() => new URLSearchParams(location.search).get('search') || '', [location.search])
-  const initialResult = peekChannels({ search: querySearch, status: 'all', sort: 'priority', limit: 20, offset: 0 })
+  const initialResult = peekChannels({ search: querySearch, status: 'all', sort: 'priority', limit: 50, offset: 0 })
   const [channels, setChannels] = useState<Channel[]>(() => initialResult?.data || [])
   const [total, setTotal] = useState(() => initialResult?.count || 0)
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(20)
+  const [pageSize, setPageSize] = useState(50)
   const [searchDraft, setSearchDraft] = useState(querySearch)
   const [search, setSearch] = useState(querySearch)
   const [status, setStatus] = useState('all')
@@ -172,7 +172,7 @@ export default function ChannelsPage() {
           {channels.map((channel) => <ChannelRow channel={channel} selected={selected.has(channel.id)} busy={busyId === channel.id || (batchBusy && selected.has(channel.id))} select={() => toggleSelected(channel.id)} toggle={() => void toggleChannel(channel)} copy={() => void copyChannel(channel)} edit={() => setEditing(channel.id)} remove={() => void removeChannel(channel)} key={channel.id} />)}
         </div>
       )}
-      <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} pageSizes={[20, 50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
+      <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} pageSizes={[50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
       {editing && <ChannelEditor channelId={editing === 'new' ? undefined : editing} close={() => setEditing(null)} saved={() => { setEditing(null); void load(undefined, { silent: true, force: true }) }} />}
       {syncOpen && <SiteChannelSyncModal close={() => setSyncOpen(false)} synced={() => void load(undefined, { silent: true, force: true })} />}
     </div>
