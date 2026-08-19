@@ -171,6 +171,8 @@ func TestWebDAVHTTPErrorProvidesSafeActionableDetails(t *testing.T) {
 		{http.StatusNotFound, "download", "没有找到备份文件"},
 		{http.StatusMethodNotAllowed, "upload", "完整文件地址"},
 		{http.StatusInsufficientStorage, "upload", "存储空间不足"},
+		{http.StatusBadGateway, "upload", "反向代理返回了 502"},
+		{http.StatusGatewayTimeout, "download", "网关响应超时"},
 	}
 	for _, test := range tests {
 		err := webDAVHTTPError(test.status, test.operation)

@@ -84,7 +84,7 @@ function TrendChart({ points, metric }: { points: MetricPoint[]; metric: TrendMe
       {values.map((value, index) => {
         const x = values.length <= 1 ? 40 : 40 + (index / (values.length - 1)) * 920
         const y = 245 - (value / max) * 205
-        return <circle cx={x} cy={y} r="3.5" className="trend-main-point" key={`${points[index].ts}-${index}`}><title>{`${formatPointTime(points[index].ts)} · ${formatMetric(value, metric)}`}</title></circle>
+        return <circle cx={x} cy={y} r="3.5" className="trend-main-point" key={`${points[index].ts}-${index}`}><title>{`${formatPointTime(points[index].ts)} · ${metricLabel(metric)} ${formatMetric(value, metric)}${metric === 'requests' ? ' 次' : ''}`}</title></circle>
       })}
     </svg>
     <div className="trend-axis"><span>{formatPointTime(points[0].ts)}</span><strong>峰值 {formatMetric(max, metric)}</strong><span>{formatPointTime(points[points.length - 1].ts)}</span></div>

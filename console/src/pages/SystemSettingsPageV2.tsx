@@ -281,11 +281,12 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
 }
 
 function UpdatePanel({ info, checking, check }: { info: { version: string; latest_version?: string; has_update?: boolean; release_url?: string; last_check?: string; message?: string; error?: string } | null; checking: boolean; check: () => void }) {
+  const officialReleaseURL = info?.latest_version ? `https://github.com/yzgolden86/PivotFlow/releases/tag/${encodeURIComponent(info.latest_version)}` : info?.release_url
   return <div className="upstream-update-panel">
     <div className="upstream-update-head"><div><strong>PivotFlow 上游版本</strong><p>仅检查官方发布信息，不会自动下载、替换或重启当前程序。</p></div><button className="secondary-button" type="button" onClick={check} disabled={checking}><RefreshCw className={checking ? 'spin' : ''} size={16} />{checking ? '检查中' : '立即检查'}</button></div>
     <div className="upstream-update-grid"><div><small>当前运行</small><strong>{info?.version || '当前构建'}</strong></div><div><small>最新已知</small><strong>{info?.latest_version || '尚未检查'}</strong></div><div><small>状态</small><strong className={info?.has_update ? 'has-update' : ''}>{info?.has_update ? '发现新版本' : info?.error ? '检查失败' : '已是最新或尚未检查'}</strong></div></div>
     {info?.error && <div className="upstream-update-error">{info.error}</div>}
-    <footer>{info?.last_check && <span>最近检查 {new Date(info.last_check).toLocaleString('zh-CN')}</span>}{info?.release_url && <a href={info.release_url} target="_blank" rel="noreferrer">查看发布说明<ExternalLink size={14} /></a>}</footer>
+    <footer>{info?.last_check && <span>最近检查 {new Date(info.last_check).toLocaleString('zh-CN')}</span>}{officialReleaseURL && <a href={officialReleaseURL} target="_blank" rel="noreferrer">查看发布说明<ExternalLink size={14} /></a>}</footer>
   </div>
 }
 

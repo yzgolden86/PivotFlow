@@ -747,6 +747,10 @@ func webDAVHTTPError(statusCode int, operation string) error {
 		detail = "WebDAV 目标文件已被锁定"
 	case http.StatusInsufficientStorage:
 		detail = "WebDAV 存储空间不足"
+	case http.StatusBadGateway:
+		detail = "WebDAV 或其反向代理返回了 502，请检查 WebDAV 服务端状态、路径和网关转发配置"
+	case http.StatusGatewayTimeout:
+		detail = "WebDAV 网关响应超时，请检查服务端状态和网络连通性"
 	default:
 		if statusCode >= 500 {
 			detail = "WebDAV 服务暂时不可用，请稍后重试"
@@ -896,7 +900,9 @@ func (s *Server) HandleBackupWebDAVExport(c *gin.Context) {
 	config, err := s.exportToWebDAV(c.Request.Context(), request.Type)
 	if err != nil {
 		s.recordBackupError(config, err)
-		RespondErrorMsg(c, http.StatusBadGateway, err.Error())
+		// Keep admin operation failures as JSON so reverse proxies cannot hide
+		// the actual WebDAV diagnosis behind an HTML error page.
+		RespondErrorMsg(c, http.StatusOK, err.Error())
 		return
 	}
 	RespondJSON(c, http.StatusOK, gin.H{"status": "success", "file_url": config.FileURL, "last_sync_at": config.LastSyncAt})
@@ -906,7 +912,9 @@ func (s *Server) HandleBackupWebDAVImport(c *gin.Context) {
 	result, config, err := s.importFromWebDAV(c.Request.Context())
 	if err != nil {
 		s.recordBackupError(config, err)
-		RespondErrorMsg(c, http.StatusBadGateway, err.Error())
+		// Keep admin operation failures as JSON so reverse proxies cannot hide
+		// the actual WebDAV diagnosis behind an HTML error page.
+		RespondErrorMsg(c, http.StatusOK, err.Error())
 		return
 	}
 	RespondJSON(c, http.StatusOK, result)
