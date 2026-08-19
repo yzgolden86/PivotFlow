@@ -72,9 +72,11 @@ export function formatNumber(value: number | undefined, digits = 0): string {
 }
 
 export function formatMoney(value: number | undefined): string {
+  const amount = value || 0
+  if (amount > 0 && amount < 0.0001) return '< $0.0001'
   return new Intl.NumberFormat('zh-CN', {
-    style: 'currency', currency: 'USD', currencyDisplay: 'narrowSymbol', maximumFractionDigits: (value || 0) >= 1 ? 2 : 4,
-  }).format(value || 0)
+    style: 'currency', currency: 'USD', currencyDisplay: 'narrowSymbol', maximumFractionDigits: amount >= 1 ? 2 : 4,
+  }).format(amount)
 }
 
 export function formatTime(timestamp: number): string {

@@ -47,6 +47,7 @@ type testChannel struct {
 	authType                string
 	oauthCredential         string
 	priority                int
+	costMultiplier          float64
 }
 
 // proxyTestEnv 集成测试环境
@@ -176,6 +177,7 @@ func setupProxyTestEnvWithSettings(
 			CooldownDetectionRules:  ch.cooldownDetectionRules,
 			RetryOtherKeysOnFailure: ch.retryOtherKeysOnFailure,
 			Priority:                priority,
+			CostMultiplier:          ch.costMultiplier,
 			Enabled:                 true,
 			ModelEntries:            modelEntries,
 		}
@@ -2358,6 +2360,100 @@ func TestProxy_Success_Streaming(t *testing.T) {
 	}
 	if !strings.Contains(body, "[DONE]") {
 		t.Fatalf("expected SSE to contain '[DONE]', body: %s", body)
+	}
+}
+
+func TestProxy_AutoRequestsOpenAIStreamUsage(t *testing.T) {
+	requestSeen := make(chan bool, 1)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+		}
+		includeUsage := gjson.GetBytes(body, "stream_options.include_usage").Bool()
+		requestSeen <- includeUsage
+		if !includeUsage {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, "{\"error\":{\"message\":\"stream_options.include_usage is required\"}}")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"+
+				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\n"+
+				"data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "new-api-usage", upstreamProtocol: "openai", models: "gpt-4o",
+		apiKey: "sk-new-api-usage", costMultiplier: 1,
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "gpt-4o", "stream": true,
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !<-requestSeen {
+		t.Fatal("proxy did not request terminal OpenAI stream usage")
+	}
+
+	entry := waitForProxyLog(t, env, "gpt-4o")
+	if entry.InputTokens != 100 || entry.OutputTokens != 20 {
+		t.Fatalf("usage=%d/%d, want 100/20", entry.InputTokens, entry.OutputTokens)
+	}
+	if entry.Cost <= 0 {
+		t.Fatalf("cost=%v, want a positive gpt-4o estimate", entry.Cost)
+	}
+}
+
+func TestProxy_FallsBackWhenOpenAIStreamUsageOptionIsUnsupported(t *testing.T) {
+	var calls atomic.Int64
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+		}
+		call := calls.Add(1)
+		includeUsage := gjson.GetBytes(body, "stream_options.include_usage").Bool()
+		if call == 1 {
+			if !includeUsage {
+				t.Errorf("first request did not include usage option: %s", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, "{\"error\":{\"message\":\"unknown parameter: stream_options.include_usage\"}}")
+			return
+		}
+		if includeUsage || gjson.GetBytes(body, "stream_options").Exists() {
+			t.Errorf("fallback request retained injected stream options: %s", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"fallback ok\"}}]}\n\n"+
+				"data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "legacy-openai-stream", upstreamProtocol: "openai", models: "gpt-4o",
+		apiKey: "sk-legacy-openai", costMultiplier: 1,
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "gpt-4o", "stream": true,
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "fallback ok") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream calls=%d, want one rejected request and one fallback", got)
 	}
 }
 

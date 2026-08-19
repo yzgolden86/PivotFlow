@@ -213,6 +213,7 @@ export interface LogEntry {
   cache_creation_input_tokens: number
   cost: number
   cost_multiplier: number
+  cost_status?: 'estimated' | 'usage_missing' | 'unpriced_model' | 'free_model' | 'local_free'
 }
 
 export interface LogFilters {

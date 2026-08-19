@@ -53,6 +53,31 @@ type tokenLogEntry struct {
 type dashboardLogEntry struct {
 	*model.LogEntry
 	CostBreakdown *util.StandardCostBreakdown `json:"cost_breakdown,omitempty"`
+	CostStatus    string                      `json:"cost_status,omitempty"`
+}
+
+// logCostStatus explains how the request-log cost should be interpreted. The
+// stored amount is always a local standard-price estimate, never the upstream
+// account's actual balance deduction.
+func logCostStatus(entry *model.LogEntry) string {
+	if entry == nil || entry.StatusCode < 200 || entry.StatusCode >= 300 {
+		return ""
+	}
+	if entry.CostMultiplier == 0 {
+		return "local_free"
+	}
+	if entry.Cost > 0 {
+		return "estimated"
+	}
+	if entry.InputTokens == 0 && entry.OutputTokens == 0 &&
+		entry.CacheReadInputTokens == 0 && entry.CacheCreationInputTokens == 0 &&
+		entry.Cache5mInputTokens == 0 && entry.Cache1hInputTokens == 0 {
+		return "usage_missing"
+	}
+	if !util.HasModelPricing(util.ResolveBillingModel(entry.ActualModel, entry.Model)) {
+		return "unpriced_model"
+	}
+	return "free_model"
 }
 
 func buildLogCostBreakdown(entry *model.LogEntry) *util.StandardCostBreakdown {
@@ -87,6 +112,7 @@ func projectDashboardLogs(logs []*model.LogEntry) []dashboardLogEntry {
 		projected = append(projected, dashboardLogEntry{
 			LogEntry:      entry,
 			CostBreakdown: buildLogCostBreakdown(entry),
+			CostStatus:    logCostStatus(entry),
 		})
 	}
 	return projected
