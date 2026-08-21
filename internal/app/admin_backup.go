@@ -22,6 +22,7 @@ const (
 	backupSchemaVersion       = "1.0"
 	backupMaxImportBytes      = 32 << 20
 	backupDefaultIntervalHour = 24
+	backupDefaultFileName     = "pivotflow-backup.json"
 )
 
 type backupSetting struct {
@@ -639,6 +640,27 @@ func validateWebDAVURL(value string) error {
 	return nil
 }
 
+// webDAVTargetURL accepts either a concrete JSON file URL or a WebDAV
+// collection URL. Most clients expose the latter (for example /dav or
+// /remote.php/dav/files/user), so appending the deterministic backup name is
+// compatible with providers that reject PUT to a collection itself.
+func webDAVTargetURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if strings.HasSuffix(strings.ToLower(parsed.Path), ".json") {
+		return raw
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + backupDefaultFileName
+	parsed.RawPath = ""
+	return parsed.String()
+}
+
 func (s *Server) HandleBackupWebDAV(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
 		config, err := s.loadBackupConfig(c.Request.Context())
@@ -730,17 +752,17 @@ func webDAVHTTPError(statusCode int, operation string) error {
 	detail := "WebDAV 服务返回了非成功状态"
 	switch statusCode {
 	case http.StatusUnauthorized:
-		detail = "WebDAV 认证失败，请检查用户名、应用密码和完整文件地址"
+		detail = "WebDAV 认证失败，请检查用户名、应用密码和 WebDAV 地址"
 	case http.StatusForbidden:
 		detail = "WebDAV 拒绝访问，请检查账号是否有目标目录的读写权限"
 	case http.StatusNotFound:
 		if operation == "download" {
-			detail = "WebDAV 中没有找到备份文件，请先上传备份并检查完整文件地址"
+			detail = "WebDAV 中没有找到备份文件，请先上传备份并检查目标目录"
 		} else {
-			detail = "WebDAV 文件地址或父目录不存在，请填写已创建目录下的完整文件地址"
+			detail = "WebDAV 目标目录不存在，请先在存储服务中创建该目录"
 		}
 	case http.StatusMethodNotAllowed:
-		detail = "WebDAV 不允许当前文件操作，请确认地址是 WebDAV 的完整文件地址而不是网页登录地址"
+		detail = "WebDAV 不允许当前文件操作，请确认填写的是 WebDAV 服务地址而不是网页登录地址"
 	case http.StatusConflict:
 		detail = "WebDAV 目标父目录不存在，请先在存储服务中创建目录"
 	case http.StatusLocked:
@@ -799,7 +821,8 @@ func (s *Server) exportToWebDAV(ctx context.Context, requestedType string) (*mod
 	if err != nil {
 		return config, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, config.FileURL, bytes.NewReader(body))
+	targetURL := webDAVTargetURL(config.FileURL)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return config, err
 	}
@@ -816,9 +839,10 @@ func (s *Server) exportToWebDAV(ctx context.Context, requestedType string) (*mod
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 		return config, webDAVHTTPError(response.StatusCode, "upload")
 	}
-	if webDAVHTMLResponse(response) {
-		return config, errors.New("webdav_html_response")
-	}
+	// A successful WebDAV PUT may legitimately return an HTML status page
+	// (some providers do this for 201/204 responses). The HTTP status is the
+	// authoritative upload result; only downloads need HTML detection because
+	// the response body must be parsed as JSON.
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 	config.LastSyncAt, config.LastError = time.Now().UnixMilli(), ""
 	_ = s.store.UpsertBackupConfig(context.Background(), config)
@@ -842,7 +866,8 @@ func (s *Server) importFromWebDAV(ctx context.Context) (backupImportResult, *mod
 	if err != nil {
 		return result, config, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, config.FileURL, nil)
+	targetURL := webDAVTargetURL(config.FileURL)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return result, config, err
 	}
@@ -905,7 +930,7 @@ func (s *Server) HandleBackupWebDAVExport(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusOK, err.Error())
 		return
 	}
-	RespondJSON(c, http.StatusOK, gin.H{"status": "success", "file_url": config.FileURL, "last_sync_at": config.LastSyncAt})
+	RespondJSON(c, http.StatusOK, gin.H{"status": "success", "file_url": webDAVTargetURL(config.FileURL), "last_sync_at": config.LastSyncAt})
 }
 
 func (s *Server) HandleBackupWebDAVImport(c *gin.Context) {

@@ -22,6 +22,36 @@ func findAdminSetting(t *testing.T, settings []map[string]any, key string) map[s
 	return nil
 }
 
+func TestRegisteredSystemSettingsHaveRuntimeConsumers(t *testing.T) {
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.configService = NewConfigService(server.store)
+	if err := server.configService.LoadDefaults(context.Background()); err != nil {
+		t.Fatalf("LoadDefaults failed: %v", err)
+	}
+	settings, err := server.configService.ListAllSettings(context.Background())
+	if err != nil {
+		t.Fatalf("ListAllSettings failed: %v", err)
+	}
+	for _, setting := range settings {
+		activation, ok := systemSettingActivationFor(setting.Key)
+		if !ok {
+			t.Errorf("setting %q has no activation contract", setting.Key)
+			continue
+		}
+		if activation.effect == "" {
+			t.Errorf("setting %q has no registered runtime consumer", setting.Key)
+		}
+		wantRestart := setting.Key != "auto_refresh_interval_seconds" && setting.Key != "log_channel_click_action"
+		if activation.requiresRestart != wantRestart {
+			t.Errorf("setting %q requiresRestart=%t, want %t", setting.Key, activation.requiresRestart, wantRestart)
+		}
+	}
+	if len(systemSettingRuntimeEffects) != len(settings) {
+		t.Errorf("activation registry has %d entries, database defaults have %d", len(systemSettingRuntimeEffects), len(settings))
+	}
+}
+
 func TestAdminContainerUpdateSettingsDisabled(t *testing.T) {
 	t.Setenv("PIVOTFLOW_CONTAINER", "1")
 
@@ -303,6 +333,26 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("AdminUpdateSetting_live_setting_does_not_restart", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/settings/log_channel_click_action", []byte(`{"value":"navigate"}`)))
+		c.Params = gin.Params{{Key: "key", Value: "log_channel_click_action"}}
+
+		server.AdminUpdateSetting(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+		if got := resp.Data["restart_required"]; got != false {
+			t.Fatalf("restart_required=%v, want false", got)
+		}
+		select {
+		case <-restartCh:
+			t.Fatal("live setting unexpectedly triggered restart")
+		case <-time.After(50 * time.Millisecond):
+		}
+	})
+
 	t.Run("AdminGetSetting_returns_latest_db_value_before_restart", func(t *testing.T) {
 		if err := store.UpdateSetting(context.Background(), "channel_check_interval_hours", "1"); err != nil {
 			t.Fatalf("failed to seed setting in db: %v", err)
@@ -453,6 +503,49 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		case <-restartCh:
 		case <-time.After(1 * time.Second):
 			t.Fatal("expected restart triggered")
+		}
+	})
+
+	t.Run("AdminBatchUpdateSettings_live_only_does_not_restart", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/settings/batch", []byte(`{"auto_refresh_interval_seconds":"3","log_channel_click_action":"edit"}`)))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+		if got := resp.Data["restart_required"]; got != false {
+			t.Fatalf("restart_required=%v, want false", got)
+		}
+		select {
+		case <-restartCh:
+			t.Fatal("live-only batch unexpectedly triggered restart")
+		case <-time.After(50 * time.Millisecond):
+		}
+	})
+
+	t.Run("AdminBatchUpdateSettings_mixed_batch_restarts_once", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/settings/batch", []byte(`{"auto_refresh_interval_seconds":"4","max_key_retries":"4"}`)))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+		if got := resp.Data["restart_required"]; got != true {
+			t.Fatalf("restart_required=%v, want true", got)
+		}
+		select {
+		case <-restartCh:
+		case <-time.After(time.Second):
+			t.Fatal("mixed batch did not trigger restart")
+		}
+		select {
+		case <-restartCh:
+			t.Fatal("mixed batch triggered more than one restart")
+		case <-time.After(50 * time.Millisecond):
 		}
 	})
 }

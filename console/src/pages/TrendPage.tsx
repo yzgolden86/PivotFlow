@@ -69,6 +69,7 @@ export default function TrendPage() {
 }
 
 function TrendChart({ points, metric }: { points: MetricPoint[]; metric: TrendMetric }) {
+  const [hovered, setHovered] = useState<number | null>(null)
   const values = useMemo(() => points.map((point) => pointValue(point, metric)), [metric, points])
   const max = Math.max(...values, 1)
   const line = values.map((value, index) => {
@@ -77,6 +78,11 @@ function TrendChart({ points, metric }: { points: MetricPoint[]; metric: TrendMe
     return `${x},${y}`
   }).join(' ')
   if (!points.length) return <div className="content-state content-state--empty">当前范围暂无趋势数据</div>
+  const hoveredIndex = hovered ?? 0
+  const hoveredPoint = hovered == null ? null : points[hoveredIndex]
+  const hoveredValue = hoveredPoint == null ? 0 : values[hoveredIndex] || 0
+  const hoveredX = values.length <= 1 ? 8 : Math.min(92, Math.max(8, 4 + (hoveredIndex / (values.length - 1)) * 92))
+  const hoveredY = 245 - (hoveredValue / max) * 205
   return <div className="trend-workbench-chart">
     <svg viewBox="0 0 1000 280" role="img" aria-label={`${metricLabel(metric)}趋势图`} preserveAspectRatio="none">
       {[40, 91, 142, 193, 245].map((y) => <line x1="40" x2="960" y1={y} y2={y} className="trend-grid-line" key={y} />)}
@@ -84,9 +90,12 @@ function TrendChart({ points, metric }: { points: MetricPoint[]; metric: TrendMe
       {values.map((value, index) => {
         const x = values.length <= 1 ? 40 : 40 + (index / (values.length - 1)) * 920
         const y = 245 - (value / max) * 205
-        return <circle cx={x} cy={y} r="3.5" className="trend-main-point" key={`${points[index].ts}-${index}`}><title>{`${formatPointTime(points[index].ts)} · ${metricLabel(metric)} ${formatMetric(value, metric)}${metric === 'requests' ? ' 次' : ''}`}</title></circle>
+        return <circle cx={x} cy={y} r={hovered === index ? 6 : 3.5} className="trend-main-point" key={`${points[index].ts}-${index}`} onMouseEnter={() => setHovered(index)} onMouseLeave={() => setHovered(null)} onFocus={() => setHovered(index)} onBlur={() => setHovered(null)} tabIndex={0} role="button" aria-label={`${formatPointTime(points[index].ts)} ${metricLabel(metric)} ${formatMetric(value, metric)}`}><title>{`${formatPointTime(points[index].ts)} · ${metricLabel(metric)} ${formatMetric(value, metric)}${metric === 'requests' ? ' 次' : ''}`}</title></circle>
       })}
     </svg>
+    {hoveredPoint && <div className="trend-point-tooltip" style={{ left: `${hoveredX}%`, top: `${(hoveredY / 280) * 100}%` }}>
+      <strong>{formatPointTime(hoveredPoint.ts)}</strong><span>{metricLabel(metric)} <b>{formatMetric(hoveredValue, metric)}{metric === 'requests' ? ' 次' : ''}</b></span>
+    </div>}
     <div className="trend-axis"><span>{formatPointTime(points[0].ts)}</span><strong>峰值 {formatMetric(max, metric)}</strong><span>{formatPointTime(points[points.length - 1].ts)}</span></div>
   </div>
 }

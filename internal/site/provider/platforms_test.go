@@ -281,3 +281,24 @@ func TestSub2APIRefreshCredentialsRotatesManagedTokens(t *testing.T) {
 		t.Fatalf("expires_at=%d before=%d", refreshed.ExpiresAt, before)
 	}
 }
+
+func TestSub2APIExpiredResponseRecognizesNumericAndLocalizedSignals(t *testing.T) {
+	tests := []struct {
+		code any
+		text string
+	}{
+		{float64(401), ""},
+		{"403", ""},
+		{"AUTH_FAILED", ""},
+		{float64(1), "token invalid"},
+		{float64(1), "登录已过期，请重新登录"},
+	}
+	for _, test := range tests {
+		if !sub2ExpiredResponse(test.code, test.text) {
+			t.Fatalf("sub2ExpiredResponse(%v, %q)=false", test.code, test.text)
+		}
+	}
+	if sub2ExpiredResponse(float64(1), "额度不足") {
+		t.Fatal("unrelated business error was classified as expired")
+	}
+}

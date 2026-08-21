@@ -455,6 +455,7 @@ type ChannelWithCooldown struct {
 	ModelCooldowns               []ModelCooldownInfo `json:"model_cooldowns,omitempty"`
 	EffectivePriority            *float64            `json:"effective_priority,omitempty"` // 健康度模式下的有效优先级
 	SuccessRate                  *float64            `json:"success_rate,omitempty"`       // 成功率(0-1)
+	EffectiveKeyCount            int                 `json:"effective_key_count"`          // 排除禁用和冷却Key后的可用数量
 }
 
 // ChannelImportSummary 导入结果统计

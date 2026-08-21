@@ -100,6 +100,10 @@ func TestWebDAVBackupUsesBasicAuthAndMasksStoredPassword(t *testing.T) {
 	var uploaded []byte
 	var methods []string
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/dav/pivotflow-backup.json" {
+			http.NotFound(w, r)
+			return
+		}
 		username, password, ok := r.BasicAuth()
 		if !ok || username != "dav-user" || password != "dav-password" {
 			t.Errorf("unexpected basic auth: ok=%v username=%q password=%q", ok, username, password)
@@ -128,7 +132,9 @@ func TestWebDAVBackupUsesBasicAuthAndMasksStoredPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := &model.BackupConfig{ID: 1, Enabled: true, FileURL: remote.URL + "/backup.json", Username: "dav-user", PasswordCiphertext: sealed, PasswordKeyVersion: cipher.Version(), ExportType: "settings", AutoSyncIntervalHours: 24}
+	// A collection URL is the normal WebDAV value. The backup code must
+	// consistently address its generated JSON file for both PUT and GET.
+	config := &model.BackupConfig{ID: 1, Enabled: true, FileURL: remote.URL + "/dav", Username: "dav-user", PasswordCiphertext: sealed, PasswordKeyVersion: cipher.Version(), ExportType: "settings", AutoSyncIntervalHours: 24}
 	if err = srv.store.UpsertBackupConfig(context.Background(), config); err != nil {
 		t.Fatal(err)
 	}
@@ -167,9 +173,9 @@ func TestWebDAVHTTPErrorProvidesSafeActionableDetails(t *testing.T) {
 		contains  string
 	}{
 		{http.StatusUnauthorized, "upload", "认证失败"},
-		{http.StatusNotFound, "upload", "父目录不存在"},
+		{http.StatusNotFound, "upload", "目标目录不存在"},
 		{http.StatusNotFound, "download", "没有找到备份文件"},
-		{http.StatusMethodNotAllowed, "upload", "完整文件地址"},
+		{http.StatusMethodNotAllowed, "upload", "WebDAV 服务地址"},
 		{http.StatusInsufficientStorage, "upload", "存储空间不足"},
 		{http.StatusBadGateway, "upload", "反向代理返回了 502"},
 		{http.StatusGatewayTimeout, "download", "网关响应超时"},
@@ -197,6 +203,23 @@ func TestWebDAVHTMLResponseOnlyMatchesWebPages(t *testing.T) {
 	response.Header.Set("Content-Type", "application/json")
 	if webDAVHTMLResponse(response) {
 		t.Fatal("JSON response was detected as HTML")
+	}
+}
+
+func TestWebDAVTargetURLAcceptsDirectoryOrFileURL(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"https://example.com/dav", "https://example.com/dav/pivotflow-backup.json"},
+		{"https://example.com/dav/", "https://example.com/dav/pivotflow-backup.json"},
+		{"https://example.com/dav/custom.json", "https://example.com/dav/custom.json"},
+		{"https://example.com/dav?tenant=one", "https://example.com/dav/pivotflow-backup.json?tenant=one"},
+	}
+	for _, test := range tests {
+		if got := webDAVTargetURL(test.input); got != test.want {
+			t.Fatalf("webDAVTargetURL(%q)=%q, want %q", test.input, got, test.want)
+		}
 	}
 }
 

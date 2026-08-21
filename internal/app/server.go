@@ -1072,6 +1072,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.PUT("/channels/:id", s.HandleChannelByID)
 		admin.DELETE("/channels/:id", s.HandleChannelByID)
 		admin.GET("/channels/:id/editor", s.HandleChannelEditor)
+		admin.GET("/channels/:id/route-diagnostics", s.HandleChannelRouteDiagnostics)
 		admin.GET("/channels/:id/keys", s.HandleChannelKeys)
 		admin.GET("/channels/:id/model-stats", s.HandleChannelModelStats)
 		admin.GET("/channels/:id/url-stats", s.HandleChannelURLStats)

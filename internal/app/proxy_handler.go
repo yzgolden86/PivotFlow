@@ -566,6 +566,7 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
 		// 使用 cooldownManager.HandleError 统一处理（DRY原则）
 		if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
+			log.Printf("[ROUTE] 渠道 %s (ID=%d) 未尝试：所有 Key 当前不可用（冷却或已被本请求尝试）", cfg.Name, cfg.ID)
 			// 统一走 applyCooldownDecision：断开取消链+按决策执行缓存失效
 			s.applyCooldownDecision(ctx, cfg, httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, 503, nil, nil))
 			continue
@@ -596,6 +597,9 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 			}
 
 			lastResult = result
+			if index+1 < len(cands) {
+				log.Printf("[ROUTE] 渠道 %s (ID=%d) 返回 %d，下一步=%v，继续检查后续候选", cfg.Name, cfg.ID, result.status, result.nextAction)
+			}
 
 			// 客户端已取消：别再浪费资源“重试”了。
 			if result.isClientCanceled {
