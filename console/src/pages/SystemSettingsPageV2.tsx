@@ -93,9 +93,7 @@ export default function SystemSettingsPageV2() {
 
   const save = async () => {
     if (!dirty.size) return
-    const restartRequired = Array.from(dirty).some((key) => settings.find((item) => item.key === key)?.requires_restart)
-    const consequence = restartRequired ? '其中包含需要重启的设置，服务会短暂中断请求。' : '这些设置保存后立即生效。'
-    if (!window.confirm(`保存 ${dirty.size} 项设置？${consequence}`)) return
+    if (!window.confirm(`保存 ${dirty.size} 项设置？`)) return
     setSaving(true)
     setError('')
     setNotice('')
@@ -113,8 +111,7 @@ export default function SystemSettingsPageV2() {
   }
 
   const reset = async (setting: SystemSetting) => {
-    const consequence = setting.requires_restart ? '服务会自动重启。' : '修改会立即生效。'
-    if (!window.confirm(`将“${settingLabel(setting)}”恢复为默认值？${consequence}`)) return
+    if (!window.confirm(`将“${settingLabel(setting)}”恢复为默认值？`)) return
     setSaving(true)
     setError('')
     setNotice('')
@@ -213,8 +210,6 @@ export default function SystemSettingsPageV2() {
               </div>
               <div className="setting-actions">
                 <div className="setting-activation">
-                  <span className={`setting-activation-badge${setting.requires_restart ? ' requires-restart' : ' is-live'}`}>{setting.requires_restart ? '保存后重启' : '立即生效'}</span>
-                  <span title={setting.runtime_effect ? `实际生效于：${setting.runtime_effect}` : undefined}>{setting.runtime_effect ? `作用于 ${setting.runtime_effect}` : '尚未接入实际功能'}</span>
                   <small>默认值：{formatDefault(setting)}</small>
                 </div>
                 <button className="icon-button icon-button--surface" type="button" onClick={() => void reset(setting)} disabled={!setting.editable || saving || values[setting.key] === setting.default_value} aria-label={`重置 ${settingLabel(setting)}`} title="恢复默认值"><RotateCcw size={16} /></button>
@@ -334,7 +329,7 @@ const labels: Record<string, string> = {
   max_concurrency: '最大并发请求数', max_body_bytes: '普通请求体上限', max_image_body_bytes: '图片请求体上限',
   channel_test_content: '健康检测提示词', channel_check_interval_hours: '自动健康检测间隔', enable_health_score: '按渠道健康度动态排序', success_rate_penalty_weight: '失败率惩罚权重', health_score_window_minutes: '健康度统计窗口', health_score_update_interval: '健康度刷新间隔', health_min_confident_sample: '健康度可信样本量', enable_ttfb_score: '加入首字延迟评分', ttfb_penalty_weight: '首字延迟惩罚权重', ttfb_max_slow_ratio: '首字慢速比上限', ttfb_min_confident_sample: '首字评分可信样本量',
   site_daily_checkin_time: '每日自动签到时间',
-  log_retention_days: '请求日志保留时间', debug_log_enabled: '记录上游原始报文', debug_log_retention_minutes: '原始报文保留时间', auto_refresh_interval_seconds: '日志页面自动刷新间隔', log_channel_click_action: '日志中的渠道点击行为',
+  log_retention_days: '请求日志保留时间', debug_log_enabled: '记录上游原始报文', debug_log_retention_minutes: '原始报文保留时间', auto_refresh_interval_seconds: '日志页面自动刷新间隔',
   responses_ws_max_sessions: '最大执行会话数', responses_ws_session_ttl_minutes: '空闲会话保留时间', responses_ws_max_transcript_bytes: '会话内容总容量', responses_ws_max_connections: '最大长连接数', responses_ws_max_connections_per_token: '单密钥最大长连接数',
   model_catalog_sync_interval_hours: '模型价格目录同步间隔', auto_update_interval_hours: '上游检查间隔', auto_update_channel: '上游检查通道', antigravity_sensitive_words: 'Antigravity 敏感词兼容',
 }
@@ -356,7 +351,6 @@ function humanizeDescription(description: string): string {
 
 function settingOptions(key: string): Array<[string, string]> | null {
   if (key === 'auto_update_channel') return [['stable', '稳定版'], ['preview', '稳定版与预览版']]
-  if (key === 'log_channel_click_action') return [['edit', '打开渠道编辑'], ['navigate', '跳转渠道页面']]
   return null
 }
 

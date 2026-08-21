@@ -229,7 +229,6 @@ export interface LogChannelOption {
 
 export interface LogsBootstrap {
   channel_test_content: string
-  log_channel_click_action?: 'edit' | 'navigate' | string
   models: string[]
   channels: LogChannelOption[]
   status_codes: number[]
