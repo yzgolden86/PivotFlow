@@ -1,13 +1,19 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Bug, History, RefreshCw, Search, Waves } from 'lucide-react'
-import { getActiveRequestDebug, getActiveRequests, getLogs, getLogsBootstrap } from '../api'
+import { getActiveRequestDebug, getActiveRequests, getLogs, getLogsBootstrap, getSystemSettings } from '../api'
 import type { ActiveRequest, DashboardRange, LogEntry, LogsBootstrap } from '../types'
 import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
 import { Modal } from './siteShared'
 
 const PAGE_SIZE = 20
-const EMPTY_BOOTSTRAP: LogsBootstrap = { channel_test_content: '', models: [], channels: [], status_codes: [] }
+const EMPTY_BOOTSTRAP: LogsBootstrap = { channel_test_content: '', log_channel_click_action: 'edit', models: [], channels: [], status_codes: [] }
+const AUTO_REFRESH_SETTING = 'auto_refresh_interval_seconds'
+
+function readAutoRefreshSeconds(settings: { key: string; value: string }[]): number {
+  const value = Number(settings.find((setting) => setting.key === AUTO_REFRESH_SETTING)?.value ?? 0)
+  return Number.isFinite(value) && value > 0 ? Math.max(1, Math.round(value)) : 0
+}
 
 export default function LogsPage() {
   const location = useLocation()
@@ -23,20 +29,38 @@ export default function LogsPage() {
   const [source, setSource] = useState('proxy')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [autoRefreshSeconds, setAutoRefreshSeconds] = useState(0)
+  const [autoRefreshing, setAutoRefreshing] = useState(false)
+  const loadSequence = useRef(0)
+  const backgroundRefreshInFlight = useRef(false)
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true)
-    setError('')
+  const load = useCallback(async (signal?: AbortSignal, background = false) => {
+    if (background && backgroundRefreshInFlight.current) return
+    const sequence = ++loadSequence.current
+    if (background) {
+      backgroundRefreshInFlight.current = true
+      setAutoRefreshing(true)
+    } else {
+      setLoading(true)
+      setError('')
+    }
     try {
       const filters = { range, channel_name: channel, model, status_code: status, log_source: source, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }
       const [result, bootstrap] = await Promise.all([getLogs(filters, signal), getLogsBootstrap(range, signal)])
+      if (signal?.aborted || sequence !== loadSequence.current) return
       setLogs(result.data)
       setTotal(result.count)
       setOptions(bootstrap)
+      setError('')
     } catch (reason) {
-      if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '日志加载失败')
+      if (!signal?.aborted && sequence === loadSequence.current && !background) setError(reason instanceof Error ? reason.message : '日志加载失败')
     } finally {
-      if (!signal?.aborted) setLoading(false)
+      if (background) {
+        backgroundRefreshInFlight.current = false
+        if (!signal?.aborted) setAutoRefreshing(false)
+      } else if (!signal?.aborted && sequence === loadSequence.current) {
+        setLoading(false)
+      }
     }
   }, [channel, model, page, range, source, status])
 
@@ -46,14 +70,33 @@ export default function LogsPage() {
     return () => controller.abort()
   }, [load])
 
+  useEffect(() => {
+    const controller = new AbortController()
+    void getSystemSettings(controller.signal).then((settings) => {
+      if (!controller.signal.aborted) setAutoRefreshSeconds(readAutoRefreshSeconds(settings))
+    }).catch(() => {
+      if (!controller.signal.aborted) setAutoRefreshSeconds(0)
+    })
+    return () => controller.abort()
+  }, [])
+
+  useEffect(() => {
+    if (view !== 'history' || autoRefreshSeconds <= 0) return
+    const refresh = () => {
+      if (document.visibilityState === 'visible') void load(undefined, true)
+    }
+    const timer = window.setInterval(refresh, autoRefreshSeconds * 1000)
+    return () => window.clearInterval(timer)
+  }, [autoRefreshSeconds, load, view])
+
   return (
     <div className="workspace-page">
       <header className="page-header">
         <h1>请求日志</h1>
-        <div className="header-controls"><div className="page-tabs page-tabs--header" role="tablist"><a className={view === 'history' ? 'is-active' : ''} href="#/logs" role="tab" aria-selected={view === 'history'}><History size={14} />历史请求</a><a className={view === 'active' ? 'is-active' : ''} href="#/logs?view=active" role="tab" aria-selected={view === 'active'}><Waves size={14} />进行中</a></div>{view === 'history' && <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新日志"><RefreshCw size={17} /></button>}</div>
+        <div className="header-controls"><div className="page-tabs page-tabs--header" role="tablist"><a className={view === 'history' ? 'is-active' : ''} href="#/logs" role="tab" aria-selected={view === 'history'}><History size={14} />历史请求</a><a className={view === 'active' ? 'is-active' : ''} href="#/logs?view=active" role="tab" aria-selected={view === 'active'}><Waves size={14} />进行中</a></div>{view === 'history' && <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新日志" title={autoRefreshSeconds > 0 ? `已启用自动刷新：每 ${autoRefreshSeconds} 秒` : '刷新日志'}><RefreshCw className={autoRefreshing ? 'spin' : undefined} size={17} /></button>}</div>
       </header>
 
-      {view === 'active' ? <ActiveRequestsView /> : <>
+      {view === 'active' ? <ActiveRequestsView autoRefreshSeconds={autoRefreshSeconds} /> : <>
       <div className="filter-bar filter-bar--wide">
         <select value={range} onChange={(event) => { setPage(1); setRange(event.target.value as DashboardRange) }} aria-label="日志时间范围"><option value="today">今日</option><option value="this_week">本周</option><option value="this_month">本月</option></select>
         <select value={channel} onChange={(event) => { setPage(1); setChannel(event.target.value) }} aria-label="日志渠道"><option value="">全部渠道</option>{options.channels.map((item) => <option value={item.name} key={item.id}>{item.name}</option>)}</select>
@@ -66,7 +109,7 @@ export default function LogsPage() {
       {loading ? <LoadingState label="正在加载请求日志" /> : error ? <ErrorState message={error} retry={() => void load()} /> : logs.length === 0 ? <EmptyState label="当前筛选条件下暂无请求日志" /> : (
         <div className="records-panel log-records" role="table" aria-label="请求日志列表">
           <div className="record-head log-grid" role="row"><span>时间 / 来源</span><span>渠道</span><span>模型与协议</span><span>状态</span><span>时延</span><span>Token</span><span>费用</span></div>
-          {logs.map((entry) => <LogRow entry={entry} key={entry.id} />)}
+          {logs.map((entry) => <LogRow entry={entry} channelClickAction={options.log_channel_click_action || 'edit'} key={entry.id} />)}
         </div>
       )}
       <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPage={setPage} />
@@ -75,7 +118,7 @@ export default function LogsPage() {
   )
 }
 
-function ActiveRequestsView() {
+function ActiveRequestsView({ autoRefreshSeconds }: { autoRefreshSeconds: number }) {
   const [requests, setRequests] = useState<ActiveRequest[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -90,9 +133,12 @@ function ActiveRequestsView() {
       finally { if (active) setLoading(false) }
     }
     void refresh()
-    const timer = window.setInterval(() => void refresh(), 2000)
+    if (autoRefreshSeconds <= 0) return () => { active = false }
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refresh()
+    }, autoRefreshSeconds * 1000)
     return () => { active = false; window.clearInterval(timer) }
-  }, [])
+  }, [autoRefreshSeconds])
 
   const openDebug = async (request: ActiveRequest) => {
     setDebugLoading(request.id); setError('')
@@ -115,14 +161,14 @@ function ActiveRequestsView() {
   </>
 }
 
-function LogRow({ entry }: { entry: LogEntry }) {
+function LogRow({ entry, channelClickAction }: { entry: LogEntry; channelClickAction: string }) {
   const success = entry.status_code >= 200 && entry.status_code < 300
   const statusText = `${entry.status_code || 'ERR'} · ${success ? '成功' : '错误'}`
   const effectiveCost = entry.cost * (entry.cost_multiplier >= 0 ? entry.cost_multiplier : 1)
   return (
     <article className="record-row log-grid">
       <div><strong>{formatTime(entry.time)}</strong><span>{sourceLabel(entry.log_source)}</span></div>
-      <div><strong>{entry.channel_name || `渠道 #${entry.channel_id}`}</strong><span>#{entry.channel_id}</span></div>
+      <div><a className="entity-link log-channel-link" href={channelClickAction === 'navigate' ? `#/channels?search=${encodeURIComponent(entry.channel_name || '')}` : `#/channels?focus_channel_id=${entry.channel_id}`} title={channelClickAction === 'navigate' ? '在渠道分发中筛选' : '打开渠道编辑'}><strong>{entry.channel_name || `渠道 #${entry.channel_id}`}</strong></a><span>#{entry.channel_id}</span></div>
       <div><strong title={entry.actual_model && entry.actual_model !== entry.model ? `${entry.model} → ${entry.actual_model}` : entry.model}>{entry.model}</strong><span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
       <div className="log-status"><span className={`status-badge status-badge--${success ? 'success' : 'danger'}`}>{statusText}</span>{entry.message && <span className="record-message" title={entry.message}>{entry.message}</span>}</div>
       <div><strong>{entry.duration ? `${entry.duration.toFixed(2)}s` : '—'}</strong><span>首字 {entry.first_byte_time ? `${entry.first_byte_time.toFixed(2)}s` : '—'}</span></div>

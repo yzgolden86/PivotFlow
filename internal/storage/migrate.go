@@ -461,6 +461,11 @@ func cleanupRemovedSettings(ctx context.Context, db *sql.DB, dialect Dialect) er
 	if err := deleteSystemSetting(ctx, db, dialect, "model_lookup_strip_date_suffix"); err != nil {
 		return err
 	}
+	// channel_stats_range 从未接入渠道统计运行时，保留它只会制造
+	// “设置已保存但没有任何效果”的假配置。
+	if err := deleteSystemSetting(ctx, db, dialect, "channel_stats_range"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -598,7 +603,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"auto_update_interval_hours", "12", "int", "非容器部署的上游版本检查间隔（整数小时；0=关闭检查；启用时最低1小时；融合版只读）", "12"},
 		{"auto_update_channel", "stable", "string", "非容器部署的版本检查渠道（stable=稳定版，preview=稳定版和测试版；融合版只读检查）", "stable"},
 		{"log_channel_click_action", "edit", "string", "日志页点击渠道名后的操作", "edit"},
-		{"channel_stats_range", "today", "string", "渠道管理页费用统计的时间范围", "today"},
 		// 健康度排序配置
 		{"enable_health_score", "false", "bool", "启用基于健康度的渠道动态排序", "false"},
 		{"success_rate_penalty_weight", "100", "int", "成功率惩罚权重(乘以失败率)", "100"},

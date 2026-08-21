@@ -213,9 +213,7 @@ func (p *Sub2API) requestData(ctx context.Context, req AccountRequest, method, p
 			message = "Sub2API rejected the request"
 		}
 		code := CodeRequestFailed
-		normalizedCode := strings.ToLower(strings.TrimSpace(fmt.Sprint(payload.Code)))
-		lowerMessage := strings.ToLower(message)
-		if strings.Contains(normalizedCode, "unauthorized") || strings.Contains(normalizedCode, "expired") || strings.Contains(lowerMessage, "unauthorized") || strings.Contains(lowerMessage, "expired") || strings.Contains(lowerMessage, "invalid token") {
+		if sub2ExpiredResponse(payload.Code, message) {
 			code = CodeExpired
 		}
 		return nil, &Error{Code: code, Message: message}
@@ -224,6 +222,23 @@ func (p *Sub2API) requestData(ctx context.Context, req AccountRequest, method, p
 		return nil, &Error{Code: CodeInvalidResponse, Message: "Sub2API response is missing data"}
 	}
 	return payload.Data, nil
+}
+
+func sub2ExpiredResponse(rawCode any, message string) bool {
+	code := strings.ToLower(strings.TrimSpace(fmt.Sprint(rawCode)))
+	if code == "401" || code == "403" || strings.Contains(code, "auth_failed") || strings.Contains(code, "unauthorized") || strings.Contains(code, "forbidden") || strings.Contains(code, "expired") {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(message))
+	for _, marker := range []string{
+		"unauthorized", "forbidden", "token expired", "expired token", "invalid token", "token invalid",
+		"session expired", "未登录", "登录已过期", "令牌无效", "令牌已过期",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func sub2SuccessCode(value any) bool {

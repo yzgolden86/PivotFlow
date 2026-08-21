@@ -60,7 +60,7 @@ export function siteErrorMessage(reason: unknown): string {
     provider_timeout: '站点请求超时', provider_rate_limited: '站点触发限流，请稍后再试', api_key_required: '投影需要 API Key',
 		models_required: '请先同步账号模型', routing_api_key_unavailable: '没有读取到可用的模型 API Key，请先在上游站点创建一个 Key 后再次同步', unsupported: '当前站点不支持此操作', conflict: '已有任务运行或投影存在冲突', expired: '系统访问令牌或登录会话已失效，请在账号管理中更新凭证',
 		user_id_required: '无法识别或验证上游用户 ID，请核对用户个人中心显示的数字 ID', credential_required: '请填写新的登录凭证', site_name_exists: '已有同名站点，请修改名称或检查未删除的数据',
-	request_failed: '上游请求失败', invalid_response: '上游返回了无法识别的数据', webdav_html_response: 'WebDAV 返回了网页而不是备份文件，请填写 WebDAV 的完整文件地址，不要填写网页登录地址',
+	request_failed: '上游请求失败', invalid_response: '上游返回了无法识别的数据', webdav_html_response: 'WebDAV 返回了网页而不是备份文件，请确认填写的是 WebDAV 服务地址，而不是网页登录地址',
 		'cookie credential requires session cookie and user_id': 'Session Cookie 账号必须填写上游用户 ID',
   }
 	const label = labels[code]

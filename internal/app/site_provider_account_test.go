@@ -320,6 +320,34 @@ func TestCreateSub2APILegacyCookieInputStoresValidatedAccessToken(t *testing.T) 
 	}
 }
 
+func TestPreserveCredentialRefreshClearsPreviousManualExpiry(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "sub2-expiry-clear-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.siteControl.cipher = cipher
+	sealed, err := cipher.Seal(provider.Credentials{
+		AccessToken:  "access-old",
+		RefreshToken: "refresh-old",
+		ExpiresAt:    time.Now().Add(48 * time.Hour).UnixMilli(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &model.SiteAccount{CredentialCiphertext: sealed, CredentialKeyVersion: cipher.Version()}
+	next := &provider.Credentials{AccessToken: "access-new"}
+
+	srv.siteControl.preserveCredentialRefresh(account, next)
+
+	if next.RefreshToken != "refresh-old" {
+		t.Fatalf("refresh token=%q, want existing refresh token", next.RefreshToken)
+	}
+	if next.ExpiresAt != 0 {
+		t.Fatalf("expires_at=%d, want 0 so the old manual value is not reused", next.ExpiresAt)
+	}
+}
+
 func TestSub2APIOpaqueExpiredTokenRefreshesReactively(t *testing.T) {
 	var refreshCalls int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

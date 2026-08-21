@@ -47,6 +47,31 @@ func (l *channelRPMLimiter) allow(channelID int64, limit int) bool {
 	return l.reserve(channelID, limit).allowed
 }
 
+// snapshot reports the current sliding-window usage without consuming a slot.
+func (l *channelRPMLimiter) snapshot(channelID int64) int {
+	if l == nil || channelID <= 0 {
+		return 0
+	}
+	now := l.now()
+	cutoff := now.Add(-time.Minute)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	events := l.requests[channelID]
+	kept := 0
+	for _, ts := range events {
+		if ts.After(cutoff) {
+			events[kept] = ts
+			kept++
+		}
+	}
+	if kept == 0 {
+		delete(l.requests, channelID)
+		return 0
+	}
+	l.requests[channelID] = events[:kept]
+	return kept
+}
+
 func (l *channelRPMLimiter) RemoveChannel(channelID int64) {
 	if l == nil || channelID <= 0 {
 		return

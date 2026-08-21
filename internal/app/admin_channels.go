@@ -407,6 +407,16 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 		keyCooldowns = append(keyCooldowns, keyInfo)
 	}
 	oc.KeyCooldowns = keyCooldowns
+	effectiveKeyCount := 0
+	for _, apiKey := range apiKeys {
+		if apiKey == nil || apiKey.Disabled {
+			continue
+		}
+		if until, ok := channelKeyCooldowns[apiKey.KeyIndex]; !ok || !until.After(ectx.now) {
+			effectiveKeyCount++
+		}
+	}
+	oc.EffectiveKeyCount = effectiveKeyCount
 	oc.ModelCooldowns = activeModelCooldownInfos(ectx.modelCooldownsMap[cfg.ID], ectx.now)
 	return oc
 }

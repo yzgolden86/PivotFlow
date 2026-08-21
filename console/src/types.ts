@@ -103,6 +103,7 @@ export interface Channel {
   daily_cost_limit: number
   cost_multiplier: number
   key_count: number
+  effective_key_count?: number
   key_strategy?: string
   cooldown_until?: string
   cooldown_remaining_ms?: number
@@ -142,6 +143,47 @@ export interface ChannelModelsPreview {
   protocol: string
   source: string
   debug?: unknown
+}
+
+export interface RouteDiagnosticReason {
+  code: string
+  message: string
+  blocking: boolean
+}
+
+export interface ChannelRouteDiagnostic {
+  channel_id: number
+  channel_name: string
+  enabled: boolean
+  base_priority: number
+  effective_priority: number
+  success_rate: number
+  health_sample_count: number
+  exact_model_match: boolean
+  fuzzy_model_match: boolean
+  active_key_count: number
+  enabled_key_count: number
+  rpm_limit: number
+  current_rpm: number
+  max_concurrency: number
+  active_concurrency: number
+  candidate: boolean
+  candidate_position?: number
+  higher_priority_count: number
+  same_priority_count: number
+  estimated_traffic_share: number
+  reasons: RouteDiagnosticReason[]
+}
+
+export interface RouteDiagnosticResponse {
+  model: string
+  client_protocol: string
+  token_id?: number
+  pool_mode: 'exact' | 'fuzzy' | 'cooldown_fallback' | 'none' | string
+  health_score_enabled: boolean
+  target: ChannelRouteDiagnostic
+  candidates: ChannelRouteDiagnostic[]
+  summary: string[]
 }
 
 export interface ChannelMutation {
@@ -187,6 +229,7 @@ export interface LogChannelOption {
 
 export interface LogsBootstrap {
   channel_test_content: string
+  log_channel_click_action?: 'edit' | 'navigate' | string
   models: string[]
   channels: LogChannelOption[]
   status_codes: number[]
@@ -509,6 +552,15 @@ export interface SystemSetting {
   updated_at: number
   editable: boolean
   disabled_reason?: string
+  runtime_effect?: string
+  requires_restart: boolean
+}
+
+export interface SystemSettingMutationResult {
+  message: string
+  restart_required: boolean
+  key?: string
+  value?: string
 }
 
 export type BackupType = 'all' | 'connections' | 'settings'

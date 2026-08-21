@@ -28,6 +28,16 @@ type channelConcurrencyLimiter struct {
 	changed map[int64]chan struct{}
 }
 
+// snapshot reports current in-flight usage without acquiring a slot.
+func (l *channelConcurrencyLimiter) snapshot(channelID int64) int {
+	if l == nil || channelID <= 0 {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.active[channelID]
+}
+
 func newChannelConcurrencyLimiter() *channelConcurrencyLimiter {
 	return &channelConcurrencyLimiter{
 		active:  make(map[int64]int),

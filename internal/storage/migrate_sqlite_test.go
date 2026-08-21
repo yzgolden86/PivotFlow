@@ -1540,7 +1540,6 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"channel_check_interval_hours",
 		"auto_update_interval_hours",
 		"auto_update_channel",
-		"channel_stats_range",
 		"enable_health_score",
 		"success_rate_penalty_weight",
 		"health_score_window_minutes",
@@ -1830,7 +1829,7 @@ func TestCleanupRemovedSettings_SQLite(t *testing.T) {
 
 	// 插入一个应该被清理的旧设置
 	_, err := db.ExecContext(ctx,
-		"INSERT OR REPLACE INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES ('model_lookup_strip_date_suffix', 'true', 'bool', 'old', 'true', unixepoch())")
+		"INSERT OR REPLACE INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES ('model_lookup_strip_date_suffix', 'true', 'bool', 'old', 'true', unixepoch()), ('channel_stats_range', 'month', 'string', 'old', 'today', unixepoch())")
 	if err != nil {
 		t.Fatalf("insert old setting: %v", err)
 	}
@@ -1845,6 +1844,12 @@ func TestCleanupRemovedSettings_SQLite(t *testing.T) {
 	).Scan(&cnt)
 	if cnt != 0 {
 		t.Fatal("expected model_lookup_strip_date_suffix to be removed")
+	}
+	_ = db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM system_settings WHERE key='channel_stats_range'",
+	).Scan(&cnt)
+	if cnt != 0 {
+		t.Fatal("expected channel_stats_range to be removed")
 	}
 }
 

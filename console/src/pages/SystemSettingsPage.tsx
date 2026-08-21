@@ -52,20 +52,25 @@ export default function SystemSettingsPage() {
 
   const save = async () => {
     if (!dirty.size) return
-    if (!window.confirm(`保存 ${dirty.size} 项系统参数？服务会自动重启并短暂中断请求。`)) return
+    const restartRequired = Array.from(dirty).some((key) => settings.find((item) => item.key === key)?.requires_restart)
+    const consequence = restartRequired ? '其中包含需要重启的设置，服务会短暂中断请求。' : '这些设置保存后立即生效。'
+    if (!window.confirm(`保存 ${dirty.size} 项系统参数？${consequence}`)) return
     setSaving(true); setError(''); setNotice('')
     try {
-      await updateSystemSettings(Object.fromEntries(Array.from(dirty).map((key) => [key, values[key]])))
-      setNotice('参数已保存，服务正在重启')
+      const updates = Object.fromEntries(Array.from(dirty).map((key) => [key, values[key]]))
+      const result = await updateSystemSettings(updates)
+      setSettings((current) => current.map((setting) => Object.prototype.hasOwnProperty.call(updates, setting.key) ? { ...setting, value: updates[setting.key] } : setting))
+      setNotice(result.message)
       setDirty(new Set())
     } catch (reason) { setError(reason instanceof Error ? reason.message : '保存失败') }
     finally { setSaving(false) }
   }
 
   const reset = async (setting: SystemSetting) => {
-    if (!window.confirm(`将“${setting.description || setting.key}”恢复为默认值？服务会自动重启。`)) return
+    const consequence = setting.requires_restart ? '服务会自动重启。' : '修改会立即生效。'
+    if (!window.confirm(`将“${setting.description || setting.key}”恢复为默认值？${consequence}`)) return
     setSaving(true); setError(''); setNotice('')
-    try { await resetSystemSetting(setting.key); change(setting.key, setting.default_value); setDirty(new Set()); setNotice('已恢复默认值，服务正在重启') }
+    try { const result = await resetSystemSetting(setting.key); change(setting.key, setting.default_value); setSettings((current) => current.map((item) => item.key === setting.key ? { ...item, value: setting.default_value } : item)); setDirty(new Set()); setNotice(result.message) }
     catch (reason) { setError(reason instanceof Error ? reason.message : '重置失败') }
     finally { setSaving(false) }
   }
@@ -111,7 +116,7 @@ function settingGroup(key: string): string {
   if (/log|check_interval|debug/.test(key)) return 'logs'
   if (/websocket|responses_ws/.test(key)) return 'websocket'
   if (/update|catalog/.test(key)) return 'updates'
-  if (/antigravity|model_fuzzy|health_|ttfb_|auto_refresh|log_channel_click_action|channel_stats_range/.test(key)) return 'advanced'
+  if (/antigravity|model_fuzzy|health_|ttfb_|auto_refresh|log_channel_click_action/.test(key)) return 'advanced'
   if (/timeout|proxy|priority|strategy/.test(key)) return 'routing'
   return 'other'
 }

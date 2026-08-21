@@ -213,12 +213,8 @@ func (s *siteControlService) preserveCredentialRefresh(account *model.SiteAccoun
 	if strings.TrimSpace(next.RefreshToken) == "" {
 		next.RefreshToken = existing.RefreshToken
 	}
-	if next.ExpiresAt == 0 {
-		next.ExpiresAt = next.EffectiveExpiresAt()
-		if next.ExpiresAt == 0 && strings.TrimSpace(next.AccessToken) == strings.TrimSpace(existing.AccessToken) {
-			next.ExpiresAt = existing.EffectiveExpiresAt()
-		}
-	}
+	// An empty expires_at from the editor intentionally clears the previous
+	// manual timestamp. JWT claims or a refresh response may repopulate it.
 }
 
 func (s *siteControlService) persistCredentials(ctx context.Context, account *model.SiteAccount, creds provider.Credentials) error {
