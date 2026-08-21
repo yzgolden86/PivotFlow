@@ -42,7 +42,7 @@ func TestRegisteredSystemSettingsHaveRuntimeConsumers(t *testing.T) {
 		if activation.effect == "" {
 			t.Errorf("setting %q has no registered runtime consumer", setting.Key)
 		}
-		wantRestart := setting.Key != "auto_refresh_interval_seconds" && setting.Key != "log_channel_click_action"
+		wantRestart := setting.Key != "auto_refresh_interval_seconds"
 		if activation.requiresRestart != wantRestart {
 			t.Errorf("setting %q requiresRestart=%t, want %t", setting.Key, activation.requiresRestart, wantRestart)
 		}
@@ -334,8 +334,8 @@ func TestAdminSettingsHandlers(t *testing.T) {
 	})
 
 	t.Run("AdminUpdateSetting_live_setting_does_not_restart", func(t *testing.T) {
-		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/settings/log_channel_click_action", []byte(`{"value":"navigate"}`)))
-		c.Params = gin.Params{{Key: "key", Value: "log_channel_click_action"}}
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/settings/auto_refresh_interval_seconds", []byte(`{"value":"3"}`)))
+		c.Params = gin.Params{{Key: "key", Value: "auto_refresh_interval_seconds"}}
 
 		server.AdminUpdateSetting(c)
 
@@ -507,7 +507,7 @@ func TestAdminSettingsHandlers(t *testing.T) {
 	})
 
 	t.Run("AdminBatchUpdateSettings_live_only_does_not_restart", func(t *testing.T) {
-		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/settings/batch", []byte(`{"auto_refresh_interval_seconds":"3","log_channel_click_action":"edit"}`)))
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/settings/batch", []byte(`{"auto_refresh_interval_seconds":"3"}`)))
 
 		server.AdminBatchUpdateSettings(c)
 

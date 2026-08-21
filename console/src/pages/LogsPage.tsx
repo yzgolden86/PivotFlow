@@ -7,7 +7,7 @@ import { useLocation } from 'react-router-dom'
 import { Modal } from './siteShared'
 
 const PAGE_SIZE = 20
-const EMPTY_BOOTSTRAP: LogsBootstrap = { channel_test_content: '', log_channel_click_action: 'edit', models: [], channels: [], status_codes: [] }
+const EMPTY_BOOTSTRAP: LogsBootstrap = { channel_test_content: '', models: [], channels: [], status_codes: [] }
 const AUTO_REFRESH_SETTING = 'auto_refresh_interval_seconds'
 
 function readAutoRefreshSeconds(settings: { key: string; value: string }[]): number {
@@ -109,7 +109,7 @@ export default function LogsPage() {
       {loading ? <LoadingState label="正在加载请求日志" /> : error ? <ErrorState message={error} retry={() => void load()} /> : logs.length === 0 ? <EmptyState label="当前筛选条件下暂无请求日志" /> : (
         <div className="records-panel log-records" role="table" aria-label="请求日志列表">
           <div className="record-head log-grid" role="row"><span>时间 / 来源</span><span>渠道</span><span>模型与协议</span><span>状态</span><span>时延</span><span>Token</span><span>费用</span></div>
-          {logs.map((entry) => <LogRow entry={entry} channelClickAction={options.log_channel_click_action || 'edit'} key={entry.id} />)}
+          {logs.map((entry) => <LogRow entry={entry} key={entry.id} />)}
         </div>
       )}
       <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPage={setPage} />
@@ -152,7 +152,7 @@ function ActiveRequestsView({ autoRefreshSeconds }: { autoRefreshSeconds: number
     {error && <OperationNotice tone="error">{error}</OperationNotice>}
     {!requests.length ? <EmptyState label="当前没有进行中的请求" /> : <div className="records-panel"><div className="record-head active-request-grid"><span>开始时间</span><span>渠道 / 模型</span><span>上游</span><span>传输状态</span><span>调试</span></div>{requests.map((request) => <article className="record-row active-request-grid" key={request.id}>
       <div><strong>{formatTime(request.start_time)}</strong><span>#{request.id} · {request.is_streaming ? '流式' : '非流式'}</span></div>
-      <div><strong>{request.channel_name || `渠道 #${request.channel_id}`}</strong><span>{request.model}</span></div>
+      <div><strong title={request.channel_name || `渠道 #${request.channel_id}`}>{request.channel_name || `渠道 #${request.channel_id}`}</strong><span>{request.model}</span></div>
       <div><strong title={request.base_url}>{request.upstream_protocol || '自动'}</strong><span>{request.api_key_used || '—'}</span></div>
       <div><strong>{statusLabel(request.upstream_status)}</strong><span>{formatNumber(request.bytes_received)} bytes{request.client_first_byte_time ? ` · 首字 ${request.client_first_byte_time.toFixed(2)}s` : ''}</span></div>
       <div><button className="icon-button icon-button--surface" type="button" onClick={() => void openDebug(request)} disabled={!request.debug_log_available || debugLoading === request.id} aria-label={`查看请求 ${request.id} 调试快照`} title={request.debug_log_available ? '调试快照' : '未开启调试捕获'}><Bug className={debugLoading === request.id ? 'spin' : ''} size={15} /></button></div>
@@ -161,14 +161,15 @@ function ActiveRequestsView({ autoRefreshSeconds }: { autoRefreshSeconds: number
   </>
 }
 
-function LogRow({ entry, channelClickAction }: { entry: LogEntry; channelClickAction: string }) {
+function LogRow({ entry }: { entry: LogEntry }) {
   const success = entry.status_code >= 200 && entry.status_code < 300
   const statusText = `${entry.status_code || 'ERR'} · ${success ? '成功' : '错误'}`
   const effectiveCost = entry.cost * (entry.cost_multiplier >= 0 ? entry.cost_multiplier : 1)
+  const channelName = entry.channel_name || `渠道 #${entry.channel_id}`
   return (
     <article className="record-row log-grid">
       <div><strong>{formatTime(entry.time)}</strong><span>{sourceLabel(entry.log_source)}</span></div>
-      <div><a className="entity-link log-channel-link" href={channelClickAction === 'navigate' ? `#/channels?search=${encodeURIComponent(entry.channel_name || '')}` : `#/channels?focus_channel_id=${entry.channel_id}`} title={channelClickAction === 'navigate' ? '在渠道分发中筛选' : '打开渠道编辑'}><strong>{entry.channel_name || `渠道 #${entry.channel_id}`}</strong></a><span>#{entry.channel_id}</span></div>
+      <div><strong title={channelName}>{channelName}</strong><span>#{entry.channel_id}</span></div>
       <div><strong title={entry.actual_model && entry.actual_model !== entry.model ? `${entry.model} → ${entry.actual_model}` : entry.model}>{entry.model}</strong><span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
       <div className="log-status"><span className={`status-badge status-badge--${success ? 'success' : 'danger'}`}>{statusText}</span>{entry.message && <span className="record-message" title={entry.message}>{entry.message}</span>}</div>
       <div><strong>{entry.duration ? `${entry.duration.toFixed(2)}s` : '—'}</strong><span>首字 {entry.first_byte_time ? `${entry.first_byte_time.toFixed(2)}s` : '—'}</span></div>

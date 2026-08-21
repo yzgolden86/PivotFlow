@@ -67,7 +67,6 @@ var systemSettingRuntimeEffects = map[string]string{
 	"model_catalog_sync_interval_hours":       "模型价格目录同步器",
 	"auto_update_interval_hours":              "版本检查调度器",
 	"auto_update_channel":                     "版本发布通道选择",
-	"log_channel_click_action":                "live:请求日志渠道导航",
 	"enable_health_score":                     "渠道健康度排序器",
 	"success_rate_penalty_weight":             "健康度失败率惩罚",
 	"health_score_window_minutes":             "健康度统计时间窗",
@@ -376,21 +375,21 @@ func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 
 func settingUpdateMessage(restartRequired bool) string {
 	if restartRequired {
-		return "配置已保存，服务将在2秒后重启"
+		return "配置已保存，服务正在自动重启"
 	}
 	return "配置已保存，立即生效"
 }
 
 func settingResetMessage(restartRequired bool) string {
 	if restartRequired {
-		return "配置已重置为默认值，服务将在2秒后重启"
+		return "配置已重置为默认值，服务正在自动重启"
 	}
 	return "配置已重置为默认值，立即生效"
 }
 
 func settingBatchUpdateMessage(count int, restartRequired bool) string {
 	if restartRequired {
-		return fmt.Sprintf("已保存 %d 项配置，服务将在2秒后重启", count)
+		return fmt.Sprintf("已保存 %d 项配置，服务正在自动重启", count)
 	}
 	return fmt.Sprintf("已保存 %d 项配置，立即生效", count)
 }
@@ -488,10 +487,6 @@ func validateSettingValue(key, valueType, value string) error {
 		case "site_daily_checkin_time":
 			if _, err := time.Parse("15:04", value); err != nil {
 				return fmt.Errorf("site_daily_checkin_time must use HH:MM")
-			}
-		case "log_channel_click_action":
-			if value != "edit" && value != "navigate" {
-				return fmt.Errorf("log_channel_click_action must be edit or navigate")
 			}
 		case "auto_update_channel":
 			_, err := version.ParseReleaseChannel(value)

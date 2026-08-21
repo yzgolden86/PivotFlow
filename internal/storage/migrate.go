@@ -466,6 +466,10 @@ func cleanupRemovedSettings(ctx context.Context, db *sql.DB, dialect Dialect) er
 	if err := deleteSystemSetting(ctx, db, dialect, "channel_stats_range"); err != nil {
 		return err
 	}
+	// 日志渠道名只提供完整名称悬浮提示，不再承担页面跳转或编辑行为。
+	if err := deleteSystemSetting(ctx, db, dialect, "log_channel_click_action"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -602,7 +606,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"model_catalog_sync_interval_hours", "6", "float", "从 models.dev 同步官方模型定价目录的间隔（小时，支持小数）；0 仅关闭网络同步，继续使用最近缓存或内置定价；不影响渠道模型列表", "6"},
 		{"auto_update_interval_hours", "12", "int", "非容器部署的上游版本检查间隔（整数小时；0=关闭检查；启用时最低1小时；融合版只读）", "12"},
 		{"auto_update_channel", "stable", "string", "非容器部署的版本检查渠道（stable=稳定版，preview=稳定版和测试版；融合版只读检查）", "stable"},
-		{"log_channel_click_action", "edit", "string", "日志页点击渠道名后的操作", "edit"},
 		// 健康度排序配置
 		{"enable_health_score", "false", "bool", "启用基于健康度的渠道动态排序", "false"},
 		{"success_rate_penalty_weight", "100", "int", "成功率惩罚权重(乘以失败率)", "100"},
