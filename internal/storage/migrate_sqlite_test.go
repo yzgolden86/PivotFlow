@@ -928,6 +928,12 @@ func TestEnsureChannelsDailyCostLimit_SQLite(t *testing.T) {
 	if !cols["scheduled_check_model"] {
 		t.Fatal("scheduled_check_model column not found in channels")
 	}
+	if !cols["available_time_start"] {
+		t.Fatal("available_time_start column not found in channels")
+	}
+	if !cols["available_time_end"] {
+		t.Fatal("available_time_end column not found in channels")
+	}
 }
 
 func TestEnsureChannelsCooldownDetectionRules_SQLite(t *testing.T) {

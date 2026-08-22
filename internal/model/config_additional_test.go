@@ -5,6 +5,48 @@ import (
 	"time"
 )
 
+func TestConfigAvailableTime(t *testing.T) {
+	tests := []struct {
+		name, start, end string
+		times            []string
+		want             []bool
+	}{
+		{name: "all day", times: []string{"00:00", "12:30", "23:59"}, want: []bool{true, true, true}},
+		{name: "day window", start: "09:00", end: "17:00", times: []string{"08:59", "09:00", "16:59", "17:00"}, want: []bool{false, true, true, false}},
+		{name: "overnight window", start: "22:00", end: "08:00", times: []string{"07:59", "08:00", "21:59", "22:00", "23:59"}, want: []bool{true, false, false, true, true}},
+		{name: "equal means all day", start: "12:00", end: "12:00", times: []string{"00:00", "12:00", "23:59"}, want: []bool{true, true, true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{AvailableTimeStart: tt.start, AvailableTimeEnd: tt.end}
+			if err := cfg.NormalizeAvailableTime(); err != nil {
+				t.Fatalf("NormalizeAvailableTime() error = %v", err)
+			}
+			for i, raw := range tt.times {
+				parsed, err := time.Parse("15:04", raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := cfg.IsAvailableAt(parsed); got != tt.want[i] {
+					t.Errorf("IsAvailableAt(%s) = %v, want %v", raw, got, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestConfigAvailableTimeValidation(t *testing.T) {
+	for _, cfg := range []*Config{
+		{AvailableTimeStart: "09:00"},
+		{AvailableTimeEnd: "17:00"},
+		{AvailableTimeStart: "9:00", AvailableTimeEnd: "17:00"},
+	} {
+		if err := cfg.NormalizeAvailableTime(); err == nil {
+			t.Errorf("NormalizeAvailableTime(%q, %q) expected error", cfg.AvailableTimeStart, cfg.AvailableTimeEnd)
+		}
+	}
+}
+
 func TestModelEntry_Validate(t *testing.T) {
 	t.Parallel()
 

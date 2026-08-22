@@ -45,7 +45,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure"}
+	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "available_time_start", "available_time_end", "retry_other_keys_on_failure"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -116,6 +116,8 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			strconv.FormatBool(cfg.ScheduledCheckEnabled),
 			cfg.ScheduledCheckModel,
 			cooldownDetectionRulesJSON,
+			cfg.AvailableTimeStart,
+			cfg.AvailableTimeEnd,
 			strconv.FormatBool(cfg.RetryOtherKeysOnFailure),
 		}
 		if err := writer.Write(record); err != nil {
@@ -178,12 +180,20 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	_, hasScheduledCheckColumn := columnIndex["scheduled_check_enabled"]
 	_, hasScheduledCheckModelColumn := columnIndex["scheduled_check_model"]
 	_, hasCooldownDetectionRulesColumn := columnIndex["cooldown_detection_rules"]
+	_, hasAvailableTimeStartColumn := columnIndex["available_time_start"]
+	_, hasAvailableTimeEndColumn := columnIndex["available_time_end"]
+	if hasAvailableTimeStartColumn != hasAvailableTimeEndColumn {
+		RespondErrorMsg(c, http.StatusBadRequest, "available_time_start 和 available_time_end 必须同时存在")
+		return
+	}
 	_, hasRetryOtherKeysOnFailureColumn := columnIndex["retry_other_keys_on_failure"]
 	existingScheduledCheckByName := make(map[string]bool)
 	existingScheduledCheckModelByName := make(map[string]string)
 	existingCooldownDetectionRulesByName := make(map[string]*model.CooldownDetectionRules)
+	existingAvailableTimeStartByName := make(map[string]string)
+	existingAvailableTimeEndByName := make(map[string]string)
 	existingRetryOtherKeysOnFailureByName := make(map[string]bool)
-	if !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn {
+	if !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasAvailableTimeStartColumn || !hasAvailableTimeEndColumn || !hasRetryOtherKeysOnFailureColumn {
 		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -193,6 +203,8 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			existingScheduledCheckByName[cfg.Name] = cfg.ScheduledCheckEnabled
 			existingScheduledCheckModelByName[cfg.Name] = cfg.ScheduledCheckModel
 			existingCooldownDetectionRulesByName[cfg.Name] = cfg.CooldownDetectionRules.Clone()
+			existingAvailableTimeStartByName[cfg.Name] = cfg.AvailableTimeStart
+			existingAvailableTimeEndByName[cfg.Name] = cfg.AvailableTimeEnd
 			existingRetryOtherKeysOnFailureByName[cfg.Name] = cfg.RetryOtherKeysOnFailure
 		}
 	}
@@ -223,10 +235,14 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			hasScheduledCheckColumn,
 			hasScheduledCheckModelColumn,
 			hasCooldownDetectionRulesColumn,
+			hasAvailableTimeStartColumn,
+			hasAvailableTimeEndColumn,
 			hasRetryOtherKeysOnFailureColumn,
 			existingScheduledCheckByName,
 			existingScheduledCheckModelByName,
 			existingCooldownDetectionRulesByName,
+			existingAvailableTimeStartByName,
+			existingAvailableTimeEndByName,
 			existingRetryOtherKeysOnFailureByName,
 		)
 		if skip {
@@ -296,10 +312,14 @@ func (s *Server) parseChannelImportRow(
 	hasScheduledCheckColumn bool,
 	hasScheduledCheckModelColumn bool,
 	hasCooldownDetectionRulesColumn bool,
+	hasAvailableTimeStartColumn bool,
+	hasAvailableTimeEndColumn bool,
 	hasRetryOtherKeysOnFailureColumn bool,
 	existingScheduledCheckByName map[string]bool,
 	existingScheduledCheckModelByName map[string]string,
 	existingCooldownDetectionRulesByName map[string]*model.CooldownDetectionRules,
+	existingAvailableTimeStartByName map[string]string,
+	existingAvailableTimeEndByName map[string]string,
 	existingRetryOtherKeysOnFailureByName map[string]bool,
 ) (channel *model.ChannelWithKeys, errMsg string, skip bool) {
 	if isCSVRecordEmpty(record) {
@@ -453,6 +473,19 @@ func (s *Server) parseChannelImportRow(
 		cooldownDetectionRules = nil
 	}
 
+	availableTimeStart := existingAvailableTimeStartByName[name]
+	availableTimeEnd := existingAvailableTimeEndByName[name]
+	if hasAvailableTimeStartColumn {
+		availableTimeStart = fetch("available_time_start")
+	}
+	if hasAvailableTimeEndColumn {
+		availableTimeEnd = fetch("available_time_end")
+	}
+	availability := &model.Config{AvailableTimeStart: availableTimeStart, AvailableTimeEnd: availableTimeEnd}
+	if err := availability.NormalizeAvailableTime(); err != nil {
+		return nil, fmt.Sprintf("第%d行渠道可用时段无效: %v", lineNo, err), true
+	}
+
 	retryOtherKeysOnFailure := existingRetryOtherKeysOnFailureByName[name]
 	if raw := fetch("retry_other_keys_on_failure"); raw != "" {
 		val, ok := parseImportEnabled(raw)
@@ -503,6 +536,8 @@ func (s *Server) parseChannelImportRow(
 		ScheduledCheckEnabled:   scheduledCheckEnabled,
 		ScheduledCheckModel:     scheduledCheckModel,
 		CooldownDetectionRules:  cooldownDetectionRules,
+		AvailableTimeStart:      availability.AvailableTimeStart,
+		AvailableTimeEnd:        availability.AvailableTimeEnd,
 		RetryOtherKeysOnFailure: retryOtherKeysOnFailure,
 	}
 
@@ -560,6 +595,10 @@ func normalizeCSVHeader(name string) string {
 		return "scheduled_check_enabled"
 	case "scheduled-check-model", "scheduledcheckmodel", "scheduled check model":
 		return "scheduled_check_model"
+	case "available-time-start", "availabletimestart", "available time start":
+		return "available_time_start"
+	case "available-time-end", "availabletimeend", "available time end":
+		return "available_time_end"
 	case "status":
 		return "enabled"
 	default:

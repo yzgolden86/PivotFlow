@@ -339,7 +339,7 @@ func TestMySQL(t *testing.T) {
 
 		// 验证 channels 表的新增列
 		var columnName string
-		for _, col := range []string{"daily_cost_limit", "scheduled_check_model"} {
+		for _, col := range []string{"daily_cost_limit", "scheduled_check_model", "available_time_start", "available_time_end"} {
 			err = env.db.QueryRow(
 				"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'channels' AND COLUMN_NAME = ?",
 				testMySQLDB, col,

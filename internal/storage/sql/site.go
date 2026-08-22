@@ -1042,7 +1042,7 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 			// Keep the user-facing name and append a stable key identity only when
 			// another channel already owns the requested name.
 			channel.Name = s.uniqueProjectionChannelNameTx(ctx, tx, channel.Name, input.SiteAccountID, input.ProjectionKey)
-			id, err := s.insertID(ctx, tx, "channels", "name,url,priority,rpm_limit,max_concurrency,auth_type,oauth_credential,websockets,protocol_transform_mode,enabled,scheduled_check_enabled,scheduled_check_model,daily_cost_limit,cost_multiplier,custom_request_rules,cooldown_detection_rules,proxy_url,retry_other_keys_on_failure,created_at,updated_at", []any{channel.Name, channel.URLs, 0, 0, 0, channel.AuthType, "", false, channel.ProtocolTransformMode, channel.Enabled, false, "", 0, 1, nil, nil, "", false, now, now})
+			id, err := s.insertID(ctx, tx, "channels", "name,url,priority,rpm_limit,max_concurrency,auth_type,oauth_credential,websockets,protocol_transform_mode,enabled,scheduled_check_enabled,scheduled_check_model,daily_cost_limit,cost_multiplier,custom_request_rules,cooldown_detection_rules,proxy_url,available_time_start,available_time_end,retry_other_keys_on_failure,created_at,updated_at", []any{channel.Name, channel.URLs, 0, 0, 0, channel.AuthType, "", false, channel.ProtocolTransformMode, channel.Enabled, false, "", 0, 1, nil, nil, "", "", "", false, now, now})
 			if err != nil {
 				return err
 			}

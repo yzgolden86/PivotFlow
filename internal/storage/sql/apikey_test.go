@@ -436,6 +436,8 @@ func TestAPIKey_ImportChannelBatchPreservesScheduledCheckWithExplicitID(t *testi
 			Priority:              5,
 			Enabled:               true,
 			ScheduledCheckEnabled: true,
+			AvailableTimeStart:    "23:00",
+			AvailableTimeEnd:      "07:00",
 			ModelEntries: []model.ModelEntry{
 				{Model: "gpt-4o-mini"},
 			},
@@ -459,6 +461,9 @@ func TestAPIKey_ImportChannelBatchPreservesScheduledCheckWithExplicitID(t *testi
 	}
 	if !config.ScheduledCheckEnabled {
 		t.Fatalf("expected scheduled_check_enabled to persist for explicit id import")
+	}
+	if config.AvailableTimeStart != "23:00" || config.AvailableTimeEnd != "07:00" {
+		t.Fatalf("expected available time to persist, got %q-%q", config.AvailableTimeStart, config.AvailableTimeEnd)
 	}
 }
 

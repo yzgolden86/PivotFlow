@@ -42,6 +42,12 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 
 	now := time.Now()
 
+	// 可用时段是静态路由约束，窗口外的渠道不得进入冷却兜底。
+	channels = filterAvailableChannelsAt(channels, now)
+	if len(channels) == 0 {
+		return nil, nil
+	}
+
 	// === 成本限额过滤（在冷却过滤之前）===
 	channels = s.filterCostLimitExceededChannels(channels)
 	if len(channels) == 0 {
@@ -105,6 +111,16 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 
 	// healthCache 关闭时：按优先级分组，使用平滑加权轮询
 	return s.balanceSamePriorityChannels(filtered, keyCooldowns, now), nil
+}
+
+func filterAvailableChannelsAt(channels []*modelpkg.Config, now time.Time) []*modelpkg.Config {
+	available := make([]*modelpkg.Config, 0, len(channels))
+	for _, cfg := range channels {
+		if cfg != nil && cfg.IsAvailableAt(now) {
+			available = append(available, cfg)
+		}
+	}
+	return available
 }
 
 func cooldownFallbackCandidate(cfg *modelpkg.Config) *modelpkg.Config {

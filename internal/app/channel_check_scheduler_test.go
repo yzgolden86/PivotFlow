@@ -345,3 +345,15 @@ func TestTriggerScheduledChannelChecks_SkipsReentry(t *testing.T) {
 		t.Fatal("expected triggerScheduledChannelChecks to skip when previous run is active")
 	}
 }
+
+func TestShouldRunScheduledChannelCheck_RespectsAvailableTime(t *testing.T) {
+	cfg := &model.Config{Enabled: true, ScheduledCheckEnabled: true, AvailableTimeStart: "09:00", AvailableTimeEnd: "17:00"}
+	inside := time.Date(2026, 8, 22, 12, 0, 0, 0, time.Local)
+	outside := time.Date(2026, 8, 22, 18, 0, 0, 0, time.Local)
+	if !shouldRunScheduledChannelCheckAt(cfg, inside) {
+		t.Fatal("expected scheduled check to run inside availability window")
+	}
+	if shouldRunScheduledChannelCheckAt(cfg, outside) {
+		t.Fatal("expected scheduled check to skip outside availability window")
+	}
+}

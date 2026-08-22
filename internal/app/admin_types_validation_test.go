@@ -255,6 +255,38 @@ func TestChannelRequest_ToConfigCopiesScheduledCheckModel(t *testing.T) {
 	}
 }
 
+func TestChannelRequestValidation_AvailableTime(t *testing.T) {
+	t.Run("cross midnight allowed", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.AvailableTimeStart = "22:00"
+		req.AvailableTimeEnd = "08:00"
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+		got := req.ToConfig()
+		if got.AvailableTimeStart != "22:00" || got.AvailableTimeEnd != "08:00" {
+			t.Fatalf("ToConfig() available time = %q-%q", got.AvailableTimeStart, got.AvailableTimeEnd)
+		}
+	})
+
+	for _, tt := range []struct {
+		name, start, end string
+	}{
+		{name: "missing end", start: "09:00"},
+		{name: "missing start", end: "17:00"},
+		{name: "invalid format", start: "9:00", end: "17:00"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newValidChannelRequest()
+			req.AvailableTimeStart = tt.start
+			req.AvailableTimeEnd = tt.end
+			if err := req.Validate(); err == nil {
+				t.Fatal("Validate() error = nil, want error")
+			}
+		})
+	}
+}
+
 func TestChannelRequestValidation_RPMLimit(t *testing.T) {
 	runChannelRequestNonNegativeLimitValidation(t, "rpm_limit", 120, func(req *ChannelRequest, value int) {
 		req.RPMLimit = value
