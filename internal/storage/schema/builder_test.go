@@ -82,3 +82,10 @@ func TestDefineChannelsTable_MySQLOAuthCredentialIsNullableWithoutDefault(t *tes
 		t.Fatalf("BuildMySQL constrains optional OAuth credential, got:\n%s", ddl)
 	}
 }
+
+func TestDefineAPIKeysTable_MySQLSecretColumnIsText(t *testing.T) {
+	ddl := DefineAPIKeysTable().BuildMySQL()
+	if !strings.Contains(ddl, "api_key TEXT NOT NULL") {
+		t.Fatalf("BuildMySQL must keep encrypted API keys in TEXT, got:\n%s", ddl)
+	}
+}

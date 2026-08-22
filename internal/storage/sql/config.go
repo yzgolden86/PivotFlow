@@ -41,6 +41,9 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := s.decryptConfigs(configs); err != nil {
+		return nil, err
+	}
 
 	if err := s.loadConfigsAuxConcurrent(ctx, configs); err != nil {
 		return nil, err
@@ -73,6 +76,9 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New("not found")
 		}
+		return nil, err
+	}
+	if err := s.decryptConfigs([]*model.Config{config}); err != nil {
 		return nil, err
 	}
 
@@ -134,6 +140,9 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 	if err != nil {
 		return nil, err
 	}
+	if err := s.decryptConfigs(configs); err != nil {
+		return nil, err
+	}
 
 	// 批量加载所有渠道的模型数据
 	if err := s.loadConfigsAuxConcurrent(ctx, configs); err != nil {
@@ -162,6 +171,10 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 	if authType == model.AuthTypeAPIKey && strings.TrimSpace(c.OAuthCredential) != "" {
 		return nil, errors.New("api_key channel cannot contain an OAuth credential")
 	}
+	storedOAuthCredential, err := s.sealSecret(c.OAuthCredential)
+	if err != nil {
+		return nil, err
+	}
 
 	protocolTransformMode := c.GetProtocolTransformMode()
 	customRules, err := marshalCustomRequestRules(c.CustomRequestRules)
@@ -187,7 +200,7 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 					INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, available_time_start, available_time_end, retry_other_keys_on_failure, created_at, updated_at)
 					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					RETURNING id
-					`, c.Name, c.URLs, c.Priority, c.RPMLimit, c.MaxConcurrency, authType, c.OAuthCredential, c.Websockets,
+					`, c.Name, c.URLs, c.Priority, c.RPMLimit, c.MaxConcurrency, authType, storedOAuthCredential, c.Websockets,
 					protocolTransformMode, c.Enabled, c.ScheduledCheckEnabled, c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, cooldownDetectionRules, c.ProxyURL, c.AvailableTimeStart, c.AvailableTimeEnd, c.RetryOtherKeysOnFailure, nowUnix, nowUnix).Scan(&id)
 				if err != nil {
 					return err
@@ -196,7 +209,7 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 				res, err := s.execTx(ctx, tx, `
 					INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, available_time_start, available_time_end, retry_other_keys_on_failure, created_at, updated_at)
 					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-					`, c.Name, c.URLs, c.Priority, c.RPMLimit, c.MaxConcurrency, authType, c.OAuthCredential, c.Websockets,
+					`, c.Name, c.URLs, c.Priority, c.RPMLimit, c.MaxConcurrency, authType, storedOAuthCredential, c.Websockets,
 					protocolTransformMode, c.Enabled, c.ScheduledCheckEnabled, c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, cooldownDetectionRules, c.ProxyURL, c.AvailableTimeStart, c.AvailableTimeEnd, c.RetryOtherKeysOnFailure, nowUnix, nowUnix)
 				if err != nil {
 					return err
@@ -212,7 +225,7 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 				_, err := s.execTx(ctx, tx, `
 					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, available_time_start, available_time_end, retry_other_keys_on_failure, created_at, updated_at)
 					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-					`, id, c.Name, c.URLs, c.Priority, c.RPMLimit, c.MaxConcurrency, authType, c.OAuthCredential, c.Websockets,
+					`, id, c.Name, c.URLs, c.Priority, c.RPMLimit, c.MaxConcurrency, authType, storedOAuthCredential, c.Websockets,
 					protocolTransformMode, c.Enabled, c.ScheduledCheckEnabled, c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, cooldownDetectionRules, c.ProxyURL, c.AvailableTimeStart, c.AvailableTimeEnd, c.RetryOtherKeysOnFailure, nowUnix, nowUnix)
 				if err != nil {
 					return err
@@ -243,7 +256,7 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 						available_time_end = VALUES(available_time_end),
 						retry_other_keys_on_failure = VALUES(retry_other_keys_on_failure),
 						updated_at = VALUES(updated_at)
-					`, id, c.Name, c.URLs, c.Priority, c.RPMLimit, c.MaxConcurrency, authType, c.OAuthCredential, c.Websockets,
+					`, id, c.Name, c.URLs, c.Priority, c.RPMLimit, c.MaxConcurrency, authType, storedOAuthCredential, c.Websockets,
 					protocolTransformMode, c.Enabled, c.ScheduledCheckEnabled, c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, cooldownDetectionRules, c.ProxyURL, c.AvailableTimeStart, c.AvailableTimeEnd, c.RetryOtherKeysOnFailure, nowUnix, nowUnix)
 				if err != nil {
 					return err
@@ -356,11 +369,15 @@ func (s *SQLStore) UpdateOAuthCredential(ctx context.Context, id int64, credenti
 	if strings.TrimSpace(credential) == "" {
 		return errors.New("OAuth credential cannot be empty")
 	}
+	storedCredential, err := s.sealSecret(credential)
+	if err != nil {
+		return err
+	}
 	result, err := s.ExecContext(ctx, `
 		UPDATE channels
 		SET oauth_credential = ?, updated_at = ?
 		WHERE id = ? AND auth_type <> ?
-	`, credential, timeToUnix(time.Now()), id, model.AuthTypeAPIKey)
+	`, storedCredential, timeToUnix(time.Now()), id, model.AuthTypeAPIKey)
 	if err != nil {
 		return fmt.Errorf("update OAuth credential: %w", err)
 	}

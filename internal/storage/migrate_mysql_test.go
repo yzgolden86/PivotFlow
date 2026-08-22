@@ -530,11 +530,11 @@ func TestMySQL(t *testing.T) {
 			t.Fatalf("查询 api_keys.api_key 列定义失败: %v", err)
 		}
 
-		if !strings.EqualFold(dataType, "varchar") {
-			t.Fatalf("api_keys.api_key 类型错误: got=%s want=varchar", dataType)
+		if !strings.EqualFold(dataType, "text") {
+			t.Fatalf("api_keys.api_key 类型错误: got=%s want=text", dataType)
 		}
-		if !charLen.Valid || charLen.Int64 != 255 {
-			t.Fatalf("api_keys.api_key 长度错误: got=%v want=255", charLen)
+		if charLen.Valid {
+			t.Fatalf("api_keys.api_key 长度应不受 VARCHAR 限制: got=%v", charLen)
 		}
 		if !strings.EqualFold(isNullable, "NO") {
 			t.Fatalf("api_keys.api_key 可空性错误: got=%s want=NO", isNullable)
@@ -552,7 +552,7 @@ func TestMySQL(t *testing.T) {
 			t.Fatalf("protocol_transform_mode 默认值=%v, want auto", protocolTransformDefault)
 		}
 
-		longKey := "sk-" + strings.Repeat("x", 197) // 长度 200，验证迁移后的 VARCHAR(255) 契约
+		longKey := "sk-" + strings.Repeat("x", 509) // 验证密文和长 Key 不会被列宽截断
 		created, updated, err := store.ImportChannelBatch(context.Background(), []*model.ChannelWithKeys{
 			{
 				Config: &model.Config{

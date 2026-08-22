@@ -602,7 +602,7 @@ func buildEntryScope(entryIndexes map[statsRequestKey]int) (string, []any) {
 }
 
 // GetStatsLite 轻量版统计查询，跳过RPM计算和渠道名称填充
-// 适用于 /public/summary 等只需要基础聚合数据的场景
+// 适用于 /dashboard/summary 等只需要基础聚合数据的场景
 func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
 	stats, _, err := s.executeStatsQuery(ctx, startTime, endTime, filter, false)
 	return stats, err

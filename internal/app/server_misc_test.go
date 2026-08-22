@@ -147,6 +147,78 @@ func TestServer_SetupRoutes_V1BetaCORSHeadersOnAuthFailure(t *testing.T) {
 	}
 }
 
+func TestServer_SetupRoutes_SecurityHeadersAndProtectedSummaries(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+
+	t.Run("global security headers", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+		if got := w.Header().Get("Permissions-Policy"); got != "camera=(), microphone=(), geolocation=()" {
+			t.Fatalf("Permissions-Policy=%q", got)
+		}
+		if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("X-Content-Type-Options=%q", got)
+		}
+		if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
+			t.Fatalf("X-Frame-Options=%q", got)
+		}
+	})
+
+	t.Run("admin responses are not cached", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/admin/channels", nil))
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusUnauthorized)
+		}
+		if got := w.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("Cache-Control=%q, want no-store", got)
+		}
+		if got := w.Header().Get("Pragma"); got != "no-cache" {
+			t.Fatalf("Pragma=%q, want no-cache", got)
+		}
+	})
+
+	t.Run("login and dashboard responses are not cached", func(t *testing.T) {
+		for _, testCase := range []struct {
+			method string
+			path   string
+		}{
+			{method: http.MethodPost, path: "/login"},
+			{method: http.MethodGet, path: "/dashboard/summary"},
+			{method: http.MethodPost, path: "/dashboard/v1/chat/completions"},
+		} {
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, httptest.NewRequest(testCase.method, testCase.path, nil))
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("%s %s Cache-Control=%q, want no-store", testCase.method, testCase.path, got)
+			}
+			if got := w.Header().Get("Pragma"); got != "no-cache" {
+				t.Errorf("%s %s Pragma=%q, want no-cache", testCase.method, testCase.path, got)
+			}
+		}
+	})
+
+	t.Run("usage summary requires a web session", func(t *testing.T) {
+		publicResponse := httptest.NewRecorder()
+		engine.ServeHTTP(publicResponse, httptest.NewRequest(http.MethodGet, "/public/summary", nil))
+		if publicResponse.Code != http.StatusNotFound {
+			t.Fatalf("GET /public/summary status=%d, want %d", publicResponse.Code, http.StatusNotFound)
+		}
+
+		dashboardResponse := httptest.NewRecorder()
+		engine.ServeHTTP(dashboardResponse, httptest.NewRequest(http.MethodGet, "/dashboard/summary", nil))
+		if dashboardResponse.Code != http.StatusUnauthorized {
+			t.Fatalf("GET /dashboard/summary status=%d, want %d", dashboardResponse.Code, http.StatusUnauthorized)
+		}
+	})
+}
+
 func TestServer_GetWriteTimeout(t *testing.T) {
 	t.Parallel()
 

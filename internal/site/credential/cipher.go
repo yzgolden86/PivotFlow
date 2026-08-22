@@ -24,6 +24,35 @@ const (
 	keyVersionEnv     = "FUSION_MASTER_KEY_VERSION"
 )
 
+// IsSealed reports whether value uses the credential ciphertext envelope.
+// Open still authenticates the version, nonce, and ciphertext before use.
+func IsSealed(value string) bool {
+	parts := strings.Split(strings.TrimSpace(value), ".")
+	if len(parts) != 4 || parts[0] != formatPrefix || !validKeyVersion(parts[1]) {
+		return false
+	}
+	nonce, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(nonce) != 12 {
+		return false
+	}
+	ciphertext, err := base64.RawURLEncoding.DecodeString(parts[3])
+	return err == nil && len(ciphertext) >= 16
+}
+
+func validKeyVersion(version string) bool {
+	if len(version) == 0 || len(version) > 64 {
+		return false
+	}
+	for _, char := range version {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-' || char == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 var (
 	ErrCredentialLocked  = errors.New("credential_locked")
 	ErrInvalidMasterKey  = errors.New("invalid fusion master key")
@@ -44,9 +73,13 @@ func New(key []byte, version string) (*Cipher, error) {
 	if strings.TrimSpace(version) == "" {
 		version = defaultKeyVersion
 	}
+	version = strings.TrimSpace(version)
+	if !validKeyVersion(version) {
+		return nil, ErrInvalidMasterKey
+	}
 	var raw [32]byte
 	copy(raw[:], key)
-	return &Cipher{key: raw, version: strings.TrimSpace(version)}, nil
+	return &Cipher{key: raw, version: version}, nil
 }
 
 // NewFromEnv reads the base64url encoded master key. Personal SQLite

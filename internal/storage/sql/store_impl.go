@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/site/credential"
 	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
@@ -18,6 +19,10 @@ import (
 type SQLStore struct {
 	db         *sql.DB
 	driverName string // "sqlite" | "mysql" | "postgres"
+
+	// Configured by the production storage factory. Test stores may leave this
+	// nil to keep fixtures deterministic and self-contained.
+	credentialCipher *credential.Cipher
 
 	// [FIX] 2025-12：保证 Close 幂等性，防止重复关闭导致 panic
 	closeOnce sync.Once

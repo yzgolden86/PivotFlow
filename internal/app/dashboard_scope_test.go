@@ -561,7 +561,7 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 
 	summaryCtx, summaryW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/summary?range=today", nil))
 	summaryCtx.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
-	server.HandlePublicSummary(summaryCtx)
+	server.HandleDashboardSummary(summaryCtx)
 	summary := mustParseAPIResponse[struct {
 		TotalRequests int `json:"total_requests"`
 	}](t, summaryW.Body.Bytes()).Data

@@ -4,8 +4,11 @@ services:
   pivotflow:
     image: ghcr.io/yzgolden86/pivotflow:latest
     container_name: pivotflow
-    user: root
     restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       # 宿主机端口:容器端口。只改左边即可对外换端口，不要改右边
       - "8080:8080"

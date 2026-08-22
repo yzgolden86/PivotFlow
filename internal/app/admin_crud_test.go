@@ -295,6 +295,37 @@ func TestHandleListChannelsFiltersByAuthenticationType(t *testing.T) {
 	}
 }
 
+func TestApplyChannelListFiltersBySource(t *testing.T) {
+	cfgs := []*model.Config{
+		{ID: 1, Name: "site projected", AuthType: model.AuthTypeAPIKey},
+		{ID: 2, Name: "manual API key", AuthType: model.AuthTypeAPIKey},
+		{ID: 3, Name: "Codex Auth", AuthType: model.AuthTypeCodexOAuth},
+		{ID: 4, Name: "Antigravity Auth", AuthType: model.AuthTypeAntigravityOAuth},
+	}
+	projected := map[int64]struct{}{1: {}}
+
+	for _, tt := range []struct {
+		source    string
+		wantNames []string
+	}{
+		{source: "site_sync", wantNames: []string{"site projected"}},
+		{source: "manual", wantNames: []string{"manual API key"}},
+		{source: "auth", wantNames: []string{"Antigravity Auth", "Codex Auth"}},
+	} {
+		t.Run(tt.source, func(t *testing.T) {
+			filtered := filterChannelConfigsBySource(cfgs, tt.source, projected)
+			gotNames := make([]string, 0, len(filtered))
+			for _, cfg := range filtered {
+				gotNames = append(gotNames, cfg.Name)
+			}
+			sort.Strings(gotNames)
+			if !slices.Equal(gotNames, tt.wantNames) {
+				t.Fatalf("source=%s names=%v, want %v", tt.source, gotNames, tt.wantNames)
+			}
+		})
+	}
+}
+
 func TestChannelCooldownFilterIncludesChannelKeyAndModelCooldowns(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

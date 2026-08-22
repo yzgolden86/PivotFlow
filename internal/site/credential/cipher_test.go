@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +26,42 @@ func TestCipherRoundTripAndTamper(t *testing.T) {
 	}
 	if err := c.Open(sealed+"x", &got); !errors.Is(err, ErrInvalidCiphertext) {
 		t.Fatalf("tamper error = %v", err)
+	}
+}
+
+func TestIsSealedValidatesEnvelopeShape(t *testing.T) {
+	c, err := New([]byte("01234567890123456789012345678901"), "v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := c.Seal(map[string]string{"token": "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !IsSealed(sealed) {
+		t.Fatalf("IsSealed(%q) = false, want true", sealed)
+	}
+
+	for _, value := range []string{
+		"fc1.actual-upstream-key",
+		"fc1.v1.not-base64.not-base64",
+		"fc1.v1.c2hvcnQ.AAAAAAAAAAAAAAAAAAAAAA",
+		"fc1.v1.MDEyMzQ1Njc4OTAx.c2hvcnQ",
+		"fc1..MDEyMzQ1Njc4OTAx.AAAAAAAAAAAAAAAAAAAAAA",
+		"fc1.invalid!version.MDEyMzQ1Njc4OTAx.AAAAAAAAAAAAAAAAAAAAAA",
+	} {
+		if IsSealed(value) {
+			t.Errorf("IsSealed(%q) = true, want false", value)
+		}
+	}
+}
+
+func TestNewRejectsInvalidKeyVersion(t *testing.T) {
+	for _, version := range []string{"release.1", "version with spaces", strings.Repeat("v", 65)} {
+		if _, err := New([]byte("01234567890123456789012345678901"), version); !errors.Is(err, ErrInvalidMasterKey) {
+			t.Errorf("New(version=%q) error=%v, want ErrInvalidMasterKey", version, err)
+		}
 	}
 }
 

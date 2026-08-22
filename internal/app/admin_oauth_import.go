@@ -192,7 +192,7 @@ func (s *Server) HandleImportOAuthCredentialsStream(c *gin.Context) {
 	defer batch.close()
 
 	c.Header("Content-Type", "text/event-stream; charset=utf-8")
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-store")
 	c.Header("X-Accel-Buffering", "no")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Status(http.StatusOK)
