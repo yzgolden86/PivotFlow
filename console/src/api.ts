@@ -191,6 +191,7 @@ function channelParams(filters: ChannelFilters): URLSearchParams {
   })
   if (filters.search) params.set('search', filters.search)
   if (filters.status && filters.status !== 'all') params.set('status', filters.status)
+  if (filters.source && filters.source !== 'all') params.set('source', filters.source)
   if (filters.sort) params.set('sort', filters.sort)
   return params
 }

@@ -992,8 +992,14 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		c.Next()
 	})
+	noStore := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
+		c.Next()
+	}
 
 	// 公开访问的API（代理服务）- 需要 API 认证
 	// 透明代理：统一处理所有 /v1/* 端点，支持所有HTTP方法
@@ -1023,22 +1029,21 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 	// 健康检查（公开访问，无需认证，K8s liveness/readiness probe）
 	r.GET("/health", s.HandleHealth)
 
-	// 公开访问的API（首页仪表盘数据）
-	// [SECURITY NOTE] /public/* 端点故意不做认证，用于首页展示。
-	// 认证仪表盘使用 /dashboard/summary；该公开端点保留给未登录首页集成。
+	// Public capability metadata. Usage and traffic summaries are exposed only
+	// through the authenticated /dashboard group below.
 	public := r.Group("/public", ZstdMiddleware())
 	{
-		public.GET("/summary", s.HandlePublicSummary)
 		public.GET("/protocols", s.HandleGetProtocols)
 		public.GET("/version", s.HandlePublicVersion)
 	}
 
 	// 登录相关（公开访问）
-	r.POST("/login", s.authService.HandleLogin)
-	r.POST("/logout", s.authService.HandleLogout)
+	r.POST("/login", noStore, s.authService.HandleLogin)
+	r.POST("/logout", noStore, s.authService.HandleLogout)
 
 	// 需要身份验证的admin APIs（使用Token认证）
 	admin := r.Group("/admin", ZstdMiddleware())
+	admin.Use(noStore)
 	admin.Use(s.authService.RequireAdminAuth())
 	{
 		// 渠道管理
@@ -1177,10 +1182,11 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 
 	// Web 仪表盘只读 API。API Token 会话由服务端强制绑定 auth_token_id。
 	dashboard := r.Group("/dashboard", ZstdMiddleware())
+	dashboard.Use(noStore)
 	dashboard.Use(s.authService.RequireWebAuth())
 	{
 		dashboard.GET("/session", s.authService.HandleWebSession)
-		dashboard.GET("/summary", s.HandlePublicSummary)
+		dashboard.GET("/summary", s.HandleDashboardSummary)
 		dashboard.GET("/logs", s.HandleErrors)
 		dashboard.GET("/logs/bootstrap", s.HandleLogsBootstrap)
 		dashboard.GET("/metrics", s.HandleMetrics)
@@ -1191,7 +1197,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		dashboard.GET("/channels/filter-options", s.HandleDashboardChannelFilterOptions)
 	}
 	dashboardProxy := r.Group("/dashboard")
-	dashboardProxy.Use(s.authService.RequireWebAuth(), s.authService.RequireWebAPITokenProxyAuth(), captureDashboardProxyMetadata())
+	dashboardProxy.Use(noStore, s.authService.RequireWebAuth(), s.authService.RequireWebAPITokenProxyAuth(), captureDashboardProxyMetadata())
 	dashboardProxy.Any("/v1/*path", s.HandleProxyRequest)
 	dashboardProxy.Any("/v1beta/*path", s.HandleProxyRequest)
 

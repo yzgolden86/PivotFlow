@@ -135,7 +135,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	filename := fmt.Sprintf("channels-%s.csv", time.Now().Format("20060102-150405"))
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-store")
 	c.String(http.StatusOK, buf.String())
 }
 

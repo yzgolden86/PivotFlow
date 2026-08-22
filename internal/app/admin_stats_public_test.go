@@ -105,10 +105,10 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		t.Fatalf("BatchAddLogs failed: %v", err)
 	}
 
-	t.Run("HandlePublicSummary", func(t *testing.T) {
-		c, w := newTestContext(t, newRequest(http.MethodGet, "/public/summary?range=today", nil))
+	t.Run("HandleDashboardSummary", func(t *testing.T) {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/summary?range=today", nil))
 
-		server.HandlePublicSummary(c)
+		server.HandleDashboardSummary(c)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
 		}

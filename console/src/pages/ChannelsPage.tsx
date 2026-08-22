@@ -11,7 +11,7 @@ export default function ChannelsPage() {
   const query = useMemo(() => new URLSearchParams(location.search), [location.search])
   const querySearch = query.get('search') || ''
   const focusChannelID = Number(query.get('focus_channel_id') || 0)
-  const initialResult = peekChannels({ search: querySearch, status: 'all', sort: 'priority', limit: 50, offset: 0 })
+  const initialResult = peekChannels({ search: querySearch, status: 'all', source: 'all', sort: 'priority', limit: 50, offset: 0 })
   const [channels, setChannels] = useState<Channel[]>(() => initialResult?.data || [])
   const [total, setTotal] = useState(() => initialResult?.count || 0)
   const [page, setPage] = useState(1)
@@ -19,6 +19,7 @@ export default function ChannelsPage() {
   const [searchDraft, setSearchDraft] = useState(querySearch)
   const [search, setSearch] = useState(querySearch)
   const [status, setStatus] = useState('all')
+  const [source, setSource] = useState('all')
   const [sort, setSort] = useState('priority')
   const [loading, setLoading] = useState(!initialResult)
   const [error, setError] = useState('')
@@ -31,27 +32,29 @@ export default function ChannelsPage() {
   const [syncOpen, setSyncOpen] = useState(false)
   const importInput = useRef<HTMLInputElement>(null)
   const focusedChannelRef = useRef(0)
+  const loadedOnceRef = useRef(Boolean(initialResult))
 
   const load = useCallback(async (signal?: AbortSignal, options: { silent?: boolean; force?: boolean } = {}) => {
-    const filters = { search, status, sort, limit: pageSize, offset: (page - 1) * pageSize }
+    const filters = { search, status, source, sort, limit: pageSize, offset: (page - 1) * pageSize }
     const cached = peekChannels(filters)
     if (cached) {
       setChannels(cached.data)
       setTotal(cached.count)
     }
-    if (!options.silent) setLoading(!cached)
+    if (!options.silent) setLoading(!cached && !loadedOnceRef.current)
     setError('')
     try {
       const result = await getChannels(filters, signal, { force: options.force })
       setChannels(result.data)
       setTotal(result.count)
+      loadedOnceRef.current = true
       setSelected((current) => new Set([...current].filter((id) => result.data.some((channel) => channel.id === id))))
     } catch (reason) {
       if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '渠道加载失败')
     } finally {
       if (!signal?.aborted && !options.silent) setLoading(false)
     }
-  }, [page, pageSize, search, sort, status])
+  }, [page, pageSize, search, sort, source, status])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -60,6 +63,15 @@ export default function ChannelsPage() {
   }, [load])
 
   useEffect(() => { setPage(1); setSearchDraft(querySearch); setSearch(querySearch) }, [querySearch])
+  useEffect(() => {
+    const nextSearch = searchDraft.trim()
+    if (nextSearch === search) return
+    const timer = window.setTimeout(() => {
+      setPage(1)
+      setSearch(nextSearch)
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [search, searchDraft])
   useEffect(() => {
     if (!focusChannelID || loading || focusedChannelRef.current === focusChannelID) return
     focusedChannelRef.current = focusChannelID
@@ -160,17 +172,19 @@ export default function ChannelsPage() {
         <span><strong>{total}</strong>渠道总数</span><span><strong>{summary.enabled}</strong>当前页启用</span><span><strong>{summary.cooldown}</strong>冷却中</span><span><strong>{summary.models}</strong>可用模型映射</span>
       </section>
 
-      <form className="filter-bar" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(searchDraft.trim()) }}>
+      <div className="filter-bar">
         <label className="selection-toggle"><input type="checkbox" checked={allPageSelected} onChange={toggleAllPage} aria-label="选择当前页全部渠道" /><span>全选</span></label>
         <label className="search-field"><Search size={16} /><input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="搜索渠道名称" aria-label="搜索渠道名称" /></label>
         <select value={status} onChange={(event) => { setPage(1); setStatus(event.target.value) }} aria-label="渠道状态">
           <option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option><option value="cooldown">冷却中</option>
         </select>
+        <select value={source} onChange={(event) => { setPage(1); setSource(event.target.value) }} aria-label="渠道来源">
+          <option value="all">全部来源</option><option value="site_sync">站点同步</option><option value="manual">手工添加</option><option value="auth">AUTH 添加</option>
+        </select>
         <select value={sort} onChange={(event) => { setPage(1); setSort(event.target.value) }} aria-label="渠道排序">
           <option value="priority">优先级</option><option value="newest">新建优先</option><option value="name">名称 A-Z</option><option value="enabled">启用优先</option><option value="models">模型数量</option>
         </select>
-        <button className="primary-button" type="submit"><Search size={15} />筛选</button>
-      </form>
+      </div>
 
       {selected.size > 0 && <div className="batch-toolbar" aria-label="渠道批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
 

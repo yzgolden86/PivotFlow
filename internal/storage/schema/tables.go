@@ -40,7 +40,7 @@ func DefineAPIKeysTable() *TableBuilder {
 		Column("id INT PRIMARY KEY AUTO_INCREMENT").
 		Column("channel_id INT NOT NULL").
 		Column("key_index INT NOT NULL").
-		Column("api_key VARCHAR(255) NOT NULL").
+		Column("api_key TEXT NOT NULL").
 		Column("note VARCHAR(512) NOT NULL DEFAULT ''").
 		Column("key_strategy VARCHAR(32) NOT NULL DEFAULT 'sequential'").
 		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").

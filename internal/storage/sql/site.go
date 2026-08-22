@@ -940,7 +940,12 @@ func (s *SQLStore) projectionSourceHashTx(ctx context.Context, tx *sql.Tx, chann
 		if index != 0 || disabled {
 			validKeys = false
 		}
-		apiKey = key
+		plaintext, err := s.openSecret(key)
+		if err != nil {
+			_ = keyRows.Close()
+			return "", false, fmt.Errorf("decrypt projected channel API key: %w", err)
+		}
+		apiKey = plaintext
 	}
 	if err := keyRows.Close(); err != nil {
 		return "", false, err
@@ -1119,7 +1124,11 @@ func (s *SQLStore) uniqueProjectionChannelNameTx(ctx context.Context, tx *sql.Tx
 }
 
 func (s *SQLStore) execAPIKeyTx(ctx context.Context, tx *sql.Tx, channelID int64, apiKey string) error {
-	_, err := s.execTx(ctx, tx, `INSERT INTO api_keys(channel_id,key_index,api_key,note,key_strategy,cooldown_until,cooldown_duration_ms,disabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, channelID, 0, apiKey, "projected", model.KeyStrategySequential, 0, 0, false, siteNow(), siteNow())
+	storedAPIKey, err := s.sealSecret(apiKey)
+	if err != nil {
+		return fmt.Errorf("encrypt projected channel API key: %w", err)
+	}
+	_, err = s.execTx(ctx, tx, `INSERT INTO api_keys(channel_id,key_index,api_key,note,key_strategy,cooldown_until,cooldown_duration_ms,disabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, channelID, 0, storedAPIKey, "projected", model.KeyStrategySequential, 0, 0, false, siteNow(), siteNow())
 	return err
 }
 

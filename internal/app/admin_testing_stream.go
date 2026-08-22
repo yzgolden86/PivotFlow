@@ -89,7 +89,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-store")
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 	disableResponseWriteTimeout(c.Writer, "聊天流式")
@@ -946,7 +946,7 @@ func writeChatErrorEvent(c *gin.Context, msg string) {
 	w := c.Writer
 	if !c.Writer.Written() {
 		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
+		c.Header("Cache-Control", "no-store")
 		c.Header("X-Accel-Buffering", "no")
 		c.Status(http.StatusOK)
 	}

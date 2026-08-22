@@ -821,9 +821,31 @@ func migrateChannelsURLToText(ctx context.Context, db *sql.DB, dialect Dialect) 
 	return nil
 }
 
-// ensureAPIKeysAPIKeyLength 修复 api_keys.api_key 列定义漂移（MySQL）
+// ensureAPIKeysAPIKeyLength ensures encrypted API keys cannot be truncated.
 func ensureAPIKeysAPIKeyLength(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect != DialectMySQL {
+	if dialect == DialectSQLite {
+		return nil
+	}
+	if dialect == DialectPostgres {
+		var dataType, isNullable string
+		err := db.QueryRowContext(ctx, `
+			SELECT data_type, is_nullable
+			FROM information_schema.columns
+			WHERE table_schema=current_schema() AND table_name='api_keys' AND column_name='api_key'
+		`).Scan(&dataType, &isNullable)
+		if err != nil {
+			return fmt.Errorf("query api_keys.api_key column info: %w", err)
+		}
+		if strings.EqualFold(dataType, "text") && strings.EqualFold(isNullable, "NO") {
+			return nil
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE api_keys ALTER COLUMN api_key TYPE TEXT"); err != nil {
+			return fmt.Errorf("modify api_keys.api_key type: %w", err)
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE api_keys ALTER COLUMN api_key SET NOT NULL"); err != nil {
+			return fmt.Errorf("modify api_keys.api_key nullability: %w", err)
+		}
+		log.Printf("[MIGRATE] Modified api_keys.api_key column: type=%s nullable=%s -> TEXT NOT NULL", dataType, isNullable)
 		return nil
 	}
 
@@ -841,17 +863,12 @@ func ensureAPIKeysAPIKeyLength(ctx context.Context, db *sql.DB, dialect Dialect)
 		return fmt.Errorf("query api_keys.api_key column info: %w", err)
 	}
 
-	const targetLen = 255
-
-	needModify := !strings.EqualFold(dataType, "varchar") ||
-		!charMaxLen.Valid ||
-		charMaxLen.Int64 < targetLen ||
-		!strings.EqualFold(isNullable, "NO")
+	needModify := !strings.EqualFold(dataType, "text") || !strings.EqualFold(isNullable, "NO")
 	if !needModify {
 		return nil
 	}
 
-	if _, err := db.ExecContext(ctx, "ALTER TABLE api_keys MODIFY COLUMN api_key VARCHAR(255) NOT NULL"); err != nil {
+	if _, err := db.ExecContext(ctx, "ALTER TABLE api_keys MODIFY COLUMN api_key TEXT NOT NULL"); err != nil {
 		return fmt.Errorf("modify api_keys.api_key column: %w", err)
 	}
 
@@ -860,7 +877,7 @@ func ensureAPIKeysAPIKeyLength(ctx context.Context, db *sql.DB, dialect Dialect)
 		currentLen = charMaxLen.Int64
 	}
 	log.Printf(
-		"[MIGRATE] Modified api_keys.api_key column: type=%s len=%d nullable=%s -> VARCHAR(255) NOT NULL",
+		"[MIGRATE] Modified api_keys.api_key column: type=%s len=%d nullable=%s -> TEXT NOT NULL",
 		dataType,
 		currentLen,
 		isNullable,

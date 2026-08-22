@@ -225,7 +225,7 @@ func (s *Server) HandleFingerprintJobStream(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-store")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 	disableResponseWriteTimeout(c.Writer, "指纹任务流式")

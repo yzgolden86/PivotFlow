@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/config"
+	"github.com/yzgolden86/PivotFlow/internal/site/credential"
 	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
@@ -40,6 +41,10 @@ func NewStore() (Store, error) {
 	if mysqlDSN != "" && pgDSN != "" {
 		log.Fatal("[FATAL] PIVOTFLOW_MYSQL 与 PIVOTFLOW_POSTGRES 互斥，请只设置其中一个主库 DSN")
 	}
+	credentialCipher, err := credential.NewFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("credential master key initialization failed: %w", err)
+	}
 
 	// 场景 1：纯 SQLite 模式（默认）
 	if mysqlDSN == "" && pgDSN == "" {
@@ -52,6 +57,10 @@ func NewStore() (Store, error) {
 		if err != nil {
 			return nil, fmt.Errorf("SQLite 初始化失败: %w", err)
 		}
+		if err := configureStoredCredentialEncryption(store, credentialCipher); err != nil {
+			_ = store.Close()
+			return nil, err
+		}
 		log.Printf("使用 SQLite 存储（纯模式）: %s", dbPath)
 		return store, nil
 	}
@@ -61,7 +70,7 @@ func NewStore() (Store, error) {
 	// 主库连接
 	var primary *sqlstore.SQLStore
 	var primaryName string
-	var err error
+	err = nil
 	if mysqlDSN != "" {
 		primary, err = createMySQLStore(mysqlDSN)
 		primaryName = "MySQL"
@@ -71,6 +80,10 @@ func NewStore() (Store, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%s 初始化失败: %w", primaryName, err)
+	}
+	if err := configureStoredCredentialEncryption(primary, credentialCipher); err != nil {
+		_ = primary.Close()
+		return nil, err
 	}
 
 	if !enableHybrid {
@@ -103,10 +116,26 @@ func NewStore() (Store, error) {
 		_ = primary.Close()
 		return nil, fmt.Errorf("数据恢复失败: %w", err)
 	}
+	// The primary database is authoritative. Validate/configure the replica
+	// only after restore has replaced any stale local credential rows.
+	if err := configureStoredCredentialEncryption(sqlite, credentialCipher); err != nil {
+		_ = sqlite.Close()
+		_ = primary.Close()
+		return nil, err
+	}
 
 	hybrid := NewHybridStore(sqlite, primary)
 	log.Printf("[INFO] 混合存储已启用（主库=%s, logs 恢复天数: %d）", primaryName, logDays)
 	return hybrid, nil
+}
+
+func configureStoredCredentialEncryption(store *sqlstore.SQLStore, cipher *credential.Cipher) error {
+	ctx, cancel := context.WithTimeout(context.Background(), config.StartupMigrationTimeout)
+	defer cancel()
+	if err := store.ConfigureCredentialCipher(ctx, cipher); err != nil {
+		return fmt.Errorf("channel credential encryption migration failed: %w", err)
+	}
+	return nil
 }
 
 // createMySQLStore 创建 MySQL 存储实例（内部函数，返回具体类型以支持生命周期方法调用）

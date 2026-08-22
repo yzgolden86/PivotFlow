@@ -159,13 +159,9 @@ func projectTokenStats(stats []model.StatsEntry) []model.StatsEntry {
 	return projected
 }
 
-// HandlePublicSummary 获取基础统计摘要(公开端点,无需认证)
-// GET /public/summary?range=today
-// 按客户端入口协议分组统计。
-//
-// [SECURITY NOTE] 该端点故意设计为公开访问，用于首页仪表盘展示。
-// 认证仪表盘使用 /dashboard/summary，并由 Web 身份强制作用域。
-func (s *Server) HandlePublicSummary(c *gin.Context) {
+// HandleDashboardSummary returns the web-session-scoped usage summary.
+// GET /dashboard/summary?range=today
+func (s *Server) HandleDashboardSummary(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	startTime, endTime := params.GetTimeRange()
 

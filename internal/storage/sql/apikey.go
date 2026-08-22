@@ -55,6 +55,11 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 		key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
 		key.UpdatedAt = model.JSONTime{Time: unixToTime(updatedAt)}
 		key.Disabled = disabled != 0
+		plaintext, err := s.openSecret(key.APIKey)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt API key %d: %w", key.ID, err)
+		}
+		key.APIKey = plaintext
 		keys = append(keys, key)
 	}
 
@@ -105,6 +110,11 @@ func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int)
 	key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
 	key.UpdatedAt = model.JSONTime{Time: unixToTime(updatedAt)}
 	key.Disabled = disabled != 0
+	plaintext, err := s.openSecret(key.APIKey)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt API key %d: %w", key.ID, err)
+	}
+	key.APIKey = plaintext
 
 	return key, nil
 }
@@ -162,7 +172,11 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 			if strategy == "" {
 				strategy = model.KeyStrategySequential
 			}
-			args = append(args, key.ChannelID, key.KeyIndex, key.APIKey, key.Note, strategy,
+			storedAPIKey, err := s.sealSecret(key.APIKey)
+			if err != nil {
+				return fmt.Errorf("encrypt API key %d for channel %d: %w", key.KeyIndex, key.ChannelID, err)
+			}
+			args = append(args, key.ChannelID, key.KeyIndex, storedAPIKey, key.Note, strategy,
 				key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix)
 		}
 
@@ -473,6 +487,10 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			if authType == model.AuthTypeAPIKey && strings.TrimSpace(config.OAuthCredential) != "" {
 				return fmt.Errorf("import channel %s: api_key channel cannot contain an OAuth credential", config.Name)
 			}
+			storedOAuthCredential, err := s.sealSecret(config.OAuthCredential)
+			if err != nil {
+				return fmt.Errorf("import channel %s OAuth credential: %w", config.Name, err)
+			}
 			protocolTransformMode := config.GetProtocolTransformMode()
 			useExplicitID := config.ID != 0
 			cooldownDetectionRules, err := marshalCooldownDetectionRules(config.CooldownDetectionRules)
@@ -500,7 +518,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 				channelID = config.ID
 				_, err := channelStmtWithID.ExecContext(ctx,
 					config.ID, config.Name, config.URLs, config.Priority,
-					config.RPMLimit, config.MaxConcurrency, authType, config.OAuthCredential, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckModel, cooldownDetectionRules, config.AvailableTimeStart, config.AvailableTimeEnd, config.RetryOtherKeysOnFailure, nowUnix, nowUnix)
+					config.RPMLimit, config.MaxConcurrency, authType, storedOAuthCredential, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckModel, cooldownDetectionRules, config.AvailableTimeStart, config.AvailableTimeEnd, config.RetryOtherKeysOnFailure, nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("import channel %s: %w", config.Name, err)
 				}
@@ -510,7 +528,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			} else {
 				_, err := channelStmtByName.ExecContext(ctx,
 					config.Name, config.URLs, config.Priority,
-					config.RPMLimit, config.MaxConcurrency, authType, config.OAuthCredential, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckModel, cooldownDetectionRules, config.AvailableTimeStart, config.AvailableTimeEnd, config.RetryOtherKeysOnFailure, nowUnix, nowUnix)
+					config.RPMLimit, config.MaxConcurrency, authType, storedOAuthCredential, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckModel, cooldownDetectionRules, config.AvailableTimeStart, config.AvailableTimeEnd, config.RetryOtherKeysOnFailure, nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("import channel %s: %w", config.Name, err)
 				}
@@ -546,8 +564,12 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			for i := range cwk.APIKeys {
 				cwk.APIKeys[i].ChannelID = channelID
 				key := cwk.APIKeys[i]
-				_, err := keyStmt.ExecContext(ctx,
-					channelID, key.KeyIndex, key.APIKey, key.Note, key.KeyStrategy,
+				storedAPIKey, err := s.sealSecret(key.APIKey)
+				if err != nil {
+					return fmt.Errorf("encrypt API key %d for channel %d: %w", key.KeyIndex, channelID, err)
+				}
+				_, err = keyStmt.ExecContext(ctx,
+					channelID, key.KeyIndex, storedAPIKey, key.Note, key.KeyStrategy,
 					key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("insert api key %d for channel %d: %w", key.KeyIndex, channelID, err)
@@ -626,6 +648,11 @@ func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey
 		key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
 		key.UpdatedAt = model.JSONTime{Time: unixToTime(updatedAt)}
 		key.Disabled = disabled != 0
+		plaintext, err := s.openSecret(key.APIKey)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt API key %d: %w", key.ID, err)
+		}
+		key.APIKey = plaintext
 
 		result[key.ChannelID] = append(result[key.ChannelID], key)
 	}

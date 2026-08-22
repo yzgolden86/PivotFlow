@@ -120,26 +120,37 @@ func (snapshot channelCooldownSnapshot) hasActiveCooldown(channelID int64, now t
 }
 
 func (s *Server) handleListChannels(c *gin.Context) {
-	cfgs, err := s.store.ListConfigs(c.Request.Context())
+	ctx := c.Request.Context()
+	cfgs, err := s.store.ListConfigs(ctx)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
+	var projectedChannelIDs map[int64]struct{}
+	if source := strings.ToLower(strings.TrimSpace(c.Query("source"))); source == "site_sync" || source == "manual" {
+		projectedChannelIDs, err = s.projectedChannelIDs(ctx)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+	}
+
 	now := time.Now()
 
 	// 三类冷却必须使用同一份快照，否则筛选结果和列表状态会互相矛盾。
-	cooldowns := s.loadChannelCooldownSnapshot(c.Request.Context())
+	cooldowns := s.loadChannelCooldownSnapshot(ctx)
 
 	// 应用所有列表过滤（type / channel_name|search / status / model|model_like）
 	// 注意：筛选下拉的全集走独立接口 /admin/channels/filter-options，
 	// 这里只负责按所有筛选条件返回当前页，避免列表数据与下拉选项耦合。
 	cfgs = applyChannelListFilters(cfgs, c, cooldowns, now)
+	cfgs = filterChannelConfigsBySource(cfgs, strings.TrimSpace(c.Query("source")), projectedChannelIDs)
 
 	hasPagination := c.Query("limit") != "" || c.Query("offset") != ""
 
 	// 批量查询所有API Keys（一次查询替代 N 次）
-	allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
+	allAPIKeys, err := s.store.GetAllAPIKeys(ctx)
 	if err != nil {
 		log.Printf("[WARN] 批量查询API Keys失败: %v", err)
 		allAPIKeys = make(map[int64][]*model.APIKey) // 降级：使用空map
@@ -262,6 +273,40 @@ func applyChannelListFilters(cfgs []*model.Config, c *gin.Context, cooldowns cha
 	}
 
 	return cfgs
+}
+
+func filterChannelConfigsBySource(cfgs []*model.Config, source string, projectedChannelIDs map[int64]struct{}) []*model.Config {
+	source = strings.ToLower(strings.TrimSpace(source))
+	if source == "" || source == "all" {
+		return cfgs
+	}
+	return filterConfigs(cfgs, func(cfg *model.Config) bool {
+		_, projected := projectedChannelIDs[cfg.ID]
+		switch source {
+		case "site_sync":
+			return projected && cfg.GetAuthType() == model.AuthTypeAPIKey
+		case "auth":
+			return cfg.GetAuthType() != model.AuthTypeAPIKey
+		case "manual":
+			return !projected && cfg.GetAuthType() == model.AuthTypeAPIKey
+		default:
+			return false
+		}
+	})
+}
+
+func (s *Server) projectedChannelIDs(ctx context.Context) (map[int64]struct{}, error) {
+	bindings, err := s.store.ListSiteChannelBindings(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list site channel bindings: %w", err)
+	}
+	ids := make(map[int64]struct{}, len(bindings))
+	for _, binding := range bindings {
+		if binding != nil && binding.ChannelID > 0 && strings.EqualFold(strings.TrimSpace(binding.Ownership), "projected") {
+			ids[binding.ChannelID] = struct{}{}
+		}
+	}
+	return ids, nil
 }
 
 // sortChannelsByEffectivePriority 原地排序 cfgs。
