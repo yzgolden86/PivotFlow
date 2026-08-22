@@ -108,7 +108,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure"}
+	expectedHeaders := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "available_time_start", "available_time_end", "retry_other_keys_on_failure"}
 	if len(header) != len(expectedHeaders) {
 		t.Errorf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -119,11 +119,11 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		}
 	}
 
-	if len(records[1]) < 16 {
-		t.Errorf("数据行字段不足，期望至少16个字段，实际: %d", len(records[1]))
+	if len(records[1]) < 18 {
+		t.Errorf("数据行字段不足，期望至少18个字段，实际: %d", len(records[1]))
 	}
-	if len(records[1]) >= 16 && records[1][15] != "true" {
-		t.Errorf("retry_other_keys_on_failure 导出值错误: got %q, want true", records[1][15])
+	if len(records[1]) >= 18 && records[1][17] != "true" {
+		t.Errorf("retry_other_keys_on_failure 导出值错误: got %q, want true", records[1][17])
 	}
 }
 

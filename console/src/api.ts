@@ -5,7 +5,6 @@ import type {
   ChannelFilters,
   ChannelMutation,
   ChannelModelsPreview,
-  RouteDiagnosticResponse,
   ChannelTestResult,
   DashboardRange,
   DashboardSnapshot,
@@ -242,12 +241,6 @@ export function fetchChannelModelsPreview(payload: {
 
 export function getChannelEditor(channelId: number, signal?: AbortSignal): Promise<ChannelEditorSnapshot> {
   return apiRequest<ChannelEditorSnapshot>(`/admin/channels/${channelId}/editor`, signal)
-}
-
-export function getChannelRouteDiagnostics(channelId: number, params: { model: string; client_protocol: string; token_id?: number }, signal?: AbortSignal): Promise<RouteDiagnosticResponse> {
-  const query = new URLSearchParams({ model: params.model, client_protocol: params.client_protocol })
-  if (params.token_id) query.set('token_id', String(params.token_id))
-  return apiRequest<RouteDiagnosticResponse>(`/admin/channels/${channelId}/route-diagnostics?${query}`, signal)
 }
 
 export async function createChannel(payload: ChannelMutation): Promise<Channel> {

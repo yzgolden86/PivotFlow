@@ -463,6 +463,10 @@ type Config struct {
 	// 渠道级代理（http/https/socks5/socks5h），空串=环境变量代理
 	ProxyURL string `json:"proxy_url,omitempty"`
 
+	// 渠道可用时段（服务器本地时间，格式 HH:MM）；均为空表示全天可用。
+	AvailableTimeStart string `json:"available_time_start,omitempty"`
+	AvailableTimeEnd   string `json:"available_time_end,omitempty"`
+
 	// 渠道故障时先将当前 Key 冷却并尝试同渠道其他 Key。
 	// 用于一个中转站下的 Key 实际对应不同上游服务商的场景；默认关闭，保持原有渠道/模型级切换语义。
 	RetryOtherKeysOnFailure bool `json:"retry_other_keys_on_failure"`
@@ -516,6 +520,8 @@ func (c *Config) Clone() *Config {
 		CustomRequestRules:      c.CustomRequestRules.Clone(),
 		CooldownDetectionRules:  c.CooldownDetectionRules.Clone(),
 		ProxyURL:                c.ProxyURL,
+		AvailableTimeStart:      c.AvailableTimeStart,
+		AvailableTimeEnd:        c.AvailableTimeEnd,
 		RetryOtherKeysOnFailure: c.RetryOtherKeysOnFailure,
 		OAuthCredential:         c.OAuthCredential,
 		CodexAccessToken:        c.CodexAccessToken,
@@ -580,6 +586,61 @@ func (c *Config) GetProtocolTransformMode() string {
 		return ProtocolTransformModeAuto
 	}
 	return mode
+}
+
+// NormalizeAvailableTime validates and canonicalizes an availability window.
+// An empty pair means all day. A window may cross midnight, for example 22:00-08:00.
+func (c *Config) NormalizeAvailableTime() error {
+	if c == nil {
+		return errors.New("config cannot be nil")
+	}
+	start := strings.TrimSpace(c.AvailableTimeStart)
+	end := strings.TrimSpace(c.AvailableTimeEnd)
+	if start == "" && end == "" {
+		c.AvailableTimeStart, c.AvailableTimeEnd = "", ""
+		return nil
+	}
+	if start == "" || end == "" {
+		return errors.New("available time start and end must both be set")
+	}
+	if _, err := parseAvailableTime(start); err != nil {
+		return fmt.Errorf("invalid available_time_start %q (expected HH:MM)", start)
+	}
+	if _, err := parseAvailableTime(end); err != nil {
+		return fmt.Errorf("invalid available_time_end %q (expected HH:MM)", end)
+	}
+	c.AvailableTimeStart, c.AvailableTimeEnd = start, end
+	return nil
+}
+
+func parseAvailableTime(value string) (time.Time, error) {
+	if len(value) != 5 || value[2] != ':' {
+		return time.Time{}, errors.New("expected HH:MM")
+	}
+	return time.Parse("15:04", value)
+}
+
+// IsAvailableAt reports whether the channel accepts traffic at local time t.
+// Equal start/end means all day; intervals are half-open otherwise.
+func (c *Config) IsAvailableAt(t time.Time) bool {
+	if c == nil || (c.AvailableTimeStart == "" && c.AvailableTimeEnd == "") {
+		return true
+	}
+	start, startErr := parseAvailableTime(c.AvailableTimeStart)
+	end, endErr := parseAvailableTime(c.AvailableTimeEnd)
+	if startErr != nil || endErr != nil {
+		return false
+	}
+	startMinutes := start.Hour()*60 + start.Minute()
+	endMinutes := end.Hour()*60 + end.Minute()
+	nowMinutes := t.Hour()*60 + t.Minute()
+	if startMinutes == endMinutes {
+		return true
+	}
+	if startMinutes < endMinutes {
+		return nowMinutes >= startMinutes && nowMinutes < endMinutes
+	}
+	return nowMinutes >= startMinutes || nowMinutes < endMinutes
 }
 
 // GetURLs returns the runtime URL keys used by forwarding and URL state.

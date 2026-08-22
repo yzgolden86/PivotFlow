@@ -23,7 +23,7 @@ func TestCSVImport_DefaultValues(t *testing.T) {
 
 func TestCSVExport_NoTimeFields(t *testing.T) {
 	// 验证CSV导出不包含时间字段
-	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
+	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "available_time_start", "available_time_end", "retry_other_keys_on_failure"}
 
 	hasCreatedAt := false
 	hasUpdatedAt := false

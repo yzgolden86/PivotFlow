@@ -114,6 +114,8 @@ export interface Channel {
   websockets?: boolean
   scheduled_check_enabled?: boolean
   scheduled_check_model?: string
+  available_time_start?: string
+  available_time_end?: string
   proxy_url?: string
   retry_other_keys_on_failure?: boolean
   custom_request_rules?: unknown
@@ -145,47 +147,6 @@ export interface ChannelModelsPreview {
   debug?: unknown
 }
 
-export interface RouteDiagnosticReason {
-  code: string
-  message: string
-  blocking: boolean
-}
-
-export interface ChannelRouteDiagnostic {
-  channel_id: number
-  channel_name: string
-  enabled: boolean
-  base_priority: number
-  effective_priority: number
-  success_rate: number
-  health_sample_count: number
-  exact_model_match: boolean
-  fuzzy_model_match: boolean
-  active_key_count: number
-  enabled_key_count: number
-  rpm_limit: number
-  current_rpm: number
-  max_concurrency: number
-  active_concurrency: number
-  candidate: boolean
-  candidate_position?: number
-  higher_priority_count: number
-  same_priority_count: number
-  estimated_traffic_share: number
-  reasons: RouteDiagnosticReason[]
-}
-
-export interface RouteDiagnosticResponse {
-  model: string
-  client_protocol: string
-  token_id?: number
-  pool_mode: 'exact' | 'fuzzy' | 'cooldown_fallback' | 'none' | string
-  health_score_enabled: boolean
-  target: ChannelRouteDiagnostic
-  candidates: ChannelRouteDiagnostic[]
-  summary: string[]
-}
-
 export interface ChannelMutation {
   name: string
   auth_type: string
@@ -201,6 +162,8 @@ export interface ChannelMutation {
   protocol_transform_mode: string
   scheduled_check_enabled: boolean
   scheduled_check_model: string
+  available_time_start: string
+  available_time_end: string
   daily_cost_limit: number
   cost_multiplier: number
   proxy_url?: string
