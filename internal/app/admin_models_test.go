@@ -148,6 +148,110 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 
 }
 
+func TestAdminModels_FetchModelsPreview_AutomaticNegotiationPrefersOpenAI(t *testing.T) {
+	var paths []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			http.Error(w, "unexpected protocol probe", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4.1"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	payload := map[string]any{
+		"urls":     []map[string]any{{"url": upstream.URL}},
+		"api_keys": []string{"sk-test"},
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+	server.HandleFetchModelsPreview(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if !reflect.DeepEqual(paths, []string{"/v1/models"}) {
+		t.Fatalf("probe paths=%v, want OpenAI /v1/models only", paths)
+	}
+	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+	if resp.Data.Protocol != "openai" {
+		t.Fatalf("protocol=%q, want openai", resp.Data.Protocol)
+	}
+}
+
+func TestAdminModels_FetchModelsPreview_AutomaticNegotiationContinuesAfter502(t *testing.T) {
+	var paths []string
+	var modelCalls int
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/models":
+			modelCalls++
+			if modelCalls == 1 {
+				http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet","type":"model"}]}`))
+		default:
+			http.Error(w, "unsupported", http.StatusBadGateway)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	payload := map[string]any{
+		"urls":     []map[string]any{{"url": upstream.URL}},
+		"api_keys": []string{"sk-test"},
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+	server.HandleFetchModelsPreview(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s paths=%v", w.Code, http.StatusOK, w.Body.String(), paths)
+	}
+	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+	if resp.Data.Protocol != "anthropic" || len(resp.Data.Models) != 1 {
+		t.Fatalf("unexpected response: %s", w.Body.String())
+	}
+	if !reflect.DeepEqual(paths, []string{"/v1/models", "/v1/models"}) {
+		t.Fatalf("probe paths=%v, want OpenAI then Anthropic on the same URL", paths)
+	}
+}
+
+func TestAdminModels_FetchModelsPreview_AutomaticNegotiationReportsAttemptedProtocols(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusBadGateway)
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	payload := map[string]any{
+		"urls":     []map[string]any{{"url": upstream.URL}},
+		"api_keys": []string{"sk-test"},
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+	server.HandleFetchModelsPreview(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want handler response 200, body=%s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+	if resp.Success {
+		t.Fatalf("expected success=false, body=%s", w.Body.String())
+	}
+	for _, protocolName := range []string{"openai", "anthropic", "codex", "gemini"} {
+		if !strings.Contains(w.Body.String(), protocolName) {
+			t.Fatalf("error does not list protocol %q: %s", protocolName, w.Body.String())
+		}
+	}
+}
+
 func TestAdminModels_FetchSub2APIBillingPreview(t *testing.T) {
 	var gotAuth string
 	var gotAccept string

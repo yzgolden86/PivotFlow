@@ -504,9 +504,19 @@ func (s *Server) fetchModelsWithURLFallback(
 	}
 	sortedURLs := orderURLsWithSelector(selector, channelID, runtimeURLs)
 	sortedURLs = prioritizeDeclaredProtocolURLs(sortedURLs, configuredURLs)
-	localProtocolOrder := localUpstreamProtocolOrder(configuredURLs)
+	// Model discovery is intentionally OpenAI-first for generic compatible
+	// gateways. This order is local to the discovery probe and must not affect
+	// the request-routing protocol order used by the proxy.
+	modelDiscoveryProtocolOrder := [...]protocol.Protocol{
+		protocol.OpenAI,
+		protocol.Anthropic,
+		protocol.Codex,
+		protocol.Gemini,
+	}
 
 	var lastErr error
+	attemptedProtocols := make([]string, 0, len(modelDiscoveryProtocolOrder))
+	attemptedSet := make(map[string]struct{}, len(modelDiscoveryProtocolOrder))
 	for _, sorted := range sortedURLs {
 		if sorted.idx < 0 || sorted.idx >= len(configuredURLs) {
 			continue
@@ -519,13 +529,20 @@ func (s *Server) fetchModelsWithURLFallback(
 			}
 			protocols = []string{overrideProtocol}
 		} else if len(protocols) == 0 {
-			protocols = make([]string, len(localProtocolOrder))
-			for i, candidate := range localProtocolOrder {
+			protocols = make([]string, len(modelDiscoveryProtocolOrder))
+			for i, candidate := range modelDiscoveryProtocolOrder {
 				protocols[i] = string(candidate)
 			}
 		}
-		urlFailed := false
+		urlShouldCooldown := false
 		for _, upstreamProtocol := range protocols {
+			if strings.TrimSpace(upstreamProtocol) == "" {
+				continue
+			}
+			if _, seen := attemptedSet[upstreamProtocol]; !seen {
+				attemptedSet[upstreamProtocol] = struct{}{}
+				attemptedProtocols = append(attemptedProtocols, upstreamProtocol)
+			}
 			for _, apiKey := range apiKeys {
 				start := time.Now()
 				resp, err := fetchModelsForConfig(ctx, upstreamProtocol, sorted.url, apiKey)
@@ -543,20 +560,27 @@ func (s *Server) fetchModelsWithURLFallback(
 				if shouldTryNextKeyOnFetchModelsError(err) {
 					continue
 				}
-				if selectorEnabled && shouldCooldownURLOnFetchModelsError(err) {
-					s.urlSelector.CooldownURL(channelID, sorted.url)
-					urlFailed = true
+				if shouldCooldownURLOnFetchModelsError(err) {
+					urlShouldCooldown = true
 				}
 				break
 			}
-			if urlFailed {
-				break
-			}
+			// A protocol-specific failure (including 502) must not prevent
+			// discovery from trying the next protocol on the same URL.
+		}
+		if selectorEnabled && urlShouldCooldown {
+			s.urlSelector.CooldownURL(channelID, sorted.url)
 		}
 	}
 
 	if lastErr != nil {
-		return nil, lastErr
+		if len(attemptedProtocols) == 0 {
+			attemptedProtocols = []string{"openai", "anthropic", "codex", "gemini"}
+		}
+		return nil, fmt.Errorf(
+			"获取模型列表失败：自动协商已尝试协议 %s；最后一次失败：%w",
+			strings.Join(attemptedProtocols, "、"), lastErr,
+		)
 	}
 	return nil, fmt.Errorf("获取模型列表失败: 未找到可用URL")
 }
@@ -650,6 +674,12 @@ func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, api
 			return nil, fmt.Errorf(
 				"获取模型列表失败(上游协议:%s, 规范化协议:%s, 数据来源:%s): %w",
 				upstreamProtocol, normalizedProtocol, source, err,
+			)
+		}
+		if len(modelNames) == 0 {
+			return nil, fmt.Errorf(
+				"获取模型列表失败(上游协议:%s, 规范化协议:%s, 数据来源:%s): 上游返回空模型列表",
+				upstreamProtocol, normalizedProtocol, source,
 			)
 		}
 	}

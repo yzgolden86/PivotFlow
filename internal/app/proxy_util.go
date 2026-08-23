@@ -442,6 +442,10 @@ func isAnyrouterChannel(cfg *model.Config) bool {
 		return false
 	}
 	haystack := strings.ToLower(cfg.Name + "\n" + strings.Join(cfg.GetURLs(), "\n"))
+	// Keep this compatibility profile scoped to the AnyRouter family that it
+	// was designed and tested for. AgentRouter/air-outer are separate upstream
+	// gateways; applying AnyRouter body/header rewrites to them can change the
+	// content sent upstream and trigger provider-side policy rejection.
 	return strings.Contains(haystack, "anyrouter")
 }
 
@@ -618,9 +622,30 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 	actualModel = s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(upstreamProtocol))
 
 	bodyToSend = reqCtx.body
+	// Preserve the billing/CCH block only for a real native Claude Code request.
+	// Generic Anthropic callers must not be able to forge that upstream identity,
+	// while protocol translation still needs the block removed as non-user data.
+	if reqCtx.clientProtocol == protocol.Anthropic &&
+		(upstreamProtocol != protocol.Anthropic || !isNativeClaudeCodeAnthropicRequest(reqCtx)) {
+		bodyToSend = stripAnthropicBillingHeaders(bodyToSend)
+	}
 	bodyToSend = replaceJSONRequestModel(bodyToSend, reqCtx.originalModel, actualModel)
 
 	return actualModel, bodyToSend
+}
+
+func isNativeClaudeCodeAnthropicRequest(reqCtx *proxyRequestContext) bool {
+	if reqCtx == nil || reqCtx.header == nil ||
+		reqCtx.clientProtocol != protocol.Anthropic ||
+		!bytes.Contains(reqCtx.body, []byte(anthropicBillingHeaderPrefix)) {
+		return false
+	}
+	userAgent := strings.ToLower(strings.TrimSpace(reqCtx.header.Get("User-Agent")))
+	beta := strings.ToLower(reqCtx.header.Get("Anthropic-Beta"))
+	return strings.HasPrefix(userAgent, "claude-cli/") &&
+		strings.EqualFold(strings.TrimSpace(reqCtx.header.Get("X-App")), "cli") &&
+		strings.Contains(beta, "claude-code-") &&
+		strings.TrimSpace(reqCtx.header.Get("X-Claude-Code-Session-Id")) != ""
 }
 
 func replaceJSONRequestModel(body []byte, originalModel, actualModel string) []byte {

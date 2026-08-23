@@ -275,6 +275,30 @@ func TestCreateAnyRouterCookieAccountStoresEncryptedUserContext(t *testing.T) {
 	}
 }
 
+func TestProjectedRoutingProtocolsKeepsRouterFamilyOnAutomaticDetection(t *testing.T) {
+	tests := []struct {
+		name      string
+		site      *model.Site
+		protocols []string
+		want      []string
+	}{
+		{name: "explicit protocol", site: &model.Site{Platform: model.SitePlatformAnyRouter, BaseURL: "https://agentrouter.org"}, protocols: []string{"anthropic"}, want: []string{"anthropic"}},
+		{name: "anyrouter platform", site: &model.Site{Platform: model.SitePlatformAnyRouter, BaseURL: "https://gateway.example.com"}},
+		{name: "agentrouter host", site: &model.Site{Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://agentrouter.org"}},
+		{name: "air outer host", site: &model.Site{Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://ps.air-outer.com"}},
+		{name: "ordinary new api", site: &model.Site{Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://new-api.example.com"}, want: []string{"openai"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := projectedRoutingProtocols(tt.site, tt.protocols)
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("protocols=%v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCreateSub2APILegacyCookieInputStoresValidatedAccessToken(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
