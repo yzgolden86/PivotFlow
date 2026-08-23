@@ -828,6 +828,55 @@ func TestStripAnthropicBillingHeaders(t *testing.T) {
 	}
 }
 
+func TestPrepareRequestBodyPreservesNativeAnthropicBillingIdentity(t *testing.T) {
+	srv := &Server{}
+	body := []byte(`{"model":"claude-opus-4-8","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.42.603; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"keep"}],"messages":[]}`)
+	reqCtx := &proxyRequestContext{
+		originalModel:  "claude-opus-4-8",
+		clientProtocol: protocol.Anthropic,
+		body:           body,
+		header: http.Header{
+			"User-Agent":               []string{"claude-cli/2.1.42 (external, cli)"},
+			"X-App":                    []string{"cli"},
+			"Anthropic-Beta":           []string{"claude-code-20250219"},
+			"X-Claude-Code-Session-Id": []string{"11111111-1111-4111-8111-111111111111"},
+		},
+	}
+	cfg := &model.Config{ModelEntries: []model.ModelEntry{{Model: "claude-opus-4-8"}}}
+
+	_, nativeBody := srv.prepareRequestBody(cfg, reqCtx, protocol.Anthropic)
+	if !bytes.Contains(nativeBody, []byte(anthropicBillingHeaderPrefix)) {
+		t.Fatalf("native Anthropic request lost billing identity: %s", nativeBody)
+	}
+
+	_, translatedBody := srv.prepareRequestBody(cfg, reqCtx, protocol.OpenAI)
+	if bytes.Contains(translatedBody, []byte(anthropicBillingHeaderPrefix)) {
+		t.Fatalf("cross-protocol request kept billing identity: %s", translatedBody)
+	}
+	if !bytes.Contains(translatedBody, []byte(`"text":"keep"`)) {
+		t.Fatalf("cross-protocol cleanup removed real system content: %s", translatedBody)
+	}
+}
+
+func TestPrepareRequestBodyStripsForgedAnthropicBillingIdentity(t *testing.T) {
+	srv := &Server{}
+	body := []byte(`{"model":"claude-opus-4-8","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.42.603; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"keep"}],"messages":[]}`)
+	reqCtx := &proxyRequestContext{
+		originalModel:  "claude-opus-4-8",
+		clientProtocol: protocol.Anthropic,
+		body:           body,
+		header:         http.Header{"User-Agent": []string{"generic-client/1.0"}},
+	}
+
+	_, got := srv.prepareRequestBody(&model.Config{}, reqCtx, protocol.Anthropic)
+	if bytes.Contains(got, []byte(anthropicBillingHeaderPrefix)) {
+		t.Fatalf("forged billing identity was preserved: %s", got)
+	}
+	if !bytes.Contains(got, []byte(`"text":"keep"`)) {
+		t.Fatalf("ordinary system content was removed: %s", got)
+	}
+}
+
 // [FIX] 2026-01: 验证模糊匹配后 URL 路径中的模型名也被正确替换
 func TestReplaceModelInPath_GeminiAPI(t *testing.T) {
 	tests := []struct {
@@ -924,6 +973,35 @@ func TestStripAnthropicProtocolHeaders(t *testing.T) {
 
 func anyrouterAnthropicCfg() *model.Config {
 	return &model.Config{Name: "anyrouter-claude", URLs: model.ChannelURLs{{URL: "https://anyrouter.top"}}}
+}
+
+func TestIsAnyrouterChannelKeepsProviderBoundary(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *model.Config
+		want bool
+	}{
+		{name: "anyrouter name", cfg: &model.Config{Name: "anyrouter-claude"}, want: true},
+		{name: "anyrouter url", cfg: &model.Config{Name: "gateway", URLs: model.ChannelURLs{{URL: "https://anyrouter.top"}}}, want: true},
+		{name: "agentrouter url", cfg: &model.Config{Name: "gateway", URLs: model.ChannelURLs{{URL: "https://agentrouter.org"}}}, want: false},
+		{name: "air-outer url", cfg: &model.Config{Name: "gateway", URLs: model.ChannelURLs{{URL: "https://ps.air-outer.com"}}}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isAnyrouterChannel(tt.cfg); got != tt.want {
+				t.Fatalf("isAnyrouterChannel() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeAnyrouterAdaptiveThinkingDoesNotRewriteAgentRouter(t *testing.T) {
+	cfg := &model.Config{Name: "agentrouter", URLs: model.ChannelURLs{{URL: "https://agentrouter.org"}}}
+	body := []byte(`{"model":"claude-opus-4-8"}`)
+	got := normalizeAnyrouterAdaptiveThinking(cfg, string(protocol.Anthropic), "/v1/messages", body)
+	if string(got) != string(body) {
+		t.Fatalf("AgentRouter body was rewritten: %s", got)
+	}
 }
 
 func TestNormalizeAnyrouterAdaptiveThinking(t *testing.T) {

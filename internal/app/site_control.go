@@ -1036,7 +1036,7 @@ func (s *siteControlService) projectAccount(ctx context.Context, account *model.
 }
 
 func (s *siteControlService) projectAccountWithModels(ctx context.Context, account *model.SiteAccount, site *model.Site, creds provider.Credentials, projectionKey, name string, names []string, force bool) (*model.SiteProjectionResult, error) {
-	return s.projectAccountWithModelsForProtocols(ctx, account, site, creds, projectionKey, name, []string{"openai"}, names, force)
+	return s.projectAccountWithModelsForProtocols(ctx, account, site, creds, projectionKey, name, nil, names, force)
 }
 
 func (s *siteControlService) projectAccountWithModelsForProtocols(ctx context.Context, account *model.SiteAccount, site *model.Site, creds provider.Credentials, projectionKey, name string, protocols, names []string, force bool) (*model.SiteProjectionResult, error) {
@@ -1062,10 +1062,7 @@ func (s *siteControlService) projectAccountWithModelsForProtocols(ctx context.Co
 	if strings.TrimSpace(name) == "" {
 		name = fmt.Sprintf("%s / %s", site.Name, account.Label)
 	}
-	protocols = normalizedModelNames(protocols)
-	if len(protocols) == 0 {
-		protocols = []string{"openai"}
-	}
+	protocols = projectedRoutingProtocols(site, protocols)
 	baseURL := routingBaseURL(site.BaseURL)
 	sourceHash := model.SiteProjectionSourceHash(baseURL, protocols, filtered, creds.APIKey, account.Enabled)
 	result, err := s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: baseURL, Protocols: protocols, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, Enabled: account.Enabled, Force: force})
@@ -1074,6 +1071,25 @@ func (s *siteControlService) projectAccountWithModelsForProtocols(ctx context.Co
 	}
 	s.projectionChanged()
 	return result, nil
+}
+
+func projectedRoutingProtocols(site *model.Site, protocols []string) []string {
+	protocols = normalizedModelNames(protocols)
+	if len(protocols) > 0 {
+		return protocols
+	}
+	if site != nil {
+		if site.Platform == model.SitePlatformAnyRouter {
+			return nil
+		}
+		if parsed, err := url.Parse(strings.TrimSpace(site.BaseURL)); err == nil {
+			host := strings.ToLower(parsed.Hostname())
+			if strings.Contains(host, "anyrouter") || strings.Contains(host, "agentrouter") || strings.Contains(host, "air-outer") {
+				return nil
+			}
+		}
+	}
+	return []string{"openai"}
 }
 
 func routingBaseURL(raw string) string {

@@ -319,6 +319,45 @@ func TestBuildProxyRequest_AddsAnthropicVersionForRuntimeAnthropicUpstream(t *te
 	}
 }
 
+func TestBuildProxyRequest_AgentRouterDoesNotReceiveAnyrouterWireRewrites(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := &model.Config{
+		ID:   1,
+		Name: "agentrouter",
+		URLs: model.ChannelURLs{{URL: "https://agentrouter.org"}},
+	}
+	reqCtx := &requestContext{
+		ctx:              context.Background(),
+		startTime:        time.Now(),
+		clientProtocol:   protocol.Anthropic,
+		upstreamProtocol: protocol.Anthropic,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol:   protocol.Anthropic,
+			UpstreamProtocol: protocol.Anthropic,
+			UpstreamPath:     "/v1/messages",
+		},
+	}
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}]}`)
+	req, err := srv.buildProxyRequest(
+		reqCtx, cfg, "sk-test", http.MethodPost, body,
+		http.Header{"Content-Type": []string{"application/json"}},
+		"", "/v1/messages", cfg.GetURLs()[0],
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+	if got := req.Header.Get("anthropic-beta"); got != "" {
+		t.Fatalf("anthropic-beta = %q, want no AnyRouter beta injection", got)
+	}
+	wireBody, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read request body: %v", err)
+	}
+	if string(wireBody) != string(body) {
+		t.Fatalf("AgentRouter request body was rewritten: %s", wireBody)
+	}
+}
+
 // TestHandleRequestError 测试错误处理
 func TestHandleRequestError(t *testing.T) {
 	srv := newInMemoryServer(t)

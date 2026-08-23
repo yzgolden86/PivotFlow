@@ -149,9 +149,9 @@ func (s *Server) buildProxyRequest(
 		injectAPIKeyHeaders(req, apiKey, runtimeUpstreamProtocol(reqCtx, cfg))
 	}
 
-	// 5. anyrouter渠道：确保anthropic-beta包含context-1m
+	// 5. AnyRouter family channels: ensure anthropic-beta contains context-1m.
 	if runtimeUpstreamProtocol(reqCtx, cfg) == util.ProtocolAnthropic &&
-		strings.Contains(strings.ToLower(cfg.Name), "anyrouter") {
+		isAnyrouterChannel(cfg) {
 		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
 
@@ -2222,8 +2222,7 @@ func isInvalidEncryptedContentError(body []byte) bool {
 
 func shouldRetryAnyrouterCodexInvalidResponsesRequest(upstreamProtocol protocol.Protocol, cfg *model.Config, res *fwResult) bool {
 	return upstreamProtocol == protocol.Codex &&
-		cfg != nil &&
-		strings.Contains(strings.ToLower(cfg.Name), "anyrouter") &&
+		isAnyrouterChannel(cfg) &&
 		res != nil &&
 		res.Status == http.StatusBadRequest &&
 		isInvalidResponsesRequestError(res.Body)
