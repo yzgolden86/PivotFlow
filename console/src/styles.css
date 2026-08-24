@@ -1355,6 +1355,11 @@ a:focus-visible {
   box-shadow: 0 5px 18px rgba(29, 49, 40, 0.04);
 }
 
+/* 渠道页有五项摘要，保持统计卡片在桌面端同一行，避免最后一项掉到第二行。 */
+.channels-summary {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .compact-summary > span {
   position: relative;
   display: flex;
@@ -1378,10 +1383,12 @@ a:focus-visible {
 .compact-summary > span:nth-child(2)::before { background: var(--blue); }
 .compact-summary > span:nth-child(3)::before { background: var(--amber); }
 .compact-summary > span:nth-child(4)::before { background: var(--coral); }
+.channels-summary > span:nth-child(5)::before { background: var(--graphite); }
 .compact-summary > span:nth-child(1) { background: color-mix(in srgb, var(--green-soft) 34%, var(--surface)); }
 .compact-summary > span:nth-child(2) { background: color-mix(in srgb, var(--blue-soft) 34%, var(--surface)); }
 .compact-summary > span:nth-child(3) { background: color-mix(in srgb, var(--amber-soft) 34%, var(--surface)); }
 .compact-summary > span:nth-child(4) { background: color-mix(in srgb, var(--coral-soft) 30%, var(--surface)); }
+.channels-summary > span:nth-child(5) { background: color-mix(in srgb, var(--surface-strong) 45%, var(--surface)); }
 
 .compact-summary > span:last-child { border-right: 0; }
 .compact-summary strong { color: var(--text); font-family: Bahnschrift, sans-serif; font-size: 18px; }
@@ -1389,6 +1396,7 @@ a:focus-visible {
 .compact-summary > span:nth-child(2) strong { color: var(--blue); }
 .compact-summary > span:nth-child(3) strong { color: var(--amber); }
 .compact-summary > span:nth-child(4) strong { color: var(--coral); }
+.channels-summary > span:nth-child(5) strong { color: var(--graphite); }
 
 .filter-bar {
   display: flex;

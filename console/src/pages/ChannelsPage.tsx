@@ -171,7 +171,7 @@ export default function ChannelsPage() {
 
       {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
 
-      <section className="compact-summary" aria-label="渠道摘要">
+      <section className="compact-summary channels-summary" aria-label="渠道摘要">
         <span><strong>{total}</strong>渠道总数</span><span><strong>{enabledTotal}</strong>全部启用</span><span><strong>{summary.enabled}</strong>本页启用</span><span><strong>{summary.cooldown}</strong>冷却中</span><span><strong>{summary.models}</strong>可用模型映射</span>
       </section>
 
