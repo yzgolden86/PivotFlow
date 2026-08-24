@@ -126,6 +126,15 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
+	// Keep the global enabled count separate from the current filtered page.
+	// The console uses this to avoid presenting a page-local count as the
+	// number of enabled channels in the whole system.
+	enabledCount := 0
+	for _, cfg := range cfgs {
+		if cfg != nil && cfg.Enabled {
+			enabledCount++
+		}
+	}
 
 	var projectedChannelIDs map[int64]struct{}
 	if source := strings.ToLower(strings.TrimSpace(c.Query("source"))); source == "site_sync" || source == "manual" {
@@ -195,10 +204,19 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	}
 
 	if hasPagination {
-		RespondPaginated(c, http.StatusOK, out, totalCount)
+		c.JSON(http.StatusOK, gin.H{
+			"success":       true,
+			"data":          out,
+			"count":         totalCount,
+			"enabled_count": enabledCount,
+		})
 		return
 	}
-	RespondJSON(c, http.StatusOK, out)
+	c.JSON(http.StatusOK, gin.H{
+		"success":       true,
+		"data":          out,
+		"enabled_count": enabledCount,
+	})
 }
 
 // applyChannelListFilters 串联应用所有列表过滤条件：

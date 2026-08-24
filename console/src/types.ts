@@ -68,6 +68,7 @@ export interface APIResponse<T> {
   data: T
   error?: string
   count?: number
+  enabled_count?: number
 }
 
 export interface ChannelURL {
@@ -175,6 +176,7 @@ export interface ChannelMutation {
 export interface PaginatedResult<T> {
   data: T[]
   count: number
+  enabled_count?: number
 }
 
 export interface ChannelFilters {
