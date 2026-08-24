@@ -85,14 +85,16 @@ func NewHybridStore(sqlite, mysql *sqlstore.SQLStore) *HybridStore {
 // syncToSQLite 同步更新 SQLite 缓存
 // SQLite 是本地库，启动时已验证可写，运行时通常不会失败
 // 但磁盘空间不足等极端情况仍可能导致写入失败，记录日志以便排查
-func (h *HybridStore) syncToSQLite(op string, fn func() error) {
+func (h *HybridStore) syncToSQLite(op string, fn func() error) error {
 	if err := fn(); err != nil {
 		count := h.sqliteSyncFailCount.Add(1)
 		// 采样告警：首次必打印，之后每 10 次一次（避免磁盘满时日志洪泛）
 		if count%10 == 1 {
 			log.Printf("[WARN] SQLite 同步失败 (%s): %v (累计失败: %d)", op, err, count)
 		}
+		return err
 	}
+	return nil
 }
 
 // cloneLogEntryForSync 克隆日志条目（异步队列需要）
@@ -206,11 +208,13 @@ func (h *HybridStore) enqueueLogSync(task *syncTask) {
 // === Channel Management ===
 
 func (h *HybridStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
-	return h.sqlite.ListConfigs(ctx)
+	// 渠道管理数据属于控制面，主库是唯一事实来源。使用 SQLite 缓存
+	// 会在缓存同步失败时把旧的 enabled 状态重新显示给管理员。
+	return h.mysql.ListConfigs(ctx)
 }
 
 func (h *HybridStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
-	return h.sqlite.GetConfig(ctx, id)
+	return h.mysql.GetConfig(ctx, id)
 }
 
 func (h *HybridStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
@@ -257,10 +261,15 @@ func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enable
 		return nil, err
 	}
 
-	h.syncToSQLite("UpdateChannelEnabled", func() error {
+	if err := h.syncToSQLite("UpdateChannelEnabled", func() error {
 		_, err := h.sqlite.UpdateChannelEnabled(ctx, id, enabled)
 		return err
-	})
+	}); err != nil {
+		// MySQL is authoritative. A cache write failure must remain visible in
+		// logs, but must not report a failed mutation after the primary update
+		// already succeeded.
+		log.Printf("[WARN] 渠道状态已写入主库，但 SQLite 缓存未同步: channel=%d: %v", id, err)
+	}
 
 	return result, nil
 }
@@ -292,7 +301,7 @@ func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {
 }
 
 func (h *HybridStore) GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
-	return h.sqlite.GetEnabledChannelsByModel(ctx, modelName)
+	return h.mysql.GetEnabledChannelsByModel(ctx, modelName)
 }
 
 func (h *HybridStore) BatchUpdatePriority(ctx context.Context, updates []struct {
@@ -355,15 +364,15 @@ func (h *HybridStore) CleanupOrphanedURLStates(ctx context.Context, channelID in
 // === API Key Management ===
 
 func (h *HybridStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
-	return h.sqlite.GetAPIKeys(ctx, channelID)
+	return h.mysql.GetAPIKeys(ctx, channelID)
 }
 
 func (h *HybridStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error) {
-	return h.sqlite.GetAPIKey(ctx, channelID, keyIndex)
+	return h.mysql.GetAPIKey(ctx, channelID, keyIndex)
 }
 
 func (h *HybridStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {
-	return h.sqlite.GetAllAPIKeys(ctx)
+	return h.mysql.GetAllAPIKeys(ctx)
 }
 
 func (h *HybridStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey) error {

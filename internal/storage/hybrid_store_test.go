@@ -548,6 +548,50 @@ func TestHybridStore_SQLiteCacheFailureDoesNotBlockWrite(t *testing.T) {
 	_ = hybrid.Close()
 }
 
+func TestHybridStore_ChannelReadsUsePrimaryState(t *testing.T) {
+	primary := createTestSQLiteStore(t)
+	cache := createTestSQLiteStore(t)
+	defer func() {
+		_ = primary.Close()
+		_ = cache.Close()
+	}()
+	hybrid := NewHybridStore(cache, primary)
+	defer func() { _ = hybrid.Close() }()
+	ctx := context.Background()
+
+	cfg := &model.Config{
+		Name:     "primary-state-channel",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 1,
+		Enabled:  true,
+	}
+	created, err := primary.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("create primary config: %v", err)
+	}
+	if _, err := cache.CreateConfig(ctx, cfg); err != nil {
+		t.Fatalf("create cache config: %v", err)
+	}
+	if _, err := primary.UpdateChannelEnabled(ctx, created.ID, false); err != nil {
+		t.Fatalf("disable primary config: %v", err)
+	}
+
+	configs, err := hybrid.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("hybrid ListConfigs: %v", err)
+	}
+	if len(configs) != 1 || configs[0].Enabled {
+		t.Fatalf("hybrid list returned stale enabled state: %+v", configs)
+	}
+	got, err := hybrid.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("hybrid GetConfig: %v", err)
+	}
+	if got.Enabled {
+		t.Fatalf("hybrid GetConfig returned stale enabled state: %+v", got)
+	}
+}
+
 func TestHybridStoreCleanupLogsBeforeIgnoresSQLiteCacheFailure(t *testing.T) {
 	mysql := createTestSQLiteStore(t)
 	sqlite := createTestSQLiteStore(t)

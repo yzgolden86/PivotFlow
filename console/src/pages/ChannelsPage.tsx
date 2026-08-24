@@ -14,6 +14,7 @@ export default function ChannelsPage() {
   const initialResult = peekChannels({ search: querySearch, status: 'all', source: 'all', sort: 'priority', limit: 50, offset: 0 })
   const [channels, setChannels] = useState<Channel[]>(() => initialResult?.data || [])
   const [total, setTotal] = useState(() => initialResult?.count || 0)
+  const [enabledTotal, setEnabledTotal] = useState(() => initialResult?.enabled_count ?? 0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [searchDraft, setSearchDraft] = useState(querySearch)
@@ -40,6 +41,7 @@ export default function ChannelsPage() {
     if (cached) {
       setChannels(cached.data)
       setTotal(cached.count)
+      setEnabledTotal(cached.enabled_count ?? 0)
     }
     if (!options.silent) setLoading(!cached && !loadedOnceRef.current)
     setError('')
@@ -47,6 +49,7 @@ export default function ChannelsPage() {
       const result = await getChannels(filters, signal, { force: options.force })
       setChannels(result.data)
       setTotal(result.count)
+      setEnabledTotal(result.enabled_count ?? 0)
       loadedOnceRef.current = true
       setSelected((current) => new Set([...current].filter((id) => result.data.some((channel) => channel.id === id))))
     } catch (reason) {
@@ -168,12 +171,12 @@ export default function ChannelsPage() {
 
       {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
 
-      <section className="compact-summary" aria-label="当前页渠道摘要">
-        <span><strong>{total}</strong>渠道总数</span><span><strong>{summary.enabled}</strong>当前页启用</span><span><strong>{summary.cooldown}</strong>冷却中</span><span><strong>{summary.models}</strong>可用模型映射</span>
+      <section className="compact-summary" aria-label="渠道摘要">
+        <span><strong>{total}</strong>渠道总数</span><span><strong>{enabledTotal}</strong>全部启用</span><span><strong>{summary.enabled}</strong>本页启用</span><span><strong>{summary.cooldown}</strong>冷却中</span><span><strong>{summary.models}</strong>可用模型映射</span>
       </section>
 
       <div className="filter-bar">
-        <label className="selection-toggle"><input type="checkbox" checked={allPageSelected} onChange={toggleAllPage} aria-label="选择当前页全部渠道" /><span>全选</span></label>
+        <label className="selection-toggle"><input type="checkbox" checked={allPageSelected} onChange={toggleAllPage} aria-label={`选择当前页全部渠道（${channels.length} 条）`} /><span>全选本页</span></label>
         <label className="search-field"><Search size={16} /><input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="搜索渠道名称" aria-label="搜索渠道名称" /></label>
         <select value={status} onChange={(event) => { setPage(1); setStatus(event.target.value) }} aria-label="渠道状态">
           <option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option><option value="cooldown">冷却中</option>

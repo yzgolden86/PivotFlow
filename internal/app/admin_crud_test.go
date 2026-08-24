@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"slices"
@@ -69,8 +70,8 @@ func TestHandleListChannels(t *testing.T) {
 		}
 	}
 
-	// 模拟请求
-	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	// 模拟分页请求（控制台实际使用的响应形状）
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels?limit=50&offset=0", nil))
 
 	// 调用处理函数
 	server.handleListChannels(c)
@@ -81,8 +82,9 @@ func TestHandleListChannels(t *testing.T) {
 	}
 
 	var resp struct {
-		Success bool            `json:"success"`
-		Data    []*model.Config `json:"data"`
+		Success      bool            `json:"success"`
+		Data         []*model.Config `json:"data"`
+		EnabledCount int             `json:"enabled_count"`
 	}
 	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 
@@ -93,11 +95,48 @@ func TestHandleListChannels(t *testing.T) {
 	if len(resp.Data) != 3 {
 		t.Errorf("期望3个渠道，实际%d个", len(resp.Data))
 	}
+	if resp.EnabledCount != 3 {
+		t.Errorf("期望全局启用渠道数3，实际%d", resp.EnabledCount)
+	}
 
 	// 验证按优先级降序排序
 	if len(resp.Data) >= 2 {
 		if resp.Data[0].Priority < resp.Data[1].Priority {
 			t.Error("渠道应该按优先级降序排序")
+		}
+	}
+}
+
+func TestHandleListChannelsEnabledCountStableAcrossPages(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	for i := 0; i < 75; i++ {
+		if _, err := store.CreateConfig(ctx, &model.Config{
+			Name:     fmt.Sprintf("paged-channel-%02d", i),
+			URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+			Priority: i,
+			Enabled:  i == 37,
+		}); err != nil {
+			t.Fatalf("create channel %d: %v", i, err)
+		}
+	}
+
+	for _, offset := range []int{0, 50, 100, 0, 50} {
+		c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels?limit=50&offset=%d", offset), nil))
+		server.handleListChannels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("offset=%d status=%d body=%s", offset, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Success      bool `json:"success"`
+			Count        int  `json:"count"`
+			EnabledCount int  `json:"enabled_count"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		if !resp.Success || resp.Count != 75 || resp.EnabledCount != 1 {
+			t.Fatalf("offset=%d response count=%d enabled_count=%d body=%s", offset, resp.Count, resp.EnabledCount, w.Body.String())
 		}
 	}
 }

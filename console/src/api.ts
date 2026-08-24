@@ -211,10 +211,18 @@ export function getChannels(filters: ChannelFilters, signal?: AbortSignal, optio
   if (!request) {
     const generation = channelsGeneration
     request = requestEnvelope<Channel[]>(`/admin/channels?${params}`).then((payload) => {
-      const result = { data: payload.data, count: payload.count ?? payload.data.length }
+      const result = {
+        data: payload.data,
+        count: payload.count ?? payload.data.length,
+        enabled_count: typeof payload.enabled_count === 'number' ? payload.enabled_count : undefined,
+      }
       if (generation === channelsGeneration) channelsCache.set(key, { value: result, fetchedAt: Date.now() })
       return result
-    }).finally(() => channelsInFlight.delete(key))
+    }).finally(() => {
+      // A request invalidated by a mutation may finish after its replacement.
+      // Only the current promise may clear the in-flight slot.
+      if (channelsInFlight.get(key) === request) channelsInFlight.delete(key)
+    })
     channelsInFlight.set(key, request)
   }
   return waitWithSignal(request, signal)
