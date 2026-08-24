@@ -101,6 +101,49 @@ func TestSiteControlSQLiteCRUDAndProjection(t *testing.T) {
 	}
 }
 
+func TestSiteProjectionSyncPreservesManuallyDisabledChannel(t *testing.T) {
+	store, err := CreateSQLiteStore(t.TempDir() + "/site-preserve-enabled.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	site, err := store.CreateSite(ctx, &model.Site{Name: "preserve-enabled", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "main", CredentialType: model.CredentialTypeAPIKey, CredentialCiphertext: "fc1.test", CredentialKeyVersion: "v1", Enabled: true, Status: "healthy", BalanceCurrency: "USD", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: "key:main", Name: "preserve-enabled", BaseURL: site.BaseURL, Protocols: []string{"openai"}, Models: []string{"gpt-5"}, APIKey: "sk-main", Enabled: true}
+	created, err := store.UpsertSiteProjection(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateChannelEnabled(ctx, created.Channel.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	input.Models = []string{"gpt-5", "gpt-5-mini"}
+	input.APIKey = "sk-main-rotated"
+	input.Force = true // the scheduled route sync path uses force reconciliation
+	updated, err := store.UpsertSiteProjection(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Channel == nil || updated.Channel.Enabled {
+		t.Fatalf("route synchronization re-enabled manually disabled channel: %+v", updated.Channel)
+	}
+	current, err := store.GetConfig(ctx, created.Channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Enabled {
+		t.Fatalf("persisted channel was re-enabled by synchronization: %+v", current)
+	}
+}
+
 func TestSiteAccountModelsReplacePrunesStaleAndMergeRetainsStale(t *testing.T) {
 	store, err := CreateSQLiteStore(t.TempDir() + "/site-models.db")
 	if err != nil {

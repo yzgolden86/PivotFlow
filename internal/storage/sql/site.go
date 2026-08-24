@@ -1023,18 +1023,29 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 			if !exists {
 				channel.ID = 0
 				action = "recreated"
-			} else if actualHash != binding.LastProjectedHash && !input.Force {
-				action = "conflict"
-				binding.LastSyncStatus = "conflict"
-				binding.LastSyncError = "projected channel changed outside site control"
-				_, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET last_sync_status='conflict',last_sync_error=?,updated_at=? WHERE id=?", binding.LastSyncError, now, binding.ID)
-				return err
-			} else if actualHash == binding.LastProjectedHash && input.SourceHash == binding.LastProjectedHash && !input.Force {
-				action = "unchanged"
-				binding.LastSyncStatus = "success"
-				binding.LastSyncError = ""
-				_, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET status='active',last_sync_status='success',last_sync_error='',updated_at=? WHERE id=?", now, binding.ID)
-				return err
+			} else {
+				// A projected channel's enabled flag is a local routing decision.
+				// Route synchronization owns the upstream URL, key and models, but
+				// must never silently re-enable a channel that an administrator
+				// disabled in the channel management page.
+				if err := s.queryRowTx(ctx, tx, "SELECT enabled FROM channels WHERE id=?", channel.ID).Scan(&channel.Enabled); err != nil {
+					return err
+				}
+				input.Enabled = channel.Enabled
+				input.SourceHash = model.SiteProjectionSourceHash(input.BaseURL, input.Protocols, input.Models, input.APIKey, input.Enabled)
+				if actualHash != binding.LastProjectedHash && !input.Force {
+					action = "conflict"
+					binding.LastSyncStatus = "conflict"
+					binding.LastSyncError = "projected channel changed outside site control"
+					_, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET last_sync_status='conflict',last_sync_error=?,updated_at=? WHERE id=?", binding.LastSyncError, now, binding.ID)
+					return err
+				} else if actualHash == binding.LastProjectedHash && input.SourceHash == binding.LastProjectedHash && !input.Force {
+					action = "unchanged"
+					binding.LastSyncStatus = "success"
+					binding.LastSyncError = ""
+					_, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET status='active',last_sync_status='success',last_sync_error='',updated_at=? WHERE id=?", now, binding.ID)
+					return err
+				}
 			}
 		}
 		if channel.ID > 0 {
