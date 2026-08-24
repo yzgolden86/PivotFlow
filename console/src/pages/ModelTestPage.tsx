@@ -229,7 +229,9 @@ function ModelCatalog({ models, sites, accounts, channels, siteMap, accountMap, 
 }) {
   const [search, setSearch] = useState('')
   const [siteId, setSiteId] = useState(0)
-  const [status, setStatus] = useState<'all' | 'available' | 'stale' | 'disabled'>('all')
+  // The catalog is a current snapshot by default. Historical stale facts stay
+  // available through the explicit “过期” filter when a refresh was partial.
+  const [status, setStatus] = useState<'all' | 'available' | 'stale' | 'disabled'>('available')
   const visible = useMemo(() => models.filter((fact) => {
     const account = accountMap.get(fact.site_account_id)
     if (!account || (siteId && account.site_id !== siteId)) return false
@@ -240,8 +242,9 @@ function ModelCatalog({ models, sites, accounts, channels, siteMap, accountMap, 
     const query = search.trim().toLowerCase()
     return !query || [fact.model, fact.route_type, site?.name || '', account.label].some((value) => value.toLowerCase().includes(query))
   }), [accountMap, models, search, siteId, siteMap, status])
-  const unique = new Set(models.filter((item) => !item.disabled).map((item) => item.model)).size
-  const projected = new Set(models.filter((fact) => channels.some((channel) => channel.models.some((item) => !item.disabled && item.model === fact.model))).map((item) => item.model)).size
+  const currentModels = models.filter((item) => !item.disabled && !item.stale)
+  const unique = new Set(currentModels.map((item) => item.model)).size
+  const projected = new Set(currentModels.filter((fact) => channels.some((channel) => channel.models.some((item) => !item.disabled && item.model === fact.model))).map((item) => item.model)).size
 
   return <>
     <section className="compact-summary" aria-label="模型清单摘要"><span><strong>{unique}</strong>站点模型</span><span><strong>{models.length}</strong>账号模型事实</span><span><strong>{projected}</strong>已进入渠道</span><span><strong>{models.filter((item) => item.stale).length}</strong>待刷新</span></section>
@@ -250,7 +253,7 @@ function ModelCatalog({ models, sites, accounts, channels, siteMap, accountMap, 
       const account = accountMap.get(fact.site_account_id)
       const site = siteMap.get(account?.site_id || 0)
       const channelCount = channels.filter((channel) => channel.models.some((item) => !item.disabled && item.model === fact.model)).length
-      return <article className="record-row model-grid" key={`${fact.site_account_id}:${fact.model}`}><div><strong title={fact.model}>{fact.model}</strong><span>{channelCount ? `${channelCount} 个渠道可路由` : '尚未投影到渠道'}</span></div><div>{account?.site_id ? <a className="entity-link model-entity-link" href={`#/sites?focus_site_id=${account.site_id}`}><strong>{site?.name || `站点 #${account.site_id}`}</strong></a> : <strong>{site?.name || '未知站点'}</strong>}{fact.site_account_id ? <a className="entity-link model-entity-link" href={`#/accounts?focus_account_id=${fact.site_account_id}`}><span>{account?.label || `账号 #${fact.site_account_id}`}</span></a> : <span>未知账号</span>}</div><div><strong>{routeLabel(fact.route_type)}</strong><span>{fact.route_type}</span></div><div><strong>{sourceLabel(fact.source)}</strong><span>{fact.source}</span></div><div><strong>{fact.last_seen_at ? formatTime(fact.last_seen_at) : '—'}</strong><span>{fact.stale ? '需要重新刷新' : '当前快照'}</span></div><div className="model-row-action"><span className={`status-badge status-badge--${fact.disabled ? 'muted' : fact.stale ? 'warning' : 'success'}`}>{fact.disabled ? '停用' : fact.stale ? '过期' : '可用'}</span><button className="icon-button icon-button--surface" type="button" disabled={fact.disabled} onClick={() => probe(fact)} aria-label={`直测 ${fact.model}`} title="站点账号直测"><Play size={15} /></button></div></article>
+      return <article className="record-row model-grid" key={`${fact.site_account_id}:${fact.model}`}><div><strong title={fact.model}>{fact.model}</strong><span>{channelCount ? `${channelCount} 个渠道可路由` : '尚未投影到渠道'}</span></div><div>{account?.site_id ? <a className="entity-link model-entity-link model-entity-link--site" href={`#/sites?focus_site_id=${account.site_id}`}><strong>{site?.name || `站点 #${account.site_id}`}</strong></a> : <strong>{site?.name || '未知站点'}</strong>}{fact.site_account_id ? <a className="entity-link model-entity-link model-entity-link--account" href={`#/accounts?focus_account_id=${fact.site_account_id}`}><span>{account?.label || `账号 #${fact.site_account_id}`}</span></a> : <span>未知账号</span>}</div><div><strong>{routeLabel(fact.route_type)}</strong><span>{fact.route_type}</span></div><div><strong>{sourceLabel(fact.source)}</strong><span>{fact.source}</span></div><div><strong>{fact.last_seen_at ? formatTime(fact.last_seen_at) : '—'}</strong><span>{fact.stale ? '需要重新刷新' : '当前快照'}</span></div><div className="model-row-action"><span className={`status-badge status-badge--${fact.disabled ? 'muted' : fact.stale ? 'warning' : 'success'}`}>{fact.disabled ? '停用' : fact.stale ? '过期' : '可用'}</span><button className="icon-button icon-button--surface" type="button" disabled={fact.disabled} onClick={() => probe(fact)} aria-label={`直测 ${fact.model}`} title="站点账号直测"><Play size={15} /></button></div></article>
     })}</div>}
   </>
 }

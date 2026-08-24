@@ -25,6 +25,7 @@ type SiteStore interface {
 	DeleteSiteAccount(ctx context.Context, id int64) error
 
 	ReplaceSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error
+	MergeSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error
 	ListSiteAccountModels(ctx context.Context, filter model.SiteModelFilter) ([]model.SiteAccountModel, error)
 
 	UpsertSiteAnnouncements(ctx context.Context, announcements []model.SiteAnnouncement) error

@@ -618,11 +618,28 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 		}
 		modelsByProjection, facts, modelErr := s.routingModels(ctx, account, site, adapter, creds, keys)
 		if modelErr != nil && len(modelsByProjection) == 0 {
+			// The refresh reached model discovery but produced no usable snapshot.
+			// Keep the old facts as an explicit stale snapshot so the console can
+			// show that this account needs another refresh without routing them as
+			// current models.
+			if mergeErr := s.store.MergeSiteAccountModels(ctx, account.ID, nil); mergeErr != nil {
+				s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(mergeErr))
+				return
+			}
 			s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(modelErr))
 			return
 		}
-		if len(facts) > 0 || modelErr == nil {
+		if modelErr == nil {
+			// A complete refresh is authoritative: models no longer returned by
+			// the upstream are removed from the current account snapshot.
 			if err := s.store.ReplaceSiteAccountModels(ctx, account.ID, facts); err != nil {
+				s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
+				return
+			}
+		} else {
+			// A partial refresh must not erase evidence from unresolved keys; keep
+			// those older facts marked stale until a complete refresh succeeds.
+			if err := s.store.MergeSiteAccountModels(ctx, account.ID, facts); err != nil {
 				s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
 				return
 			}
