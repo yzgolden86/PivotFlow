@@ -85,16 +85,14 @@ func NewHybridStore(sqlite, mysql *sqlstore.SQLStore) *HybridStore {
 // syncToSQLite 同步更新 SQLite 缓存
 // SQLite 是本地库，启动时已验证可写，运行时通常不会失败
 // 但磁盘空间不足等极端情况仍可能导致写入失败，记录日志以便排查
-func (h *HybridStore) syncToSQLite(op string, fn func() error) error {
+func (h *HybridStore) syncToSQLite(op string, fn func() error) {
 	if err := fn(); err != nil {
 		count := h.sqliteSyncFailCount.Add(1)
 		// 采样告警：首次必打印，之后每 10 次一次（避免磁盘满时日志洪泛）
 		if count%10 == 1 {
 			log.Printf("[WARN] SQLite 同步失败 (%s): %v (累计失败: %d)", op, err, count)
 		}
-		return err
 	}
-	return nil
 }
 
 // cloneLogEntryForSync 克隆日志条目（异步队列需要）
@@ -261,15 +259,10 @@ func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enable
 		return nil, err
 	}
 
-	if err := h.syncToSQLite("UpdateChannelEnabled", func() error {
+	h.syncToSQLite("UpdateChannelEnabled", func() error {
 		_, err := h.sqlite.UpdateChannelEnabled(ctx, id, enabled)
 		return err
-	}); err != nil {
-		// MySQL is authoritative. A cache write failure must remain visible in
-		// logs, but must not report a failed mutation after the primary update
-		// already succeeded.
-		log.Printf("[WARN] 渠道状态已写入主库，但 SQLite 缓存未同步: channel=%d: %v", id, err)
-	}
+	})
 
 	return result, nil
 }
