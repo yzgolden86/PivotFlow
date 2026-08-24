@@ -152,7 +152,7 @@ function ActiveRequestsView({ autoRefreshSeconds }: { autoRefreshSeconds: number
     {error && <OperationNotice tone="error">{error}</OperationNotice>}
     {!requests.length ? <EmptyState label="当前没有进行中的请求" /> : <div className="records-panel"><div className="record-head active-request-grid"><span>开始时间</span><span>渠道 / 模型</span><span>上游</span><span>传输状态</span><span>调试</span></div>{requests.map((request) => <article className="record-row active-request-grid" key={request.id}>
       <div><strong>{formatTime(request.start_time)}</strong><span>#{request.id} · {request.is_streaming ? '流式' : '非流式'}</span></div>
-      <div><strong title={request.channel_name || `渠道 #${request.channel_id}`}>{request.channel_name || `渠道 #${request.channel_id}`}</strong><span>{request.model}</span></div>
+      <div><strong title={request.channel_name || undefined}>{request.channel_name || ((request.channel_id || 0) > 0 ? `渠道 #${request.channel_id}` : '尚未选定渠道')}</strong><span>{request.model}</span></div>
       <div><strong title={request.base_url}>{request.upstream_protocol || '自动'}</strong><span>{request.api_key_used || '—'}</span></div>
       <div><strong>{statusLabel(request.upstream_status)}</strong><span>{formatNumber(request.bytes_received)} bytes{request.client_first_byte_time ? ` · 首字 ${request.client_first_byte_time.toFixed(2)}s` : ''}</span></div>
       <div><button className="icon-button icon-button--surface" type="button" onClick={() => void openDebug(request)} disabled={!request.debug_log_available || debugLoading === request.id} aria-label={`查看请求 ${request.id} 调试快照`} title={request.debug_log_available ? '调试快照' : '未开启调试捕获'}><Bug className={debugLoading === request.id ? 'spin' : ''} size={15} /></button></div>
@@ -166,7 +166,8 @@ function LogRow({ entry }: { entry: LogEntry }) {
   const success = entry.status_code >= 200 && entry.status_code < 300
   const statusText = `${entry.status_code || 'ERR'} · ${success ? '成功' : '错误'}`
   const effectiveCost = entry.cost * (entry.cost_multiplier >= 0 ? entry.cost_multiplier : 1)
-  const channelName = entry.channel_name || `渠道 #${entry.channel_id}`
+  const hasChannel = entry.channel_id > 0
+  const channelName = entry.channel_name || (hasChannel ? `渠道 #${entry.channel_id}` : '路由汇总')
   const copyStatus = async () => {
     const value = entry.message ? `${statusText}\n${entry.message}` : statusText
     const fallbackCopy = () => {
@@ -195,7 +196,7 @@ function LogRow({ entry }: { entry: LogEntry }) {
   return (
     <article className="record-row log-grid">
       <div><strong>{formatTime(entry.time)}</strong><span>{sourceLabel(entry.log_source)}</span></div>
-      <div className="log-channel-cell"><strong title={channelName}>{channelName}</strong><span>#{entry.channel_id}</span></div>
+      <div className="log-channel-cell"><strong title={entry.channel_name || undefined}>{channelName}</strong><span>{hasChannel ? `#${entry.channel_id}` : '未命中可用渠道'}</span></div>
       <div className="log-status"><div className="log-status-line"><span className={`status-badge status-badge--${success ? 'success' : 'danger'}`}>{statusText}</span>{entry.message && <button className="log-copy-button" type="button" onClick={() => void copyStatus()} aria-label="复制状态错误" title="复制状态和错误详情">{copied ? <Check size={13} /> : <Copy size={13} />}</button>}</div>{entry.message && <span className="record-message" title={entry.message}>{entry.message}</span>}</div>
       <div><strong title={entry.actual_model && entry.actual_model !== entry.model ? `${entry.model} → ${entry.actual_model}` : entry.model}>{entry.model}</strong><span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
       <div><strong>{entry.duration ? `${entry.duration.toFixed(2)}s` : '—'}</strong><span>首字 {entry.first_byte_time ? `${entry.first_byte_time.toFixed(2)}s` : '—'}</span></div>

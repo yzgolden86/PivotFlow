@@ -151,7 +151,7 @@ export default function ModelTestPage() {
         ? await testChannel(channelId, payload)
         : await testSiteAccountModel(accountId, payload)
       const sourceLabel = target === 'channel'
-        ? channel?.name || `渠道 #${channelId}`
+        ? channel?.name || (channelId > 0 ? `渠道 #${channelId}` : '尚未选定渠道')
         : `${siteMap.get(account?.site_id || 0)?.name || '站点'} / ${account?.label || `账号 #${accountId}`}`
       const normalized: ProbeResult = {
         ...raw,
