@@ -269,6 +269,9 @@ type SiteProjectionInput struct {
 	Models        []string
 	APIKey        string
 	SourceHash    string
+	// Enabled is used when creating a projection. For an existing projected
+	// channel, its persisted enabled flag is a local routing decision and is
+	// preserved during synchronization.
 	Enabled       bool
 	Force         bool
 }
