@@ -272,8 +272,8 @@ type SiteProjectionInput struct {
 	// Enabled is used when creating a projection. For an existing projected
 	// channel, its persisted enabled flag is a local routing decision and is
 	// preserved during synchronization.
-	Enabled       bool
-	Force         bool
+	Enabled bool
+	Force   bool
 }
 
 // SiteProjectionResult reports the idempotent projection outcome.
