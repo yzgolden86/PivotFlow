@@ -470,6 +470,14 @@ func (s *SQLStore) unmarkRetainedChannelCandidates(candidates, deleted []int64) 
 }
 
 func (s *SQLStore) ReplaceSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error {
+	return s.replaceSiteAccountModels(ctx, accountID, models, true)
+}
+
+func (s *SQLStore) MergeSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error {
+	return s.replaceSiteAccountModels(ctx, accountID, models, false)
+}
+
+func (s *SQLStore) replaceSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel, pruneStale bool) error {
 	now := siteNow()
 	return s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		if _, err := s.execTx(ctx, tx, "UPDATE site_account_models SET stale=1, updated_at=? WHERE site_account_id=?", now, accountID); err != nil {
@@ -481,6 +489,11 @@ func (s *SQLStore) ReplaceSiteAccountModels(ctx context.Context, accountID int64
 				_, err = s.execTx(ctx, tx, `INSERT INTO site_account_models(site_account_id, model, route_type, source, disabled, stale, last_seen_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE route_type=VALUES(route_type), source=VALUES(source), stale=0, last_seen_at=VALUES(last_seen_at), updated_at=VALUES(updated_at)`, accountID, item.Model, item.RouteType, item.Source, item.Disabled, false, now, now, now)
 			}
 			if err != nil {
+				return err
+			}
+		}
+		if pruneStale {
+			if _, err := s.execTx(ctx, tx, "DELETE FROM site_account_models WHERE site_account_id=? AND stale=1", accountID); err != nil {
 				return err
 			}
 		}

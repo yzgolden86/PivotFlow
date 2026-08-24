@@ -101,6 +101,54 @@ func TestSiteControlSQLiteCRUDAndProjection(t *testing.T) {
 	}
 }
 
+func TestSiteAccountModelsReplacePrunesStaleAndMergeRetainsStale(t *testing.T) {
+	store, err := CreateSQLiteStore(t.TempDir() + "/site-models.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	site, err := store.CreateSite(ctx, &model.Site{Name: "models", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "main", CredentialType: model.CredentialTypeAPIKey, CredentialCiphertext: "fc1.test", CredentialKeyVersion: "v1", Enabled: true, Status: "healthy", BalanceCurrency: "USD", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceSiteAccountModels(ctx, account.ID, []model.SiteAccountModel{{Model: "old-model", RouteType: "openai_chat", Source: "models_endpoint"}, {Model: "shared-model", RouteType: "openai_chat", Source: "models_endpoint"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceSiteAccountModels(ctx, account.ID, []model.SiteAccountModel{{Model: "shared-model", RouteType: "openai_chat", Source: "models_endpoint"}, {Model: "new-model", RouteType: "openai_chat", Source: "models_endpoint"}}); err != nil {
+		t.Fatal(err)
+	}
+	models, err := store.ListSiteAccountModels(ctx, model.SiteModelFilter{SiteAccountID: account.ID, IncludeDisabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 || models[0].Model != "new-model" || models[1].Model != "shared-model" {
+		t.Fatalf("complete replacement should prune old models: %+v", models)
+	}
+	if err := store.MergeSiteAccountModels(ctx, account.ID, []model.SiteAccountModel{{Model: "partial-model", RouteType: "openai_chat", Source: "routing_key_models"}}); err != nil {
+		t.Fatal(err)
+	}
+	models, err = store.ListSiteAccountModels(ctx, model.SiteModelFilter{SiteAccountID: account.ID, IncludeDisabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 3 {
+		t.Fatalf("partial merge should retain stale facts: %+v", models)
+	}
+	for _, item := range models {
+		if item.Model == "partial-model" && item.Stale {
+			t.Fatalf("new partial model must be current: %+v", item)
+		}
+		if item.Model != "partial-model" && !item.Stale {
+			t.Fatalf("unresolved partial model must be stale: %+v", item)
+		}
+	}
+}
+
 func TestDeleteSiteAccountAndSiteRemoveOnlyOwnedProjectedChannels(t *testing.T) {
 	store, err := CreateSQLiteStore(t.TempDir() + "/site-delete-cascade.db")
 	if err != nil {

@@ -1625,8 +1625,15 @@ a:focus-visible {
 .model-status-filter button { min-height: 28px; padding: 4px 9px; color: var(--text-muted); background: transparent; border: 0; border-radius: 5px; cursor: pointer; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .model-status-filter button:hover { color: var(--text); }
 .model-status-filter button.is-active { color: var(--text); background: var(--surface); box-shadow: 0 1px 3px rgba(16, 25, 20, .08); }
-.model-entity-link { text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--text-muted) 60%, transparent); text-underline-offset: 3px; }
-.model-entity-link:hover { text-decoration-color: var(--green); }
+.model-entity-link { display: inline-flex; width: fit-content; min-height: 23px; align-items: center; padding: 2px 7px; border: 1px solid transparent; border-radius: 6px; font-weight: 700; line-height: 17px; text-decoration-line: underline; text-decoration-thickness: 1.75px; text-underline-offset: 3px; transition: color .16s ease, background-color .16s ease, border-color .16s ease, box-shadow .16s ease; }
+.model-entity-link strong,
+.model-entity-link span { color: inherit !important; font-weight: 700; }
+.model-entity-link--site { color: var(--green); background: color-mix(in srgb, var(--green-soft) 46%, var(--surface)); border-color: color-mix(in srgb, var(--green) 28%, var(--border)); text-decoration-color: color-mix(in srgb, var(--green) 78%, transparent); }
+.model-entity-link--account { color: var(--blue); background: color-mix(in srgb, var(--blue-soft) 46%, var(--surface)); border-color: color-mix(in srgb, var(--blue) 28%, var(--border)); text-decoration-color: color-mix(in srgb, var(--blue) 78%, transparent); }
+.model-entity-link--site:hover,
+.model-entity-link--site:focus-visible { color: var(--green); background: var(--green-soft); border-color: color-mix(in srgb, var(--green) 58%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 14%, transparent); }
+.model-entity-link--account:hover,
+.model-entity-link--account:focus-visible { color: var(--blue); background: var(--blue-soft); border-color: color-mix(in srgb, var(--blue) 58%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 14%, transparent); }
 .log-status .status-badge { min-width: 66px; }
 .cost-status--usage_missing,
 .cost-status--unpriced_model { color: var(--amber) !important; }
@@ -2169,6 +2176,11 @@ a:focus-visible {
 .site-sync-row strong { font-size: 12px; }
 .site-sync-row span { color: var(--text-muted); font-size: 10px; }
 .site-sync-row > div:last-child { justify-items: start; }
+.site-sync-progress { display: grid; gap: 7px; margin: 10px 0 12px; padding: 10px 12px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 8px; }
+.site-sync-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-secondary); font-size: 11px; }
+.site-sync-progress-head strong { color: var(--text); font-size: 12px; }
+.site-sync-progress-track { height: 6px; overflow: hidden; background: var(--surface-strong); border-radius: 999px; }
+.site-sync-progress-track i { display: block; height: 100%; background: linear-gradient(90deg, var(--green), var(--blue)); border-radius: inherit; transition: width .25s ease; }
 .site-sync-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: 11px; }
 .site-sync-dialog > footer > div { display: flex; gap: 8px; }
 .credential-replace-toggle { padding: 10px 11px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 8px; }

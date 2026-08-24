@@ -29,7 +29,7 @@ export function StatusBadge({ status }: { status?: string }) {
 
 export function statusTone(status?: string): string {
   if (['healthy', 'success', 'already_checked', 'active'].includes(status || '')) return 'success'
-  if (['degraded', 'partial', 'browser_required', 'running', 'queued'].includes(status || '')) return 'warning'
+  if (['degraded', 'partial', 'browser_required', 'running', 'queued', 'pending'].includes(status || '')) return 'warning'
   if (['expired', 'error', 'failed'].includes(status || '')) return 'danger'
   return 'muted'
 }
@@ -38,7 +38,7 @@ export function statusLabel(status?: string): string {
   const labels: Record<string, string> = {
     healthy: '正常', degraded: '降级', expired: '已过期', disabled: '已禁用', active: '启用', inactive: '已停用', error: '异常', unknown: '未知',
     success: '成功', failed: '失败', already_checked: '已签到', browser_required: '需浏览器', unsupported: '不支持',
-    running: '运行中', queued: '排队中', partial: '部分成功', cancelled: '已取消', never: '未发送',
+    running: '运行中', queued: '排队中', pending: '等待中', partial: '部分成功', cancelled: '已取消', never: '未发送',
   }
   return labels[status || ''] || status || '未知'
 }

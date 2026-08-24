@@ -261,7 +261,7 @@ function SiteChannelSyncModal({ close, synced }: { close: () => void; synced: ()
   const sync = async () => {
     const targets = accounts.filter((account) => selected.has(account.id))
     if (!targets.length) { setError('请至少选择一个站点账号'); return }
-    setSyncing(true); setError(''); setResults(new Map()); setProgress({ done: 0, total: targets.length })
+    setSyncing(true); setError(''); setResults(new Map(targets.map((account) => [account.id, { status: 'queued' }]))); setProgress({ done: 0, total: targets.length })
     let cursor = 0; let done = 0
     const worker = async () => {
       while (cursor < targets.length) {
@@ -281,6 +281,14 @@ function SiteChannelSyncModal({ close, synced }: { close: () => void; synced: ()
     await loadData(); synced(); setSyncing(false)
   }
 
+  const resultValues = [...results.values()]
+  const successCount = resultValues.filter((item) => item.status === 'success').length
+  const partialCount = resultValues.filter((item) => item.status === 'partial').length
+  const failedCount = resultValues.filter((item) => item.status === 'failed').length
+  const completedCount = successCount + partialCount + failedCount
+  const progressPercent = progress.total ? Math.round((progress.done / progress.total) * 100) : 0
+  const hasFinished = results.size > 0 && completedCount === progress.total && !syncing
+
   return (
     <Modal title="同步站点渠道" close={close} wide>
       {error && <div className="inline-error modal-error">{error}</div>}
@@ -291,6 +299,7 @@ function SiteChannelSyncModal({ close, synced }: { close: () => void; synced: ()
             <div><button className="text-button" type="button" onClick={selectAll}>{filteredAccounts.some((account) => account.enabled) && filteredAccounts.filter((account) => account.enabled).every((account) => selected.has(account.id)) ? '取消全选' : '全选搜索结果'}</button><button className="text-button" type="button" onClick={() => setSelected(new Set())}>清空</button></div>
           </div>
           <label className="search-field site-sync-search"><Search size={15} /><input value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} placeholder="搜索账号、站点名称或网址" aria-label="搜索站点账号" /><span>{filteredAccounts.length}/{accounts.length}</span></label>
+          {(syncing || hasFinished) && <div className="site-sync-progress" aria-live="polite"><div className="site-sync-progress-head"><strong>{syncing ? `同步进行中 · ${progress.done}/${progress.total}` : `同步完成 · 成功 ${successCount} · 部分成功 ${partialCount} · 失败 ${failedCount}`}</strong><span>{progressPercent}%</span></div><div className="site-sync-progress-track"><i style={{ width: `${progressPercent}%` }} /></div></div>}
           {!accounts.length ? <EmptyState label="还没有站点账号" /> : (
             <div className="site-sync-list">
               {!filteredAccounts.length ? <EmptyState label="没有匹配的站点账号" /> : filteredAccounts.map((account) => {
@@ -312,7 +321,7 @@ function SiteChannelSyncModal({ close, synced }: { close: () => void; synced: ()
               })}
             </div>
           )}
-          <footer><span>{syncing ? `正在同步 ${progress.done}/${progress.total}` : `已选择 ${selected.size} 个账号`}</span><div><button className="secondary-button" type="button" onClick={close} disabled={syncing}>关闭</button><button className="primary-button" type="button" onClick={() => void sync()} disabled={syncing || !selected.size}>{syncing && <RefreshCw className="spin" size={15} />}{syncing ? '同步中' : '开始同步'}</button></div></footer>
+          <footer><span>{syncing ? `正在同步 ${progress.done}/${progress.total}` : hasFinished ? `已完成 ${completedCount} 个账号，可查看上方逐项结果` : `已选择 ${selected.size} 个账号`}</span><div><button className="secondary-button" type="button" onClick={close} disabled={syncing}>关闭</button><button className="primary-button" type="button" onClick={() => void sync()} disabled={syncing || !selected.size}>{syncing && <RefreshCw className="spin" size={15} />}{syncing ? '同步中' : hasFinished ? '再次同步' : '开始同步'}</button></div></footer>
         </div>
       )}
     </Modal>

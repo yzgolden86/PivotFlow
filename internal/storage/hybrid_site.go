@@ -114,6 +114,9 @@ func (h *HybridStore) deleteProjectedSQLiteCopies(ctx context.Context, candidate
 func (h *HybridStore) ReplaceSiteAccountModels(ctx context.Context, id int64, v []model.SiteAccountModel) error {
 	return h.mysql.ReplaceSiteAccountModels(ctx, id, v)
 }
+func (h *HybridStore) MergeSiteAccountModels(ctx context.Context, id int64, v []model.SiteAccountModel) error {
+	return h.mysql.MergeSiteAccountModels(ctx, id, v)
+}
 func (h *HybridStore) ListSiteAccountModels(ctx context.Context, f model.SiteModelFilter) ([]model.SiteAccountModel, error) {
 	return h.mysql.ListSiteAccountModels(ctx, f)
 }
