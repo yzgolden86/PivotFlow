@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Bug, History, RefreshCw, Search, Waves } from 'lucide-react'
+import { Bug, Check, Copy, History, RefreshCw, Search, Waves } from 'lucide-react'
 import { getActiveRequestDebug, getActiveRequests, getLogs, getLogsBootstrap, getSystemSettings } from '../api'
 import type { ActiveRequest, DashboardRange, LogEntry, LogsBootstrap } from '../types'
 import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, Pagination } from './shared'
@@ -108,7 +108,7 @@ export default function LogsPage() {
 
       {loading ? <LoadingState label="正在加载请求日志" /> : error ? <ErrorState message={error} retry={() => void load()} /> : logs.length === 0 ? <EmptyState label="当前筛选条件下暂无请求日志" /> : (
         <div className="records-panel log-records" role="table" aria-label="请求日志列表">
-          <div className="record-head log-grid" role="row"><span>时间 / 来源</span><span>渠道</span><span>模型与协议</span><span>状态</span><span>时延</span><span>Token</span><span>费用</span></div>
+          <div className="record-head log-grid" role="row"><span>时间 / 来源</span><span>渠道</span><span>状态</span><span>模型与协议</span><span>时延</span><span>Token</span><span>费用</span></div>
           {logs.map((entry) => <LogRow entry={entry} key={entry.id} />)}
         </div>
       )}
@@ -162,16 +162,42 @@ function ActiveRequestsView({ autoRefreshSeconds }: { autoRefreshSeconds: number
 }
 
 function LogRow({ entry }: { entry: LogEntry }) {
+  const [copied, setCopied] = useState(false)
   const success = entry.status_code >= 200 && entry.status_code < 300
   const statusText = `${entry.status_code || 'ERR'} · ${success ? '成功' : '错误'}`
   const effectiveCost = entry.cost * (entry.cost_multiplier >= 0 ? entry.cost_multiplier : 1)
   const channelName = entry.channel_name || `渠道 #${entry.channel_id}`
+  const copyStatus = async () => {
+    const value = entry.message ? `${statusText}\n${entry.message}` : statusText
+    const fallbackCopy = () => {
+      const textarea = document.createElement('textarea')
+      textarea.value = value
+      textarea.setAttribute('readonly', 'true')
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const copiedByFallback = document.execCommand('copy')
+      textarea.remove()
+      if (!copiedByFallback) throw new Error('clipboard unavailable')
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        try { await navigator.clipboard.writeText(value) }
+        catch { fallbackCopy() }
+      } else fallbackCopy()
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1600)
+    } catch {
+      // The log row remains usable when the browser denies clipboard access.
+    }
+  }
   return (
     <article className="record-row log-grid">
       <div><strong>{formatTime(entry.time)}</strong><span>{sourceLabel(entry.log_source)}</span></div>
-      <div><strong title={channelName}>{channelName}</strong><span>#{entry.channel_id}</span></div>
+      <div className="log-channel-cell"><strong title={channelName}>{channelName}</strong><span>#{entry.channel_id}</span></div>
+      <div className="log-status"><div className="log-status-line"><span className={`status-badge status-badge--${success ? 'success' : 'danger'}`}>{statusText}</span>{entry.message && <button className="log-copy-button" type="button" onClick={() => void copyStatus()} aria-label="复制状态错误" title="复制状态和错误详情">{copied ? <Check size={13} /> : <Copy size={13} />}</button>}</div>{entry.message && <span className="record-message" title={entry.message}>{entry.message}</span>}</div>
       <div><strong title={entry.actual_model && entry.actual_model !== entry.model ? `${entry.model} → ${entry.actual_model}` : entry.model}>{entry.model}</strong><span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
-      <div className="log-status"><span className={`status-badge status-badge--${success ? 'success' : 'danger'}`}>{statusText}</span>{entry.message && <span className="record-message" title={entry.message}>{entry.message}</span>}</div>
       <div><strong>{entry.duration ? `${entry.duration.toFixed(2)}s` : '—'}</strong><span>首字 {entry.first_byte_time ? `${entry.first_byte_time.toFixed(2)}s` : '—'}</span></div>
       <div><strong>{formatNumber(entry.input_tokens)} / {formatNumber(entry.output_tokens)}</strong><span>输入 / 输出</span></div>
       <div><strong title={entry.cost_status ? costStatusLabel(entry.cost_status, entry.is_streaming) : undefined}>{formatMoney(effectiveCost)}</strong><span className={entry.cost_status ? `cost-status cost-status--${entry.cost_status}` : undefined}>{costStatusLabel(entry.cost_status, entry.is_streaming)}</span></div>

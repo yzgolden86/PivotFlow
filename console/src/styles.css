@@ -1613,10 +1613,20 @@ a:focus-visible {
 .record-row > div { display: flex; min-width: 0; flex-direction: column; }
 .record-row strong { overflow: hidden; color: var(--text); font-size: 11px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .record-row span { overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
-.record-message { max-width: 100%; color: var(--coral) !important; }
-.log-grid { grid-template-columns: 104px minmax(92px, .52fr) minmax(126px, .68fr) minmax(228px, 1.3fr) 82px 100px 96px; }
+.record-message { max-width: 100%; color: var(--coral) !important; user-select: text; }
+.log-grid { grid-template-columns: 100px minmax(176px, 1.1fr) minmax(270px, 1.55fr) minmax(104px, .62fr) 82px 100px 96px; }
+.log-channel-cell strong { white-space: normal; overflow-wrap: anywhere; }
 .log-grid > div:nth-child(4) { min-width: 0; }
-.log-status { gap: 3px; }
+.log-status { gap: 4px; }
+.log-status-line { display: flex !important; min-width: 0; align-items: center; flex-direction: row !important; gap: 6px; }
+.log-copy-button { display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; flex: 0 0 24px; padding: 0; color: var(--text-muted); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 5px; cursor: pointer; }
+.log-copy-button:hover { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
+.model-status-filter { display: inline-flex; align-items: center; gap: 2px; padding: 3px; background: var(--surface-strong); border: 1px solid var(--border); border-radius: 7px; }
+.model-status-filter button { min-height: 28px; padding: 4px 9px; color: var(--text-muted); background: transparent; border: 0; border-radius: 5px; cursor: pointer; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.model-status-filter button:hover { color: var(--text); }
+.model-status-filter button.is-active { color: var(--text); background: var(--surface); box-shadow: 0 1px 3px rgba(16, 25, 20, .08); }
+.model-entity-link { text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--text-muted) 60%, transparent); text-underline-offset: 3px; }
+.model-entity-link:hover { text-decoration-color: var(--green); }
 .log-status .status-badge { min-width: 66px; }
 .cost-status--usage_missing,
 .cost-status--unpriced_model { color: var(--amber) !important; }
@@ -2591,7 +2601,7 @@ a:focus-visible {
 
   .channel-row { grid-template-columns: minmax(180px, 1fr) minmax(210px, 1.2fr) 120px minmax(150px, 1fr) 112px; }
   .channel-limits { display: none; }
-  .log-grid { grid-template-columns: 100px minmax(88px, .5fr) minmax(120px, .64fr) minmax(210px, 1.2fr) 78px 92px 96px; }
+  .log-grid { grid-template-columns: 100px minmax(160px, 1fr) minmax(250px, 1.35fr) minmax(100px, .6fr) 78px 92px 96px; }
   .log-grid > :nth-child(6) { display: none; }
   .stats-grid { grid-template-columns: minmax(170px, 1.1fr) 110px 105px 100px 75px 115px; }
   .stats-grid > :nth-child(6) { display: none; }
@@ -3470,7 +3480,7 @@ body { font-size: 14px; line-height: 1.5; }
   .account-grid > :nth-child(5) { display: flex; }
   .checkin-account-records > .checkin-account-grid { min-width: 900px; }
   .records-panel > .checkin-grid { min-width: 980px; }
-  .records-panel > .log-grid { min-width: 900px; }
+  .records-panel > .log-grid { min-width: 1040px; }
   .records-panel > .stats-grid { min-width: 840px; }
   .log-grid > :nth-child(6),
   .stats-grid > :nth-child(6),
