@@ -376,6 +376,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
   const [loading, setLoading] = useState(Boolean(channelId))
   const [saving, setSaving] = useState(false)
   const [discovering, setDiscovering] = useState(false)
+  const [selectedModelIndexes, setSelectedModelIndexes] = useState<Set<number>>(new Set())
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -383,6 +384,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
     const controller = new AbortController()
     void getChannelEditor(channelId, controller.signal).then((data) => {
       setSnapshot(data)
+      setSelectedModelIndexes(new Set(data.channel.models.map((_, index) => index)))
       setForm({
         name: data.channel.name,
         authType: data.channel.auth_type || 'api_key',
@@ -407,24 +409,31 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
     return () => controller.abort()
   }, [channelId])
 
+  useEffect(() => {
+    setSelectedModelIndexes((current) => new Set([...current].filter((index) => index >= 0 && index < form.models.length)))
+  }, [form.models.length])
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); setSaving(true); setError('')
     try {
-      const models = normalizeEditorModels(form.models)
+      const models = normalizeEditorModels(form.models.filter((_, index) => selectedModelIndexes.has(index)))
+      const selectedModelNames = new Set(models.map((item) => item.model.toLowerCase()))
+      const scheduledCheckModel = snapshot?.channel.scheduled_check_model?.trim() || ''
       const payload: ChannelMutation = {
         name: form.name.trim(), auth_type: form.authType,
         urls: parseURLs(form.urls), models, api_keys: form.authType === 'api_key' ? parseKeys(form.keys) : [],
-        key_strategy: form.keyStrategy, priority: Number(form.priority) || 0, rpm_limit: Number(form.rpmLimit) || 0,
+        ...(form.authType === 'api_key' ? { key_strategy: form.keyStrategy } : {}),
+        priority: Number(form.priority) || 0, rpm_limit: Number(form.rpmLimit) || 0,
         max_concurrency: Number(form.maxConcurrency) || 0, enabled: form.enabled, websockets: form.websockets,
         protocol_transform_mode: form.protocolMode, scheduled_check_enabled: snapshot?.channel.scheduled_check_enabled || false,
-        scheduled_check_model: snapshot?.channel.scheduled_check_model || '', daily_cost_limit: Number(form.dailyCostLimit) || 0,
+        scheduled_check_model: selectedModelNames.has(scheduledCheckModel.toLowerCase()) ? scheduledCheckModel : '', daily_cost_limit: Number(form.dailyCostLimit) || 0,
         cost_multiplier: Number(form.costMultiplier), proxy_url: form.proxyURL.trim(), retry_other_keys_on_failure: form.retryOtherKeys,
         available_time_start: form.availableTimeStart, available_time_end: form.availableTimeEnd,
         custom_request_rules: snapshot?.channel.custom_request_rules, cooldown_detection_rules: snapshot?.channel.cooldown_detection_rules,
       }
       if ((payload.available_time_start && !payload.available_time_end) || (!payload.available_time_start && payload.available_time_end)) throw new Error('可用时段需要同时填写开始和结束时间')
       if (!payload.urls.length) throw new Error('至少填写一个上游 URL')
-      if (!payload.models.some((item) => item.model && !item.disabled)) throw new Error('至少保留一个启用模型')
+      if (!payload.models.some((item) => item.model && !item.disabled)) throw new Error('至少勾选一个启用模型')
       if (form.authType === 'api_key' && !payload.api_keys.length) throw new Error('至少填写一个 API Key')
       if (channelId) await updateChannel(channelId, payload); else await createChannel(payload)
       saved()
@@ -466,20 +475,16 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
       <div className="form-help">可用时段按服务器本地时间判断；留空表示全天，开始晚于结束时按跨午夜窗口处理。窗口外渠道不会参与路由或定时巡检。</div>
       <label className="textarea-field">上游 URL<textarea required rows={3} value={form.urls} onChange={(event) => setForm({ ...form, urls: event.target.value })} placeholder="每行一个；可写 URL | anthropic, openai" /></label>
       {form.authType === 'api_key' ? <label className="textarea-field">API Keys<textarea required rows={4} value={form.keys} onChange={(event) => setForm({ ...form, keys: event.target.value })} placeholder="每行一个；可写 key | 备注" /></label> : <div className="form-help">OAuth 渠道不在这里手填密钥，请使用顶部“导入凭证”导入 Codex 或 Antigravity 凭证文件。</div>}
-      {form.authType === 'api_key' && <div className="model-discovery-action"><div><strong>自动获取模型</strong><span>使用上方 URL 和 Key 请求模型列表，获取结果会直接用于渠道。</span></div><button className="secondary-button" type="button" onClick={() => void discoverModels()} disabled={discovering || !form.urls.trim() || !form.keys.trim()}>{discovering ? <RefreshCw className="spin" size={15} /> : <Sparkles size={15} />}{discovering ? '获取中' : '获取模型'}</button></div>}
-      <EditableModelList models={form.models} onChange={(models) => setForm((current) => ({ ...current, models }))} />
+      {form.authType === 'api_key' && <div className="model-discovery-action"><div><strong>自动获取模型</strong><span>获取结果作为候选模型加入列表；勾选需要保留的模型后再保存渠道。</span></div><button className="secondary-button" type="button" onClick={() => void discoverModels()} disabled={discovering || !form.urls.trim() || !form.keys.trim()}>{discovering ? <RefreshCw className="spin" size={15} /> : <Sparkles size={15} />}{discovering ? '获取中' : '获取模型'}</button></div>}
+      <EditableModelList models={form.models} selected={selectedModelIndexes} onSelectionChange={setSelectedModelIndexes} onChange={(models) => setForm((current) => ({ ...current, models }))} />
       <div className="checkbox-grid"><label className="checkbox-field"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用渠道</label><label className="checkbox-field"><input type="checkbox" checked={form.websockets} onChange={(event) => setForm({ ...form, websockets: event.target.checked })} />WebSocket</label><label className="checkbox-field"><input type="checkbox" checked={form.retryOtherKeys} onChange={(event) => setForm({ ...form, retryOtherKeys: event.target.checked })} />失败时尝试其他 Key</label></div>
       <footer><button className="secondary-button" type="button" onClick={close}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving ? <RefreshCw className="spin" size={15} /> : null}{saving ? '保存中' : '保存渠道'}</button></footer>
     </form>}
   </Modal>
 }
 
-function EditableModelList({ models, onChange }: { models: ChannelModel[]; onChange: (models: ChannelModel[]) => void }) {
-  const [selected, setSelected] = useState<Set<number>>(new Set())
+function EditableModelList({ models, selected, onSelectionChange, onChange }: { models: ChannelModel[]; selected: Set<number>; onSelectionChange: (selected: Set<number>) => void; onChange: (models: ChannelModel[]) => void }) {
   const [query, setQuery] = useState('')
-  useEffect(() => {
-    setSelected((current) => new Set([...current].filter((index) => index >= 0 && index < models.length)))
-  }, [models.length])
   const visibleIndexes = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return models.reduce<number[]>((indexes, item, index) => {
@@ -490,24 +495,29 @@ function EditableModelList({ models, onChange }: { models: ChannelModel[]; onCha
   const update = (index: number, patch: Partial<ChannelModel>) => onChange(models.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
   const remove = (index: number) => {
     onChange(models.filter((_, itemIndex) => itemIndex !== index))
-    setSelected((current) => new Set([...current].filter((itemIndex) => itemIndex !== index).map((itemIndex) => itemIndex > index ? itemIndex - 1 : itemIndex)))
+    onSelectionChange(new Set([...selected].filter((itemIndex) => itemIndex !== index).map((itemIndex) => itemIndex > index ? itemIndex - 1 : itemIndex)))
   }
-  const removeSelected = () => {
-    if (!selected.size) return
-    onChange(models.filter((_, index) => !selected.has(index)))
-    setSelected(new Set())
+  const removeUnselected = () => {
+    if (selected.size === models.length) return
+    onChange(models.filter((_, index) => selected.has(index)))
+    onSelectionChange(new Set(Array.from({ length: selected.size }, (_, index) => index)))
   }
-  const add = () => { setQuery(''); onChange([...models, { model: '', redirect_model: '' }]) }
+  const add = () => {
+    setQuery('')
+    onChange([...models, { model: '', redirect_model: '' }])
+    onSelectionChange(new Set(selected).add(models.length))
+  }
   const allVisibleSelected = visibleIndexes.length > 0 && visibleIndexes.every((index) => selected.has(index))
-  const toggleVisible = () => setSelected((current) => {
-    const next = new Set(current)
+  const toggleVisible = () => {
+    const next = new Set(selected)
     if (allVisibleSelected) visibleIndexes.forEach((index) => next.delete(index))
     else visibleIndexes.forEach((index) => next.add(index))
-    return next
-  })
+    onSelectionChange(next)
+  }
+  const unselectedCount = models.length - selected.size
   return <section className="selection-panel discovered-model-panel">
-    <header><div><strong>渠道模型</strong><span>{models.length ? `${models.length} 个模型，可删减或配置映射${selected.size ? `，累计已选 ${selected.size} 个` : ''}` : '尚未配置模型'}</span></div><div className="model-list-actions"><button className="text-button" type="button" onClick={toggleVisible} disabled={!visibleIndexes.length}>{allVisibleSelected ? '取消当前结果' : '全选搜索结果'}</button>{selected.size > 0 && <button className="text-button" type="button" onClick={() => setSelected(new Set())}>清空选择</button>}{selected.size > 0 && <button className="text-button danger-text-button" type="button" onClick={removeSelected}><Trash2 size={14} />删除所选 ({selected.size})</button>}<button className="text-button" type="button" onClick={add}><Plus size={14} />添加模型</button></div></header>
-    {models.length ? <><div className="model-selection-toolbar"><label className="search-field selection-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索模型或映射名称" aria-label="搜索渠道模型" /><span>{visibleIndexes.length}/{models.length}</span></label>{selected.size > 0 && <small>已跨搜索保留 {selected.size} 个选择</small>}</div>{visibleIndexes.length ? <div className="editable-model-list">{visibleIndexes.map((index) => { const item = models[index]; return <div className="editable-model-row" key={`${item.model}-${index}`}><input type="checkbox" checked={selected.has(index)} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(index)) next.delete(index); else next.add(index); return next })} aria-label={`选择模型 ${item.model || index + 1}`} /><input value={item.model} onChange={(event) => update(index, { model: event.target.value })} placeholder="对外模型名" aria-label={`第 ${index + 1} 个对外模型`} /><span aria-hidden="true">→</span><input value={item.redirect_model || ''} onChange={(event) => update(index, { redirect_model: event.target.value })} placeholder="映射到上游模型（可选）" aria-label={`第 ${index + 1} 个上游映射`} /><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除模型 ${item.model || index + 1}`} title="删除模型"><Trash2 size={15} /></button></div> })}</div> : <span className="selection-empty">没有匹配“{query.trim()}”的模型，已勾选的其他模型仍会保留。</span>}</> : <span className="selection-empty">填写 URL 和 API Key 后点击“获取模型”，也可以直接添加模型。</span>}
+    <header><div><strong>渠道模型</strong><span>{models.length ? `${models.length} 个候选，已勾选 ${selected.size} 个；保存时只提交勾选模型` : '尚未配置模型'}</span></div><div className="model-list-actions"><button className="text-button" type="button" onClick={toggleVisible} disabled={!visibleIndexes.length}>{allVisibleSelected ? '取消当前结果' : '全选搜索结果'}</button>{selected.size > 0 && <button className="text-button" type="button" onClick={() => onSelectionChange(new Set())}>清空选择</button>}{unselectedCount > 0 && <button className="text-button danger-text-button" type="button" onClick={removeUnselected}><Trash2 size={14} />移除未选 ({unselectedCount})</button>}<button className="text-button" type="button" onClick={add}><Plus size={14} />添加模型</button></div></header>
+    {models.length ? <><div className="model-selection-toolbar"><label className="search-field selection-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索模型或映射名称" aria-label="搜索渠道模型" /><span>{visibleIndexes.length}/{models.length}</span></label><small>已跨搜索保留 {selected.size} 个勾选</small></div>{visibleIndexes.length ? <div className="editable-model-list">{visibleIndexes.map((index) => { const item = models[index]; return <div className="editable-model-row" key={`${item.model}-${index}`}><input type="checkbox" checked={selected.has(index)} onChange={() => { const next = new Set(selected); if (next.has(index)) next.delete(index); else next.add(index); onSelectionChange(next) }} aria-label={`保存模型 ${item.model || index + 1}`} /><input value={item.model} onChange={(event) => update(index, { model: event.target.value })} placeholder="对外模型名" aria-label={`第 ${index + 1} 个对外模型`} /><span aria-hidden="true">→</span><input value={item.redirect_model || ''} onChange={(event) => update(index, { redirect_model: event.target.value })} placeholder="映射到上游模型（可选）" aria-label={`第 ${index + 1} 个上游映射`} /><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除模型 ${item.model || index + 1}`} title="删除模型"><Trash2 size={15} /></button></div> })}</div> : <span className="selection-empty">没有匹配“{query.trim()}”的模型，已勾选的其他模型仍会保留。</span>}</> : <span className="selection-empty">填写 URL 和 API Key 后点击“获取模型”，也可以直接添加模型。</span>}
   </section>
 }
 
