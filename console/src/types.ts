@@ -152,7 +152,7 @@ export interface ChannelMutation {
   name: string
   auth_type: string
   api_keys: Array<{ api_key: string; note?: string }>
-  key_strategy: string
+  key_strategy?: string
   urls: ChannelURL[]
   priority: number
   rpm_limit: number
