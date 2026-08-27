@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, Copy, KeyRound, Pencil, Plus, Power, RefreshCw, Search, Trash2, WalletCards } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, Copy, KeyRound, Pencil, Plus, Power, RefreshCw, Search, Trash2, WalletCards, X } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 import {
   createSiteAccount,
@@ -48,6 +48,20 @@ type MetadataForm = {
 }
 
 type AccountTaskKind = 'checkin' | 'refresh' | 'model_refresh' | 'update' | 'delete'
+type RouteSyncStatus = 'queued' | 'running' | 'success' | 'partial' | 'failed' | 'cancelled'
+
+type RouteSyncResult = {
+  accountId: number
+  accountLabel: string
+  siteName: string
+  status: RouteSyncStatus
+  message?: string
+}
+
+type RouteSyncRun = {
+  running: boolean
+  results: Map<number, RouteSyncResult>
+}
 
 const emptyCredential = (type: CredentialType = 'username_password'): CredentialForm => ({
   credential_type: type,
@@ -95,6 +109,7 @@ export default function AccountsPage() {
   const [busy, setBusy] = useState<Map<number, AccountTaskKind>>(new Map())
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [batchBusy, setBatchBusy] = useState(false)
+  const [routeSyncRun, setRouteSyncRun] = useState<RouteSyncRun | null>(null)
   const [openingCreate, setOpeningCreate] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createForm, setCreateForm] = useState<CreateAccountForm>(emptyAccount())
@@ -411,20 +426,45 @@ export default function AccountsPage() {
     const targets = action === 'refresh' ? selectedAccounts.filter((account) => account.credential_type !== 'api_key') : selectedAccounts
     const skipped = selectedAccounts.length - targets.length
     setBatchBusy(true); setError(''); setNotice('')
-    let failed = 0
+    if (action === 'model_refresh') {
+      setRouteSyncRun({
+        running: true,
+        results: new Map(targets.map((account) => [account.id, {
+          accountId: account.id,
+          accountLabel: account.label,
+          siteName: siteMap.get(account.site_id)?.name || `站点 #${account.site_id}`,
+          status: 'queued' as const,
+        }])),
+      })
+    }
+    let failed = 0; let partial = 0
     await runLimited(targets, async (account) => {
       setBusy((current) => new Map(current).set(account.id, action === 'enable' || action === 'disable' ? 'update' : action))
+      if (action === 'model_refresh') updateRouteSyncResult(setRouteSyncRun, account.id, { status: 'running', message: undefined })
       try {
         if (action === 'refresh' || action === 'model_refresh') {
           const result = await executeAccountTask(account.id, action)
           if (!['success', 'partial'].includes(result.status)) throw new Error(result.error || result.status)
+          if (action === 'model_refresh') {
+            if (result.status === 'partial') partial++
+            updateRouteSyncResult(setRouteSyncRun, account.id, {
+              status: result.status,
+              message: result.error ? siteErrorMessage(result.error) : result.status === 'partial' ? '模型已刷新，但部分渠道未同步' : '模型和路由渠道已同步',
+            })
+          }
         } else if (action === 'delete') await deleteSiteAccount(account.id)
         else await updateSiteAccount(account.id, { enabled: action === 'enable' })
-      } catch { failed++ }
+      } catch (reason) {
+        failed++
+        if (action === 'model_refresh') updateRouteSyncResult(setRouteSyncRun, account.id, { status: 'failed', message: siteErrorMessage(reason) })
+      }
       finally { setBusy((current) => { const next = new Map(current); next.delete(account.id); return next }) }
     })
-    const succeeded = targets.length - failed
-    setNotice(`批量操作完成：成功 ${succeeded}${skipped ? `，跳过 ${skipped} 个纯 API Key 账号` : ''}${failed ? `，失败 ${failed}` : ''}`)
+    const succeeded = targets.length - failed - partial
+    if (action === 'model_refresh') setRouteSyncRun((current) => current ? { ...current, running: false } : current)
+    setNotice(action === 'model_refresh'
+      ? `批量同步路由完成：成功 ${succeeded}${partial ? `，部分成功 ${partial}` : ''}${failed ? `，失败 ${failed}` : ''}`
+      : `批量操作完成：成功 ${succeeded}${skipped ? `，跳过 ${skipped} 个纯 API Key 账号` : ''}${failed ? `，失败 ${failed}` : ''}`)
     if (action === 'delete') setSelected(new Set())
     await load(undefined, { silent: true, force: true })
     setBatchBusy(false)
@@ -447,6 +487,7 @@ export default function AccountsPage() {
     <section className="compact-summary"><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{accounts.filter((item) => item.status === 'healthy').length}</strong>健康</span><span><strong>{accounts.filter((item) => item.auto_checkin).length}</strong>自动签到</span><span><strong>{accounts.filter((item) => item.credential_configured).length}</strong>凭证已配置</span></section>
     <div className="filter-bar filter-bar--wide"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部账号" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索账号或站点" aria-label="搜索账号" /></label><select value={siteFilter} onChange={(event) => setSiteFilter(Number(event.target.value))} aria-label="账号站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="账号状态"><option value="all">全部状态</option><option value="healthy">正常</option><option value="error">异常</option><option value="expired">已过期</option><option value="unknown">未知</option></select><select value={sort} onChange={(event) => chooseSort(event.target.value as AccountSort)} aria-label="账号排序"><option value="newest">新建优先</option><option value="name">账号名称</option><option value="site">站点名称</option><option value="status">状态</option><option value="balance">余额</option><option value="checkin">最近签到</option><option value="updated">最近更新</option></select></div>
     {selected.size > 0 && <div className="batch-toolbar" aria-label="账号批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('refresh')} disabled={batchBusy}><WalletCards size={14} />刷新余额</button><button type="button" onClick={() => void runBatch('model_refresh')} disabled={batchBusy}><RefreshCw size={14} />同步路由</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
+    {routeSyncRun && <RouteSyncProgress run={routeSyncRun} close={() => setRouteSyncRun(null)} />}
     {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
     {error && accounts.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
     {loading ? <LoadingState label="正在加载账号" /> : error && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? accounts.length ? <EmptyState label="没有匹配的账号" /> : <div className="content-state content-state--empty"><strong>还没有账号</strong><button className="secondary-button" type="button" onClick={() => void openCreate()} disabled={!sites.length}><Plus size={15} />添加账号</button></div> : <div className="account-records records-panel"><div className="record-head account-grid"><SortableHead label="账号 / 站点" sortKey="name" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="状态" sortKey="status" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="余额" sortKey="balance" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="最近签到" sortKey="checkin" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="自动任务" sortKey="automation" active={sort} direction={sortDirection} choose={toggleSort} /><span>操作</span></div>{pagedVisible.map((account) => <AccountRow key={account.id} account={account} site={siteMap.get(account.site_id)} latestCheckin={latestCheckins[account.id]} selected={selected.has(account.id)} busyKind={busy.get(account.id)} focused={account.id === focusAccountId} rowRef={(node) => { if (node) rowRefs.current.set(account.id, node); else rowRefs.current.delete(account.id) }} select={() => toggleSelected(account.id)} task={(kind) => void task(account, kind)} copy={() => void copyAccount(account)} edit={() => openMetadata(account)} credential={() => openCredential(account)} remove={() => void remove(account)} />)}</div>}
@@ -456,6 +497,44 @@ export default function AccountsPage() {
     {editing && metadata && <Modal title="编辑账号" close={() => { setEditing(null); setMetadata(null) }}>{error && <div className="inline-error modal-error">{error}</div>}<MetadataFormView account={editing} site={siteMap.get(editing.site_id)} form={metadata} setForm={setMetadata} saving={savingMetadata} submit={saveMetadata} /></Modal>}
     {credentialAccount && <Modal title={`更新凭证 · ${credentialAccount.label}`} close={() => setCredentialAccount(null)}>{credentialError && <div className="inline-error modal-error">{credentialError}</div>}<CredentialUpdateView account={credentialAccount} site={siteMap.get(credentialAccount.site_id)} form={credentialForm} change={changeCredential} verification={verification} verifying={verifying} saving={savingCredential} verify={() => void verifyCredential()} save={() => void saveCredential()} /></Modal>}
   </div>
+}
+
+function updateRouteSyncResult(
+  update: React.Dispatch<React.SetStateAction<RouteSyncRun | null>>,
+  accountId: number,
+  patch: Pick<RouteSyncResult, 'status' | 'message'>,
+) {
+  update((current) => {
+    const previous = current?.results.get(accountId)
+    if (!current || !previous) return current
+    const results = new Map(current.results)
+    results.set(accountId, { ...previous, ...patch })
+    return { ...current, results }
+  })
+}
+
+function RouteSyncProgress({ run, close }: { run: RouteSyncRun; close: () => void }) {
+  const results = [...run.results.values()]
+  const success = results.filter((item) => item.status === 'success').length
+  const partial = results.filter((item) => item.status === 'partial').length
+  const failed = results.filter((item) => ['failed', 'cancelled'].includes(item.status)).length
+  const completed = success + partial + failed
+  const percent = results.length ? Math.round((completed / results.length) * 100) : 0
+  return <section className="account-route-sync" aria-live="polite" aria-label="批量同步路由进度">
+    <header>
+      <div><strong>{run.running ? '批量同步路由进行中' : '批量同步路由已完成'}</strong><span>{completed}/{results.length} 个账号</span></div>
+      <button className="icon-button icon-button--surface" type="button" onClick={close} disabled={run.running} aria-label="关闭同步结果" title={run.running ? '同步完成后可关闭' : '关闭同步结果'}><X size={16} /></button>
+    </header>
+    <div className="account-route-sync-progress"><i style={{ width: `${percent}%` }} /></div>
+    <div className="account-route-sync-summary"><span>进度 <strong>{percent}%</strong></span><span className="is-success">成功 <strong>{success}</strong></span><span className="is-partial">部分成功 <strong>{partial}</strong></span><span className="is-failed">失败 <strong>{failed}</strong></span></div>
+    <div className="account-route-sync-results">
+      {results.map((result) => <div className="account-route-sync-row" key={result.accountId}>
+        <div><strong>{result.accountLabel}</strong><span>{result.siteName}</span></div>
+        <StatusBadge status={result.status} />
+        <span className="account-route-sync-message" title={result.message}>{result.message || (result.status === 'queued' ? '等待同步' : result.status === 'running' ? '正在刷新模型与路由渠道' : '')}</span>
+      </div>)}
+    </div>
+  </section>
 }
 
 function AccountRow({ account, site, latestCheckin, selected, busyKind, focused, rowRef, select, task, copy, edit, credential, remove }: {

@@ -2056,6 +2056,37 @@ a:focus-visible {
 .batch-toolbar button:disabled { cursor: wait; opacity: .55; }
 .batch-toolbar button.danger-button { color: var(--coral); }
 
+.account-route-sync {
+  display: grid;
+  gap: 10px;
+  margin: -4px 0 14px;
+  padding: 12px 14px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--blue);
+  border-radius: 8px;
+}
+.account-route-sync > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.account-route-sync > header > div { display: flex; min-width: 0; align-items: baseline; gap: 9px; }
+.account-route-sync > header strong { color: var(--text); font-size: 13px; }
+.account-route-sync > header span { color: var(--text-muted); font-size: 11px; }
+.account-route-sync-progress { height: 6px; overflow: hidden; background: var(--surface-strong); border-radius: 999px; }
+.account-route-sync-progress i { display: block; height: 100%; background: linear-gradient(90deg, var(--green), var(--blue)); border-radius: inherit; transition: width .25s ease; }
+.account-route-sync-summary { display: flex; flex-wrap: wrap; gap: 14px; color: var(--text-muted); font-size: 11px; }
+.account-route-sync-summary strong { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.account-route-sync-summary .is-success strong { color: var(--green); }
+.account-route-sync-summary .is-partial strong { color: var(--amber); }
+.account-route-sync-summary .is-failed strong { color: var(--coral); }
+.account-route-sync-results { max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+.account-route-sync-row { display: grid; grid-template-columns: minmax(180px, .8fr) 78px minmax(240px, 1.2fr); align-items: center; gap: 12px; min-height: 48px; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+.account-route-sync-row:last-child { border-bottom: 0; }
+.account-route-sync-row > div { display: grid; min-width: 0; gap: 2px; }
+.account-route-sync-row > div strong,
+.account-route-sync-row > div span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-route-sync-row > div strong { color: var(--text); font-size: 12px; }
+.account-route-sync-row > div span { color: var(--text-muted); font-size: 10px; }
+.account-route-sync-message { min-width: 0; color: var(--text-secondary); font-size: 11px; line-height: 16px; overflow-wrap: anywhere; user-select: text; }
+
 .model-discovery-action {
   display: flex;
   align-items: center;
@@ -3463,6 +3494,8 @@ body { font-size: 14px; line-height: 1.5; }
   body { font-size: 14px; }
   .page-header h1 { font-size: 25px; }
   .distribution-layout { min-height: 0; }
+  .account-route-sync-row { grid-template-columns: minmax(0, 1fr) 76px; }
+  .account-route-sync-message { grid-column: 1 / -1; }
 }
 
 .records-panel {
