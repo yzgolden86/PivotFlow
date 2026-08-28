@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Copy, FileUp, FlaskConical, Layers3, Pencil, Plus, Power, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
+import { Copy, FileUp, FlaskConical, Layers3, Pencil, Plus, Power, RefreshCw, Search, Settings2, Sparkles, Trash2 } from 'lucide-react'
 import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, getChannelEditor, getChannels, getSiteChannelBindings, getSiteInventory, importOAuthCredentials, peekChannels, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
-import type { Channel, ChannelEditorSnapshot, ChannelModel, ChannelMutation, ChannelURL, Site, SiteAccount, SiteChannelBinding } from '../types'
+import type { Channel, ChannelBodyRuleAction, ChannelEditorSnapshot, ChannelHeaderRuleAction, ChannelModel, ChannelMutation, ChannelRequestRules, ChannelURL, Site, SiteAccount, SiteChannelBinding } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
 import { Modal, siteErrorMessage, StatusBadge } from './siteShared'
@@ -361,13 +361,36 @@ interface EditorForm {
   name: string; authType: string; urls: string; models: ChannelModel[]; keys: string; keyStrategy: string
   priority: number; rpmLimit: number; maxConcurrency: number; costMultiplier: number; dailyCostLimit: number
   protocolMode: string; proxyURL: string; enabled: boolean; websockets: boolean; retryOtherKeys: boolean
-  availableTimeStart: string; availableTimeEnd: string
+  availableTimeStart: string; availableTimeEnd: string; requestRules: RequestRulesForm
+}
+
+interface HeaderRuleForm {
+  action: ChannelHeaderRuleAction
+  name: string
+  value: string
+}
+
+interface BodyRuleForm {
+  action: ChannelBodyRuleAction
+  path: string
+  value: string
+}
+
+interface RequestRulesForm {
+  headers: HeaderRuleForm[]
+  body: BodyRuleForm[]
+}
+
+const maxCustomRuleEntries = 32
+
+function emptyRequestRules(): RequestRulesForm {
+  return { headers: [], body: [] }
 }
 
 const blankEditor: EditorForm = {
   name: '', authType: 'api_key', urls: '', models: [], keys: '', keyStrategy: 'sequential', priority: 0,
   rpmLimit: 0, maxConcurrency: 0, costMultiplier: 1, dailyCostLimit: 0, protocolMode: 'auto', proxyURL: '',
-  enabled: true, websockets: false, retryOtherKeys: false, availableTimeStart: '', availableTimeEnd: '',
+  enabled: true, websockets: false, retryOtherKeys: false, availableTimeStart: '', availableTimeEnd: '', requestRules: emptyRequestRules(),
 }
 
 function ChannelEditor({ channelId, close, saved }: { channelId?: number; close: () => void; saved: () => void }) {
@@ -404,6 +427,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
         retryOtherKeys: Boolean(data.channel.retry_other_keys_on_failure),
         availableTimeStart: data.channel.available_time_start || '',
         availableTimeEnd: data.channel.available_time_end || '',
+        requestRules: requestRulesToForm(data.channel.custom_request_rules),
       })
     }).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '渠道详情加载失败') }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
@@ -419,6 +443,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
       const models = normalizeEditorModels(form.models.filter((_, index) => selectedModelIndexes.has(index)))
       const selectedModelNames = new Set(models.map((item) => item.model.toLowerCase()))
       const scheduledCheckModel = snapshot?.channel.scheduled_check_model?.trim() || ''
+      const customRequestRules = requestRulesToPayload(form.requestRules)
       const payload: ChannelMutation = {
         name: form.name.trim(), auth_type: form.authType,
         urls: parseURLs(form.urls), models, api_keys: form.authType === 'api_key' ? parseKeys(form.keys) : [],
@@ -429,7 +454,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
         scheduled_check_model: selectedModelNames.has(scheduledCheckModel.toLowerCase()) ? scheduledCheckModel : '', daily_cost_limit: Number(form.dailyCostLimit) || 0,
         cost_multiplier: Number(form.costMultiplier), proxy_url: form.proxyURL.trim(), retry_other_keys_on_failure: form.retryOtherKeys,
         available_time_start: form.availableTimeStart, available_time_end: form.availableTimeEnd,
-        custom_request_rules: snapshot?.channel.custom_request_rules, cooldown_detection_rules: snapshot?.channel.cooldown_detection_rules,
+        custom_request_rules: customRequestRules, cooldown_detection_rules: snapshot?.channel.cooldown_detection_rules,
       }
       if ((payload.available_time_start && !payload.available_time_end) || (!payload.available_time_start && payload.available_time_end)) throw new Error('可用时段需要同时填写开始和结束时间')
       if (!payload.urls.length) throw new Error('至少填写一个上游 URL')
@@ -477,10 +502,77 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
       {form.authType === 'api_key' ? <label className="textarea-field">API Keys<textarea required rows={4} value={form.keys} onChange={(event) => setForm({ ...form, keys: event.target.value })} placeholder="每行一个；可写 key | 备注" /></label> : <div className="form-help">OAuth 渠道不在这里手填密钥，请使用顶部“导入凭证”导入 Codex 或 Antigravity 凭证文件。</div>}
       {form.authType === 'api_key' && <div className="model-discovery-action"><div><strong>自动获取模型</strong><span>获取结果作为候选模型加入列表；勾选需要保留的模型后再保存渠道。</span></div><button className="secondary-button" type="button" onClick={() => void discoverModels()} disabled={discovering || !form.urls.trim() || !form.keys.trim()}>{discovering ? <RefreshCw className="spin" size={15} /> : <Sparkles size={15} />}{discovering ? '获取中' : '获取模型'}</button></div>}
       <EditableModelList models={form.models} selected={selectedModelIndexes} onSelectionChange={setSelectedModelIndexes} onChange={(models) => setForm((current) => ({ ...current, models }))} />
+      <CustomRequestRulesEditor value={form.requestRules} onChange={(requestRules) => setForm((current) => ({ ...current, requestRules }))} />
       <div className="checkbox-grid"><label className="checkbox-field"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用渠道</label><label className="checkbox-field"><input type="checkbox" checked={form.websockets} onChange={(event) => setForm({ ...form, websockets: event.target.checked })} />WebSocket</label><label className="checkbox-field"><input type="checkbox" checked={form.retryOtherKeys} onChange={(event) => setForm({ ...form, retryOtherKeys: event.target.checked })} />失败时尝试其他 Key</label></div>
       <footer><button className="secondary-button" type="button" onClick={close}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving ? <RefreshCw className="spin" size={15} /> : null}{saving ? '保存中' : '保存渠道'}</button></footer>
     </form>}
   </Modal>
+}
+
+function CustomRequestRulesEditor({ value, onChange }: { value: RequestRulesForm; onChange: (value: RequestRulesForm) => void }) {
+  const ruleCount = value.headers.length + value.body.length
+  const updateHeader = (index: number, patch: Partial<HeaderRuleForm>) => onChange({ ...value, headers: value.headers.map((rule, itemIndex) => itemIndex === index ? { ...rule, ...patch } : rule) })
+  const updateBody = (index: number, patch: Partial<BodyRuleForm>) => onChange({ ...value, body: value.body.map((rule, itemIndex) => itemIndex === index ? { ...rule, ...patch } : rule) })
+
+  return <details className="advanced-request-settings">
+    <summary><span className="advanced-request-summary"><Settings2 size={16} /><span><strong>高级请求设置</strong><small>请求头覆盖、参数覆盖与安全透传</small></span></span><span className="advanced-request-count">{ruleCount ? `${ruleCount} 条规则` : '未配置'}</span></summary>
+    <div className="advanced-request-content">
+      <p className="form-help">低频高级选项，默认不改变请求。普通请求头会按安全策略透传；协议转换选择“上游原生”可进行协议级透传。认证头由系统托管，不能通过这里覆盖。</p>
+      <section className="advanced-rule-group">
+        <header><div><strong>请求头规则</strong><small>按顺序删除、覆盖或追加上游请求头，最多 {maxCustomRuleEntries} 条</small></div><button className="text-button" type="button" disabled={value.headers.length >= maxCustomRuleEntries} title={value.headers.length >= maxCustomRuleEntries ? `最多添加 ${maxCustomRuleEntries} 条请求头规则` : '添加请求头规则'} onClick={() => onChange({ ...value, headers: [...value.headers, { action: 'override', name: '', value: '' }] })}><Plus size={14} />添加请求头</button></header>
+        {value.headers.length === 0 ? <div className="advanced-rule-empty">未配置请求头规则</div> : <div className="advanced-rule-list">{value.headers.map((rule, index) => <div className="advanced-rule-row" key={`header-${index}`}>
+          <select value={rule.action} onChange={(event) => updateHeader(index, { action: event.target.value as ChannelHeaderRuleAction })} aria-label={`第 ${index + 1} 条请求头动作`}><option value="override">覆盖</option><option value="append">追加</option><option value="remove">删除</option></select>
+          <input value={rule.name} onChange={(event) => updateHeader(index, { name: event.target.value })} placeholder="请求头名称，例如 X-Api-Version" aria-label={`第 ${index + 1} 条请求头名称`} />
+          <input value={rule.value} onChange={(event) => updateHeader(index, { value: event.target.value })} placeholder={rule.action === 'remove' ? '留空删除整个请求头；填写值可删除逗号分隔项' : '请求头值'} aria-label={`第 ${index + 1} 条请求头值`} />
+          <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => onChange({ ...value, headers: value.headers.filter((_, itemIndex) => itemIndex !== index) })} aria-label={`删除第 ${index + 1} 条请求头规则`} title="删除规则"><Trash2 size={15} /></button>
+        </div>)}</div>}
+      </section>
+      <section className="advanced-rule-group">
+        <header><div><strong>JSON 参数规则</strong><small>使用点号路径覆盖或删除请求体字段，最多 {maxCustomRuleEntries} 条</small></div><button className="text-button" type="button" disabled={value.body.length >= maxCustomRuleEntries} title={value.body.length >= maxCustomRuleEntries ? `最多添加 ${maxCustomRuleEntries} 条参数规则` : '添加 JSON 参数规则'} onClick={() => onChange({ ...value, body: [...value.body, { action: 'override', path: '', value: '' }] })}><Plus size={14} />添加参数</button></header>
+        {value.body.length === 0 ? <div className="advanced-rule-empty">未配置参数规则</div> : <div className="advanced-rule-list">{value.body.map((rule, index) => <div className="advanced-rule-row advanced-rule-row--body" key={`body-${index}`}>
+          <select value={rule.action} onChange={(event) => updateBody(index, { action: event.target.value as ChannelBodyRuleAction, ...(event.target.value === 'remove' ? { value: '' } : {}) })} aria-label={`第 ${index + 1} 条参数动作`}><option value="override">覆盖</option><option value="remove">删除</option></select>
+          <input value={rule.path} onChange={(event) => updateBody(index, { path: event.target.value })} placeholder="参数路径，例如 thinking.budget_tokens" aria-label={`第 ${index + 1} 条参数路径`} />
+          <textarea rows={1} value={rule.value} disabled={rule.action === 'remove'} onChange={(event) => updateBody(index, { value: event.target.value })} placeholder={'JSON 值，例如 "text"、8192 或 {"enabled":true}'} aria-label={`第 ${index + 1} 条参数值`} />
+          <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => onChange({ ...value, body: value.body.filter((_, itemIndex) => itemIndex !== index) })} aria-label={`删除第 ${index + 1} 条参数规则`} title="删除规则"><Trash2 size={15} /></button>
+        </div>)}</div>}
+      </section>
+    </div>
+  </details>
+}
+
+function requestRulesToForm(raw?: ChannelRequestRules): RequestRulesForm {
+  if (!raw) return emptyRequestRules()
+  return {
+    headers: Array.isArray(raw.headers) ? raw.headers.map((rule) => ({ action: rule.action, name: rule.name || '', value: rule.value || '' })) : [],
+    body: Array.isArray(raw.body) ? raw.body.map((rule) => ({ action: rule.action, path: rule.path || '', value: rule.action === 'remove' ? '' : jsonEditorValue(rule.value) })) : [],
+  }
+}
+
+function jsonEditorValue(value: unknown): string {
+  if (typeof value === 'undefined') return ''
+  try { return JSON.stringify(value) } catch { return '' }
+}
+
+function requestRulesToPayload(form: RequestRulesForm): ChannelRequestRules | undefined {
+  if (form.headers.length > maxCustomRuleEntries) throw new Error(`请求头规则最多 ${maxCustomRuleEntries} 条`)
+  if (form.body.length > maxCustomRuleEntries) throw new Error(`参数规则最多 ${maxCustomRuleEntries} 条`)
+  const headers = form.headers.map((rule, index) => {
+    const name = rule.name.trim()
+    if (!name) throw new Error(`请求头规则 ${index + 1} 的名称不能为空`)
+    return { action: rule.action, name, ...(rule.value ? { value: rule.value } : {}) }
+  })
+  const body = form.body.map((rule, index) => {
+    const path = rule.path.trim()
+    if (!path) throw new Error(`参数规则 ${index + 1} 的路径不能为空`)
+    if (rule.action === 'remove') return { action: rule.action, path }
+    const raw = rule.value.trim()
+    if (!raw) throw new Error(`参数规则 ${index + 1} 需要填写 JSON 值`)
+    let parsed: unknown
+    try { parsed = JSON.parse(raw) } catch { throw new Error(`参数规则 ${index + 1} 的值不是有效 JSON`) }
+    return { action: rule.action, path, value: parsed }
+  })
+  if (!headers.length && !body.length) return undefined
+  return { ...(headers.length ? { headers } : {}), ...(body.length ? { body } : {}) }
 }
 
 function EditableModelList({ models, selected, onSelectionChange, onChange }: { models: ChannelModel[]; selected: Set<number>; onSelectionChange: (selected: Set<number>) => void; onChange: (models: ChannelModel[]) => void }) {

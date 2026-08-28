@@ -813,6 +813,48 @@ func (h *HybridStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64
 	return h.sqlite.FillAuthTokenRPMStats(ctx, stats, startTime, endTime, isToday)
 }
 
+// === System Access Token Management ===
+
+func (h *HybridStore) CreateSystemAccessToken(ctx context.Context, token *model.SystemAccessToken) error {
+	if err := h.mysql.CreateSystemAccessToken(ctx, token); err != nil {
+		return err
+	}
+	h.syncToSQLite("CreateSystemAccessToken", func() error { return h.sqlite.CreateSystemAccessToken(ctx, token) })
+	return nil
+}
+
+func (h *HybridStore) GetSystemAccessTokenByHash(ctx context.Context, tokenHash string) (*model.SystemAccessToken, error) {
+	return h.sqlite.GetSystemAccessTokenByHash(ctx, tokenHash)
+}
+
+func (h *HybridStore) ListSystemAccessTokens(ctx context.Context) ([]*model.SystemAccessToken, error) {
+	return h.sqlite.ListSystemAccessTokens(ctx)
+}
+
+func (h *HybridStore) UpdateSystemAccessToken(ctx context.Context, token *model.SystemAccessToken) error {
+	if err := h.mysql.UpdateSystemAccessToken(ctx, token); err != nil {
+		return err
+	}
+	h.syncToSQLite("UpdateSystemAccessToken", func() error { return h.sqlite.UpdateSystemAccessToken(ctx, token) })
+	return nil
+}
+
+func (h *HybridStore) DeleteSystemAccessToken(ctx context.Context, id int64) error {
+	if err := h.mysql.DeleteSystemAccessToken(ctx, id); err != nil {
+		return err
+	}
+	h.syncToSQLite("DeleteSystemAccessToken", func() error { return h.sqlite.DeleteSystemAccessToken(ctx, id) })
+	return nil
+}
+
+func (h *HybridStore) UpdateSystemAccessTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error {
+	if err := h.mysql.UpdateSystemAccessTokenLastUsed(ctx, tokenHash, now); err != nil {
+		return err
+	}
+	h.syncToSQLite("UpdateSystemAccessTokenLastUsed", func() error { return h.sqlite.UpdateSystemAccessTokenLastUsed(ctx, tokenHash, now) })
+	return nil
+}
+
 // === System Settings ===
 
 func (h *HybridStore) GetSetting(ctx context.Context, key string) (*model.SystemSetting, error) {

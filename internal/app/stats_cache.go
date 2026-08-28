@@ -268,6 +268,9 @@ func hashFilter(filter *model.LogFilter) string {
 	if filter.StatusCode != nil {
 		parts = append(parts, fmt.Sprintf("status:%d", *filter.StatusCode))
 	}
+	if filter.StatusCodeMin != nil {
+		parts = append(parts, fmt.Sprintf("status_min:%d", *filter.StatusCodeMin))
+	}
 	if filter.LogSource != "" {
 		parts = append(parts, fmt.Sprintf("source:%s", filter.LogSource))
 	}

@@ -585,6 +585,9 @@ func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) str
 	if redirectModel, ok := cfg.GetRedirectModel(originalModel); ok && redirectModel != "" {
 		actualModel = redirectModel
 	}
+	if actualModel == originalModel && s.modelAliases != nil {
+		actualModel = s.modelAliases.actualModelFor(cfg, originalModel)
+	}
 
 	// 2. 模糊匹配回退（仅当未触发重定向时）
 	if actualModel == originalModel && s.modelFuzzyMatch {

@@ -98,7 +98,7 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, model string, clientProtocol string) ([]*modelpkg.Config, error) {
 	normalizedType := normalizeOptionalProtocol(clientProtocol)
 
-	channels, err := s.getEnabledChannelsSnapshotByModel(ctx, model)
+	channels, err := s.getEnabledChannelsSnapshotByUnifiedModel(ctx, model)
 	if err != nil {
 		return nil, err
 	}
@@ -150,4 +150,33 @@ func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, m
 
 	// 最终兜底：如果候选存在但全部在冷却中，让全冷却兜底逻辑选择“最早恢复”的渠道。
 	return s.filterCooldownChannels(ctx, allCandidates, model, normalizedType)
+}
+
+func (s *Server) getEnabledChannelsSnapshotByUnifiedModel(ctx context.Context, modelName string) ([]*modelpkg.Config, error) {
+	if modelName == "*" || s.modelAliases == nil {
+		return s.getEnabledChannelsSnapshotByModel(ctx, modelName)
+	}
+	names := s.modelAliases.namesFor(modelName)
+	if len(names) <= 1 {
+		return s.getEnabledChannelsSnapshotByModel(ctx, modelName)
+	}
+	seen := make(map[int64]struct{})
+	merged := make([]*modelpkg.Config, 0)
+	for _, name := range names {
+		channels, err := s.getEnabledChannelsSnapshotByModel(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		for _, cfg := range channels {
+			if cfg == nil {
+				continue
+			}
+			if _, exists := seen[cfg.ID]; exists {
+				continue
+			}
+			seen[cfg.ID] = struct{}{}
+			merged = append(merged, cfg)
+		}
+	}
+	return merged, nil
 }

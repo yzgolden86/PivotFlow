@@ -129,7 +129,7 @@ export default function TokensPage() {
     </div>
 
     {error && tokens.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
-    {loading ? <LoadingState label="正在加载令牌" /> : error && !tokens.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label="没有符合条件的令牌" /> : <div className="token-list">
+    {loading ? <LoadingState label="正在加载令牌" /> : error && !tokens.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label="没有符合条件的令牌" /> : <div className="token-table-wrap"><div className="token-table-head"><span /><span>名称</span><span>令牌</span><span>请求统计</span><span>费用</span><span>限制</span><span>创建时间</span><span>最后使用</span><span>操作</span></div><div className="token-list">
       {visible.map((token) => <article className="token-row" key={token.id}>
         <span className={`token-icon${token.is_active ? '' : ' token-icon--off'}`}><KeyRound size={17} /></span>
         <div className="token-identity"><strong>{token.description}</strong><span>令牌 #{token.id}</span></div>
@@ -145,7 +145,7 @@ export default function TokensPage() {
           <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => void remove(token)} disabled={busyId === token.id} aria-label={`删除 ${token.description}`} title="删除"><Trash2 size={16} /></button>
         </div>
       </article>)}
-    </div>}
+    </div></div>}
 
     {editing && <TokenForm token={editing === 'new' ? undefined : editing} close={() => setEditing(null)} saved={(token, plain) => {
       setEditing(null); if (plain) setCreatedToken(plain)

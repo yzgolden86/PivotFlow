@@ -12,6 +12,7 @@ func TestWhereBuilder_ApplyLogFilter(t *testing.T) {
 
 	channelID := int64(42)
 	statusCode := 500
+	statusCodeMin := 400
 	authTokenID := int64(7)
 
 	tests := []struct {
@@ -55,6 +56,13 @@ func TestWhereBuilder_ApplyLogFilter(t *testing.T) {
 			name: "status_code filter",
 			filter: &model.LogFilter{
 				StatusCode: &statusCode,
+			},
+			expectArgsLen: 2,
+		},
+		{
+			name: "minimum status_code filter",
+			filter: &model.LogFilter{
+				StatusCodeMin: &statusCodeMin,
 			},
 			expectArgsLen: 2,
 		},

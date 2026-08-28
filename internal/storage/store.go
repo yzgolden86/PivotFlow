@@ -112,6 +112,14 @@ type Store interface {
 	GetAuthTokenStatsInRange(ctx context.Context, startTime, endTime time.Time) (map[int64]*model.AuthTokenRangeStats, error)
 	FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*model.AuthTokenRangeStats, startTime, endTime time.Time, isToday bool) error
 
+	// === System access tokens (management-plane diagnostics) ===
+	CreateSystemAccessToken(ctx context.Context, token *model.SystemAccessToken) error
+	GetSystemAccessTokenByHash(ctx context.Context, tokenHash string) (*model.SystemAccessToken, error)
+	ListSystemAccessTokens(ctx context.Context) ([]*model.SystemAccessToken, error)
+	UpdateSystemAccessToken(ctx context.Context, token *model.SystemAccessToken) error
+	DeleteSystemAccessToken(ctx context.Context, id int64) error
+	UpdateSystemAccessTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error
+
 	// === Web Session Management ===
 	CreateWebSession(ctx context.Context, token string, session model.WebSession) error
 	GetWebSession(ctx context.Context, token string) (model.WebSession, bool, error)

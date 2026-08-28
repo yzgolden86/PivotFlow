@@ -83,6 +83,26 @@ export interface ChannelModel {
   disabled?: boolean
 }
 
+export type ChannelHeaderRuleAction = 'remove' | 'override' | 'append'
+export type ChannelBodyRuleAction = 'remove' | 'override'
+
+export interface ChannelHeaderRule {
+  action: ChannelHeaderRuleAction
+  name: string
+  value?: string
+}
+
+export interface ChannelBodyRule {
+  action: ChannelBodyRuleAction
+  path: string
+  value?: unknown
+}
+
+export interface ChannelRequestRules {
+  headers?: ChannelHeaderRule[]
+  body?: ChannelBodyRule[]
+}
+
 export interface ChannelCooldown {
   model?: string
   key_index?: number
@@ -119,7 +139,7 @@ export interface Channel {
   available_time_end?: string
   proxy_url?: string
   retry_other_keys_on_failure?: boolean
-  custom_request_rules?: unknown
+  custom_request_rules?: ChannelRequestRules
   cooldown_detection_rules?: unknown
 }
 
@@ -169,7 +189,7 @@ export interface ChannelMutation {
   cost_multiplier: number
   proxy_url?: string
   retry_other_keys_on_failure: boolean
-  custom_request_rules?: unknown
+  custom_request_rules?: ChannelRequestRules
   cooldown_detection_rules?: unknown
 }
 
@@ -506,6 +526,23 @@ export interface AuthTokenList {
   duration_seconds?: number
   rpm_stats?: RPMStats
   is_today: boolean
+}
+
+export interface SystemAccessToken {
+  id: number
+  token_hint: string
+  token?: string
+  description: string
+  scopes: string[]
+  created_at: number
+  last_used_at?: number
+  expires_at: number
+  is_active: boolean
+}
+
+export interface SystemAccessTokenList {
+  tokens: SystemAccessToken[]
+  scopes: string[]
 }
 
 export interface SystemSetting {
