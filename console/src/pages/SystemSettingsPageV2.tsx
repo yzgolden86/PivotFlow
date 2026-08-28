@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity, BellRing, CalendarClock, Check, CheckCircle2, Clock3, ExternalLink, FileClock, Gauge, Network,
   DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
-  Palette, PanelsTopLeft, SlidersHorizontal, TimerReset, Type, Wrench,
+  KeyRound, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, SlidersHorizontal, TimerReset, Trash2, Type, Wrench,
 } from 'lucide-react'
-import { checkForUpdates, getSystemSettings, resetSystemSetting, updateSystemSettings } from '../api'
-import type { SystemSetting } from '../types'
+import { checkForUpdates, createSystemAccessToken, deleteSystemAccessToken, getSystemAccessTokens, getSystemSettings, resetSystemSetting, updateSystemAccessToken, updateSystemSettings } from '../api'
+import type { SystemAccessToken, SystemSetting } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice } from './shared'
 import { WebhookSettingsPanel } from './SettingsPage'
 import { BackupSettingsPanel } from './BackupSettingsPanel'
+import { Modal } from './siteShared'
 import { applyThemeCustomization, readThemeCustomization, resetThemeCustomization } from '../theme'
 import type { ThemeCustomization, ThemeFont, ThemePreference, ThemePreset, ThemeRadius } from '../theme'
 
@@ -29,7 +30,7 @@ const groups = [
 type GroupKey = typeof groups[number]['key']
 
 export default function SystemSettingsPageV2() {
-  const [section, setSection] = useState<'runtime' | 'notifications' | 'backup'>('runtime')
+  const [section, setSection] = useState<'runtime' | 'notifications' | 'backup' | 'system-access'>('runtime')
   const [settings, setSettings] = useState<SystemSetting[]>([])
   const [values, setValues] = useState<Record<string, string>>({})
   const [dirty, setDirty] = useState<Set<string>>(new Set())
@@ -75,6 +76,7 @@ export default function SystemSettingsPageV2() {
   const visible = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     return settings.filter((setting) => {
+      if (setting.key === 'model_alias_groups') return false
       const searchable = `${settingLabel(setting)} ${settingHelp(setting)} ${setting.key} ${setting.description}`.toLowerCase()
       return normalized ? searchable.includes(normalized) : settingGroup(setting.key) === group
     })
@@ -175,9 +177,10 @@ export default function SystemSettingsPageV2() {
       <button type="button" role="tab" aria-selected={section === 'runtime'} className={section === 'runtime' ? 'is-active' : ''} onClick={() => setSection('runtime')}><SlidersHorizontal size={17} />运行设置</button>
       <button type="button" role="tab" aria-selected={section === 'notifications'} className={section === 'notifications' ? 'is-active' : ''} onClick={() => setSection('notifications')}><BellRing size={17} />通知设置</button>
       <button type="button" role="tab" aria-selected={section === 'backup'} className={section === 'backup' ? 'is-active' : ''} onClick={() => setSection('backup')}><DatabaseBackup size={17} />导入导出</button>
+      <button type="button" role="tab" aria-selected={section === 'system-access'} className={section === 'system-access' ? 'is-active' : ''} onClick={() => setSection('system-access')}><KeyRound size={17} />系统访问</button>
     </div>
 
-    {section === 'notifications' ? <WebhookSettingsPanel /> : section === 'backup' ? <BackupSettingsPanel /> : <>
+    {section === 'notifications' ? <WebhookSettingsPanel /> : section === 'backup' ? <BackupSettingsPanel /> : section === 'system-access' ? <SystemAccessTokensPanel /> : <>
       {notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={16} />{notice}</OperationNotice>}
       {error && <OperationNotice tone="error">{error}</OperationNotice>}
       <div className="settings-layout">
@@ -199,6 +202,7 @@ export default function SystemSettingsPageV2() {
           </div>
 
           {group === 'appearance' && !query.trim() ? <AppearancePanel customization={appearance} change={changeAppearance} reset={resetAppearance} /> : <>
+          {group === 'routing' && !query.trim() && <ModelAliasPanel value={values.model_alias_groups || '[]'} change={(value) => change('model_alias_groups', value)} />}
           {group === 'advanced' && !query.trim() && <div className="settings-risk-note"><ShieldAlert size={17} /><span>这些设置用于特殊兼容场景。不了解具体影响时请保持默认值。</span></div>}
 
           {!visible.length ? <EmptyState label="没有符合条件的设置" /> : <div className="setting-list">
@@ -222,6 +226,138 @@ export default function SystemSettingsPageV2() {
       </div>
     </>}
   </div>
+}
+
+function formatSystemTokenDate(value?: number): string {
+  if (!value) return '未使用'
+  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value))
+}
+
+const systemAccessScopeLabels: Record<string, string> = {
+  'channels.read': '渠道状态',
+  'routes.read': '路由诊断',
+  'logs.read': '错误日志',
+  'metrics.read': '运行指标',
+}
+
+function SystemAccessTokensPanel() {
+  const [tokens, setTokens] = useState<SystemAccessToken[]>([])
+  const [scopes, setScopes] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [editing, setEditing] = useState<SystemAccessToken | 'new' | null>(null)
+  const [createdSecret, setCreatedSecret] = useState('')
+  const [copyingSecret, setCopyingSecret] = useState(false)
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    setLoading(true); setError('')
+    try { const data = await getSystemAccessTokens(signal); setTokens(data.tokens || []); setScopes(data.scopes || []) }
+    catch (reason) { if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '系统访问令牌加载失败') }
+    finally { if (!signal?.aborted) setLoading(false) }
+  }, [])
+
+  useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
+
+  const save = async (value: { description: string; scopes: string[]; expires_at: number; is_active: boolean }) => {
+    setSaving(true); setError(''); setNotice('')
+    try {
+      if (editing === 'new') {
+        const created = await createSystemAccessToken(value); setTokens((current) => [created, ...current]); setCreatedSecret(created.token || ''); setNotice('系统访问令牌已创建')
+      } else if (editing) {
+        const updated = await updateSystemAccessToken(editing.id, value); setTokens((current) => current.map((item) => item.id === updated.id ? { ...item, ...updated } : item)); setNotice('系统访问令牌已更新')
+      }
+      setEditing(null)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '保存系统访问令牌失败') }
+    finally { setSaving(false) }
+  }
+
+  const toggle = async (token: SystemAccessToken) => {
+    try { const updated = await updateSystemAccessToken(token.id, { is_active: !token.is_active }); setTokens((current) => current.map((item) => item.id === updated.id ? { ...item, ...updated } : item)); setNotice(updated.is_active ? '令牌已启用' : '令牌已停用') }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '更新令牌状态失败') }
+  }
+
+  const remove = async (token: SystemAccessToken) => {
+    if (!window.confirm(`删除系统访问令牌“${token.description}”？`)) return
+    try { await deleteSystemAccessToken(token.id); setTokens((current) => current.filter((item) => item.id !== token.id)); setNotice('系统访问令牌已删除') }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '删除系统访问令牌失败') }
+  }
+
+  const copyCreatedSecret = async () => {
+    setCopyingSecret(true); setError('')
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('当前浏览器不允许访问剪贴板')
+      await navigator.clipboard.writeText(createdSecret)
+      setCreatedSecret('')
+      setNotice('完整系统令牌已复制，请妥善保存')
+    } catch (reason) {
+      setError(reason instanceof Error ? `复制失败：${reason.message}` : '复制失败，请检查浏览器剪贴板权限')
+    } finally { setCopyingSecret(false) }
+  }
+
+  if (loading) return <section className="system-access-panel"><LoadingState label="正在加载系统访问令牌" /></section>
+  return <section className="system-access-panel" aria-label="系统访问令牌">
+    <header className="system-access-head"><div><strong>系统访问令牌</strong><p>用于外部 AI 诊断客户端访问 `/system-api/*`。它与模型调用 Key 完全独立，仅在创建完成时显示一次完整令牌。</p></div><button className="primary-button" type="button" onClick={() => setEditing('new')}><Plus size={16} />创建系统令牌</button></header>
+    {notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={16} />{notice}</OperationNotice>}
+    {error && <OperationNotice tone="error">{error}</OperationNotice>}
+    {!tokens.length ? <div className="system-access-empty"><KeyRound size={22} /><strong>还没有系统访问令牌</strong><span>创建后可为诊断脚本分配独立权限，避免使用管理员会话。</span></div> : <div className="system-access-list">{tokens.map((token) => <article className="system-access-row" key={token.id}><span className={`token-icon${token.is_active ? '' : ' token-icon--off'}`}><KeyRound size={17} /></span><div className="system-access-identity"><strong>{token.description}</strong><code>{token.token_hint}</code><span>{token.scopes.map((scope) => systemAccessScopeLabels[scope] || scope).join(' · ')}</span></div><div><strong>{token.is_active ? '已启用' : '已停用'}</strong><span>最后使用：{formatSystemTokenDate(token.last_used_at)}</span></div><div><strong>{formatSystemTokenDate(token.created_at)}</strong><span>{token.expires_at ? `到期：${formatSystemTokenDate(token.expires_at)}` : '永不过期'}</span></div><div className="row-actions"><button className="icon-button icon-button--surface" type="button" onClick={() => void toggle(token)} aria-label={token.is_active ? '停用系统令牌' : '启用系统令牌'} title={token.is_active ? '停用' : '启用'}>{token.is_active ? <Power size={16} /> : <Play size={16} />}</button><button className="icon-button icon-button--surface" type="button" onClick={() => setEditing(token)} aria-label="编辑系统令牌" title="编辑"><Pencil size={16} /></button><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => void remove(token)} aria-label="删除系统令牌" title="删除"><Trash2 size={16} /></button></div></article>)}</div>}
+    {editing && <SystemAccessTokenForm token={editing === 'new' ? undefined : editing} scopes={scopes} saving={saving} close={() => setEditing(null)} save={save} />}
+    {createdSecret && <Modal title="系统令牌已创建" close={() => setCreatedSecret('')}><div className="secret-reveal"><p>完整令牌只显示这一次，请立即保存。关闭后无法恢复。</p><code>{createdSecret}</code><button className="primary-button" type="button" disabled={copyingSecret} onClick={() => void copyCreatedSecret()}><Check size={15} />{copyingSecret ? '正在复制' : '复制并关闭'}</button></div></Modal>}
+  </section>
+}
+
+function SystemAccessTokenForm({ token, scopes, saving, close, save }: { token?: SystemAccessToken; scopes: string[]; saving: boolean; close: () => void; save: (value: { description: string; scopes: string[]; expires_at: number; is_active: boolean }) => void }) {
+  const [description, setDescription] = useState(token?.description || '')
+  const [selected, setSelected] = useState<string[]>(token?.scopes || scopes)
+  const [expires, setExpires] = useState(token?.expires_at ? toDateTimeLocal(token.expires_at) : '')
+  const [active, setActive] = useState(token?.is_active ?? true)
+  return <Modal title={token ? '编辑系统访问令牌' : '创建系统访问令牌'} close={close}><form className="console-form system-access-form" onSubmit={(event) => { event.preventDefault(); void save({ description: description.trim(), scopes: selected, expires_at: expires ? new Date(expires).getTime() : 0, is_active: active }) }}><label><span>名称</span><input required maxLength={120} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="例如：排障机器人" /></label><label><span>权限范围</span><div className="system-access-scope-list">{scopes.map((scope) => <label className="checkbox-field" key={scope}><input type="checkbox" checked={selected.includes(scope)} onChange={() => setSelected((current) => current.includes(scope) ? current.filter((item) => item !== scope) : [...current, scope])} /><span>{systemAccessScopeLabels[scope] || scope}<small>{scope}</small></span></label>)}</div></label><label><span>到期时间（可选）</span><input type="datetime-local" value={expires} onChange={(event) => setExpires(event.target.value)} /></label><label className="checkbox-field"><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} />{token ? '启用此令牌' : '创建后启用'}</label><footer><button className="secondary-button" type="button" onClick={close}>取消</button><button className="primary-button" type="submit" disabled={saving || !selected.length}>{saving ? '保存中' : '保存'}</button></footer></form></Modal>
+}
+
+function toDateTimeLocal(value: number): string { const date = new Date(value - new Date(value).getTimezoneOffset() * 60_000); return date.toISOString().slice(0, 16) }
+
+type AliasDraft = { canonical: string; aliases: string; enabled: boolean }
+
+function parseAliasDraft(value: string): AliasDraft[] {
+  try {
+    const parsed = JSON.parse(value || '[]') as Array<{ canonical?: string; aliases?: string[]; enabled?: boolean }>
+    if (!Array.isArray(parsed)) return []
+    return parsed.map((item) => ({ canonical: item.canonical || '', aliases: Array.isArray(item.aliases) ? item.aliases.join('\n') : '', enabled: item.enabled !== false }))
+  } catch {
+    return []
+  }
+}
+
+function serializeAliasDraft(groups: AliasDraft[]): string {
+  return JSON.stringify(groups.map((group) => ({
+    canonical: group.canonical.trim(),
+    aliases: group.aliases.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
+    enabled: group.enabled,
+  })), null, 2)
+}
+
+function ModelAliasPanel({ value, change }: { value: string; change: (value: string) => void }) {
+  const groups = useMemo(() => parseAliasDraft(value), [value])
+  const update = (index: number, patch: Partial<AliasDraft>) => {
+    const next = groups.map((group, itemIndex) => itemIndex === index ? { ...group, ...patch } : group)
+    change(serializeAliasDraft(next))
+  }
+  const add = () => change(serializeAliasDraft([...groups, { canonical: '', aliases: '', enabled: true }]))
+  const remove = (index: number) => change(serializeAliasDraft(groups.filter((_, itemIndex) => itemIndex !== index)))
+
+  return <section className="model-alias-panel" aria-label="模型统一映射">
+    <header><div><strong>模型统一映射</strong><p>给多个上游名称设置一个稳定入口。请求统一名称时，系统会按渠道实际存在的模型名发送。</p></div><button className="secondary-button" type="button" onClick={add}><Plus size={15} />新增映射</button></header>
+    {!groups.length ? <div className="model-alias-empty">暂未配置统一模型名称。新增后可把 `GLM-5.2`、`glm-5.2` 等名称归并到同一入口。</div> : <div className="model-alias-list">
+      {groups.map((group, index) => <article className="model-alias-row" key={`${index}-${group.canonical}`}>
+        <div className="model-alias-fields">
+          <label>统一名称<input value={group.canonical} onChange={(event) => update(index, { canonical: event.target.value })} placeholder="例如 glm-5.2" /></label>
+          <label>上游名称（每行一个）<textarea rows={3} value={group.aliases} onChange={(event) => update(index, { aliases: event.target.value })} placeholder={'GLM-5.2\nz.ai/glm-5.2'} /></label>
+        </div>
+        <div className="model-alias-actions"><label className="checkbox-field"><input type="checkbox" checked={group.enabled} onChange={(event) => update(index, { enabled: event.target.checked })} />启用</label><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除 ${group.canonical || '未命名映射'}`} title="删除映射"><Trash2 size={15} /></button></div>
+      </article>)}
+    </div>}
+  </section>
 }
 
 function AppearancePanel({ customization, change, reset }: { customization: ThemeCustomization; change: (patch: Partial<ThemeCustomization>, label: string) => void; reset: () => void }) {
@@ -297,7 +433,7 @@ function UpdatePanel({ info, checking, check }: { info: { version: string; lates
 
 function SettingInput({ setting, value, change }: { setting: SystemSetting; value: string; change: (value: string) => void }) {
   if (setting.value_type === 'bool') return <button className={`setting-switch${normalizeBool(value) === 'true' ? ' is-on' : ''}`} type="button" role="switch" aria-checked={normalizeBool(value) === 'true'} onClick={() => change(normalizeBool(value) === 'true' ? 'false' : 'true')} disabled={!setting.editable}><span>{normalizeBool(value) === 'true' ? '已启用' : '已停用'}</span><i /></button>
-  if (setting.key === 'site_daily_checkin_time') return <input type="time" step="60" value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
+  if (setting.key === 'site_daily_checkin_time' || setting.key === 'site_daily_announcement_time') return <input type="time" step="60" value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
   const options = settingOptions(setting.key)
   if (options) return <select value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable}>{options.map(([optionValue, label]) => <option value={optionValue} key={optionValue}>{label}</option>)}</select>
   if (setting.value_type === 'json') return <textarea rows={4} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} spellCheck={false} />
@@ -308,7 +444,7 @@ function SettingInput({ setting, value, change }: { setting: SystemSetting; valu
 function normalizeBool(value: string): string { return value === 'true' || value === '1' ? 'true' : 'false' }
 
 function settingGroup(key: string): GroupKey {
-  if (key === 'site_daily_checkin_time') return 'automation'
+  if (key === 'site_daily_checkin_time' || key === 'site_daily_announcement_time') return 'automation'
   if (key === 'cooldown_fallback_enabled') return 'routing'
   if (/^cooldown_|global_cooldown/.test(key)) return 'cooldown'
   if (/timeout|connection_reuse/.test(key)) return 'timeouts'
@@ -329,6 +465,7 @@ const labels: Record<string, string> = {
   max_concurrency: '最大并发请求数', max_body_bytes: '普通请求体上限', max_image_body_bytes: '图片请求体上限',
   channel_test_content: '健康检测提示词', channel_check_interval_hours: '自动健康检测间隔', enable_health_score: '按渠道健康度动态排序', success_rate_penalty_weight: '失败率惩罚权重', health_score_window_minutes: '健康度统计窗口', health_score_update_interval: '健康度刷新间隔', health_min_confident_sample: '健康度可信样本量', enable_ttfb_score: '加入首字延迟评分', ttfb_penalty_weight: '首字延迟惩罚权重', ttfb_max_slow_ratio: '首字慢速比上限', ttfb_min_confident_sample: '首字评分可信样本量',
   site_daily_checkin_time: '每日自动签到时间',
+  site_daily_announcement_time: '每日自动刷新公告时间',
   log_retention_days: '请求日志保留时间', debug_log_enabled: '记录上游原始报文', debug_log_retention_minutes: '原始报文保留时间', auto_refresh_interval_seconds: '日志页面自动刷新间隔',
   responses_ws_max_sessions: '最大执行会话数', responses_ws_session_ttl_minutes: '空闲会话保留时间', responses_ws_max_transcript_bytes: '会话内容总容量', responses_ws_max_connections: '最大长连接数', responses_ws_max_connections_per_token: '单密钥最大长连接数',
   model_catalog_sync_interval_hours: '模型价格目录同步间隔', auto_update_interval_hours: '上游检查间隔', auto_update_channel: '上游检查通道', antigravity_sensitive_words: 'Antigravity 敏感词兼容',
@@ -338,6 +475,7 @@ const helps: Record<string, string> = {
   max_key_retries: '一次请求在同一渠道内最多尝试多少把上游密钥。', model_fuzzy_match: '精确匹配失败后尝试兼容带日期或版本后缀的模型名。', cooldown_fallback_enabled: '所有渠道都在冷却时，仍选择当前最优渠道进行最后一次尝试。',
   channel_test_content: '自动巡检渠道时发送的最小测试内容。', channel_check_interval_hours: '设为 0 可关闭定时巡检，小数支持分钟级间隔。', enable_health_score: '根据近期成功率动态调整同优先级渠道的顺序。', enable_ttfb_score: '在健康度排序中考虑首字响应速度。',
   site_daily_checkin_time: '到达该时间后，为当天尚未执行过的账号触发签到；分别按账号或站点时区计算。',
+  site_daily_announcement_time: '到达该时间后，每个站点每天刷新一次公告；按站点时区计算。',
   debug_log_enabled: '会记录上游请求与响应原文，仅建议排障时短暂开启。', auto_refresh_interval_seconds: '日志页面按此间隔刷新历史请求和进行中请求；设为 0 关闭，隐藏浏览器标签页时会暂停。', model_catalog_sync_interval_hours: '从 models.dev 更新价格信息，不影响站点模型列表。', auto_update_interval_hours: '仅非容器部署生效，设为 0 关闭后台检查；融合版不会自动替换程序。',
   antigravity_sensitive_words: '使用零宽字符处理特定 systemInstruction 关键词。', global_cooldown_detection_rules: '没有渠道专属规则时使用的状态码与错误文本识别规则。',
 }

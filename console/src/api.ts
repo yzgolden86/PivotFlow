@@ -28,6 +28,8 @@ import type {
   ActiveRequest,
   AuthToken,
   AuthTokenList,
+  SystemAccessToken,
+  SystemAccessTokenList,
   FingerprintJob,
   FingerprintTestRecord,
   ModelFingerprint,
@@ -634,6 +636,22 @@ export function deleteAuthToken(tokenId: number): Promise<{ id: number }> {
 
 export function revealAuthToken(tokenId: number): Promise<{ id: number; token: string; token_hint: string }> {
   return apiRequest(`/admin/auth-tokens/${tokenId}/reveal`)
+}
+
+export function getSystemAccessTokens(signal?: AbortSignal): Promise<SystemAccessTokenList> {
+  return apiRequest<SystemAccessTokenList>('/admin/system-access-tokens', signal)
+}
+
+export function createSystemAccessToken(payload: { description: string; scopes: string[]; expires_at: number; is_active: boolean }): Promise<SystemAccessToken> {
+  return apiMutation<SystemAccessToken>('/admin/system-access-tokens', payload)
+}
+
+export function updateSystemAccessToken(tokenId: number, payload: Partial<{ description: string; scopes: string[]; expires_at: number; is_active: boolean }>): Promise<SystemAccessToken> {
+  return apiMutation<SystemAccessToken>(`/admin/system-access-tokens/${tokenId}`, payload, 'PATCH')
+}
+
+export function deleteSystemAccessToken(tokenId: number): Promise<{ id: number }> {
+  return apiMutation(`/admin/system-access-tokens/${tokenId}`, undefined, 'DELETE')
 }
 
 export function getSystemSettings(signal?: AbortSignal): Promise<SystemSetting[]> {

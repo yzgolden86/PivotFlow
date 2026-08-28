@@ -129,6 +129,22 @@ func DefineAuthTokensTable() *TableBuilder {
 		Index("idx_auth_tokens_expires", "expires_at")
 }
 
+// DefineSystemAccessTokensTable stores management-plane diagnostic tokens.
+func DefineSystemAccessTokensTable() *TableBuilder {
+	return NewTable("system_access_tokens").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("token VARCHAR(64) NOT NULL UNIQUE").
+		Column("token_hint VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("description VARCHAR(512) NOT NULL").
+		Column("scopes TEXT NOT NULL DEFAULT ''").
+		Column("created_at BIGINT NOT NULL").
+		Column("last_used_at BIGINT NOT NULL DEFAULT 0").
+		Column("expires_at BIGINT NOT NULL DEFAULT 0").
+		Column("is_active TINYINT NOT NULL DEFAULT 1").
+		Index("idx_system_access_tokens_active", "is_active").
+		Index("idx_system_access_tokens_expires", "expires_at")
+}
+
 // DefineSystemSettingsTable 定义system_settings表结构
 func DefineSystemSettingsTable() *TableBuilder {
 	return NewTable("system_settings").

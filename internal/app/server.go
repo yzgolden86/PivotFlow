@@ -92,7 +92,8 @@ type Server struct {
 	responsesWebsocketPingIntervalOverride time.Duration
 	protocolTimeouts                       map[string]protocolTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
-	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
+	modelFuzzyMatch bool                // 未命中时启用模糊匹配（子串匹配+版本排序）
+	modelAliases    *modelAliasRegistry // 全局统一模型名称映射
 	// 渠道未配置专属规则时使用的进程级默认规则。
 	globalCooldownDetectionRules *model.CooldownDetectionRules
 
@@ -186,6 +187,7 @@ func NewServer(store storage.Store) *Server {
 		protocolTimeouts:         runtimeCfg.ProtocolTimeouts,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch:              runtimeCfg.ModelFuzzyMatch,
+		modelAliases:                 loadModelAliasRegistry(configService),
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
@@ -1159,6 +1161,12 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/auth-tokens/:id/reveal", s.HandleRevealAuthToken)
 		admin.DELETE("/auth-tokens/:id", s.HandleDeleteAuthToken)
 
+		// 系统访问令牌（仅用于外部诊断客户端，不属于模型调用 Key）
+		admin.GET("/system-access-tokens", s.HandleListSystemAccessTokens)
+		admin.POST("/system-access-tokens", s.HandleCreateSystemAccessToken)
+		admin.PATCH("/system-access-tokens/:id", s.HandleUpdateSystemAccessToken)
+		admin.DELETE("/system-access-tokens/:id", s.HandleDeleteSystemAccessToken)
+
 		// 系统配置管理
 		admin.GET("/settings", s.AdminListSettings)
 		admin.GET("/settings/:key", s.AdminGetSetting)
@@ -1178,6 +1186,16 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/fingerprints/jobs/:id", s.HandleFingerprintJob)
 		admin.GET("/fingerprints/jobs/:id/stream", s.HandleFingerprintJobStream)
 		admin.POST("/fingerprints/jobs/:id/cancel", s.HandleCancelFingerprintJob)
+	}
+
+	// 独立诊断 API：只接受 Authorization: Bearer <system token>，不复用
+	// /admin 的管理员会话，也不暴露完整管理接口。
+	systemAPI := r.Group("/system-api", noStore)
+	{
+		systemAPI.GET("/channels", s.RequireSystemAccessToken(model.SystemAccessScopeChannelsRead), s.HandleSystemAPIChannels)
+		systemAPI.GET("/channels/:id/route-diagnostics", s.RequireSystemAccessToken(model.SystemAccessScopeRoutesRead), s.HandleSystemAPIRouteDiagnostics)
+		systemAPI.GET("/logs", s.RequireSystemAccessToken(model.SystemAccessScopeLogsRead), s.HandleSystemAPILogs)
+		systemAPI.GET("/metrics", s.RequireSystemAccessToken(model.SystemAccessScopeMetricsRead), s.HandleSystemAPIMetrics)
 	}
 
 	// Web 仪表盘只读 API。API Token 会话由服务端强制绑定 auth_token_id。

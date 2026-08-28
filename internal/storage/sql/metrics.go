@@ -202,6 +202,7 @@ func cloneLogFilterWithoutStatusCode(filter *model.LogFilter) *model.LogFilter {
 
 	cloned := *filter
 	cloned.StatusCode = nil
+	cloned.StatusCodeMin = nil
 	return &cloned
 }
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/site/provider"
 )
 
 const (
@@ -25,6 +26,18 @@ func (s *siteControlService) dailyCheckinMinute() int {
 	parsed, err := time.Parse("15:04", value)
 	if err != nil {
 		parsed, _ = time.Parse("15:04", siteDailyCheckinTime)
+	}
+	return parsed.Hour()*60 + parsed.Minute()
+}
+
+func (s *siteControlService) dailyAnnouncementMinute() int {
+	value := "09:00"
+	if s != nil && s.configService != nil {
+		value = s.configService.GetString("site_daily_announcement_time", value)
+	}
+	parsed, err := time.Parse("15:04", value)
+	if err != nil {
+		parsed, _ = time.Parse("15:04", "09:00")
 	}
 	return parsed.Hour()*60 + parsed.Minute()
 }
@@ -60,6 +73,7 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 	}
 	sem := make(chan struct{}, siteSchedulerConcurrency)
 	checkinMinute := s.dailyCheckinMinute()
+	announcementMinute := s.dailyAnnouncementMinute()
 	var wg sync.WaitGroup
 	for _, site := range sites {
 		if site == nil || !site.Enabled {
@@ -72,6 +86,10 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 		wg.Add(1)
 		go func(site *model.Site, accounts []*model.SiteAccount) {
 			defer wg.Done()
+			localNow := now.In(loadSiteLocation(site.Timezone, site.Timezone))
+			if dailyCheckinDue(localNow, announcementMinute) {
+				s.runScheduledAnnouncementTask(ctx, sem, site, localNow.Format("2006-01-02"))
+			}
 			for _, account := range accounts {
 				if account == nil || !account.Enabled {
 					continue
@@ -92,6 +110,38 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 		}(site, accounts)
 	}
 	wg.Wait()
+}
+
+func (s *siteControlService) runScheduledAnnouncementTask(ctx context.Context, sem chan struct{}, site *model.Site, localDay string) {
+	select {
+	case sem <- struct{}{}:
+	case <-ctx.Done():
+		return
+	}
+	defer func() { <-sem }()
+	task, err := s.createTask(ctx, "announcement_refresh", site.ID, 0, 1)
+	if err != nil {
+		return
+	}
+	leaseKey := fmt.Sprintf("site:%d:announcements:%s", site.ID, localDay)
+	now := time.Now().UnixMilli()
+	acquired, err := s.store.AcquireSiteTaskLease(ctx, leaseKey, task.ID, now, now+int64((26*time.Hour).Milliseconds()))
+	if err != nil || !acquired {
+		s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", "已由其他任务执行")
+		return
+	}
+	taskCtx, stopLease := s.leaseContext(ctx, leaseKey, task.ID)
+	defer stopLease()
+	s.updateTask(taskCtx, task, model.SiteTaskStatusRunning, "", "")
+	if err := s.refreshAnnouncements(taskCtx, site.ID); err != nil {
+		if provider.ErrorCode(err) == provider.CodeUnsupported {
+			s.updateTask(taskCtx, task, model.SiteTaskStatusSuccess, "announcements", "该站点不提供公告接口")
+			return
+		}
+		s.updateTask(taskCtx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
+		return
+	}
+	s.updateTask(taskCtx, task, model.SiteTaskStatusSuccess, "announcements", "公告已刷新")
 }
 
 func dailyCheckinDue(localNow time.Time, scheduledMinute int) bool {

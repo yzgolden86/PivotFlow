@@ -319,7 +319,7 @@ const (
 type CustomHeaderRule struct {
 	Action string `json:"action"`          // remove | override | append
 	Name   string `json:"name"`            // header 名，保持原大小写
-	Value  string `json:"value,omitempty"` // remove 时忽略
+	Value  string `json:"value,omitempty"` // remove 时为空删除整条，非空按逗号 token 精确删除
 }
 
 // CustomBodyRule 单条自定义 JSON 请求体规则

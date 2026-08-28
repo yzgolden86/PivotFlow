@@ -61,9 +61,11 @@ var systemSettingRuntimeEffects = map[string]string{
 	"stream_timeout":                          "流式请求总超时",
 	"non_stream_timeout":                      "非流式请求总超时",
 	"model_fuzzy_match":                       "模型候选选择器",
+	"model_alias_groups":                      "全局模型统一映射",
 	"channel_test_content":                    "手动测试与定时巡检",
 	"channel_check_interval_hours":            "渠道定时巡检调度器",
 	"site_daily_checkin_time":                 "站点每日签到调度器",
+	"site_daily_announcement_time":            "站点每日公告刷新调度器",
 	"model_catalog_sync_interval_hours":       "模型价格目录同步器",
 	"auto_update_interval_hours":              "版本检查调度器",
 	"auto_update_channel":                     "版本发布通道选择",
@@ -483,9 +485,9 @@ func validateSettingValue(key, valueType, value string) error {
 
 	case "string":
 		switch key {
-		case "site_daily_checkin_time":
+		case "site_daily_checkin_time", "site_daily_announcement_time":
 			if _, err := time.Parse("15:04", value); err != nil {
-				return fmt.Errorf("site_daily_checkin_time must use HH:MM")
+				return fmt.Errorf("%s must use HH:MM", key)
 			}
 		case "auto_update_channel":
 			_, err := version.ParseReleaseChannel(value)
@@ -495,6 +497,15 @@ func validateSettingValue(key, valueType, value string) error {
 	case "json":
 		if !json.Valid([]byte(value)) {
 			return fmt.Errorf("not valid JSON")
+		}
+		if key == "model_alias_groups" {
+			var groups []model.ModelAliasGroup
+			if err := json.Unmarshal([]byte(value), &groups); err != nil {
+				return fmt.Errorf("model_alias_groups must be an array")
+			}
+			if len(model.NormalizeModelAliasGroups(groups)) != len(groups) {
+				return fmt.Errorf("model_alias_groups contains empty or duplicate canonical names")
+			}
 		}
 
 	default:

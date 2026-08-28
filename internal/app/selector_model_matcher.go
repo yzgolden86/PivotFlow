@@ -9,7 +9,7 @@ func (s *Server) configSupportsModel(cfg *modelpkg.Config, model string) bool {
 	if model == "*" {
 		return true
 	}
-	return cfg.SupportsModel(model)
+	return cfg.SupportsModel(model) || (s.modelAliases != nil && s.modelAliases.supports(cfg, model))
 }
 
 // configSupportsModelWithFuzzyMatch 检查渠道是否支持指定模型（含模糊匹配）
