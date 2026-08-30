@@ -60,6 +60,7 @@ var systemSettingRuntimeEffects = map[string]string{
 	"upstream_connection_reuse_limit_seconds": "上游连接池复用时限",
 	"stream_timeout":                          "流式请求总超时",
 	"non_stream_timeout":                      "非流式请求总超时",
+	"route_strategy":                          "渠道选择策略",
 	"model_fuzzy_match":                       "模型候选选择器",
 	"model_alias_groups":                      "全局模型统一映射",
 	"channel_test_content":                    "手动测试与定时巡检",
@@ -492,6 +493,10 @@ func validateSettingValue(key, valueType, value string) error {
 		case "auto_update_channel":
 			_, err := version.ParseReleaseChannel(value)
 			return err
+		case routeStrategySettingKey:
+			if value != RouteStrategyBalanced && value != RouteStrategySticky {
+				return fmt.Errorf("route_strategy must be %q or %q", RouteStrategyBalanced, RouteStrategySticky)
+			}
 		}
 
 	case "json":

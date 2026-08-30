@@ -558,6 +558,23 @@ function SettingInput({ setting, value, change }: { setting: SystemSetting; valu
   if (setting.value_type === 'bool') return <button className={`setting-switch${normalizeBool(value) === 'true' ? ' is-on' : ''}`} type="button" role="switch" aria-checked={normalizeBool(value) === 'true'} onClick={() => change(normalizeBool(value) === 'true' ? 'false' : 'true')} disabled={!setting.editable}><span>{normalizeBool(value) === 'true' ? '已启用' : '已停用'}</span><i /></button>
   if (setting.key === 'site_daily_checkin_time' || setting.key === 'site_daily_announcement_time') return <input type="time" step="60" value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
   const options = settingOptions(setting.key)
+  const tips = optionTips[setting.key]
+  // 有逐项说明时用分段按钮：原生 <option> 的 title 在各浏览器表现不一致，
+  // 而策略之间的取舍必须讲清楚，光看名字看不出来。
+  if (options && tips) return <div className="setting-choice" role="radiogroup" aria-label={settingLabel(setting)}>
+    {options.map(([optionValue, label]) => <button
+      className={`setting-choice-option${value === optionValue ? ' is-selected' : ''}`}
+      type="button"
+      role="radio"
+      aria-checked={value === optionValue}
+      disabled={!setting.editable}
+      onClick={() => change(optionValue)}
+      key={optionValue}
+    >
+      <span className="setting-choice-label">{label}{value === optionValue && <Check size={14} />}</span>
+      {tips[optionValue] && <span className="setting-choice-tip" role="tooltip">{tips[optionValue]}</span>}
+    </button>)}
+  </div>
   if (options) return <select value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable}>{options.map(([optionValue, label]) => <option value={optionValue} key={optionValue}>{label}</option>)}</select>
   if (setting.value_type === 'json') return <textarea rows={4} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} spellCheck={false} />
   const type = ['int', 'float', 'duration'].includes(setting.value_type) ? 'number' : 'text'
@@ -582,6 +599,7 @@ function settingGroup(key: string): GroupKey {
 
 const labels: Record<string, string> = {
   max_key_retries: '单渠道密钥重试次数', model_fuzzy_match: '模型名称模糊匹配', cooldown_fallback_enabled: '全渠道冷却时继续尝试',
+  route_strategy: '渠道选择策略',
   upstream_first_byte_timeout: '全局首字超时', upstream_connection_reuse_limit_seconds: '上游连接复用时限', stream_timeout: '流式请求总时限', non_stream_timeout: '非流式请求总时限',
   anthropic_first_byte_timeout: 'Anthropic 首字超时', anthropic_non_stream_timeout: 'Anthropic 非流式超时', codex_first_byte_timeout: 'Codex 首字超时', codex_non_stream_timeout: 'Codex 非流式超时', openai_first_byte_timeout: 'OpenAI 首字超时', openai_non_stream_timeout: 'OpenAI 非流式超时', gemini_first_byte_timeout: 'Gemini 首字超时', gemini_non_stream_timeout: 'Gemini 非流式超时',
   cooldown_auth_seconds: '认证错误冷却', cooldown_server_seconds: '上游服务错误冷却', cooldown_timeout_seconds: '请求超时冷却', cooldown_rate_limit_seconds: '限流错误冷却', cooldown_max_seconds: '冷却时间上限', cooldown_min_seconds: '冷却时间下限', global_cooldown_detection_rules: '全局冷却识别规则',
@@ -596,6 +614,7 @@ const labels: Record<string, string> = {
 
 const helps: Record<string, string> = {
   max_key_retries: '一次请求在同一渠道内最多尝试多少把上游密钥。', model_fuzzy_match: '精确匹配失败后尝试兼容带日期或版本后缀的模型名。', cooldown_fallback_enabled: '所有渠道都在冷却时，仍选择当前最优渠道进行最后一次尝试。',
+  route_strategy: '同一模型有多个可用渠道时如何挑选。两种策略都先比优先级，只在优先级相同的渠道之间才有差别。鼠标移到选项上看详细取舍。',
   channel_test_content: '自动巡检渠道时发送的最小测试内容。', channel_check_interval_hours: '设为 0 可关闭定时巡检，小数支持分钟级间隔。', enable_health_score: '根据近期成功率动态调整同优先级渠道的顺序。', enable_ttfb_score: '在健康度排序中考虑首字响应速度。',
   site_daily_checkin_time: '到达该时间后，为当天尚未执行过的账号触发签到；分别按账号或站点时区计算。',
   site_daily_announcement_time: '到达该时间后，每个站点每天刷新一次公告；按站点时区计算。',
@@ -612,7 +631,16 @@ function humanizeDescription(description: string): string {
 
 function settingOptions(key: string): Array<[string, string]> | null {
   if (key === 'auto_update_channel') return [['stable', '稳定版'], ['preview', '稳定版与预览版']]
+  if (key === 'route_strategy') return [['balanced', '均衡轮询'], ['sticky', '粘性轮询']]
   return null
+}
+
+// 逐个选项的悬浮说明。两种策略的取舍差别较大，只靠名字看不出来。
+const optionTips: Record<string, Record<string, string>> = {
+  route_strategy: {
+    balanced: '先比优先级，只在优先级相同的渠道之间按权重（有效 Key 数）平滑轮询。每个请求换一个渠道，负载摊得最匀，单个渠道抖动的影响最小；代价是不复用上游的会话亲和性。',
+    sticky: '先比优先级，然后固定使用上次成功的渠道，直到它失败才切到下一个（失败时本次请求内会依次尝试其余候选，不会直接报错）。命中缓存和会话连续性更好；代价是流量会集中在少数渠道上。',
+  },
 }
 
 function settingUnit(key: string): string {

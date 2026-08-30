@@ -603,6 +603,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"openai_non_stream_timeout", "0", "duration", "OpenAI非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
 		{"gemini_first_byte_timeout", "0", "duration", "Gemini流式请求首个有效内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
 		{"gemini_non_stream_timeout", "0", "duration", "Gemini非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
+		{"route_strategy", "balanced", "string", "渠道选择策略(balanced=同优先级内按权重均衡轮询；sticky=沿用上次成功的渠道，失败后才切换)", "balanced"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"model_alias_groups", "[]", "json", "全局统一模型名称映射(JSON数组，canonical为统一名称，aliases为上游名称)", "[]"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},

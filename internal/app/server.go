@@ -92,8 +92,10 @@ type Server struct {
 	responsesWebsocketPingIntervalOverride time.Duration
 	protocolTimeouts                       map[string]protocolTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
-	modelFuzzyMatch bool                // 未命中时启用模糊匹配（子串匹配+版本排序）
-	modelAliases    *modelAliasRegistry // 全局统一模型名称映射
+	modelFuzzyMatch   bool                // 未命中时启用模糊匹配（子串匹配+版本排序）
+	modelAliases      *modelAliasRegistry // 全局统一模型名称映射
+	routeStrategyMode string              // 渠道选择策略（启动时加载，修改后重启生效）
+	stickyRouter      *stickyRouter       // 粘性路由：记录每个模型上次成功的渠道
 	// 渠道未配置专属规则时使用的进程级默认规则。
 	globalCooldownDetectionRules *model.CooldownDetectionRules
 
@@ -188,6 +190,8 @@ func NewServer(store storage.Store) *Server {
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch:              runtimeCfg.ModelFuzzyMatch,
 		modelAliases:                 loadModelAliasRegistry(configService),
+		routeStrategyMode:            runtimeCfg.RouteStrategy,
+		stickyRouter:                 newStickyRouter(),
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
@@ -399,6 +403,7 @@ type serverRuntimeConfig struct {
 	ProtocolTimeouts             map[string]protocolTimeoutConfig
 	LogRetentionDays             int
 	ModelFuzzyMatch              bool
+	RouteStrategy                string
 	GlobalCooldownDetectionRules *model.CooldownDetectionRules
 	Cooldown                     util.CooldownSettings
 }
@@ -483,6 +488,11 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		log.Print("[INFO] 已启用模型模糊匹配：未命中时进行子串匹配并按版本排序选择最新模型")
 	}
 
+	routeStrategy := normalizeRouteStrategy(cs.GetString(routeStrategySettingKey, RouteStrategyBalanced))
+	if routeStrategy == RouteStrategySticky {
+		log.Print("[INFO] 渠道选择策略：粘性轮询（沿用上次成功的渠道，失败后切换；优先级仍优先）")
+	}
+
 	return serverRuntimeConfig{
 		MaxKeyRetries:                maxKeyRetries,
 		MaxConcurrency:               loadPositiveInt(cs, "max_concurrency", config.DefaultMaxConcurrency),
@@ -495,6 +505,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		ProtocolTimeouts:             protocolTimeouts,
 		LogRetentionDays:             logRetentionDays,
 		ModelFuzzyMatch:              modelFuzzyMatch,
+		RouteStrategy:                routeStrategy,
 		GlobalCooldownDetectionRules: loadGlobalCooldownDetectionRules(cs),
 		Cooldown:                     loadCooldownSettings(cs),
 	}
@@ -1294,6 +1305,9 @@ func (s *Server) stateCleanupLoop() {
 			if s.channelRPMLimiter != nil {
 				s.channelRPMLimiter.CleanupExpired()
 			}
+
+			// 粘性记录本身带 TTL，这里只回收长期不再出现的模型条目。
+			s.stickyRouter.cleanup(stickyEntryTTL)
 		}
 	}
 }
