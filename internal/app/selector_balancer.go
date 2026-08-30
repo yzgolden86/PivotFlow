@@ -38,6 +38,7 @@ func (s *Server) sortChannelsByHealth(
 	channels []*modelpkg.Config,
 	keyCooldowns map[int64]map[int]time.Time,
 	now time.Time,
+	universe rrGroupKey,
 ) []*modelpkg.Config {
 	if len(channels) == 0 {
 		return channels
@@ -79,7 +80,7 @@ func (s *Server) sortChannelsByHealth(
 	for i := 1; i <= len(scored); i++ {
 		if i == len(scored) || effPriorityBucket(scored[i].effPriority) != effPriorityBucket(scored[groupStart].effPriority) {
 			if i-groupStart > 1 {
-				s.balanceScoredChannelsInPlace(scored[groupStart:i], keyCooldowns, now)
+				s.balanceScoredChannelsInPlace(scored[groupStart:i], keyCooldowns, now, universe)
 			}
 			groupStart = i
 		}
@@ -168,6 +169,7 @@ func (s *Server) balanceSamePriorityChannels(
 	channels []*modelpkg.Config,
 	keyCooldowns map[int64]map[int]time.Time,
 	now time.Time,
+	universe rrGroupKey,
 ) []*modelpkg.Config {
 	n := len(channels)
 	if n <= 1 {
@@ -191,7 +193,9 @@ func (s *Server) balanceSamePriorityChannels(
 		if i == n || result[i].Priority != result[groupStart].Priority {
 			if i-groupStart > 1 {
 				group := result[groupStart:i]
-				s.channelBalancer.selectWithCooldownInPlace(group, keyCooldowns, now)
+				// tier 用基础优先级：整数，天然可作分层键。
+				scope := rrScope{universe: universe, tier: int64(result[groupStart].Priority)}
+				s.channelBalancer.selectWithCooldownInPlace(group, keyCooldowns, now, scope)
 			}
 			groupStart = i
 		}
@@ -206,6 +210,7 @@ func (s *Server) balanceScoredChannelsInPlace(
 	items []channelWithScore,
 	keyCooldowns map[int64]map[int]time.Time,
 	now time.Time,
+	universe rrGroupKey,
 ) {
 	n := len(items)
 	if n <= 1 {
@@ -223,8 +228,11 @@ func (s *Server) balanceScoredChannelsInPlace(
 		configs[i] = item.config
 	}
 
+	// tier 用有效优先级的分桶值，与外层分组边界保持同一口径。
+	scope := rrScope{universe: universe, tier: effPriorityBucket(items[0].effPriority)}
+
 	// 使用平滑加权轮询获取排序后的结果
-	balanced := s.channelBalancer.selectWithCooldownInPlace(configs, keyCooldowns, now)
+	balanced := s.channelBalancer.selectWithCooldownInPlace(configs, keyCooldowns, now, scope)
 
 	// 按轮询结果重排 items（O(n) 交换）
 	// balanced[0] 是选中的渠道，需要把它移到 items[0]

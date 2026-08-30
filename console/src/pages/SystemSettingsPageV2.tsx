@@ -4,8 +4,8 @@ import {
   DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
   KeyRound, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, SlidersHorizontal, TimerReset, Trash2, Type, Wrench,
 } from 'lucide-react'
-import { checkForUpdates, createSystemAccessToken, deleteSystemAccessToken, getSystemAccessTokens, getSystemSettings, resetSystemSetting, updateSystemAccessToken, updateSystemSettings } from '../api'
-import type { SystemAccessToken, SystemSetting } from '../types'
+import { checkForUpdates, createSystemAccessToken, deleteSystemAccessToken, getModelAliasInventory, getSystemAccessTokens, getSystemSettings, resetSystemSetting, updateSystemAccessToken, updateSystemSettings } from '../api'
+import type { ModelAliasCandidate, ModelAliasInventory, ModelAliasSuggestion, SystemAccessToken, SystemSetting } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice } from './shared'
 import { WebhookSettingsPanel } from './SettingsPage'
 import { BackupSettingsPanel } from './BackupSettingsPanel'
@@ -337,27 +337,150 @@ function serializeAliasDraft(groups: AliasDraft[]): string {
   })), null, 2)
 }
 
+function aliasMembers(group: AliasDraft): string[] {
+  return group.aliases.split(/[\n,]/).map((item) => item.trim()).filter(Boolean)
+}
+
+function withMembers(group: AliasDraft, members: string[]): AliasDraft {
+  return { ...group, aliases: Array.from(new Set(members)).join('\n') }
+}
+
 function ModelAliasPanel({ value, change }: { value: string; change: (value: string) => void }) {
   const groups = useMemo(() => parseAliasDraft(value), [value])
-  const update = (index: number, patch: Partial<AliasDraft>) => {
-    const next = groups.map((group, itemIndex) => itemIndex === index ? { ...group, ...patch } : group)
-    change(serializeAliasDraft(next))
+  const [inventory, setInventory] = useState<ModelAliasInventory | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [pickerFor, setPickerFor] = useState<number | null>(null)
+
+  const reload = useCallback((signal?: AbortSignal) => {
+    setLoading(true)
+    getModelAliasInventory(signal)
+      .then((data) => { setInventory(data); setError('') })
+      .catch((err: Error) => { if (err.name !== 'AbortError') setError(err.message) })
+      .finally(() => { if (!signal?.aborted) setLoading(false) })
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    reload(controller.signal)
+    return () => controller.abort()
+  }, [reload])
+
+  const commit = (next: AliasDraft[]) => change(serializeAliasDraft(next))
+  const update = (index: number, patch: Partial<AliasDraft>) => commit(groups.map((group, itemIndex) => itemIndex === index ? { ...group, ...patch } : group))
+  const add = () => commit([...groups, { canonical: '', aliases: '', enabled: true }])
+  const remove = (index: number) => commit(groups.filter((_, itemIndex) => itemIndex !== index))
+
+  // Adopting a suggestion either extends the group that already owns the model
+  // or appends a new group, so two canonical names never compete for one model.
+  const adopt = (suggestion: ModelAliasSuggestion) => {
+    if (suggestion.extends_canonical) {
+      const target = groups.findIndex((group) => group.canonical.trim() === suggestion.extends_canonical)
+      if (target >= 0) {
+        commit(groups.map((group, index) => index === target ? withMembers(group, [...aliasMembers(group), ...suggestion.members]) : group))
+        return
+      }
+    }
+    const members = suggestion.members.filter((member) => member !== suggestion.canonical)
+    commit([...groups, withMembers({ canonical: suggestion.canonical, aliases: '', enabled: true }, members)])
   }
-  const add = () => change(serializeAliasDraft([...groups, { canonical: '', aliases: '', enabled: true }]))
-  const remove = (index: number) => change(serializeAliasDraft(groups.filter((_, itemIndex) => itemIndex !== index)))
+
+  const usableSuggestions = useMemo(() => {
+    if (!inventory) return []
+    return inventory.suggestions.filter((suggestion) => suggestion.members.length > 0)
+  }, [inventory])
 
   return <section className="model-alias-panel" aria-label="模型统一映射">
-    <header><div><strong>模型统一映射</strong><p>给多个上游名称设置一个稳定入口。请求统一名称时，系统会按渠道实际存在的模型名发送。</p></div><button className="secondary-button" type="button" onClick={add}><Plus size={15} />新增映射</button></header>
-    {!groups.length ? <div className="model-alias-empty">暂未配置统一模型名称。新增后可把 `GLM-5.2`、`glm-5.2` 等名称归并到同一入口。</div> : <div className="model-alias-list">
-      {groups.map((group, index) => <article className="model-alias-row" key={`${index}-${group.canonical}`}>
-        <div className="model-alias-fields">
-          <label>统一名称<input value={group.canonical} onChange={(event) => update(index, { canonical: event.target.value })} placeholder="例如 glm-5.2" /></label>
-          <label>上游名称（每行一个）<textarea rows={3} value={group.aliases} onChange={(event) => update(index, { aliases: event.target.value })} placeholder={'GLM-5.2\nz.ai/glm-5.2'} /></label>
-        </div>
-        <div className="model-alias-actions"><label className="checkbox-field"><input type="checkbox" checked={group.enabled} onChange={(event) => update(index, { enabled: event.target.checked })} />启用</label><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除 ${group.canonical || '未命名映射'}`} title="删除映射"><Trash2 size={15} /></button></div>
-      </article>)}
+    <header>
+      <div><strong>模型统一映射</strong><p>给多个上游名称设置一个稳定入口。请求统一名称时，系统会按渠道实际存在的模型名发送。</p></div>
+      <div className="model-alias-header-actions">
+        <button className="icon-button icon-button--surface" type="button" onClick={() => reload()} disabled={loading} title="重新读取渠道模型清单" aria-label="刷新模型清单"><RefreshCw size={15} className={loading ? 'is-spinning' : undefined} /></button>
+        <button className="secondary-button" type="button" onClick={add}><Plus size={15} />新增映射</button>
+      </div>
+    </header>
+
+    {error && <div className="model-alias-inline-error" role="alert">读取渠道模型清单失败：{error}</div>}
+
+    {!!usableSuggestions.length && <div className="model-alias-suggestions">
+      <header><Wrench size={15} /><strong>检测到 {usableSuggestions.length} 组可合并的名称</strong><span>来自当前启用渠道，点击即可套用</span></header>
+      <ul>
+        {usableSuggestions.map((suggestion) => <li key={`${suggestion.canonical}-${suggestion.members.join('|')}`}>
+          <div className="model-alias-suggestion-body">
+            <strong>{suggestion.canonical}{suggestion.extends_canonical && <em className="model-alias-suggestion-tag">补进已有映射</em>}</strong>
+            <div className="model-alias-suggestion-members">{suggestion.members.map((member) => <code key={member}>{member}</code>)}</div>
+            <small>{suggestion.reason}</small>
+          </div>
+          <button className="secondary-button" type="button" onClick={() => adopt(suggestion)}><Check size={15} />套用</button>
+        </li>)}
+      </ul>
     </div>}
+
+    {!groups.length ? <div className="model-alias-empty">暂未配置统一模型名称。可直接套用上方建议，或新增映射后从渠道模型清单中挑选。</div> : <div className="model-alias-list">
+      {groups.map((group, index) => {
+        const members = aliasMembers(group)
+        return <article className="model-alias-row" key={`${index}-${group.canonical}`}>
+          <div className="model-alias-fields">
+            <label>统一名称<input value={group.canonical} onChange={(event) => update(index, { canonical: event.target.value })} placeholder="例如 glm-5.2" list="model-alias-known-names" /></label>
+            <div className="model-alias-member-field">
+              <div className="model-alias-member-head"><span>上游名称</span><button className="text-button" type="button" onClick={() => setPickerFor(index)} disabled={!inventory?.candidates.length}><Search size={14} />从渠道挑选{inventory ? `（${inventory.total_models}）` : ''}</button></div>
+              {members.length ? <div className="model-alias-member-chips">
+                {members.map((member) => <span className="model-alias-chip" key={member}>{member}<button type="button" onClick={() => update(index, withMembers(group, members.filter((item) => item !== member)))} aria-label={`移除 ${member}`} title="移除">×</button></span>)}
+              </div> : <p className="model-alias-member-empty">尚未选择上游名称</p>}
+              <textarea rows={2} value={group.aliases} onChange={(event) => update(index, { aliases: event.target.value })} placeholder={'也可直接粘贴，每行一个\nGLM-5.2\nz.ai/glm-5.2'} aria-label="上游名称，每行一个" />
+            </div>
+          </div>
+          <div className="model-alias-actions"><label className="checkbox-field"><input type="checkbox" checked={group.enabled} onChange={(event) => update(index, { enabled: event.target.checked })} />启用</label><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除 ${group.canonical || '未命名映射'}`} title="删除映射"><Trash2 size={15} /></button></div>
+        </article>
+      })}
+    </div>}
+
+    <datalist id="model-alias-known-names">{(inventory?.candidates || []).map((candidate) => <option value={candidate.model} key={candidate.model} />)}</datalist>
+
+    {pickerFor !== null && inventory && <ModelPickerModal
+      candidates={inventory.candidates}
+      selected={aliasMembers(groups[pickerFor] || { canonical: '', aliases: '', enabled: true })}
+      close={() => setPickerFor(null)}
+      apply={(members) => { const target = groups[pickerFor]; if (target) update(pickerFor, withMembers(target, members)); setPickerFor(null) }}
+    />}
   </section>
+}
+
+function ModelPickerModal({ candidates, selected, close, apply }: { candidates: ModelAliasCandidate[]; selected: string[]; close: () => void; apply: (members: string[]) => void }) {
+  const [query, setQuery] = useState('')
+  const [picked, setPicked] = useState<string[]>(selected)
+
+  // Selections survive re-filtering, so several searches can build one group.
+  const toggle = (model: string) => setPicked((current) => current.includes(model) ? current.filter((item) => item !== model) : [...current, model])
+
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    if (!needle) return candidates
+    return candidates.filter((candidate) => candidate.model.toLowerCase().includes(needle) || candidate.channel_names.some((name) => name.toLowerCase().includes(needle)))
+  }, [candidates, query])
+
+  return <Modal title="从渠道模型中挑选" close={close}>
+    <div className="model-picker">
+      <div className="model-picker-toolbar">
+        <label className="model-picker-search"><Search size={15} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索模型或渠道名称" aria-label="搜索模型" /></label>
+        <span className="model-picker-count">已选 {picked.length} 项{query.trim() && ` · 匹配 ${visible.length}`}</span>
+      </div>
+      {!visible.length ? <EmptyState label="没有匹配的模型，换个关键词或先在渠道中同步模型清单" /> : <ul className="model-picker-list">
+        {visible.map((candidate) => <li key={candidate.model}>
+          <label className="checkbox-field">
+            <input type="checkbox" checked={picked.includes(candidate.model)} onChange={() => toggle(candidate.model)} />
+            <span className="model-picker-entry">
+              <strong>{candidate.model}</strong>
+              <small>{candidate.channel_count} 个渠道{candidate.channel_names.length ? ` · ${candidate.channel_names.join('、')}` : ''}{candidate.mapped_to ? ` · 已映射到 ${candidate.mapped_to}` : ''}</small>
+            </span>
+          </label>
+        </li>)}
+      </ul>}
+      <footer className="model-picker-footer">
+        <button className="text-button" type="button" onClick={() => setPicked([])} disabled={!picked.length}>清空已选</button>
+        <div><button className="secondary-button" type="button" onClick={close}>取消</button><button className="primary-button" type="button" onClick={() => apply(picked)}>确定（{picked.length}）</button></div>
+      </footer>
+    </div>
+  </Modal>
 }
 
 function AppearancePanel({ customization, change, reset }: { customization: ThemeCustomization; change: (patch: Partial<ThemeCustomization>, label: string) => void; reset: () => void }) {

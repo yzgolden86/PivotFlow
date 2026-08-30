@@ -396,6 +396,27 @@ export interface SiteCredentialVerification {
   model_count: number
 }
 
+export interface ModelAliasCandidate {
+  model: string
+  channel_count: number
+  channel_names: string[]
+  mapped_to?: string
+  normalized_key: string
+}
+
+export interface ModelAliasSuggestion {
+  canonical: string
+  members: string[]
+  reason: string
+  extends_canonical?: string
+}
+
+export interface ModelAliasInventory {
+  candidates: ModelAliasCandidate[]
+  suggestions: ModelAliasSuggestion[]
+  total_models: number
+}
+
 export interface SiteAccountModel {
   site_account_id: number
   model: string
