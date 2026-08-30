@@ -12,8 +12,9 @@ import (
 var benchmarkBalancedChannelsSink []*modelpkg.Config
 
 // 生产代码只暴露原地重排的入口；测试需要保留入参顺序，因此在边界显式克隆。
+// 这两个 helper 把入参本身当作稳定集合，等价于「没有渠道处于冷却」的场景。
 func rrSelect(rr *SmoothWeightedRR, channels []*modelpkg.Config, weights []int) []*modelpkg.Config {
-	return rr.selectByWeight(slices.Clone(channels), weights)
+	return rr.selectByWeight(slices.Clone(channels), weights, rrScope{universe: rrUniverseKey(channels)})
 }
 
 func rrSelectWithCooldown(
@@ -22,7 +23,7 @@ func rrSelectWithCooldown(
 	keyCooldowns map[int64]map[int]time.Time,
 	now time.Time,
 ) []*modelpkg.Config {
-	return rr.selectWithCooldownInPlace(slices.Clone(channels), keyCooldowns, now)
+	return rr.selectWithCooldownInPlace(slices.Clone(channels), keyCooldowns, now, rrScope{universe: rrUniverseKey(channels)})
 }
 
 func BenchmarkSmoothWeightedRRSelect3000(b *testing.B) {
@@ -51,7 +52,7 @@ func BenchmarkSmoothWeightedRRSelectWithCooldownInPlace3000(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		benchmarkBalancedChannelsSink = rr.selectWithCooldownInPlace(channels, nil, time.Now())
+		benchmarkBalancedChannelsSink = rr.selectWithCooldownInPlace(channels, nil, time.Now(), rrScope{universe: rrUniverseKey(channels)})
 	}
 }
 
@@ -296,15 +297,15 @@ func TestSmoothWeightedRR_Cleanup_RemovesOldStates(t *testing.T) {
 	}
 	rrSelect(rr, channels, []int{1, 1})
 
-	key := rr.generateGroupKey(channels)
-	if rr.states[key] == nil {
-		t.Fatalf("expected state created for group key")
+	scope := rrScope{universe: rrUniverseKey(channels)}
+	if rr.states[scope] == nil {
+		t.Fatalf("expected state created for group scope")
 	}
 
-	rr.states[key].lastAccess = time.Now().Add(-time.Hour)
+	rr.states[scope].lastAccess = time.Now().Add(-time.Hour)
 	rr.Cleanup(30 * time.Minute)
 
-	if _, ok := rr.states[key]; ok {
+	if _, ok := rr.states[scope]; ok {
 		t.Fatalf("expected expired state cleaned up")
 	}
 }

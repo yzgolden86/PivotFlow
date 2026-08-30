@@ -1116,7 +1116,7 @@ func TestSortChannelsByHealth_WeightedByKeyCount(t *testing.T) {
 			{ID: 2, Name: "channel-B", Priority: 10, KeyCount: 2},
 		}
 
-		result := server.sortChannelsByHealth(channels, nil, time.Now())
+		result := server.sortChannelsByHealth(channels, nil, time.Now(), rrUniverseKey(channels))
 		firstPositionCount[result[0].Name]++
 	}
 
@@ -1180,7 +1180,7 @@ func TestSortChannelsByHealth_WeightedByEffectiveKeyCount(t *testing.T) {
 			{ID: 2, Name: "channel-B", Priority: 10, KeyCount: 2},
 		}
 
-		result := server.sortChannelsByHealth(channels, keyCooldowns, now)
+		result := server.sortChannelsByHealth(channels, keyCooldowns, now, rrUniverseKey(channels))
 		firstPositionCount[result[0].Name]++
 	}
 

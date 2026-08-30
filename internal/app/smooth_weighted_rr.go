@@ -14,10 +14,25 @@ import (
 // 算法来源：Nginx upstream smooth weighted round-robin
 type SmoothWeightedRR struct {
 	mu     sync.Mutex
-	states map[rrGroupKey]*rrGroupState // key: 渠道ID集合的稳定摘要
+	states map[rrScope]*rrGroupState
 }
 
 type rrGroupKey [sha256.Size]byte
+
+// rrScope 标识一个轮询组。
+//
+// universe 必须来自「该模型下全部候选渠道」这个稳定集合，而不是冷却过滤后的存活集合：
+// 后者会随任意一个渠道进入/退出冷却而改变，导致本组换成一个全新的 state、
+// currentWeights 全部归零。归零后 selectByWeight 只能走「取最大权重、同权重比 ID 小」
+// 的冷启动兜底，于是在权重相同的等价渠道之间永远选中同一个（ID 最小的那个），
+// 其余渠道被饿死。用稳定集合做键后，权重能跨冷却抖动累积，冷却中的渠道只是本轮
+// 不加权、不被选中，恢复后凭已累积的权重优先补偿。
+//
+// tier 区分同一 universe 内的不同（有效）优先级层，避免高低优先级共用游标。
+type rrScope struct {
+	universe rrGroupKey
+	tier     int64
+}
 
 // rrGroupState 单个优先级组的轮询状态
 type rrGroupState struct {
@@ -28,7 +43,7 @@ type rrGroupState struct {
 // NewSmoothWeightedRR 创建平滑加权轮询调度器
 func NewSmoothWeightedRR() *SmoothWeightedRR {
 	rr := &SmoothWeightedRR{
-		states: make(map[rrGroupKey]*rrGroupState),
+		states: make(map[rrScope]*rrGroupState),
 	}
 	return rr
 }
@@ -40,25 +55,23 @@ func NewSmoothWeightedRR() *SmoothWeightedRR {
 func (rr *SmoothWeightedRR) selectByWeight(
 	channels []*modelpkg.Config,
 	weights []int,
+	scope rrScope,
 ) []*modelpkg.Config {
 	n := len(channels)
 	if n <= 1 || len(weights) != n {
 		return channels
 	}
 
-	// 生成组签名（用于区分不同的渠道组合）
-	groupKey := rr.generateGroupKey(channels)
-
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
 
 	// 获取或创建组状态
-	state, exists := rr.states[groupKey]
+	state, exists := rr.states[scope]
 	if !exists {
 		state = &rrGroupState{
 			currentWeights: make(map[int64]int),
 		}
-		rr.states[groupKey] = state
+		rr.states[scope] = state
 	}
 	state.lastAccess = time.Now()
 
@@ -107,6 +120,7 @@ func (rr *SmoothWeightedRR) selectWithCooldownInPlace(
 	channels []*modelpkg.Config,
 	keyCooldowns map[int64]map[int]time.Time,
 	now time.Time,
+	scope rrScope,
 ) []*modelpkg.Config {
 	if len(channels) <= 1 {
 		return channels
@@ -115,12 +129,14 @@ func (rr *SmoothWeightedRR) selectWithCooldownInPlace(
 	for i, ch := range channels {
 		weights[i] = calcEffectiveKeyCount(ch, keyCooldowns, now)
 	}
-	return rr.selectByWeight(channels, weights)
+	return rr.selectByWeight(channels, weights, scope)
 }
 
-// generateGroupKey 对排序后的渠道 ID 做固定宽度摘要。
+// rrUniverseKey 对排序后的渠道 ID 做固定宽度摘要。
 // 输入顺序不影响结果；固定宽度编码避免每个 ID 的十进制字符串分配。
-func (rr *SmoothWeightedRR) generateGroupKey(channels []*modelpkg.Config) rrGroupKey {
+//
+// 传入的必须是稳定集合（冷却过滤之前的候选渠道），理由见 rrScope 注释。
+func rrUniverseKey(channels []*modelpkg.Config) rrGroupKey {
 	ids := make([]int64, 0, len(channels))
 	for _, ch := range channels {
 		if ch == nil {
@@ -158,11 +174,16 @@ func (rr *SmoothWeightedRR) Cleanup(maxAge time.Duration) {
 	}
 }
 
-// ResetAll 重置所有轮询状态（渠道配置变更时调用）
+// ResetAll 清空所有轮询状态。
+//
+// 警告：不要把它挂到渠道缓存失效这类高频路径上。清零后每次选择都是冷启动，
+// 会退化成「取最大权重、同权重比 ID 小」，在等价渠道之间永远选中同一个，
+// 其余渠道被饿死（详见 InvalidateChannelListCache 里的说明）。
+// 拓扑变化由 rrScope 分域自然处理，正常运行期不需要调用本函数。
 func (rr *SmoothWeightedRR) ResetAll() {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
-	rr.states = make(map[rrGroupKey]*rrGroupState)
+	rr.states = make(map[rrScope]*rrGroupState)
 }
 
 // calcEffectiveKeyCount 计算渠道的有效Key数量（排除冷却中的Key）

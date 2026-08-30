@@ -766,19 +766,23 @@ func TestKeySelector_CleanupInactiveCounters(t *testing.T) {
 		t.Fatalf("SelectAvailableKey(channel=200) failed: %v", err)
 	}
 
+	// 游标按「渠道 + 候选 Key 集合」分域，这里沿用生产路径的同一口径取 scope。
+	scope100 := newRRCounterScope(100, keys)
+	scope200 := newRRCounterScope(200, keys)
+
 	// 将 channel=100 标记为“很久没用”
-	expired := ks.getOrCreateCounter(100)
+	expired := ks.getOrCreateCounter(scope100)
 	expired.lastAccess.Store(time.Now().Add(-48 * time.Hour).UnixNano())
 
 	// 保持 channel=200 活跃
-	active := ks.getOrCreateCounter(200)
+	active := ks.getOrCreateCounter(scope200)
 	active.lastAccess.Store(time.Now().UnixNano())
 
 	ks.CleanupInactiveCounters(24 * time.Hour)
 
 	ks.rrMutex.RLock()
-	_, okExpired := ks.rrCounters[100]
-	_, okActive := ks.rrCounters[200]
+	_, okExpired := ks.rrCounters[scope100]
+	_, okActive := ks.rrCounters[scope200]
 	ks.rrMutex.RUnlock()
 
 	if okExpired {

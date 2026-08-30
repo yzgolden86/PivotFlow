@@ -33,6 +33,7 @@ import type {
   FingerprintJob,
   FingerprintTestRecord,
   ModelFingerprint,
+  ModelAliasInventory,
   SystemSetting,
   SystemSettingMutationResult,
   BackupDocument,
@@ -656,6 +657,10 @@ export function deleteSystemAccessToken(tokenId: number): Promise<{ id: number }
 
 export function getSystemSettings(signal?: AbortSignal): Promise<SystemSetting[]> {
   return apiRequest<SystemSetting[]>('/admin/settings', signal)
+}
+
+export function getModelAliasInventory(signal?: AbortSignal): Promise<ModelAliasInventory> {
+  return apiRequest<ModelAliasInventory>('/admin/model-alias-inventory', signal)
 }
 
 export function updateSystemSettings(values: Record<string, string>): Promise<SystemSettingMutationResult> {

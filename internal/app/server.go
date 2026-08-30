@@ -903,10 +903,21 @@ func (s *Server) InvalidateChannelListCache() {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateCache()
 	}
-	// 渠道配置变更时重置轮询状态，确保新配置下的分布正确
-	if s.channelBalancer != nil {
-		s.channelBalancer.ResetAll()
-	}
+	// 这里刻意不再重置轮询状态。
+	//
+	// 原实现无条件调用 channelBalancer.ResetAll()，把全部渠道的轮询游标清零。
+	// 该函数不只在管理员改渠道时被调用，站点投影同步和 OAuth 凭证刷新回调也会调用
+	// （见 Init 中的 onProjectionChanged 与各 credentialManager 回调）。一旦调用频率
+	// 接近请求频率，每次选择都变成冷启动，退化为「取最大权重、同权重比 ID 小」，
+	// 在权重相同的等价渠道中永远选中 ID 最小的那一个，其余渠道被彻底饿死。
+	//
+	// 不重置是安全的：
+	//   - 轮询状态按「稳定候选集合 + 优先级层」分域（见 rrScope），拓扑变化天然换域；
+	//   - currentWeights 以渠道 ID 为键，已删除渠道的残留项不会被读到，
+	//     并由 Cleanup(24h) 回收；
+	//   - 权重每轮实时重算，改 KeyCount / 优先级会在随后几轮内自行收敛。
+	//
+	// 渠道被删除时仍会通过 keySelector.RemoveChannelCounter 精确清理 Key 级游标。
 	// URL 或上游协议配置可能已变化，丢弃运行时学习结果。
 	s.protocolCapabilities.clear()
 }
@@ -1153,6 +1164,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/stats", s.HandleStats)
 		admin.GET("/stats/filter-options", s.HandleStatsFilterOptions)
 		admin.GET("/models", s.HandleGetModels)
+		admin.GET("/model-alias-inventory", s.HandleModelAliasInventory)
 
 		// API访问令牌管理
 		admin.GET("/auth-tokens", s.HandleListAuthTokens)

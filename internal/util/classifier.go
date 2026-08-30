@@ -78,6 +78,10 @@ const (
 	RateLimitScopeGlobal  = "global"
 	RateLimitScopeIP      = "ip"
 	RateLimitScopeAccount = "account"
+	// anthropicRateLimitUnifiedResetHeader carries the Unix second at which an
+	// Anthropic unified rate limit lifts. When present the limit applies to the
+	// model on that account, so trying sibling keys is pointless.
+	anthropicRateLimitUnifiedResetHeader = "Anthropic-Ratelimit-Unified-Reset"
 )
 
 // ErrorLevel 表示错误的严重级别。
@@ -104,9 +108,13 @@ type StatusCodeMeta struct {
 
 // HTTPResponseClassification 包含 HTTP 响应分类的结果。
 type HTTPResponseClassification struct {
-	Level                   ErrorLevel
-	Model                   string
-	ModelScoped             bool
+	Level       ErrorLevel
+	Model       string
+	ModelScoped bool
+	// PreventKeyFallback blocks per-key retry when the upstream told us the whole
+	// model is rate limited until a known instant. Burning the remaining keys
+	// cannot succeed and only drives every key into cooldown.
+	PreventKeyFallback      bool
 	ModelCooldownUntil      time.Time
 	HasModelCooldownUntil   bool
 	ModelCooldownReason     string
@@ -453,10 +461,19 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		if headers != nil {
 			level = classifyRateLimitError(headers, responseBody)
 		}
-		return HTTPResponseClassification{
+		classification := HTTPResponseClassification{
 			Level:       level,
 			ModelScoped: true,
 		}
+		// 上游给出了统一重置时刻：该模型在此账号下整体受限，逐个换 Key 不会成功，
+		// 只会把剩余 Key 全部拖进冷却。此时按精确时刻冷却模型并禁止 Key 回退。
+		if until, ok := parseAnthropicRateLimitReset(headers, now); ok {
+			classification.PreventKeyFallback = true
+			classification.ModelCooldownUntil = until
+			classification.HasModelCooldownUntil = true
+			classification.ModelCooldownReason = "anthropic_unified_reset"
+		}
+		return classification
 	}
 
 	// 400 表示当前模型无法接受该请求。切换渠道，但只冷却实际请求的模型。
@@ -585,6 +602,29 @@ func classifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 
 	// 4. 默认标记为窄域限流；冷却仍只作用于当前模型
 	return ErrorLevelKey
+}
+
+// parseAnthropicRateLimitReset reads the Anthropic unified reset header and
+// returns the instant the limit lifts. A malformed or already-past value returns
+// false so the caller keeps its normal backoff instead of trusting bad input.
+func parseAnthropicRateLimitReset(headers map[string][]string, now time.Time) (time.Time, bool) {
+	for name, values := range headers {
+		if !strings.EqualFold(name, anthropicRateLimitUnifiedResetHeader) {
+			continue
+		}
+		for _, value := range values {
+			resetUnix, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			if err != nil {
+				continue
+			}
+			until := time.Unix(resetUnix, 0)
+			if until.After(now) {
+				return until, true
+			}
+		}
+		return time.Time{}, false
+	}
+	return time.Time{}, false
 }
 
 // classifySSEError 分析SSE error事件的具体类型
