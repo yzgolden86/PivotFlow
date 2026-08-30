@@ -56,11 +56,15 @@ export function SecretInput({ value, change, placeholder, required = false, auto
   autoComplete?: string
 }) {
   const [visible, setVisible] = useState(false)
+  // 已保存的凭证从不回传浏览器（SiteAccount.CredentialCiphertext 标了 json:"-"），
+  // 所以编辑时输入框初值是空的。此时显示切换按钮只会照出一个空框，
+  // 让人以为功能坏了。只有在本次真的输入了内容时才提供切换。
+  const hasValue = value.length > 0
   return <span className="secret-input">
-    <input required={required} type={visible ? 'text' : 'password'} autoComplete={autoComplete} value={value} onChange={(event) => change(event.target.value)} placeholder={placeholder} />
-    <button type="button" onClick={() => setVisible((current) => !current)} aria-label={visible ? '隐藏内容' : '显示内容'} title={visible ? '隐藏内容' : '显示内容'}>
+    <input required={required} type={visible && hasValue ? 'text' : 'password'} autoComplete={autoComplete} value={value} onChange={(event) => change(event.target.value)} placeholder={placeholder} />
+    {hasValue && <button type="button" onClick={() => setVisible((current) => !current)} aria-label={visible ? '隐藏内容' : '显示内容'} title={visible ? '隐藏内容' : '核对已输入的内容'}>
       {visible ? <EyeOff size={16} /> : <Eye size={16} />}
-    </button>
+    </button>}
   </span>
 }
 

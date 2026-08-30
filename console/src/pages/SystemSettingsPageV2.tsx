@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, BellRing, CalendarClock, Check, CheckCircle2, Clock3, ExternalLink, FileClock, Gauge, Network,
+  Activity, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, Clock3, ExternalLink, FileClock, Gauge, Network,
   DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
   KeyRound, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, SlidersHorizontal, TimerReset, Trash2, Type, Wrench,
 } from 'lucide-react'
@@ -351,6 +351,8 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [pickerFor, setPickerFor] = useState<number | null>(null)
+  const [filter, setFilter] = useState('')
+  const [expanded, setExpanded] = useState<number | null>(null)
 
   const reload = useCallback((signal?: AbortSignal) => {
     setLoading(true)
@@ -368,8 +370,21 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
 
   const commit = (next: AliasDraft[]) => change(serializeAliasDraft(next))
   const update = (index: number, patch: Partial<AliasDraft>) => commit(groups.map((group, itemIndex) => itemIndex === index ? { ...group, ...patch } : group))
-  const add = () => commit([...groups, { canonical: '', aliases: '', enabled: true }])
-  const remove = (index: number) => commit(groups.filter((_, itemIndex) => itemIndex !== index))
+  // 新增的那条直接展开，否则点了「新增映射」看不到任何可填的地方。
+  const add = () => { commit([...groups, { canonical: '', aliases: '', enabled: true }]); setExpanded(groups.length); setFilter('') }
+  const remove = (index: number) => {
+    commit(groups.filter((_, itemIndex) => itemIndex !== index))
+    // 删除会让后续条目索引前移，展开态跟着挪，避免展开到别人身上。
+    setExpanded((current) => current === null ? null : current === index ? null : current > index ? current - 1 : current)
+  }
+
+  // 带上原始 index：过滤后仍要能改到正确的那一条。
+  const visibleGroups = useMemo(() => {
+    const entries = groups.map((group, index) => ({ group, index }))
+    const needle = filter.trim().toLowerCase()
+    if (!needle) return entries
+    return entries.filter(({ group }) => group.canonical.toLowerCase().includes(needle) || group.aliases.toLowerCase().includes(needle))
+  }, [groups, filter])
 
   // Adopting a suggestion either extends the group that already owns the model
   // or appends a new group, so two canonical names never compete for one model.
@@ -415,11 +430,27 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
       </ul>
     </div>}
 
+    {groups.length > 4 && <label className="model-alias-filter"><Search size={14} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={`在 ${groups.length} 条映射中搜索统一名称或上游名称`} aria-label="搜索映射" /></label>}
+
     {!groups.length ? <div className="model-alias-empty">暂未配置统一模型名称。可直接套用上方建议，或新增映射后从渠道模型清单中挑选。</div> : <div className="model-alias-list">
-      {groups.map((group, index) => {
+      {visibleGroups.map(({ group, index }) => {
         const members = aliasMembers(group)
-        return <article className="model-alias-row" key={`${index}-${group.canonical}`}>
-          <div className="model-alias-fields">
+        // 默认折叠成一行：映射条数多时全部展开会把设置页拖得很长。
+        // 展开态由 index 记录，新增的那条自动展开。
+        const open = expanded === index
+        return <article className={`model-alias-row${open ? ' is-open' : ''}`} key={`${index}-${group.canonical}`}>
+          <div className="model-alias-summary">
+            <button className="model-alias-disclosure" type="button" aria-expanded={open} onClick={() => setExpanded(open ? null : index)}>
+              <ChevronRight size={15} className="model-alias-caret" />
+              <strong>{group.canonical || '未命名映射'}</strong>
+              <span>{members.length ? `${members.length} 个上游名称` : '尚未选择上游名称'}</span>
+            </button>
+            <div className="model-alias-actions">
+              <label className="checkbox-field"><input type="checkbox" checked={group.enabled} onChange={(event) => update(index, { enabled: event.target.checked })} />启用</label>
+              <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除 ${group.canonical || '未命名映射'}`} title="删除映射"><Trash2 size={15} /></button>
+            </div>
+          </div>
+          {open && <div className="model-alias-fields">
             <label>统一名称<input value={group.canonical} onChange={(event) => update(index, { canonical: event.target.value })} placeholder="例如 glm-5.2" list="model-alias-known-names" /></label>
             <div className="model-alias-member-field">
               <div className="model-alias-member-head"><span>上游名称</span><button className="text-button" type="button" onClick={() => setPickerFor(index)} disabled={!inventory?.candidates.length}><Search size={14} />从渠道挑选{inventory ? `（${inventory.total_models}）` : ''}</button></div>
@@ -428,10 +459,10 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
               </div> : <p className="model-alias-member-empty">尚未选择上游名称</p>}
               <textarea rows={2} value={group.aliases} onChange={(event) => update(index, { aliases: event.target.value })} placeholder={'也可直接粘贴，每行一个\nGLM-5.2\nz.ai/glm-5.2'} aria-label="上游名称，每行一个" />
             </div>
-          </div>
-          <div className="model-alias-actions"><label className="checkbox-field"><input type="checkbox" checked={group.enabled} onChange={(event) => update(index, { enabled: event.target.checked })} />启用</label><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除 ${group.canonical || '未命名映射'}`} title="删除映射"><Trash2 size={15} /></button></div>
+          </div>}
         </article>
       })}
+      {!visibleGroups.length && <div className="model-alias-empty">没有匹配「{filter}」的映射</div>}
     </div>}
 
     <datalist id="model-alias-known-names">{(inventory?.candidates || []).map((candidate) => <option value={candidate.model} key={candidate.model} />)}</datalist>
