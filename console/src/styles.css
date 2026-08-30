@@ -2068,6 +2068,14 @@ a:focus-visible {
 }
 .secret-input { position: relative; display: block; width: 100%; }
 .secret-input input { width: 100%; padding-right: 42px !important; }
+/* Edge/IE 会在密码框右侧自绘一个显示按钮，与我们自己的眼睛按钮重叠。
+   同时屏蔽 Edge 的清除按钮，避免焦点态多出一个叉。
+   对全部密码框生效：并非每个密码框都包在 .secret-input 里。 */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
+/* 掩码点默认字号偏大且字距松散，等宽字体下更整齐。
+   显示明文时切回常规字体，便于核对长令牌。 */
+.secret-input input[type="password"] { font-family: Consolas, Menlo, monospace; letter-spacing: .12em; }
 .secret-input button { position: absolute; top: 50%; right: 5px; display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; color: var(--text-muted); background: transparent; border: 0; border-radius: 6px; cursor: pointer; transform: translateY(-50%); }
 .secret-input button:hover { color: var(--green); background: var(--green-soft); }
 .secret-input button:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 45%, transparent); outline-offset: 1px; }
@@ -2616,6 +2624,32 @@ a:focus-visible {
 .model-alias-fields label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 10px; font-weight: 700; }
 .model-alias-fields textarea { min-height: 72px; resize: vertical; font-family: Consolas, monospace; font-size: 11px; }
 .model-alias-actions { display: flex; align-items: center; gap: 8px; padding-bottom: 2px; }
+/* 带逐项悬浮说明的分段选择器（如渠道选择策略） */
+.setting-choice { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.setting-choice-option { position: relative; padding: 7px 12px; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; cursor: pointer; font-size: 11px; font-weight: 600; }
+.setting-choice-option:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.setting-choice-option.is-selected { color: var(--green); background: var(--green-soft); border-color: color-mix(in srgb, var(--green) 42%, var(--border)); }
+.setting-choice-option:disabled { opacity: .55; cursor: not-allowed; }
+.setting-choice-option:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 45%, transparent); outline-offset: 1px; }
+.setting-choice-label { display: inline-flex; align-items: center; gap: 5px; }
+/* 说明气泡：默认隐藏，悬浮或键盘聚焦时出现。
+   固定在按钮上方并限制宽度，避免长文本把设置行撑开或溢出视口。 */
+.setting-choice-tip {
+  position: absolute; bottom: calc(100% + 7px); left: 50%; z-index: 30;
+  width: max-content; max-width: min(340px, 74vw); padding: 9px 11px;
+  color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 7px;
+  box-shadow: 0 8px 22px rgb(0 0 0 / 14%);
+  font-size: 11px; font-weight: 400; line-height: 18px; text-align: left; white-space: normal;
+  opacity: 0; visibility: hidden; transform: translateX(-50%) translateY(3px); transition: opacity .12s ease, transform .12s ease, visibility .12s;
+}
+.setting-choice-option:hover .setting-choice-tip,
+.setting-choice-option:focus-visible .setting-choice-tip { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
+@media (prefers-reduced-motion: reduce) { .setting-choice-tip { transition: none; } }
+/* 靠右的选项把气泡右对齐，防止溢出容器 */
+.setting-choice-option:last-child .setting-choice-tip { left: auto; right: 0; transform: translateY(3px); }
+.setting-choice-option:last-child:hover .setting-choice-tip,
+.setting-choice-option:last-child:focus-visible .setting-choice-tip { transform: translateY(0); }
+
 .model-alias-header-actions { display: flex; align-items: center; gap: 8px; }
 .model-alias-inline-error { padding: 9px 11px; color: var(--red); background: color-mix(in srgb, var(--red) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--red) 26%, var(--border)); border-radius: 7px; font-size: 11px; }
 

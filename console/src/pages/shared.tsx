@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronLeft, ChevronRight, RefreshCw, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Eye, EyeOff, RefreshCw, X } from 'lucide-react'
 
 export function OperationNotice({ children, persistent = false, onDismiss, tone = 'success' }: { children: ReactNode; persistent?: boolean; onDismiss?: () => void; tone?: 'success' | 'warning' | 'error' }) {
   const [visible, setVisible] = useState(true)
@@ -44,6 +44,24 @@ export function ErrorState({ message, retry }: { message: string; retry: () => v
 
 export function EmptyState({ label }: { label: string }) {
   return <div className="content-state content-state--empty">{label}</div>
+}
+
+// SecretInput 用统一的显隐切换替代裸 password 输入框。
+// 浏览器自绘的显示按钮已在样式中屏蔽，避免和这里的眼睛图标重叠。
+export function SecretInput({ value, change, placeholder, required = false, autoComplete = 'off' }: {
+  value: string
+  change: (value: string) => void
+  placeholder?: string
+  required?: boolean
+  autoComplete?: string
+}) {
+  const [visible, setVisible] = useState(false)
+  return <span className="secret-input">
+    <input required={required} type={visible ? 'text' : 'password'} autoComplete={autoComplete} value={value} onChange={(event) => change(event.target.value)} placeholder={placeholder} />
+    <button type="button" onClick={() => setVisible((current) => !current)} aria-label={visible ? '隐藏内容' : '显示内容'} title={visible ? '隐藏内容' : '显示内容'}>
+      {visible ? <EyeOff size={16} /> : <Eye size={16} />}
+    </button>
+  </span>
 }
 
 export function Pagination({ page, pageSize, total, onPage, pageSizes, onPageSize }: {

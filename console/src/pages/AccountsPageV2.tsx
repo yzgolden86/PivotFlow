@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, Copy, Eye, EyeOff, KeyRound, Pencil, Plus, Power, RefreshCw, Search, Trash2, WalletCards, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, Copy, KeyRound, Pencil, Plus, Power, RefreshCw, Search, Trash2, WalletCards, X } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 import {
   createSiteAccount,
@@ -13,7 +13,7 @@ import {
   verifySiteAccountCredential,
 } from '../api'
 import type { CheckinAttempt, Site, SiteAccount, SiteCredentialVerification } from '../types'
-import { EmptyState, ErrorState, formatTime, LoadingState, OperationNotice, Pagination } from './shared'
+import { EmptyState, ErrorState, formatTime, LoadingState, OperationNotice, Pagination, SecretInput } from './shared'
 import { formatAccountBalance, Modal, siteErrorMessage, StatusBadge } from './siteShared'
 import { credentialLabel, credentialOptions, normalizeCredentialType, platformSupportsCheckin, type CredentialType } from '../siteCredentials'
 
@@ -633,10 +633,6 @@ function CredentialFields<T extends CredentialForm>({ form, field, platform }: {
   return <section className="embedded-form-section credential-section"><label><span>凭证类型</span><select value={form.credential_type} onChange={(event) => field('credential_type', event.target.value)}>{options.map((option) => <option value={option} key={option}>{credentialLabel(option, platform)}</option>)}</select></label>{form.credential_type === 'username_password' ? <div className="form-grid"><label><span>用户名</span><input required value={form.username} onChange={(event) => field('username', event.target.value)} autoComplete="username" /></label><label><span>密码</span><SecretInput required value={form.password} change={(value) => field('password', value)} autoComplete="current-password" /></label></div> : <label><span>{credentialLabel(form.credential_type, platform)}</span><SecretInput required value={form.credential} change={(value) => field('credential', value)} placeholder={platform === 'sub2api' && form.credential_type === 'access_token' ? '填写浏览器存储中的 auth token' : '凭证将加密保存'} /></label>}{!['api_key', 'username_password'].includes(form.credential_type) && platform !== 'sub2api' && <label><span>上游用户 ID{form.credential_type === 'cookie' ? '' : '（自动识别失败时填写）'}</span><input required={form.credential_type === 'cookie'} type="number" min="1" value={form.user_id || ''} onChange={(event) => field('user_id', Number(event.target.value))} placeholder="用户个人中心显示的数字 ID" /></label>}{supportsRefresh && <><div className="form-grid"><label><span>Refresh Token（可选）</span><SecretInput value={form.refresh_token} change={(value) => field('refresh_token', value)} placeholder="用于访问令牌自动续期" /></label><label><span>访问令牌过期时间（可选）</span><input type="text" inputMode="numeric" pattern="[0-9]*" value={form.expires_at} onChange={(event) => field('expires_at', event.target.value.replace(/[^0-9]/g, ''))} placeholder="例如 1786982260314" /></label></div><div className="form-help">过期时间可留空：JWT 会自动读取到期时间；其他令牌会在上游明确返回 401/403 后使用 Refresh Token 刷新并重试一次。</div></>}{form.credential_type === 'api_key' && <div className="form-help">模型 API Key 只用于发现模型和路由，不支持余额、签到或公告。</div>}</section>
 }
 
-function SecretInput({ value, change, placeholder, required = false, autoComplete = 'off' }: { value: string; change: (value: string) => void; placeholder?: string; required?: boolean; autoComplete?: string }) {
-  const [visible, setVisible] = useState(false)
-  return <span className="secret-input"><input required={required} type={visible ? 'text' : 'password'} autoComplete={autoComplete} value={value} onChange={(event) => change(event.target.value)} placeholder={placeholder} /><button type="button" onClick={() => setVisible((current) => !current)} aria-label={visible ? '隐藏内容' : '显示内容'} title={visible ? '隐藏内容' : '显示内容'}>{visible ? <EyeOff size={16} /> : <Eye size={16} />}</button></span>
-}
 
 function credentialPayload(form: CredentialForm, platform: string) {
   if (form.credential_type === 'username_password') return { username: form.username.trim(), password: form.password }

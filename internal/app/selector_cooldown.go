@@ -110,12 +110,20 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 	}
 
 	// 启用健康度排序：对"已通过冷却过滤"的渠道按健康度排序
+	var ordered []*modelpkg.Config
 	if s.healthCache != nil && s.healthCache.Config().Enabled {
-		return s.sortChannelsByHealth(filtered, keyCooldowns, now, universe), nil
+		ordered = s.sortChannelsByHealth(filtered, keyCooldowns, now, universe)
+	} else {
+		// healthCache 关闭时：按优先级分组，使用平滑加权轮询
+		ordered = s.balanceSamePriorityChannels(filtered, keyCooldowns, now, universe)
 	}
 
-	// healthCache 关闭时：按优先级分组，使用平滑加权轮询
-	return s.balanceSamePriorityChannels(filtered, keyCooldowns, now, universe), nil
+	// 粘性策略：把上次成功的渠道提回首位（仅限同优先级层）。
+	// 放在排序之后，因为它只调整首选，不改变其余候选的回退顺序。
+	if requestModel != "" && requestModel != "*" && s.routeStrategy() == RouteStrategySticky {
+		ordered = applyStickyPreference(ordered, s.stickyRouter.preferred(requestModel, now))
+	}
+	return ordered, nil
 }
 
 func filterAvailableChannelsAt(channels []*modelpkg.Config, now time.Time) []*modelpkg.Config {

@@ -1598,6 +1598,8 @@ func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) 
 	if s.urlSelector != nil {
 		s.urlSelector.RemoveChannel(id)
 	}
+	// 渠道已删除，任何指向它的粘性记录都必须失效。
+	s.stickyRouter.forgetChannel(id)
 	if s.channelRPMLimiter != nil {
 		s.channelRPMLimiter.RemoveChannel(id)
 	}
