@@ -1673,8 +1673,8 @@ a:focus-visible {
 .cost-status--unpriced_model { color: var(--amber) !important; }
 .cost-status--local_free,
 .cost-status--free_model { color: var(--green) !important; }
-/* 健康列加宽到 175px：分格条要能数清 10 格，还要放右侧百分比 */
-.stats-grid { grid-template-columns: minmax(190px, 1.2fr) minmax(175px, .9fr) 110px 110px 80px 130px 100px; }
+/* 健康列 205px：50 格细梳条需要足够横向空间，右侧还要放百分比 */
+.stats-grid { grid-template-columns: minmax(180px, 1.1fr) minmax(205px, 1fr) 105px 105px 78px 125px 96px; }
 
 .status-badge {
   display: inline-flex;
@@ -1719,8 +1719,9 @@ a:focus-visible {
 /* 成功率用分格电量条：格数可数，比连续细条更易比较。
    百分比与格子同行靠右，不再占下方一行。 */
 .health-meter { display: flex !important; align-items: center; gap: 8px; }
-.health-meter-cells { display: flex; flex: 1; min-width: 0; gap: 2px; padding: 2px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 4px; }
-.health-meter-cells i { flex: 1; min-width: 3px; height: 11px; background: color-mix(in srgb, var(--border-strong) 42%, transparent); border-radius: 1px; transition: background .16s ease; }
+/* 细梳状：50 格、每格 2%。格间距只留 1px，否则间隙会吃掉格子本身的宽度 */
+.health-meter-cells { display: flex; flex: 1; min-width: 0; gap: 1px; padding: 2px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 3px; }
+.health-meter-cells i { flex: 1; min-width: 1px; height: 12px; background: color-mix(in srgb, var(--border-strong) 38%, transparent); transition: background .16s ease; }
 .health-meter-cells i.is-on { background: var(--green); }
 .health-meter > strong { flex-shrink: 0; min-width: 46px; color: var(--green); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
 .health-meter--warning .health-meter-cells i.is-on,
@@ -2743,7 +2744,8 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .alias-transfer-item { display: grid; gap: 4px; flex: 1; min-width: 0; }
 .alias-transfer-item strong { color: var(--text); font-family: Consolas, monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .alias-transfer-item div { display: flex; flex-wrap: wrap; gap: 4px; }
-.alias-transfer-item code { padding: 1px 5px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 4px; font-size: 10px; }
+/* 模型名可能很长（带厂商前缀），允许在容器内换行而不是被裁掉 */
+.alias-transfer-item code { padding: 1px 5px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 4px; font-size: 10px; overflow-wrap: anywhere; }
 .alias-transfer-empty { justify-content: center; color: var(--text-muted) !important; font-size: 11px; background: none !important; border-style: dashed !important; }
 .alias-transfer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .alias-transfer-footer span { color: var(--text-muted); font-size: 11px; }

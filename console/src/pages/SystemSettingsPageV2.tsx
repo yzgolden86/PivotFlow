@@ -747,7 +747,7 @@ function AliasTransferModal({ suggestions, close, apply }: {
   const addAll = () => setPending((current) => [...current, ...available])
   const remove = (item: ModelAliasSuggestion) => setPending((current) => current.filter((entry) => entry !== item))
 
-  return <Modal title="批量创建统一映射" close={close}>
+  return <Modal title="批量创建统一映射" close={close} wide>
     <div className="alias-transfer">
       <p className="alias-transfer-hint">左边是当前启用渠道中检测到的可合并名称组合。选中要采用的组合，确定后一起写入映射列表。</p>
       <div className="alias-transfer-panes">
