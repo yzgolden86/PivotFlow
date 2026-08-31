@@ -770,6 +770,8 @@ function AliasTransferModal({ suggestions, close, apply }: {
         </section>
         <section className="alias-transfer-pane">
           <header><strong>待创建 <em>{pending.length}</em></strong>{!!pending.length && <button className="text-button" type="button" onClick={() => setPending([])}>清空</button>}</header>
+          {/* 左栏此处是搜索框；右栏用等高占位，让两栏的列表从同一水平线开始 */}
+          <div className="alias-transfer-spacer" aria-hidden="true" />
           <ul>
             {pending.map((item, index) => <li key={`${item.canonical}-${index}`}>
               <div className="alias-transfer-item">
