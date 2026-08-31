@@ -151,6 +151,82 @@
   --shadow: 0 12px 32px rgba(0, 0, 0, .22);
 }
 
+/* 紫罗兰：冷紫主色，配蓝作辅 */
+:root[data-theme-preset="violet"] {
+  --green: #6d4bc4;
+  --green-soft: #ece7fa;
+  --blue: #3a72c0;
+  --blue-soft: #e6eefb;
+  --amber: #b4761f;
+  --amber-soft: #fbefd9;
+}
+
+:root[data-theme="dark"][data-theme-preset="violet"] {
+  --green: #a68df0;
+  --green-soft: #2b2350;
+  --blue: #7ea6e6;
+  --blue-soft: #1d2d4a;
+  --amber: #d7a85b;
+  --amber-soft: #362a18;
+}
+
+/* 石墨灰：近中性主色，适合长时间盯盘 */
+:root[data-theme-preset="slate"] {
+  --green: #4a6272;
+  --green-soft: #e7edf1;
+  --blue: #3f6f9c;
+  --blue-soft: #e5eef7;
+  --amber: #a8762a;
+  --amber-soft: #f8efdc;
+}
+
+:root[data-theme="dark"][data-theme-preset="slate"] {
+  --green: #8fadc0;
+  --green-soft: #22303a;
+  --blue: #7ea8cf;
+  --blue-soft: #1c2c3b;
+  --amber: #cfa462;
+  --amber-soft: #33291a;
+}
+
+/* 松林绿：比松石绿更深更沉的绿 */
+:root[data-theme-preset="forest"] {
+  --green: #2f6b45;
+  --green-soft: #e3f0e7;
+  --blue: #3d6f8f;
+  --blue-soft: #e5eff5;
+  --amber: #97701f;
+  --amber-soft: #f7eed8;
+}
+
+:root[data-theme="dark"][data-theme-preset="forest"] {
+  --green: #6fb98a;
+  --green-soft: #1d3326;
+  --blue: #79a8c4;
+  --blue-soft: #1b2d38;
+  --amber: #c9a25c;
+  --amber-soft: #322818;
+}
+
+/* 梅子紫：暖紫红主色 */
+:root[data-theme-preset="plum"] {
+  --green: #9a3f6b;
+  --green-soft: #f8e6ee;
+  --blue: #4a6a9e;
+  --blue-soft: #e7edf8;
+  --amber: #b0761f;
+  --amber-soft: #faeed8;
+}
+
+:root[data-theme="dark"][data-theme-preset="plum"] {
+  --green: #dd85ab;
+  --green-soft: #3d2130;
+  --blue: #8ba6d6;
+  --blue-soft: #202c44;
+  --amber: #d3a35d;
+  --amber-soft: #352a19;
+}
+
 :root[data-theme-font="system"] {
   --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
   --font-display: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
@@ -162,18 +238,29 @@
 }
 
 :root[data-theme-font="pingfang"] {
-  --font-ui: "PingFang SC", "HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
-  --font-display: "PingFang SC", "HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-ui: "PingFang SC", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-display: "PingFang SC", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
 }
 
 :root[data-theme-font="dengxian"] {
-  --font-ui: DengXian, "等线", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  --font-display: DengXian, "等线", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-ui: DengXian, "等线", Aptos, "Avenir Next", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-display: DengXian, "等线", "Aptos Display", "Avenir Next", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+}
+
+:root[data-theme-font="harmony"] {
+  --font-ui: "HarmonyOS Sans SC", "HarmonyOS Sans", "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-display: "HarmonyOS Sans SC", "HarmonyOS Sans", "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+}
+
+/* 思源宋体优先：现代衬线，比 SimSun 精致得多。恢复自最初的「人文宋体」。 */
+:root[data-theme-font="notoserif"] {
+  --font-ui: "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  --font-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
 }
 
 :root[data-theme-font="songti"] {
-  --font-ui: "Songti SC", SimSun, "Noto Serif SC", "Source Han Serif SC", serif;
-  --font-display: "Songti SC", SimSun, "Noto Serif SC", "Source Han Serif SC", serif;
+  --font-ui: "Songti SC", SimSun, "Noto Serif SC", serif;
+  --font-display: "Songti SC", SimSun, "Noto Serif SC", serif;
 }
 
 :root[data-theme-font="kaiti"] {
@@ -181,14 +268,25 @@
   --font-display: "Kaiti SC", KaiTi, STKaiti, "楷体", "Microsoft YaHei UI", serif;
 }
 
-:root[data-theme-font="inter"] {
+:root[data-theme-font="segoe"] {
   --font-ui: "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "Helvetica Neue", "Microsoft YaHei UI", "PingFang SC", sans-serif;
   --font-display: "Segoe UI Variable Display", "Segoe UI Semibold", "SF Pro Display", "Helvetica Neue", "Microsoft YaHei UI", "PingFang SC", sans-serif;
 }
 
-:root[data-theme-font="mono"] {
-  --font-ui: Consolas, "Cascadia Mono", "SF Mono", Menlo, "Sarasa Mono SC", "Microsoft YaHei UI", monospace;
-  --font-display: Consolas, "Cascadia Mono", "SF Mono", Menlo, "Sarasa Mono SC", "Microsoft YaHei UI", monospace;
+:root[data-theme-font="consolas"] {
+  --font-ui: Consolas, "SFMono-Regular", Menlo, "Microsoft YaHei UI", "PingFang SC", monospace;
+  --font-display: Consolas, "SFMono-Regular", Menlo, "Microsoft YaHei UI", "PingFang SC", monospace;
+}
+
+:root[data-theme-font="cascadia"] {
+  --font-ui: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", "Microsoft YaHei UI", monospace;
+  --font-display: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", "Microsoft YaHei UI", monospace;
+}
+
+/* 更纱黑体等宽：中英文严格等宽对齐，未安装时回落 Consolas */
+:root[data-theme-font="sarasa"] {
+  --font-ui: "Sarasa Mono SC", "Sarasa Gothic SC", "Noto Sans Mono CJK SC", Consolas, monospace;
+  --font-display: "Sarasa Mono SC", "Sarasa Gothic SC", "Noto Sans Mono CJK SC", Consolas, monospace;
 }
 
 :root[data-theme-radius="compact"] {
@@ -1718,12 +1816,14 @@ a:focus-visible {
 
 /* 成功率用分格电量条：格数可数，比连续细条更易比较。
    百分比与格子同行靠右，不再占下方一行。 */
-.health-meter { display: flex !important; align-items: center; gap: 8px; }
-/* 细梳状：50 格、每格 2%。格间距只留 1px，否则间隙会吃掉格子本身的宽度 */
-.health-meter-cells { display: flex; flex: 1; min-width: 0; gap: 1px; padding: 2px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 3px; }
-.health-meter-cells i { flex: 1; min-width: 1px; height: 12px; background: color-mix(in srgb, var(--border-strong) 38%, transparent); transition: background .16s ease; }
+/* 靠左排布：梳条紧贴列首，右侧空间留给百分比和列间距 */
+.health-meter { display: flex !important; align-items: center; justify-content: flex-start; gap: 9px; }
+/* 细梳状：50 格、每格 2%。格间距只留 1px，否则间隙会吃掉格子本身的宽度。
+   梳条不占满整列 —— 右侧留白让百分比与后续列不至于挤在一起。 */
+.health-meter-cells { display: flex; flex: 0 1 auto; width: min(62%, 170px); min-width: 0; gap: 1px; padding: 1px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 3px; }
+.health-meter-cells i { flex: 1; min-width: 1px; height: 9px; background: color-mix(in srgb, var(--border-strong) 38%, transparent); transition: background .16s ease; }
 .health-meter-cells i.is-on { background: var(--green); }
-.health-meter > strong { flex-shrink: 0; min-width: 46px; color: var(--green); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+.health-meter > strong { flex-shrink: 0; min-width: 44px; color: var(--green); font-size: 11px; font-variant-numeric: tabular-nums; text-align: left; }
 .health-meter--warning .health-meter-cells i.is-on,
 .health-meter--warning > strong { background: unset; color: var(--amber); }
 .health-meter--warning .health-meter-cells i.is-on { background: var(--amber); }
@@ -2730,25 +2830,27 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .model-alias-suggestion-members { display: flex; flex-wrap: wrap; gap: 5px; }
 .model-alias-suggestion-members code { padding: 2px 6px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 4px; font-family: Consolas, monospace; font-size: 10px; }
 /* 批量创建映射的二级弹窗：左候选右待建，Word 式穿梭 */
-.alias-transfer { display: grid; gap: 12px; min-width: min(680px, 86vw); }
-.alias-transfer-hint { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 17px; }
+/* 穿梭框比常规弹窗更宽：左右两栏各要放完整模型名，760px 会挤 */
+.console-modal:has(.alias-transfer) { width: min(100%, 1040px); }
+.alias-transfer { display: grid; gap: 13px; }
+.alias-transfer-hint { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 19px; }
 .alias-transfer-panes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .alias-transfer-pane { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 8px; min-height: 0; padding: 10px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 8px; }
-.alias-transfer-pane > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text); font-size: 11px; }
+.alias-transfer-pane > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text); font-size: 12px; font-weight: 650; }
 .alias-transfer-pane > header em { color: var(--text-muted); font-style: normal; }
 .alias-transfer-search { display: flex; align-items: center; gap: 6px; padding: 0 8px; color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
-.alias-transfer-search input { flex: 1; padding: 6px 0; color: var(--text); background: none; border: 0; font-size: 11px; }
+.alias-transfer-search input { flex: 1; padding: 7px 0; color: var(--text); background: none; border: 0; font-size: 12px; }
 .alias-transfer-search input:focus { outline: none; }
-.alias-transfer-pane ul { display: grid; gap: 5px; align-content: start; max-height: min(46vh, 380px); margin: 0; padding: 0; overflow-y: auto; list-style: none; }
-.alias-transfer-pane li { display: flex; align-items: center; gap: 8px; padding: 7px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+.alias-transfer-pane ul { display: grid; gap: 6px; align-content: start; max-height: min(52vh, 460px); margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.alias-transfer-pane li { display: flex; align-items: center; gap: 9px; padding: 9px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
 .alias-transfer-item { display: grid; gap: 4px; flex: 1; min-width: 0; }
-.alias-transfer-item strong { color: var(--text); font-family: Consolas, monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alias-transfer-item strong { color: var(--text); font-family: Consolas, monospace; font-size: 13px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .alias-transfer-item div { display: flex; flex-wrap: wrap; gap: 4px; }
 /* 模型名可能很长（带厂商前缀），允许在容器内换行而不是被裁掉 */
-.alias-transfer-item code { padding: 1px 5px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 4px; font-size: 10px; overflow-wrap: anywhere; }
-.alias-transfer-empty { justify-content: center; color: var(--text-muted) !important; font-size: 11px; background: none !important; border-style: dashed !important; }
+.alias-transfer-item code { padding: 2px 6px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 4px; font-size: 12px; overflow-wrap: anywhere; }
+.alias-transfer-empty { justify-content: center; padding: 16px 8px !important; color: var(--text-muted) !important; font-size: 12px; background: none !important; border-style: dashed !important; }
 .alias-transfer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.alias-transfer-footer span { color: var(--text-muted); font-size: 11px; }
+.alias-transfer-footer span { color: var(--text-secondary); font-size: 12px; }
 .alias-transfer-footer > div { display: flex; gap: 8px; }
 @media (max-width: 760px) {
   .alias-transfer { min-width: 0; }
@@ -3561,12 +3663,16 @@ body { font-size: 14px; line-height: 1.5; }
 .theme-font-preview { font-size: 13px; }
 .theme-font-preview--system { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif; }
 .theme-font-preview--yahei { font-family: "Microsoft YaHei UI", "微软雅黑", "PingFang SC", "Heiti SC", sans-serif; }
-.theme-font-preview--pingfang { font-family: "PingFang SC", "HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif; }
-.theme-font-preview--dengxian { font-family: DengXian, "等线", "Microsoft YaHei UI", "PingFang SC", sans-serif; }
-.theme-font-preview--songti { font-family: "Songti SC", SimSun, "Noto Serif SC", "Source Han Serif SC", serif; }
+.theme-font-preview--pingfang { font-family: "PingFang SC", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif; }
+.theme-font-preview--dengxian { font-family: DengXian, "等线", Aptos, "Avenir Next", "Microsoft YaHei UI", sans-serif; }
+.theme-font-preview--harmony { font-family: "HarmonyOS Sans SC", "HarmonyOS Sans", "Noto Sans SC", "Microsoft YaHei UI", sans-serif; }
+.theme-font-preview--notoserif { font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif; }
+.theme-font-preview--songti { font-family: "Songti SC", SimSun, "Noto Serif SC", serif; }
 .theme-font-preview--kaiti { font-family: "Kaiti SC", KaiTi, STKaiti, "楷体", "Microsoft YaHei UI", serif; }
-.theme-font-preview--inter { font-family: "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "Helvetica Neue", "Microsoft YaHei UI", sans-serif; }
-.theme-font-preview--mono { font-family: Consolas, "Cascadia Mono", "SF Mono", Menlo, "Sarasa Mono SC", monospace; letter-spacing: -.01em; }
+.theme-font-preview--segoe { font-family: "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "Helvetica Neue", "Microsoft YaHei UI", sans-serif; }
+.theme-font-preview--consolas { font-family: Consolas, "SFMono-Regular", Menlo, "Microsoft YaHei UI", monospace; }
+.theme-font-preview--cascadia { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", "Microsoft YaHei UI", monospace; }
+.theme-font-preview--sarasa { font-family: "Sarasa Mono SC", "Sarasa Gothic SC", "Noto Sans Mono CJK SC", Consolas, monospace; }
 .radius-shape { display: block; width: 31px; height: 25px; background: var(--green-soft); border: 1px solid color-mix(in srgb, var(--green) 35%, var(--border)); }
 .radius-shape--compact { border-radius: 3px; }
 .radius-shape--balanced { border-radius: 8px; }

@@ -5,13 +5,17 @@ export type ThemePreset = 'jade' | 'ocean' | 'coral' | 'anthropic' | 'violet' | 
 // 写进未安装的字体只会静默回落，让选项之间看不出差别。
 export const themeFontOptions = [
   { value: 'system', label: '系统默认', note: '跟随操作系统' },
-  { value: 'yahei', label: '微软雅黑', note: 'Windows 常用黑体' },
+  { value: 'yahei', label: '微软雅黑', note: 'Windows 常用黑体，字面大' },
   { value: 'pingfang', label: '苹方 / 思源黑', note: '字重均匀，偏现代' },
-  { value: 'dengxian', label: '等线', note: '笔画细，偏清瘦' },
-  { value: 'songti', label: '宋体', note: '衬线，阅读感强' },
+  { value: 'dengxian', label: '等线', note: '笔画清瘦，留白多' },
+  { value: 'harmony', label: '鸿蒙黑体', note: '中性几何，比雅黑更瘦' },
+  { value: 'notoserif', label: '思源宋体', note: '现代衬线，长文阅读舒适' },
+  { value: 'songti', label: '宋体', note: '传统衬线，笔锋明显' },
   { value: 'kaiti', label: '楷体', note: '书写感，适合小字号少量文本' },
-  { value: 'inter', label: '西文优先', note: '拉丁与数字紧凑清晰' },
-  { value: 'mono', label: '等宽', note: '数字逐列对齐，适合读日志' },
+  { value: 'segoe', label: 'Segoe UI', note: '西文紧凑，数字清晰' },
+  { value: 'consolas', label: 'Consolas', note: '等宽，数字逐列对齐' },
+  { value: 'cascadia', label: 'Cascadia Mono', note: '等宽，字形比 Consolas 圆润' },
+  { value: 'sarasa', label: '更纱等宽', note: '等宽且中文对齐，需自行安装' },
 ] as const
 
 export type ThemeFont = typeof themeFontOptions[number]['value']
