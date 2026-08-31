@@ -145,6 +145,15 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 		}
 
+		// 站点级联停用标记（site_accounts 与 channels 各一列）
+		if tb.Name() == "site_accounts" || tb.Name() == "channels" {
+			if err := ensureColumn(ctx, db, dialect, tb.Name(), "suspended_by_site",
+				"TINYINT NOT NULL DEFAULT 0",
+				"INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return fmt.Errorf("migrate %s suspended_by_site: %w", tb.Name(), err)
+			}
+		}
+
 		// 增量迁移：确保logs表新字段存在（2025-12新增）
 		if tb.Name() == "logs" {
 			if err := ensureLogsNewColumns(ctx, db, dialect); err != nil {

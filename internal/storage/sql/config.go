@@ -394,11 +394,14 @@ func (s *SQLStore) UpdateOAuthCredential(ctx context.Context, id int64, credenti
 // UpdateChannelEnabled updates only the enabled flag.
 // The full UpdateConfig path rewrites models and reloads the
 // config before writing. A switch click must not pay that cost.
+//
+// Toggling by hand also clears suspended_by_site: the user has now expressed an
+// explicit intent, which must survive the next site enable/disable cycle.
 func (s *SQLStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error) {
 	updatedAtUnix := timeToUnix(time.Now())
 	result, err := s.ExecContext(ctx, `
 		UPDATE channels
-		SET enabled = ?, updated_at = ?
+		SET enabled = ?, suspended_by_site = 0, updated_at = ?
 		WHERE id = ?
 	`, enabled, updatedAtUnix, id)
 	if err != nil {

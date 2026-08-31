@@ -15,6 +15,9 @@ func DefineChannelsTable() *TableBuilder {
 		Column("websockets TINYINT NOT NULL DEFAULT 0").
 		Column("protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'auto'").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
+		// 因站点被禁用而级联停用；站点恢复时只放开带此标记的渠道。
+		// 不用 COMMENT：SQLite 不支持内联列注释，会导致建表失败。
+		Column("suspended_by_site TINYINT NOT NULL DEFAULT 0").
 		Column("scheduled_check_enabled TINYINT NOT NULL DEFAULT 0").
 		Column("scheduled_check_model VARCHAR(191) NOT NULL DEFAULT ''").
 		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
@@ -201,6 +204,8 @@ func DefineSiteAccountsTable() *TableBuilder {
 		Column("credential_ciphertext TEXT NOT NULL").
 		Column("credential_key_version VARCHAR(32) NOT NULL").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
+		// 因站点被禁用而级联停用；站点恢复时只放开带此标记的账号。
+		Column("suspended_by_site TINYINT NOT NULL DEFAULT 0").
 		Column("auto_checkin TINYINT NOT NULL DEFAULT 1").
 		Column("auto_refresh TINYINT NOT NULL DEFAULT 1").
 		Column("timezone VARCHAR(64)").

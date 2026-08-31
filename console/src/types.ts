@@ -343,6 +343,8 @@ export interface Site {
   platform: string
   base_url: string
   enabled: boolean
+  // 仅出现在启停 PATCH 的响应里，用于提示连带影响了多少账号与渠道。
+  cascade?: SiteCascadeResult
   timezone: string
   use_system_proxy: boolean
   proxy_url?: string
@@ -394,6 +396,13 @@ export interface SiteCredentialVerification {
   currency?: string
   routing_key_available: boolean
   model_count: number
+}
+
+// 站点启停时连带停用/恢复的账号与渠道数量，仅在真的发生级联时返回。
+export interface SiteCascadeResult {
+  enabled: boolean
+  accounts: number
+  channels: number
 }
 
 export interface ModelAliasCandidate {

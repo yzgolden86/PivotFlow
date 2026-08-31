@@ -24,6 +24,7 @@ var sqliteMigratableTables = map[string]bool{
 	"schema_migrations":        true,
 	"checkin_attempts":         true,
 	"sites":                    true,
+	"site_accounts":            true,
 	"webhook_endpoints":        true,
 }
 

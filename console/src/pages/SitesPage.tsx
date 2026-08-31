@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Copy, ExternalLink, Globe2, Network, Pencil, Plus, Power, Radar, RefreshCw, Search, Trash2, UserPlus } from 'lucide-react'
 import { createSite, deleteSite, getSiteInventory, peekSiteInventory, probeSite, updateSite } from '../api'
-import type { Site, SiteAccount } from '../types'
+import type { Site, SiteAccount, SiteCascadeResult } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, Pagination, SecretInput } from './shared'
 import { Modal, StatusBadge, siteErrorMessage } from './siteShared'
 import { useLocation } from 'react-router-dom'
@@ -142,12 +142,27 @@ export default function SitesPage() {
     finally { setSaving(false) }
   }
 
+  // 级联会改动用户没直接点的行，必须说出来，不能静默变更。
+  const siteToggleNotice = (wasEnabled: boolean, cascade?: SiteCascadeResult) => {
+    const base = wasEnabled ? '站点已停用' : '站点已启用'
+    if (!cascade || (!cascade.accounts && !cascade.channels)) return base
+    const verb = cascade.enabled ? '恢复' : '停用'
+    const parts: string[] = []
+    if (cascade.accounts) parts.push(`${cascade.accounts} 个账号`)
+    if (cascade.channels) parts.push(`${cascade.channels} 个渠道`)
+    const tail = cascade.enabled ? '（此前手动停用的保持不变）' : ''
+    return `${base}，已连带${verb} ${parts.join('、')}${tail}`
+  }
+
   const execute = async (site: Site, action: 'probe' | 'toggle' | 'delete') => {
     if (action === 'delete' && !window.confirm(`永久删除站点“${site.name}”、全部账号及同步生成的渠道？手工渠道不受影响，此操作无法撤销。`)) return
     setBusyId(site.id); setError(''); setNotice('')
     try {
       if (action === 'probe') { const result = await probeSite(site.id); setNotice(result.matched ? '站点探测成功' : '未识别到受支持的平台') }
-      if (action === 'toggle') { await updateSite(site.id, { enabled: !site.enabled }); setNotice(site.enabled ? '站点已停用' : '站点已启用') }
+      if (action === 'toggle') {
+        const updated = await updateSite(site.id, { enabled: !site.enabled })
+        setNotice(siteToggleNotice(site.enabled, updated.cascade))
+      }
       if (action === 'delete') { await deleteSite(site.id); setNotice('站点已删除') }
       await load(undefined, { silent: true, force: true })
     } catch (reason) { setError(siteErrorMessage(reason)) }
@@ -172,14 +187,28 @@ export default function SitesPage() {
     if (action === 'delete' && !window.confirm(`永久删除选中的 ${targets.length} 个站点、全部账号及同步生成的渠道？手工渠道不受影响，此操作无法撤销。`)) return
     setBatchBusy(true); setError(''); setNotice('')
     let failed = 0
+    let cascadeAccounts = 0
+    let cascadeChannels = 0
     await runLimited(targets, async (site) => {
       try {
         if (action === 'delete') await deleteSite(site.id)
         else if (action === 'proxy_on' || action === 'proxy_off') await updateSite(site.id, { use_system_proxy: action === 'proxy_on' })
-        else await updateSite(site.id, { enabled: action === 'enable' })
+        else {
+          const updated = await updateSite(site.id, { enabled: action === 'enable' })
+          cascadeAccounts += updated.cascade?.accounts || 0
+          cascadeChannels += updated.cascade?.channels || 0
+        }
       } catch { failed++ }
     })
-    setNotice(failed ? `批量操作完成，${targets.length - failed} 个成功，${failed} 个失败` : `已处理 ${targets.length} 个站点`)
+    let summary = failed ? `批量操作完成，${targets.length - failed} 个成功，${failed} 个失败` : `已处理 ${targets.length} 个站点`
+    if (cascadeAccounts || cascadeChannels) {
+      const verb = action === 'enable' ? '恢复' : '停用'
+      const parts: string[] = []
+      if (cascadeAccounts) parts.push(`${cascadeAccounts} 个账号`)
+      if (cascadeChannels) parts.push(`${cascadeChannels} 个渠道`)
+      summary += `，已连带${verb} ${parts.join('、')}`
+    }
+    setNotice(summary)
     if (action === 'delete') setSelected(new Set())
     await load(undefined, { silent: true, force: true })
     setBatchBusy(false)
@@ -252,7 +281,10 @@ function SiteFormView({ form, setForm, saving, submit, editing }: { form: SiteFo
         {form.credentialType === 'api_key' ? <div className="form-help">模型 API Key 会用于模型发现和自动创建渠道，不会执行余额刷新、签到或公告同步。</div> : <div className="checkbox-grid"><label className="checkbox-field"><input type="checkbox" checked={form.autoCheckin} onChange={(event) => field('autoCheckin', event.target.checked)} disabled={!supportsCheckin} /><span>{supportsCheckin ? '自动签到' : '该平台不支持签到'}</span></label><label className="checkbox-field"><input type="checkbox" checked={form.autoRefresh} onChange={(event) => field('autoRefresh', event.target.checked)} /><span>自动刷新余额</span></label></div>}
       </>}
     </section>}
-    {editing && <label className="checkbox-field"><input type="checkbox" checked={form.enabled} onChange={(event) => field('enabled', event.target.checked)} /><span>启用站点</span></label>}
+    {editing && <>
+      <label className="checkbox-field"><input type="checkbox" checked={form.enabled} onChange={(event) => field('enabled', event.target.checked)} /><span>启用站点</span></label>
+      <div className="form-help">停用站点会连带停用其下账号与同步生成的渠道；重新启用只恢复被连带停用的那些，此前手动停用的保持不变。手工渠道不受影响。</div>
+    </>}
     <footer><button className="primary-button" type="submit" disabled={saving}>{saving ? <RefreshCw className="spin" size={15} /> : null}{saving ? '保存中' : '保存站点'}</button></footer>
   </form>
 }

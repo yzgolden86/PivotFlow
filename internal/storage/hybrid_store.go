@@ -267,6 +267,35 @@ func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enable
 	return result, nil
 }
 
+// CascadeSiteSuspend applies the cascade on the primary, then mirrors it.
+// Counts come from the primary; the replica is best-effort like every other
+// write here.
+func (h *HybridStore) CascadeSiteSuspend(ctx context.Context, siteID int64, enable bool) (int, int, error) {
+	accounts, channels, err := h.mysql.CascadeSiteSuspend(ctx, siteID, enable)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	h.syncToSQLite("CascadeSiteSuspend", func() error {
+		_, _, err := h.sqlite.CascadeSiteSuspend(ctx, siteID, enable)
+		return err
+	})
+
+	return accounts, channels, nil
+}
+
+func (h *HybridStore) ClearSiteAccountSuspendMark(ctx context.Context, accountID int64) error {
+	if err := h.mysql.ClearSiteAccountSuspendMark(ctx, accountID); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("ClearSiteAccountSuspendMark", func() error {
+		return h.sqlite.ClearSiteAccountSuspendMark(ctx, accountID)
+	})
+
+	return nil
+}
+
 func (h *HybridStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, patch model.BatchConfigPatch) (model.BatchConfigPatchResult, error) {
 	result, err := h.mysql.BatchPatchConfigs(ctx, channelIDs, patch)
 	if err != nil {

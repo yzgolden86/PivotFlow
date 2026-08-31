@@ -1,7 +1,7 @@
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ResolvedTheme = 'light' | 'dark'
-export type ThemePreset = 'jade' | 'ocean' | 'coral' | 'anthropic'
-export type ThemeFont = 'modern' | 'system' | 'serif'
+export type ThemePreset = 'jade' | 'ocean' | 'coral' | 'anthropic' | 'violet' | 'slate' | 'forest' | 'plum'
+export type ThemeFont = 'modern' | 'system' | 'serif' | 'yahei' | 'inter' | 'mono'
 export type ThemeRadius = 'compact' | 'balanced' | 'soft'
 
 export interface ThemeCustomization {
@@ -27,11 +27,13 @@ function isThemePreference(value: unknown): value is ThemePreference {
 }
 
 function isThemePreset(value: unknown): value is ThemePreset {
-  return value === 'jade' || value === 'ocean' || value === 'coral' || value === 'anthropic'
+  return value === 'jade' || value === 'ocean' || value === 'coral' || value === 'anthropic' ||
+    value === 'violet' || value === 'slate' || value === 'forest' || value === 'plum'
 }
 
 function isThemeFont(value: unknown): value is ThemeFont {
-  return value === 'modern' || value === 'system' || value === 'serif'
+  return value === 'modern' || value === 'system' || value === 'serif' ||
+    value === 'yahei' || value === 'inter' || value === 'mono'
 }
 
 function isThemeRadius(value: unknown): value is ThemeRadius {
