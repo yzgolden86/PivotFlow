@@ -1,7 +1,20 @@
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ResolvedTheme = 'light' | 'dark'
 export type ThemePreset = 'jade' | 'ocean' | 'coral' | 'anthropic' | 'violet' | 'slate' | 'forest' | 'plum'
-export type ThemeFont = 'modern' | 'system' | 'serif' | 'yahei' | 'inter' | 'mono'
+// 字体只列 Windows / macOS 预装的常用款：项目不加载 webfont，
+// 写进未安装的字体只会静默回落，让选项之间看不出差别。
+export const themeFontOptions = [
+  { value: 'system', label: '系统默认', note: '跟随操作系统' },
+  { value: 'yahei', label: '微软雅黑', note: 'Windows 常用黑体' },
+  { value: 'pingfang', label: '苹方 / 思源黑', note: '字重均匀，偏现代' },
+  { value: 'dengxian', label: '等线', note: '笔画细，偏清瘦' },
+  { value: 'songti', label: '宋体', note: '衬线，阅读感强' },
+  { value: 'kaiti', label: '楷体', note: '书写感，适合小字号少量文本' },
+  { value: 'inter', label: '西文优先', note: '拉丁与数字紧凑清晰' },
+  { value: 'mono', label: '等宽', note: '数字逐列对齐，适合读日志' },
+] as const
+
+export type ThemeFont = typeof themeFontOptions[number]['value']
 export type ThemeRadius = 'compact' | 'balanced' | 'soft'
 
 export interface ThemeCustomization {
@@ -14,7 +27,7 @@ export interface ThemeCustomization {
 export const defaultThemeCustomization: ThemeCustomization = {
   preference: 'system',
   preset: 'jade',
-  font: 'modern',
+  font: 'system',
   radius: 'balanced',
 }
 
@@ -32,8 +45,7 @@ function isThemePreset(value: unknown): value is ThemePreset {
 }
 
 function isThemeFont(value: unknown): value is ThemeFont {
-  return value === 'modern' || value === 'system' || value === 'serif' ||
-    value === 'yahei' || value === 'inter' || value === 'mono'
+  return themeFontOptions.some((option) => option.value === value)
 }
 
 function isThemeRadius(value: unknown): value is ThemeRadius {

@@ -20,17 +20,41 @@
         <img src="/web/brand-mark.svg?v=__VERSION__" alt="" />
         <strong>PivotFlow</strong>
       </div>
-      <div class="route-map" aria-hidden="true">
-        <span class="orbit orbit--outer"></span><span class="orbit orbit--inner"></span>
-        <span class="route-line route-line--a"></span><span class="route-line route-line--b"></span>
-        <span class="route-line route-line--c"></span><span class="route-line route-line--d"></span>
-        <div class="route-core"><img src="/web/brand-mark.svg?v=__VERSION__" alt="" /></div>
-        <div class="route-node route-node--claude"><i>C</i><span>Claude</span></div>
-        <div class="route-node route-node--openai"><i>O</i><span>OpenAI</span></div>
-        <div class="route-node route-node--gemini"><i>G</i><span>Gemini</span></div>
-        <div class="route-node route-node--codex"><i>X</i><span>Codex</span></div>
-        <span class="route-signal route-signal--a"></span><span class="route-signal route-signal--b"></span>
+      <!-- 抽象网关图：左侧多个客户端汇聚到中心，右侧扇出到任意数量的上游。
+           刻意不写任何厂商或协议名 —— 能接的上游是开放集合，写死几个名字
+           既会过时，也把"通用网关"说小了。节点用 CSS 变量定位，
+           增减只改 HTML 里的节点行，不必重算角度。 -->
+      <div class="gateway-map" aria-hidden="true">
+        <div class="gw-side gw-side--in">
+          <span class="gw-dot" style="--i:0"></span>
+          <span class="gw-dot" style="--i:1"></span>
+          <span class="gw-dot" style="--i:2"></span>
+          <span class="gw-dot" style="--i:3"></span>
+        </div>
+
+        <div class="gw-core">
+          <span class="gw-ring gw-ring--outer"></span>
+          <span class="gw-ring gw-ring--inner"></span>
+          <img src="/web/brand-mark.svg?v=__VERSION__" alt="" />
+        </div>
+
+        <div class="gw-side gw-side--out">
+          <span class="gw-dot" style="--i:0"></span>
+          <span class="gw-dot" style="--i:1"></span>
+          <span class="gw-dot" style="--i:2"></span>
+          <span class="gw-dot" style="--i:3"></span>
+          <span class="gw-dot" style="--i:4"></span>
+          <span class="gw-dot" style="--i:5"></span>
+        </div>
+
+        <span class="gw-pulse gw-pulse--a"></span>
+        <span class="gw-pulse gw-pulse--b"></span>
       </div>
+
+      <p class="stage-caption">
+        <strong>任意客户端，任意上游</strong>
+        <span>统一入口 · 智能路由 · 自动故障转移</span>
+      </p>
     </section>
     <section class="login-panel">
       <div class="login-card">

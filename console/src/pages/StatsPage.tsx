@@ -69,13 +69,31 @@ function StatsRow({ entry }: { entry: StatsEntry }) {
   const rate = entry.total ? entry.success / entry.total : 0
   return <article className="record-row stats-grid">
     <div><strong>{entry.channel_name}</strong><span title={entry.model}>{entry.model}</span></div>
-    <div><span className={`health-meter health-meter--${successTone(rate)}`}><i style={{ width: `${rate * 100}%` }} /></span><strong>{entry.total ? `${(rate * 100).toFixed(1)}%` : '—'}</strong></div>
+    <div className="health-cell"><HealthMeter rate={rate} hasData={entry.total > 0} /></div>
     <div><strong>{formatNumber(entry.success)} / {formatNumber(entry.error)}</strong><span>共 {formatNumber(entry.total)}</span></div>
     <div><strong>{entry.avg_first_byte_time_seconds ? `${entry.avg_first_byte_time_seconds.toFixed(2)}s` : '—'}</strong><span>{entry.avg_duration_seconds ? `${entry.avg_duration_seconds.toFixed(2)}s` : '—'}</span></div>
     <div><strong>{formatNumber(entry.peak_rpm, 1)}</strong><span>均值 {formatNumber(entry.avg_rpm, 1)}</span></div>
     <div><strong>{formatNumber(entry.total_input_tokens)} / {formatNumber(entry.total_output_tokens)}</strong><span>输入 / 输出</span></div>
     <div><strong>{formatMoney(entry.effective_cost ?? entry.total_cost)}</strong>{entry.cost_multiplier && entry.cost_multiplier !== 1 ? <span>{entry.cost_multiplier}x 倍率</span> : <span>标准倍率</span>}</div>
   </article>
+}
+
+// 分格显示成功率，像电池电量：一眼能数出格数，比连续细条更易读。
+// 百分比放在右侧同一行，不再占用下方一行。
+const healthSegments = 10
+
+function HealthMeter({ rate, hasData }: { rate: number; hasData: boolean }) {
+  const percent = rate * 100
+  // 向上取整：非零成功率至少点亮一格，否则 3% 看起来和 0% 一样。
+  const filled = hasData ? Math.min(healthSegments, Math.ceil(rate * healthSegments)) : 0
+  const tone = successTone(rate)
+  const label = hasData ? `${percent.toFixed(1)}%` : '—'
+  return <span className={`health-meter health-meter--${tone}`} role="img" aria-label={hasData ? `成功率 ${label}` : '暂无数据'}>
+    <span className="health-meter-cells">
+      {Array.from({ length: healthSegments }, (_, index) => <i className={index < filled ? 'is-on' : undefined} key={index} />)}
+    </span>
+    <strong>{label}</strong>
+  </span>
 }
 
 function sumStats(entries: StatsEntry[]) { return entries.reduce((sum, item) => ({ total: sum.total + item.total, success: sum.success + item.success, error: sum.error + item.error, tokens: sum.tokens + (item.total_input_tokens || 0) + (item.total_output_tokens || 0), cost: sum.cost + (item.effective_cost ?? item.total_cost ?? 0) }), { total: 0, success: 0, error: 0, tokens: 0, cost: 0 }) }
