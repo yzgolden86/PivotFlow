@@ -23,6 +23,17 @@ type Store interface {
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	UpdateOAuthCredential(ctx context.Context, id int64, credential string) error
 	UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error)
+	// CascadeSiteSuspend stops or restores everything owned by one site.
+	//
+	// Disabling marks each still-enabled account and projected channel with
+	// suspended_by_site and turns it off. Enabling only restores rows carrying
+	// that mark, so anything the user had stopped by hand stays stopped.
+	// Returns how many accounts and channels actually changed.
+	CascadeSiteSuspend(ctx context.Context, siteID int64, enable bool) (accounts int, channels int, err error)
+	// ClearSiteAccountSuspendMark drops the cascade mark after a manual toggle.
+	// Without it, re-enabling the site would revive an account the user had just
+	// stopped on purpose. Background writers must not call this.
+	ClearSiteAccountSuspendMark(ctx context.Context, accountID int64) error
 	BatchPatchConfigs(ctx context.Context, channelIDs []int64, patch model.BatchConfigPatch) (model.BatchConfigPatchResult, error)
 	DeleteConfig(ctx context.Context, id int64) error
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)

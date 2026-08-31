@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"slices"
@@ -70,6 +71,28 @@ func newSiteControlService(store storage.Store, baseCtx context.Context, wg *syn
 }
 
 func (s *siteControlService) locked() bool { return s == nil || s.cipher == nil }
+
+// siteCascadeResult tells the console how much the site toggle carried along,
+// so it can say so instead of silently changing rows the user did not click.
+type siteCascadeResult struct {
+	Enabled  bool `json:"enabled"`
+	Accounts int  `json:"accounts"`
+	Channels int  `json:"channels"`
+}
+
+// siteWithCascade keeps the PATCH response shape a Site while adding the
+// cascade summary, so existing clients that read Site fields keep working.
+type siteWithCascade struct {
+	*model.Site
+	Cascade *siteCascadeResult `json:"cascade,omitempty"`
+}
+
+func cascadeVerb(enable bool) string {
+	if enable {
+		return "启用"
+	}
+	return "停用"
+}
 
 func (s *siteControlService) projectionChanged() {
 	if s != nil && s.onProjectionChanged != nil {
@@ -1448,6 +1471,8 @@ func (s *siteControlService) handleSiteByID(c *gin.Context) {
 		if req.ExternalCheckinURL != nil {
 			site.ExternalCheckinURL = strings.TrimSpace(*req.ExternalCheckinURL)
 		}
+		// 记录切换前的状态：只有真正发生启停变化时才做级联。
+		enabledChanged := req.Enabled != nil && *req.Enabled != site.Enabled
 		if req.Enabled != nil {
 			site.Enabled = *req.Enabled
 		}
@@ -1456,7 +1481,30 @@ func (s *siteControlService) handleSiteByID(c *gin.Context) {
 			RespondError(c, 400, err)
 			return
 		}
+
+		// 站点启停级联到其账号与投影渠道：禁用站点却留着渠道继续路由，
+		// 与用户的意图相反。恢复时只放开被级联停用的，手动停用的保持原状。
+		var cascade *siteCascadeResult
+		if enabledChanged {
+			accounts, channels, cascadeErr := s.store.CascadeSiteSuspend(ctx, id, site.Enabled)
+			if cascadeErr != nil {
+				log.Printf("[WARN] 站点 %d 级联%s失败: %v", id, cascadeVerb(site.Enabled), cascadeErr)
+			} else {
+				cascade = &siteCascadeResult{Accounts: accounts, Channels: channels, Enabled: site.Enabled}
+				if accounts > 0 || channels > 0 {
+					log.Printf("[SITE] 站点 %d 已%s，级联%s %d 个账号、%d 个渠道",
+						id, cascadeVerb(site.Enabled), cascadeVerb(site.Enabled), accounts, channels)
+				}
+			}
+		}
+
 		s.projectionChanged()
+		if cascade != nil {
+			// 保持返回体仍是一个 Site：级联结果作为附加字段挂上去，
+			// 换成 {site, cascade} 会破坏既有前端契约。
+			RespondJSON(c, 200, siteWithCascade{Site: out, Cascade: cascade})
+			return
+		}
 		RespondJSON(c, 200, out)
 	case http.MethodDelete:
 		if err := s.store.DeleteSite(ctx, id); err != nil {

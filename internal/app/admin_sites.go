@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"slices"
 	"strconv"
@@ -202,6 +203,9 @@ func (s *siteControlService) handleSiteAccountByID(c *gin.Context) {
 		if req.Label != nil {
 			account.Label = strings.TrimSpace(*req.Label)
 		}
+		// 手动启停即用户的明确意图：清掉级联标记，
+		// 否则下次站点恢复会把这个账号一并放开。
+		manualEnabledToggle := req.Enabled != nil && *req.Enabled != account.Enabled
 		if req.Enabled != nil {
 			account.Enabled = *req.Enabled
 		}
@@ -271,6 +275,11 @@ func (s *siteControlService) handleSiteAccountByID(c *gin.Context) {
 		if err != nil {
 			RespondError(c, 400, err)
 			return
+		}
+		if manualEnabledToggle {
+			if clearErr := s.store.ClearSiteAccountSuspendMark(c.Request.Context(), id); clearErr != nil {
+				log.Printf("[WARN] 清除账号 %d 的站点级联标记失败: %v", id, clearErr)
+			}
 		}
 		// Account updates can disable projected channels in the store. Evict the
 		// router snapshots so the data plane observes that change immediately.

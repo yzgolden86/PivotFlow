@@ -166,6 +166,104 @@
   --font-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
 }
 
+/* 以下字体栈只使用 Windows / macOS 预装字体：项目不加载 webfont，
+   写进未安装的字体只会静默回落，让不同选项看起来一模一样。 */
+
+/* 雅黑标准：Windows 最稳的中文界面字体，字面大、笔画粗细均匀 */
+:root[data-theme-font="yahei"] {
+  --font-ui: "Microsoft YaHei UI", "微软雅黑", "PingFang SC", "Heiti SC", "Noto Sans SC", sans-serif;
+  --font-display: "Microsoft YaHei UI", "微软雅黑", "PingFang SC", "Heiti SC", "Noto Sans SC", sans-serif;
+}
+
+/* 精致西文：拉丁与数字用 Segoe UI Variable，中文交给雅黑，
+   数字紧凑清晰，适合盯用量和费用 */
+:root[data-theme-font="inter"] {
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "Helvetica Neue", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Semibold", "SF Pro Display", "Helvetica Neue", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+}
+
+/* 等宽：数字与模型名逐列对齐，适合长时间读日志 */
+:root[data-theme-font="mono"] {
+  --font-ui: Consolas, "Cascadia Mono", "SF Mono", Menlo, "Sarasa Mono SC", "Microsoft YaHei UI", monospace;
+  --font-display: Consolas, "Cascadia Mono", "SF Mono", Menlo, "Sarasa Mono SC", "Microsoft YaHei UI", monospace;
+}
+
+/* 紫罗兰：冷紫主色，配青绿点缀 */
+:root[data-theme-preset="violet"] {
+  --green: #6d4bc4;
+  --green-soft: #ece7fa;
+  --blue: #3a72c0;
+  --blue-soft: #e6eefb;
+  --amber: #b4761f;
+  --amber-soft: #fbefd9;
+}
+
+:root[data-theme="dark"][data-theme-preset="violet"] {
+  --green: #a68df0;
+  --green-soft: #2b2350;
+  --blue: #7ea6e6;
+  --blue-soft: #1d2d4a;
+  --amber: #d7a85b;
+  --amber-soft: #362a18;
+}
+
+/* 石墨：近中性主色，适合长时间盯盘 */
+:root[data-theme-preset="slate"] {
+  --green: #4a6272;
+  --green-soft: #e7edf1;
+  --blue: #3f6f9c;
+  --blue-soft: #e5eef7;
+  --amber: #a8762a;
+  --amber-soft: #f8efdc;
+}
+
+:root[data-theme="dark"][data-theme-preset="slate"] {
+  --green: #8fadc0;
+  --green-soft: #22303a;
+  --blue: #7ea8cf;
+  --blue-soft: #1c2c3b;
+  --amber: #cfa462;
+  --amber-soft: #33291a;
+}
+
+/* 松林：深绿主色，比 jade 更沉 */
+:root[data-theme-preset="forest"] {
+  --green: #2f6b45;
+  --green-soft: #e3f0e7;
+  --blue: #3d6f8f;
+  --blue-soft: #e5eff5;
+  --amber: #97701f;
+  --amber-soft: #f7eed8;
+}
+
+:root[data-theme="dark"][data-theme-preset="forest"] {
+  --green: #6fb98a;
+  --green-soft: #1d3326;
+  --blue: #79a8c4;
+  --blue-soft: #1b2d38;
+  --amber: #c9a25c;
+  --amber-soft: #322818;
+}
+
+/* 梅子：暖紫红主色 */
+:root[data-theme-preset="plum"] {
+  --green: #9a3f6b;
+  --green-soft: #f8e6ee;
+  --blue: #4a6a9e;
+  --blue-soft: #e7edf8;
+  --amber: #b0761f;
+  --amber-soft: #faeed8;
+}
+
+:root[data-theme="dark"][data-theme-preset="plum"] {
+  --green: #dd85ab;
+  --green-soft: #3d2130;
+  --blue: #8ba6d6;
+  --blue-soft: #202c44;
+  --amber: #d3a35d;
+  --amber-soft: #352a19;
+}
+
 :root[data-theme-radius="compact"] {
   --radius-control: 5px;
   --radius-panel: 7px;
@@ -2679,7 +2777,15 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .model-alias-suggestions > header { display: flex; align-items: center; gap: 7px; color: var(--text); font-size: 11px; }
 .model-alias-suggestions > header strong { font-size: 12px; }
 .model-alias-suggestions > header span { color: var(--text-muted); font-size: 10px; }
-.model-alias-suggestions ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.model-alias-suggestions ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; max-height: min(42vh, 340px); overflow-y: auto; }
+.model-alias-suggest-toggle { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; padding: 0; background: none; border: 0; cursor: pointer; color: var(--text); text-align: left; }
+.model-alias-suggest-toggle strong { font-size: 12px; white-space: nowrap; }
+.model-alias-suggest-toggle span { color: var(--text-muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-alias-suggest-toggle:hover strong { color: var(--green); }
+.model-alias-suggest-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 45%, transparent); outline-offset: 2px; border-radius: 5px; }
+.model-alias-suggest-toggle[aria-expanded="true"] .model-alias-caret { transform: rotate(90deg); }
+.model-alias-suggestion-empty { padding: 12px; color: var(--text-muted); font-size: 10px; text-align: center; }
+.model-alias-suggestion-more { margin: 0; color: var(--text-muted); font-size: 10px; }
 .model-alias-suggestions li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; background: color-mix(in srgb, var(--green-soft) 30%, var(--surface)); border: 1px solid var(--border); border-radius: 6px; }
 .model-alias-suggestion-body { display: grid; gap: 5px; min-width: 0; }
 .model-alias-suggestion-body > strong { display: flex; align-items: center; gap: 7px; color: var(--text); font-size: 12px; }
@@ -3485,6 +3591,9 @@ body { font-size: 14px; line-height: 1.5; }
 .theme-font-sample--modern > span { font-family: DengXian, "等线", Aptos, "Avenir Next", "HarmonyOS Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif; font-weight: 600; }
 .theme-font-sample--system > span { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif; font-weight: 450; }
 .theme-font-sample--serif > span { font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif; }
+.theme-font-sample--yahei > span { font-family: "Microsoft YaHei UI", "微软雅黑", "PingFang SC", "Heiti SC", "Noto Sans SC", sans-serif; font-weight: 550; }
+.theme-font-sample--inter > span { font-family: "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "Helvetica Neue", "Microsoft YaHei UI", "PingFang SC", sans-serif; font-weight: 600; }
+.theme-font-sample--mono > span { font-family: Consolas, "Cascadia Mono", "SF Mono", Menlo, "Sarasa Mono SC", "Microsoft YaHei UI", monospace; font-weight: 500; letter-spacing: -.01em; }
 .radius-shape { display: block; width: 31px; height: 25px; background: var(--green-soft); border: 1px solid color-mix(in srgb, var(--green) 35%, var(--border)); }
 .radius-shape--compact { border-radius: 3px; }
 .radius-shape--balanced { border-radius: 8px; }

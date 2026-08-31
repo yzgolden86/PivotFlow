@@ -353,6 +353,9 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
   const [pickerFor, setPickerFor] = useState<number | null>(null)
   const [filter, setFilter] = useState('')
   const [expanded, setExpanded] = useState<number | null>(null)
+  // 建议区默认折叠：自动检测在几十个渠道下可能给出上百组，展开会淹没整个设置页。
+  const [suggestOpen, setSuggestOpen] = useState(false)
+  const [suggestFilter, setSuggestFilter] = useState('')
 
   const reload = useCallback((signal?: AbortSignal) => {
     setLoading(true)
@@ -405,6 +408,18 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
     return inventory.suggestions.filter((suggestion) => suggestion.members.length > 0)
   }, [inventory])
 
+  // 上百组建议全渲染会让设置页失去可用性，也没人会逐条读完。
+  // 未搜索时只给前若干组，其余靠搜索按需取用。
+  const suggestionLimit = 20
+  const visibleSuggestions = useMemo(() => {
+    const needle = suggestFilter.trim().toLowerCase()
+    if (!needle) return usableSuggestions.slice(0, suggestionLimit)
+    return usableSuggestions.filter((suggestion) =>
+      suggestion.canonical.toLowerCase().includes(needle) ||
+      suggestion.members.some((member) => member.toLowerCase().includes(needle))
+    ).slice(0, suggestionLimit)
+  }, [usableSuggestions, suggestFilter])
+
   return <section className="model-alias-panel" aria-label="模型统一映射">
     <header>
       <div><strong>模型统一映射</strong><p>给多个上游名称设置一个稳定入口。请求统一名称时，系统会按渠道实际存在的模型名发送。</p></div>
@@ -417,17 +432,29 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
     {error && <div className="model-alias-inline-error" role="alert">读取渠道模型清单失败：{error}</div>}
 
     {!!usableSuggestions.length && <div className="model-alias-suggestions">
-      <header><Wrench size={15} /><strong>检测到 {usableSuggestions.length} 组可合并的名称</strong><span>来自当前启用渠道，点击即可套用</span></header>
-      <ul>
-        {usableSuggestions.map((suggestion) => <li key={`${suggestion.canonical}-${suggestion.members.join('|')}`}>
-          <div className="model-alias-suggestion-body">
-            <strong>{suggestion.canonical}{suggestion.extends_canonical && <em className="model-alias-suggestion-tag">补进已有映射</em>}</strong>
-            <div className="model-alias-suggestion-members">{suggestion.members.map((member) => <code key={member}>{member}</code>)}</div>
-            <small>{suggestion.reason}</small>
-          </div>
-          <button className="secondary-button" type="button" onClick={() => adopt(suggestion)}><Check size={15} />套用</button>
-        </li>)}
-      </ul>
+      <header>
+        <button className="model-alias-suggest-toggle" type="button" aria-expanded={suggestOpen} onClick={() => setSuggestOpen((open) => !open)}>
+          <ChevronRight size={15} className="model-alias-caret" />
+          <Wrench size={15} />
+          <strong>检测到 {usableSuggestions.length} 组可合并的名称</strong>
+          <span>{suggestOpen ? '来自当前启用渠道，点击「套用」即写入' : '展开查看并逐条套用'}</span>
+        </button>
+      </header>
+      {suggestOpen && <>
+        {usableSuggestions.length > 8 && <label className="model-alias-filter"><Search size={14} /><input value={suggestFilter} onChange={(event) => setSuggestFilter(event.target.value)} placeholder={`在 ${usableSuggestions.length} 组建议中搜索模型名`} aria-label="搜索建议" /></label>}
+        <ul>
+          {visibleSuggestions.map((suggestion) => <li key={`${suggestion.canonical}-${suggestion.members.join('|')}`}>
+            <div className="model-alias-suggestion-body">
+              <strong>{suggestion.canonical}{suggestion.extends_canonical && <em className="model-alias-suggestion-tag">补进已有映射</em>}</strong>
+              <div className="model-alias-suggestion-members">{suggestion.members.map((member) => <code key={member}>{member}</code>)}</div>
+            </div>
+            <button className="secondary-button" type="button" onClick={() => adopt(suggestion)}><Check size={15} />套用</button>
+          </li>)}
+          {!visibleSuggestions.length && <li className="model-alias-suggestion-empty">没有匹配「{suggestFilter}」的建议</li>}
+        </ul>
+        {/* 只有在没搜索时才提示被截断：搜索结果自己就是收窄后的集合。 */}
+        {!suggestFilter.trim() && usableSuggestions.length > suggestionLimit && <p className="model-alias-suggestion-more">仅显示前 {suggestionLimit} 组，用搜索找到需要的名称，或先套用几组再刷新。</p>}
+      </>}
     </div>}
 
     {groups.length > 4 && <label className="model-alias-filter"><Search size={14} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={`在 ${groups.length} 条映射中搜索统一名称或上游名称`} aria-label="搜索映射" /></label>}
@@ -525,11 +552,18 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
     ['ocean', '海湾蓝', ['#14758f', '#436fbd', '#c07a20']],
     ['coral', '珊瑚红', ['#b9533f', '#2d7b78', '#bc741b']],
     ['anthropic', 'Anthropic', ['#a84c32', '#657a80', '#b0782c']],
+    ['violet', '紫罗兰', ['#6d4bc4', '#3a72c0', '#b4761f']],
+    ['slate', '石墨灰', ['#4a6272', '#3f6f9c', '#a8762a']],
+    ['forest', '松林绿', ['#2f6b45', '#3d6f8f', '#97701f']],
+    ['plum', '梅子紫', ['#9a3f6b', '#4a6a9e', '#b0761f']],
   ]
   const fonts: Array<[ThemeFont, string, string]> = [
-    ['modern', '几何无衬线', '枢衡 PivotFlow 0123'],
+    ['modern', '几何等线', '枢衡 PivotFlow 0123'],
     ['system', '系统原生', '枢衡 PivotFlow 0123'],
+    ['yahei', '雅黑标准', '枢衡 PivotFlow 0123'],
+    ['inter', '精致西文', '枢衡 PivotFlow 0123'],
     ['serif', '人文宋体', '枢衡 PivotFlow 0123'],
+    ['mono', '等宽对齐', '枢衡 PivotFlow 0123'],
   ]
   const radii: Array<[ThemeRadius, string]> = [
     ['compact', '利落'],
