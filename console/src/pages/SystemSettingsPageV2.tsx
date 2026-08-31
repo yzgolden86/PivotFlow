@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, Clock3, ExternalLink, FileClock, Gauge, Network,
   DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
-  KeyRound, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, SlidersHorizontal, TimerReset, Trash2, Type, Wrench,
+  KeyRound, ListPlus, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, SlidersHorizontal, TimerReset, Trash2, Type, Wrench, X,
 } from 'lucide-react'
 import { checkForUpdates, createSystemAccessToken, deleteSystemAccessToken, getModelAliasInventory, getSystemAccessTokens, getSystemSettings, resetSystemSetting, updateSystemAccessToken, updateSystemSettings } from '../api'
 import type { ModelAliasCandidate, ModelAliasInventory, ModelAliasSuggestion, SystemAccessToken, SystemSetting } from '../types'
@@ -10,7 +10,7 @@ import { EmptyState, ErrorState, LoadingState, OperationNotice } from './shared'
 import { WebhookSettingsPanel } from './SettingsPage'
 import { BackupSettingsPanel } from './BackupSettingsPanel'
 import { Modal } from './siteShared'
-import { applyThemeCustomization, readThemeCustomization, resetThemeCustomization } from '../theme'
+import { applyThemeCustomization, readThemeCustomization, resetThemeCustomization, themeFontOptions } from '../theme'
 import type { ThemeCustomization, ThemeFont, ThemePreference, ThemePreset, ThemeRadius } from '../theme'
 
 const groups = [
@@ -353,9 +353,7 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
   const [pickerFor, setPickerFor] = useState<number | null>(null)
   const [filter, setFilter] = useState('')
   const [expanded, setExpanded] = useState<number | null>(null)
-  // 建议区默认折叠：自动检测在几十个渠道下可能给出上百组，展开会淹没整个设置页。
-  const [suggestOpen, setSuggestOpen] = useState(false)
-  const [suggestFilter, setSuggestFilter] = useState('')
+  const [transferOpen, setTransferOpen] = useState(false)
 
   const reload = useCallback((signal?: AbortSignal) => {
     setLoading(true)
@@ -408,17 +406,28 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
     return inventory.suggestions.filter((suggestion) => suggestion.members.length > 0)
   }, [inventory])
 
-  // 上百组建议全渲染会让设置页失去可用性，也没人会逐条读完。
-  // 未搜索时只给前若干组，其余靠搜索按需取用。
-  const suggestionLimit = 20
-  const visibleSuggestions = useMemo(() => {
-    const needle = suggestFilter.trim().toLowerCase()
-    if (!needle) return usableSuggestions.slice(0, suggestionLimit)
-    return usableSuggestions.filter((suggestion) =>
-      suggestion.canonical.toLowerCase().includes(needle) ||
-      suggestion.members.some((member) => member.toLowerCase().includes(needle))
-    ).slice(0, suggestionLimit)
-  }, [usableSuggestions, suggestFilter])
+  // 批量套用：一次提交所有选中的建议，只写回一次，避免逐条 commit。
+  // 两条建议指向同一统一名称时只取第一条（先到先得，后面的丢弃）。
+  const adoptMany = (selections: ModelAliasSuggestion[]) => {
+    const next = [...groups]
+    const seenCanonical = new Set<string>()
+    for (const suggestion of selections) {
+      const key = suggestion.canonical.trim().toLowerCase()
+      if (seenCanonical.has(key)) continue
+      seenCanonical.add(key)
+      if (suggestion.extends_canonical) {
+        const target = next.findIndex((group) => group.canonical.trim() === suggestion.extends_canonical)
+        if (target >= 0) {
+          next[target] = withMembers(next[target], [...aliasMembers(next[target]), ...suggestion.members])
+          continue
+        }
+      }
+      const members = suggestion.members.filter((member) => member !== suggestion.canonical)
+      next.push(withMembers({ canonical: suggestion.canonical, aliases: '', enabled: true }, members))
+    }
+    commit(next)
+    setFilter('')
+  }
 
   return <section className="model-alias-panel" aria-label="模型统一映射">
     <header>
@@ -431,30 +440,14 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
 
     {error && <div className="model-alias-inline-error" role="alert">读取渠道模型清单失败：{error}</div>}
 
+    {/* 建议只在这里给一个入口：展开的清单动辄上百行，放进二级弹窗里慢慢挑。 */}
     {!!usableSuggestions.length && <div className="model-alias-suggestions">
       <header>
-        <button className="model-alias-suggest-toggle" type="button" aria-expanded={suggestOpen} onClick={() => setSuggestOpen((open) => !open)}>
-          <ChevronRight size={15} className="model-alias-caret" />
-          <Wrench size={15} />
-          <strong>检测到 {usableSuggestions.length} 组可合并的名称</strong>
-          <span>{suggestOpen ? '来自当前启用渠道，点击「套用」即写入' : '展开查看并逐条套用'}</span>
-        </button>
+        <Wrench size={15} />
+        <strong>检测到 {usableSuggestions.length} 组可合并的名称</strong>
+        <span>来自当前启用渠道，可批量挑选后一次创建</span>
+        <button className="secondary-button" type="button" onClick={() => setTransferOpen(true)}><ListPlus size={15} />批量创建</button>
       </header>
-      {suggestOpen && <>
-        {usableSuggestions.length > 8 && <label className="model-alias-filter"><Search size={14} /><input value={suggestFilter} onChange={(event) => setSuggestFilter(event.target.value)} placeholder={`在 ${usableSuggestions.length} 组建议中搜索模型名`} aria-label="搜索建议" /></label>}
-        <ul>
-          {visibleSuggestions.map((suggestion) => <li key={`${suggestion.canonical}-${suggestion.members.join('|')}`}>
-            <div className="model-alias-suggestion-body">
-              <strong>{suggestion.canonical}{suggestion.extends_canonical && <em className="model-alias-suggestion-tag">补进已有映射</em>}</strong>
-              <div className="model-alias-suggestion-members">{suggestion.members.map((member) => <code key={member}>{member}</code>)}</div>
-            </div>
-            <button className="secondary-button" type="button" onClick={() => adopt(suggestion)}><Check size={15} />套用</button>
-          </li>)}
-          {!visibleSuggestions.length && <li className="model-alias-suggestion-empty">没有匹配「{suggestFilter}」的建议</li>}
-        </ul>
-        {/* 只有在没搜索时才提示被截断：搜索结果自己就是收窄后的集合。 */}
-        {!suggestFilter.trim() && usableSuggestions.length > suggestionLimit && <p className="model-alias-suggestion-more">仅显示前 {suggestionLimit} 组，用搜索找到需要的名称，或先套用几组再刷新。</p>}
-      </>}
     </div>}
 
     {groups.length > 4 && <label className="model-alias-filter"><Search size={14} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={`在 ${groups.length} 条映射中搜索统一名称或上游名称`} aria-label="搜索映射" /></label>}
@@ -499,6 +492,12 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
       selected={aliasMembers(groups[pickerFor] || { canonical: '', aliases: '', enabled: true })}
       close={() => setPickerFor(null)}
       apply={(members) => { const target = groups[pickerFor]; if (target) update(pickerFor, withMembers(target, members)); setPickerFor(null) }}
+    />}
+
+    {transferOpen && inventory && <AliasTransferModal
+      suggestions={usableSuggestions}
+      close={() => setTransferOpen(false)}
+      apply={(selections) => { adoptMany(selections); setTransferOpen(false) }}
     />}
   </section>
 }
@@ -557,14 +556,6 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
     ['forest', '松林绿', ['#2f6b45', '#3d6f8f', '#97701f']],
     ['plum', '梅子紫', ['#9a3f6b', '#4a6a9e', '#b0761f']],
   ]
-  const fonts: Array<[ThemeFont, string, string]> = [
-    ['modern', '几何等线', '枢衡 PivotFlow 0123'],
-    ['system', '系统原生', '枢衡 PivotFlow 0123'],
-    ['yahei', '雅黑标准', '枢衡 PivotFlow 0123'],
-    ['inter', '精致西文', '枢衡 PivotFlow 0123'],
-    ['serif', '人文宋体', '枢衡 PivotFlow 0123'],
-    ['mono', '等宽对齐', '枢衡 PivotFlow 0123'],
-  ]
   const radii: Array<[ThemeRadius, string]> = [
     ['compact', '利落'],
     ['balanced', '均衡'],
@@ -587,7 +578,17 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
 
         <section className="appearance-control-group">
           <header><span><Type size={17} /></span><strong>字体风格</strong></header>
-          <div className="appearance-font-list">{fonts.map(([value, label, sample]) => <button className={`${customization.font === value ? 'is-selected ' : ''}theme-font-sample theme-font-sample--${value}`} type="button" aria-pressed={customization.font === value} onClick={() => change({ font: value }, label)} key={value}><span>{sample}</span><strong>{label}</strong>{customization.font === value && <Check size={16} />}</button>)}</div>
+          {/* 下拉而非按钮墙：常用字体有八款，平铺占位太多，
+              且相邻两款的差异往往要看同一段文字才分得出来。 */}
+          <div className="appearance-font-picker">
+            <select className="theme-font-select" value={customization.font} onChange={(event) => {
+              const next = event.target.value as ThemeFont
+              change({ font: next }, themeFontOptions.find((item) => item.value === next)?.label || next)
+            }} aria-label="界面字体">
+              {themeFontOptions.map((option) => <option value={option.value} key={option.value}>{option.label} · {option.note}</option>)}
+            </select>
+            <p className={`theme-font-preview theme-font-preview--${customization.font}`}>枢衡 PivotFlow · 渠道 12 个 · $0.0834 · 99.6%</p>
+          </div>
         </section>
 
         <section className="appearance-control-group">
@@ -723,4 +724,71 @@ function formatDefault(setting: SystemSetting): string {
   const option = settingOptions(setting.key)?.find(([value]) => value === setting.default_value)
   const unit = settingUnit(setting.key)
   return option?.[1] || `${setting.default_value || '空'}${unit ? ` ${unit}` : ''}`
+}
+
+// 批量创建映射的二级界面：左边是自动检测到的可合并组，点「添加」进右边，
+// 确定后一次性写入。解决了上百组建议在设置页里平铺无法使用的问题。
+function AliasTransferModal({ suggestions, close, apply }: {
+  suggestions: ModelAliasSuggestion[]
+  close: () => void
+  apply: (selections: ModelAliasSuggestion[]) => void
+}) {
+  const [query, setQuery] = useState('')
+  const [pending, setPending] = useState<ModelAliasSuggestion[]>([])
+
+  const pendingKeys = useMemo(() => new Set(pending.map((item) => item.canonical)), [pending])
+  const available = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    return suggestions.filter((item) => !pendingKeys.has(item.canonical) &&
+      (!needle || item.canonical.toLowerCase().includes(needle) || item.members.some((member) => member.toLowerCase().includes(needle))))
+  }, [suggestions, pendingKeys, query])
+
+  const add = (item: ModelAliasSuggestion) => setPending((current) => [...current, item])
+  const addAll = () => setPending((current) => [...current, ...available])
+  const remove = (item: ModelAliasSuggestion) => setPending((current) => current.filter((entry) => entry !== item))
+
+  return <Modal title="批量创建统一映射" close={close}>
+    <div className="alias-transfer">
+      <p className="alias-transfer-hint">左边是当前启用渠道中检测到的可合并名称组合。选中要采用的组合，确定后一起写入映射列表。</p>
+      <div className="alias-transfer-panes">
+        <section className="alias-transfer-pane">
+          <header>
+            <strong>候选组合 <em>{available.length}</em></strong>
+            <button className="text-button" type="button" onClick={addAll} disabled={!available.length}><ListPlus size={14} />全部添加</button>
+          </header>
+          <label className="alias-transfer-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索模型名" aria-label="搜索候选组合" /></label>
+          <ul>
+            {available.map((item, index) => <li key={`${item.canonical}-${index}`}>
+              <div className="alias-transfer-item">
+                <strong>{item.canonical}{item.extends_canonical && <em className="model-alias-suggestion-tag">补进已有映射</em>}</strong>
+                <div>{item.members.map((member) => <code key={member}>{member}</code>)}</div>
+              </div>
+              <button className="icon-button icon-button--surface" type="button" onClick={() => add(item)} aria-label={`添加 ${item.canonical}`} title="添加到右侧"><Plus size={15} /></button>
+            </li>)}
+            {!available.length && <li className="alias-transfer-empty">{suggestions.length ? '没有匹配的候选组合' : '暂无可合并的候选'}</li>}
+          </ul>
+        </section>
+        <section className="alias-transfer-pane">
+          <header><strong>待创建 <em>{pending.length}</em></strong>{!!pending.length && <button className="text-button" type="button" onClick={() => setPending([])}>清空</button>}</header>
+          <ul>
+            {pending.map((item, index) => <li key={`${item.canonical}-${index}`}>
+              <div className="alias-transfer-item">
+                <strong>{item.canonical}</strong>
+                <div>{item.members.map((member) => <code key={member}>{member}</code>)}</div>
+              </div>
+              <button className="icon-button icon-button--surface" type="button" onClick={() => remove(item)} aria-label={`移除 ${item.canonical}`} title="移除"><X size={15} /></button>
+            </li>)}
+            {!pending.length && <li className="alias-transfer-empty">还没有选择任何组合</li>}
+          </ul>
+        </section>
+      </div>
+      <footer className="alias-transfer-footer">
+        <span>确定后将创建 {pending.length} 组映射{pending.some((item) => item.extends_canonical) ? '，其中含补进已有映射的组合' : ''}</span>
+        <div>
+          <button className="secondary-button" type="button" onClick={close}>取消</button>
+          <button className="primary-button" type="button" disabled={!pending.length} onClick={() => apply(pending)}>确定（{pending.length}）</button>
+        </div>
+      </footer>
+    </div>
+  </Modal>
 }

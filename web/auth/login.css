@@ -19,9 +19,11 @@ button, input { font: inherit; }
 
 .route-stage {
   position: relative;
-  display: grid;
+  display: flex;
   min-height: 100svh;
-  place-items: center;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
   color: #f8fcfa;
   background: radial-gradient(circle at 50% 47%, rgba(83, 214, 177, .16), transparent 34%), linear-gradient(145deg, #0b2524, #123a36 58%, #102c2b);
@@ -47,48 +49,126 @@ button, input { font: inherit; }
 }
 
 .stage-brand img { width: 52px; height: 52px; border-radius: 15px; box-shadow: 0 18px 42px rgba(0, 0, 0, .24); }
-.route-map { position: relative; width: min(72%, 600px); aspect-ratio: 1.15; margin-top: 52px; }
-.orbit { position: absolute; border: 1px solid rgba(153, 208, 184, .16); border-radius: 50%; }
-.orbit--outer { inset: 9%; }
-.orbit--inner { inset: 27%; border-color: rgba(153, 208, 184, .24); }
+/* 抽象网关图：左侧入口汇聚 → 中心 → 右侧上游扇出。
+   节点靠 flex 均分排列，增减节点不需要重算任何角度或坐标。 */
+.gateway-map {
+  position: relative;
+  display: grid;
+  width: min(74%, 540px);
+  align-items: center;
+  grid-template-columns: 1fr auto 1fr;
+  /* 间隙留给连接线；线宽用同一个 clamp，两者永远吻合 */
+  gap: var(--gw-link);
+  margin-top: 0;
+}
 
-.route-core {
+.route-stage { --gw-link: clamp(30px, 4.4vw, 52px); }
+
+.gw-side { position: relative; display: flex; flex-direction: column; gap: clamp(13px, 2vw, 22px); }
+
+/* 每个节点是一个胶囊 + 一条指向中心的连接线。
+   线用 ::after 画，长度百分比自适应，与节点数量无关。 */
+.gw-dot {
+  position: relative;
+  height: clamp(30px, 4vw, 38px);
+  background: rgba(27, 72, 66, .95);
+  border: 1px solid rgba(185, 222, 205, .3);
+  border-radius: 10px;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, .22);
+}
+
+/* 胶囊内的三条占位线，暗示"某个客户端/上游"，但不写名字 */
+.gw-dot::before {
   position: absolute;
   top: 50%;
-  left: 50%;
-  z-index: 4;
+  left: 11px;
+  width: 42%;
+  height: 3px;
+  content: "";
+  background: rgba(185, 222, 205, .45);
+  border-radius: 2px;
+  transform: translateY(-50%);
+}
+
+/* 连接线跨满整个间隙，两端各留 1px，视觉上真正连到核心 */
+.gw-dot::after {
+  position: absolute;
+  top: 50%;
+  width: var(--gw-link);
+  height: 1px;
+  content: "";
+  transform: translateY(-50%);
+}
+
+.gw-side--in .gw-dot::after {
+  right: calc(-1 * var(--gw-link));
+  background: linear-gradient(90deg, rgba(83, 214, 177, .18), rgba(83, 214, 177, .62));
+}
+
+.gw-side--out .gw-dot::after {
+  left: calc(-1 * var(--gw-link));
+  background: linear-gradient(90deg, rgba(83, 214, 177, .62), rgba(83, 214, 177, .18));
+}
+/* 右侧上游更密更小，直观表达"数量不限" */
+.gw-side--out .gw-dot { height: clamp(20px, 2.6vw, 26px); background: rgba(20, 58, 54, .72); }
+.gw-side--out .gw-dot::before { width: 34%; height: 2px; }
+
+.gw-core {
+  position: relative;
   display: grid;
-  width: 116px;
+  width: clamp(84px, 12vw, 112px);
   aspect-ratio: 1;
   place-items: center;
   background: #f8fcfa;
-  border: 10px solid rgba(83, 214, 177, .17);
   border-radius: 50%;
-  box-shadow: 0 26px 70px rgba(0, 0, 0, .3);
-  transform: translate(-50%, -50%);
+  box-shadow: 0 24px 62px rgba(0, 0, 0, .28);
 }
 
-.route-core img { width: 58px; height: 58px; }
-.route-line { position: absolute; top: 50%; left: 50%; z-index: 1; width: 34%; height: 2px; background: linear-gradient(90deg, rgba(83, 214, 177, .7), rgba(83, 214, 177, .15)); transform-origin: 0 50%; }
-.route-line::after { position: absolute; top: -3px; right: 0; width: 8px; height: 8px; content: ""; background: #53d6b1; border-radius: 50%; box-shadow: 0 0 0 6px rgba(83, 214, 177, .1); }
-.route-line--a { transform: rotate(-120deg); }
-.route-line--b { transform: rotate(-22deg); }
-.route-line--c { transform: rotate(58deg); }
-.route-line--d { transform: rotate(158deg); }
+.gw-core img { position: relative; z-index: 2; width: clamp(42px, 6vw, 56px); }
+.gw-ring { position: absolute; border-radius: 50%; }
+.gw-ring--inner { inset: -13px; border: 1px solid rgba(83, 214, 177, .46); }
+.gw-ring--outer { inset: -32px; border: 1px solid rgba(153, 208, 184, .24); }
 
-.route-node { position: absolute; z-index: 3; display: flex; min-width: 132px; align-items: center; gap: 10px; padding: 10px 13px; color: #deebe6; background: rgba(20, 58, 54, .94); border: 1px solid rgba(185, 222, 205, .18); border-radius: 12px; box-shadow: 0 18px 36px rgba(0, 0, 0, .2); font-size: 14px; font-weight: 700; backdrop-filter: blur(12px); }
-.route-node i { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 9px; font-style: normal; font-weight: 900; }
-.route-node--claude { top: 3%; left: 4%; }
-.route-node--claude i { color: #c95c49; background: #f7e2dd; }
-.route-node--openai { top: 14%; right: -1%; }
-.route-node--openai i { color: #157a54; background: #dff2e9; }
-.route-node--gemini { right: 5%; bottom: 3%; }
-.route-node--gemini i { color: #356fc8; background: #e2eafa; }
-.route-node--codex { bottom: 8%; left: 0; }
-.route-node--codex i { color: #44524d; background: #e9eeeb; }
-.route-signal { position: absolute; z-index: 5; width: 10px; height: 10px; background: #e9b35e; border: 2px solid #102c2b; border-radius: 50%; box-shadow: 0 0 0 6px rgba(233, 179, 94, .13); animation: signal 2.8s ease-in-out infinite; }
-.route-signal--a { top: 30%; left: 35%; }
-.route-signal--b { right: 27%; bottom: 31%; background: #53d6b1; animation-delay: -1.35s; }
+/* 流动光点沿连接线左右穿行，表达"请求正在被转发"。
+   放在中间列两侧的间隙上，与线同高，不再像随手点的装饰。 */
+.gw-pulse {
+  position: absolute;
+  top: 50%;
+  z-index: 3;
+  width: 6px;
+  height: 6px;
+  background: #6ee7bf;
+  border-radius: 50%;
+  box-shadow: 0 0 8px 2px rgba(110, 231, 191, .45);
+  transform: translateY(-50%);
+}
+
+.gw-pulse--a { left: calc(50% - var(--gw-link) - 6px); animation: gw-flow-in 3.2s ease-in-out infinite; }
+.gw-pulse--b { right: calc(50% - var(--gw-link) - 6px); background: #f0c274; box-shadow: 0 0 8px 2px rgba(240, 194, 116, .4); animation: gw-flow-out 3.2s ease-in-out infinite; animation-delay: -1.6s; }
+
+@keyframes gw-flow-in {
+  0% { opacity: 0; transform: translate(calc(-1 * var(--gw-link)), -50%); }
+  35%, 65% { opacity: 1; }
+  100% { opacity: 0; transform: translate(0, -50%); }
+}
+
+@keyframes gw-flow-out {
+  0% { opacity: 0; transform: translate(0, -50%); }
+  35%, 65% { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--gw-link), -50%); }
+}
+
+/* 说明文字跟在图后面参与居中，不再绝对定位到底部 —— 那样会让
+   图整体偏上、底部留一条空带。 */
+.stage-caption {
+  display: grid;
+  gap: 7px;
+  margin: clamp(38px, 5vw, 58px) 0 0;
+  text-align: center;
+}
+
+.stage-caption strong { color: #eef7f2; font-size: clamp(16px, 2vw, 19px); font-weight: 720; }
+.stage-caption span { color: rgba(206, 228, 217, .68); font-size: clamp(12px, 1.4vw, 13px); }
 
 .login-panel { display: grid; min-height: 100svh; place-items: center; padding: 42px; background: radial-gradient(circle at 15% 20%, rgba(83, 214, 177, .08), transparent 32%), #f4f7f5; }
 .login-card { width: min(100%, 470px); padding: 48px 50px 44px; background: rgba(255, 255, 255, .96); border: 1px solid rgba(16, 44, 43, .12); border-radius: 22px; box-shadow: 0 30px 80px rgba(28, 55, 47, .14); }
@@ -120,7 +200,7 @@ button, input { font: inherit; }
 @media (max-width: 900px) {
   .login-shell { display: block; padding-top: 96px; }
   .route-stage { position: absolute; top: 0; left: 0; width: 100%; min-height: 96px; height: 96px; place-items: start center; }
-  .route-stage::before, .route-map { display: none; }
+  .route-stage::before, .gateway-map, .stage-caption { display: none; }
   .stage-brand { position: static; margin-top: 23px; font-size: 24px; }
   .stage-brand img { width: 48px; height: 48px; border-radius: 13px; }
   .login-panel { min-height: calc(100svh - 96px); padding: 24px 16px; }
