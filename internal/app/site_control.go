@@ -676,6 +676,7 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 		}
 		for index, item := range keys {
 			projectionKey := stableProjectionKey(item, index)
+			pricingGroup := strings.TrimSpace(item.Group)
 			activeProjectionKeys = append(activeProjectionKeys, projectionKey)
 			models, resolved := modelsByProjection[projectionKey]
 			if !resolved || len(models) == 0 {
@@ -693,7 +694,7 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 			// "Sync route" is an explicit reconciliation operation. Projected
 			// channels follow the upstream key name, URL, credential and models;
 			// manual channels are protected by ownership checks in the store.
-			if _, err := s.projectAccountWithModelsForProtocols(ctx, account, site, keyCreds, projectionKey, name, item.Protocols, models, true); err != nil {
+			if _, err := s.projectAccountWithModelsForProtocols(ctx, account, site, keyCreds, projectionKey, name, item.Protocols, models, true, pricingGroup); err != nil {
 				syncErrors = append(syncErrors, fmt.Sprintf("%s: %s", routingKeyLabel(item, projectionKey), siteTaskError(err)))
 			}
 		}
@@ -1076,10 +1077,12 @@ func (s *siteControlService) projectAccount(ctx context.Context, account *model.
 }
 
 func (s *siteControlService) projectAccountWithModels(ctx context.Context, account *model.SiteAccount, site *model.Site, creds provider.Credentials, projectionKey, name string, names []string, force bool) (*model.SiteProjectionResult, error) {
-	return s.projectAccountWithModelsForProtocols(ctx, account, site, creds, projectionKey, name, nil, names, force)
+	return s.projectAccountWithModelsForProtocols(ctx, account, site, creds, projectionKey, name, nil, names, force, "")
 }
 
-func (s *siteControlService) projectAccountWithModelsForProtocols(ctx context.Context, account *model.SiteAccount, site *model.Site, creds provider.Credentials, projectionKey, name string, protocols, names []string, force bool) (*model.SiteProjectionResult, error) {
+// pricingGroup 是上游令牌所属分组，仅在按路由 Key 投影时才有值。
+// 站点价目表按分组给倍率，落库后才能用站点自身价格算费用。
+func (s *siteControlService) projectAccountWithModelsForProtocols(ctx context.Context, account *model.SiteAccount, site *model.Site, creds provider.Credentials, projectionKey, name string, protocols, names []string, force bool, pricingGroup string) (*model.SiteProjectionResult, error) {
 	filtered := make([]string, 0, len(names))
 	seen := map[string]struct{}{}
 	for _, item := range names {
@@ -1105,7 +1108,7 @@ func (s *siteControlService) projectAccountWithModelsForProtocols(ctx context.Co
 	protocols = projectedRoutingProtocols(site, protocols)
 	baseURL := routingBaseURL(site.BaseURL)
 	sourceHash := model.SiteProjectionSourceHash(baseURL, protocols, filtered, creds.APIKey, account.Enabled)
-	result, err := s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: baseURL, Protocols: protocols, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, Enabled: account.Enabled, Force: force})
+	result, err := s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: baseURL, Protocols: protocols, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, PricingGroup: pricingGroup, Enabled: account.Enabled, Force: force})
 	if err != nil {
 		return nil, err
 	}

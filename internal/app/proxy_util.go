@@ -889,6 +889,9 @@ type logEntryParams struct {
 	DebugData        *model.DebugLogEntry // Debug日志数据
 	CostMultiplier   float64              // 渠道成本倍率快照（0=免费，<0 视为 1）
 	ThinkingEffort   string
+	// SiteCost 是用站点自身价目表算出的费用（不含工具费）。
+	// nil 表示站点价格不可用，buildLogEntry 会回退本地估算。
+	SiteCost *float64
 }
 
 // resolveProxyBillingModel 选择代理请求的计费模型。
@@ -998,7 +1001,17 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 			// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
 			// 优先 actual（重定向可能换价）；无定价时回退 request（渠道第一列作定价别名）
 			// alpha/search 固定按 search_call 计费。
-			entry.Cost = computeRequestCost(billingModel, res.ServiceTier, res) + res.ToolCostUSD
+			//
+			// 中转站按自己的倍率计费，厂商标价与之无关。调用方若已用站点价目表
+			// 算出费用会通过 p.SiteCost 传入；拿不到时（手工渠道、站点无该接口、
+			// 账号无管理凭证）回退本地估算。
+			if p.SiteCost != nil {
+				entry.Cost = *p.SiteCost + res.ToolCostUSD
+				entry.CostSource = costSourceSite
+			} else {
+				entry.Cost = computeRequestCost(billingModel, res.ServiceTier, res) + res.ToolCostUSD
+				entry.CostSource = costSourceLocal
+			}
 		}
 	} else {
 		entry.Message = "unknown"

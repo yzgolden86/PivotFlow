@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -186,7 +187,26 @@ func (s *Server) logProxyResult(
 		DebugData:        reqCtx.debugData,
 		CostMultiplier:   cfg.CostMultiplier,
 		ThinkingEffort:   reqCtx.thinkingEffort,
+		SiteCost:         s.siteCostForLog(actualModel, reqCtx.originalModel, cfg, statusCode, res),
 	}))
+}
+
+// siteCostForLog prices a successful request with the owning site's own ratios.
+// Returns nil whenever those prices are unavailable, so the log falls back to
+// the local estimate instead of recording a number we cannot stand behind.
+func (s *Server) siteCostForLog(actualModel, requestModel string, cfg *model.Config, statusCode int, res *fwResult) *float64 {
+	if res == nil || cfg == nil || statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return nil
+	}
+	billingModel := strings.TrimSpace(actualModel)
+	if billingModel == "" {
+		billingModel = strings.TrimSpace(requestModel)
+	}
+	cost, ok := s.siteSourcedCost(billingModel, cfg.ID, res)
+	if !ok {
+		return nil
+	}
+	return &cost
 }
 
 func (s *Server) updateTokenStatsForProxy(

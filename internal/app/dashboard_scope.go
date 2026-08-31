@@ -56,9 +56,12 @@ type dashboardLogEntry struct {
 	CostStatus    string                      `json:"cost_status,omitempty"`
 }
 
-// logCostStatus explains how the request-log cost should be interpreted. The
-// stored amount is always a local standard-price estimate, never the upstream
-// account's actual balance deduction.
+// logCostStatus explains how the request-log cost should be interpreted.
+//
+// The amount is computed from the owning site's own price table when that table
+// is readable, and from vendor list prices otherwise. LogEntry.CostSource says
+// which of the two produced this row; this function only classifies why a cost
+// may be absent or zero.
 func logCostStatus(entry *model.LogEntry) string {
 	if entry == nil || entry.StatusCode < 200 || entry.StatusCode >= 300 {
 		return ""
@@ -74,7 +77,10 @@ func logCostStatus(entry *model.LogEntry) string {
 		entry.Cache5mInputTokens == 0 && entry.Cache1hInputTokens == 0 {
 		return "usage_missing"
 	}
-	if !util.HasModelPricing(util.ResolveBillingModel(entry.ActualModel, entry.Model)) {
+	// A site-priced row with zero cost genuinely costs nothing on that site;
+	// vendor-price coverage is irrelevant in that case.
+	if entry.CostSource != costSourceSite &&
+		!util.HasModelPricing(util.ResolveBillingModel(entry.ActualModel, entry.Model)) {
 		return "unpriced_model"
 	}
 	return "free_model"
