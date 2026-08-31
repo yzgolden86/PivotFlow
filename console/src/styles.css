@@ -2738,6 +2738,9 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .model-alias-filter { display: flex; align-items: center; gap: 7px; padding: 0 9px; color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; }
 .model-alias-filter input { flex: 1; padding: 7px 0; color: var(--text); background: none; border: 0; font-size: 11px; }
 .model-alias-filter input:focus { outline: none; }
+
+/* 站点价目表算出的费用：与本地估算区分开，前者接近上游真实扣费 */
+.cost-status--site { color: var(--green) !important; }
 .model-alias-fields { display: grid; grid-template-columns: minmax(170px, .7fr) minmax(260px, 1.3fr); gap: 10px; }
 .model-alias-fields label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 10px; font-weight: 700; }
 .model-alias-fields textarea { min-height: 72px; resize: vertical; font-family: Consolas, monospace; font-size: 11px; }

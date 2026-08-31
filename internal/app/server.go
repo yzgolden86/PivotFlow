@@ -96,6 +96,7 @@ type Server struct {
 	modelAliases      *modelAliasRegistry // 全局统一模型名称映射
 	routeStrategyMode string              // 渠道选择策略（启动时加载，修改后重启生效）
 	stickyRouter      *stickyRouter       // 粘性路由：记录每个模型上次成功的渠道
+	sitePricing       *sitePricingCache   // 站点自身价目表，用于按站点倍率算费用
 	// 渠道未配置专属规则时使用的进程级默认规则。
 	globalCooldownDetectionRules *model.CooldownDetectionRules
 
@@ -192,6 +193,7 @@ func NewServer(store storage.Store) *Server {
 		modelAliases:                 loadModelAliasRegistry(configService),
 		routeStrategyMode:            runtimeCfg.RouteStrategy,
 		stickyRouter:                 newStickyRouter(),
+		sitePricing:                  newSitePricingCache(),
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
@@ -928,6 +930,9 @@ func (s *Server) InvalidateChannelListCache() {
 	//     并由 Cleanup(24h) 回收；
 	//   - 权重每轮实时重算，改 KeyCount / 优先级会在随后几轮内自行收敛。
 	//
+	// 渠道拓扑变了，渠道→站点/分组的映射可能失效：重新投影会把令牌换到别的分组。
+	s.sitePricing.invalidate()
+
 	// 渠道被删除时仍会通过 keySelector.RemoveChannelCounter 精确清理 Key 级游标。
 	// URL 或上游协议配置可能已变化，丢弃运行时学习结果。
 	s.protocolCapabilities.clear()

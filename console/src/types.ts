@@ -242,6 +242,8 @@ export interface LogEntry {
   cost: number
   cost_multiplier: number
   cost_status?: 'estimated' | 'usage_missing' | 'unpriced_model' | 'free_model' | 'local_free'
+  // site_pricing = 用站点自身价目表算出；local_estimate 或空 = 厂商标价本地估算。
+  cost_source?: 'site_pricing' | 'local_estimate'
 }
 
 export interface LogFilters {

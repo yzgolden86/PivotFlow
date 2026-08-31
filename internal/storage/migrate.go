@@ -154,6 +154,15 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 		}
 
+		// 上游令牌分组：站点价目表按分组给倍率，用于按站点自身价格算费用。
+		if tb.Name() == "site_channel_bindings" {
+			if err := ensureColumn(ctx, db, dialect, tb.Name(), "pricing_group",
+				"VARCHAR(64) NOT NULL DEFAULT ''",
+				"TEXT NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("migrate site_channel_bindings pricing_group: %w", err)
+			}
+		}
+
 		// 增量迁移：确保logs表新字段存在（2025-12新增）
 		if tb.Name() == "logs" {
 			if err := ensureLogsNewColumns(ctx, db, dialect); err != nil {
@@ -161,6 +170,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 			if err := ensureLogsCostMultiplier(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs cost_multiplier: %w", err)
+			}
+			if err := ensureColumn(ctx, db, dialect, "logs", "cost_source",
+				"VARCHAR(32) NOT NULL DEFAULT ''",
+				"TEXT NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("migrate logs cost_source: %w", err)
 			}
 			if err := ensureLogsUpstreamWebsocket(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs upstream_websocket: %w", err)

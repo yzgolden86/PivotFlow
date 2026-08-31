@@ -249,6 +249,46 @@ type RoutingModelProvider interface {
 	ListModelsForRoutingKey(ctx context.Context, req AccountRequest, key RoutingKeySnapshot) ([]ModelSnapshot, error)
 }
 
+// ModelPrice is one model's billing terms as the upstream site itself declares
+// them. Relay sites apply their own ratios, so a cost computed from vendor list
+// prices diverges from what the site actually deducts; these are the numbers
+// that make the estimate match.
+//
+// Ratios are relative units, not money. New API's convention is
+// quota_per_unit = 500000 and one ratio unit = $0.002 per 1K tokens, which is
+// why converting a ratio to USD per million tokens multiplies by 2.
+type ModelPrice struct {
+	Model string
+	// QuotaType 0 bills per token via the ratios below; 1 bills a fixed amount
+	// per call and the ratios do not apply.
+	QuotaType int
+	// PerCallPrice is the fixed charge for QuotaType 1, before the group ratio.
+	PerCallPrice float64
+	// ModelRatio scales the input price. Output is additionally scaled by
+	// CompletionRatio; cache reads and writes by their own ratios.
+	ModelRatio         float64
+	CompletionRatio    float64
+	CacheRatio         float64
+	CacheCreationRatio float64
+	// Groups lists the site groups this model is available to. A price only
+	// applies to a request whose token belongs to one of these groups.
+	Groups []string
+}
+
+// SitePricing is a whole site's price table plus its per-group multipliers.
+// GroupRatio always carries a "default" entry so lookups cannot miss.
+type SitePricing struct {
+	Models     []ModelPrice
+	GroupRatio map[string]float64
+}
+
+// PricingProvider is implemented by providers whose management API exposes the
+// site's own price table. Used to replace vendor list prices with the site's
+// real ratios when computing request cost.
+type PricingProvider interface {
+	FetchPricing(ctx context.Context, req AccountRequest) (SitePricing, error)
+}
+
 type Registry struct {
 	adapters map[string]SiteAdapter
 	order    []SiteAdapter

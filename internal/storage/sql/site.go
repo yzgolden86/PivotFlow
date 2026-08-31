@@ -877,7 +877,7 @@ func (s *SQLStore) UpsertWebhookEventState(ctx context.Context, state *model.Web
 
 func (s *SQLStore) GetSiteChannelBinding(ctx context.Context, siteAccountID int64, projectionKey string) (*model.SiteChannelBinding, error) {
 	var binding model.SiteChannelBinding
-	err := s.QueryRowContext(ctx, "SELECT id,site_account_id,projection_key,COALESCE(channel_id,0),ownership,status,last_projected_hash,last_sync_status,last_sync_error,created_at,updated_at FROM site_channel_bindings WHERE site_account_id=? AND projection_key=?", siteAccountID, projectionKey).Scan(&binding.ID, &binding.SiteAccountID, &binding.ProjectionKey, &binding.ChannelID, &binding.Ownership, &binding.Status, &binding.LastProjectedHash, &binding.LastSyncStatus, &binding.LastSyncError, &binding.CreatedAt, &binding.UpdatedAt)
+	err := s.QueryRowContext(ctx, "SELECT id,site_account_id,projection_key,COALESCE(channel_id,0),ownership,status,COALESCE(pricing_group,''),last_projected_hash,last_sync_status,last_sync_error,created_at,updated_at FROM site_channel_bindings WHERE site_account_id=? AND projection_key=?", siteAccountID, projectionKey).Scan(&binding.ID, &binding.SiteAccountID, &binding.ProjectionKey, &binding.ChannelID, &binding.Ownership, &binding.Status, &binding.PricingGroup, &binding.LastProjectedHash, &binding.LastSyncStatus, &binding.LastSyncError, &binding.CreatedAt, &binding.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errors.New("not found")
 	}
@@ -885,7 +885,7 @@ func (s *SQLStore) GetSiteChannelBinding(ctx context.Context, siteAccountID int6
 }
 
 func (s *SQLStore) ListSiteChannelBindings(ctx context.Context) ([]*model.SiteChannelBinding, error) {
-	rows, err := s.QueryContext(ctx, "SELECT id,site_account_id,projection_key,COALESCE(channel_id,0),ownership,status,last_projected_hash,last_sync_status,last_sync_error,created_at,updated_at FROM site_channel_bindings ORDER BY id ASC")
+	rows, err := s.QueryContext(ctx, "SELECT id,site_account_id,projection_key,COALESCE(channel_id,0),ownership,status,COALESCE(pricing_group,''),last_projected_hash,last_sync_status,last_sync_error,created_at,updated_at FROM site_channel_bindings ORDER BY id ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -894,7 +894,7 @@ func (s *SQLStore) ListSiteChannelBindings(ctx context.Context) ([]*model.SiteCh
 	bindings := make([]*model.SiteChannelBinding, 0)
 	for rows.Next() {
 		var binding model.SiteChannelBinding
-		if err := rows.Scan(&binding.ID, &binding.SiteAccountID, &binding.ProjectionKey, &binding.ChannelID, &binding.Ownership, &binding.Status, &binding.LastProjectedHash, &binding.LastSyncStatus, &binding.LastSyncError, &binding.CreatedAt, &binding.UpdatedAt); err != nil {
+		if err := rows.Scan(&binding.ID, &binding.SiteAccountID, &binding.ProjectionKey, &binding.ChannelID, &binding.Ownership, &binding.Status, &binding.PricingGroup, &binding.LastProjectedHash, &binding.LastSyncStatus, &binding.LastSyncError, &binding.CreatedAt, &binding.UpdatedAt); err != nil {
 			return nil, err
 		}
 		bindings = append(bindings, &binding)
@@ -1003,7 +1003,7 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 		}
 		if binding.ID > 0 {
 			action = "updated"
-			if err := s.queryRowTx(ctx, tx, "SELECT COALESCE(channel_id,0),ownership,status,last_projected_hash,last_sync_status,last_sync_error,created_at FROM site_channel_bindings WHERE id=?", binding.ID).Scan(&binding.ChannelID, &binding.Ownership, &binding.Status, &binding.LastProjectedHash, &binding.LastSyncStatus, &binding.LastSyncError, &binding.CreatedAt); err != nil {
+			if err := s.queryRowTx(ctx, tx, "SELECT COALESCE(channel_id,0),ownership,status,COALESCE(pricing_group,''),last_projected_hash,last_sync_status,last_sync_error,created_at FROM site_channel_bindings WHERE id=?", binding.ID).Scan(&binding.ChannelID, &binding.Ownership, &binding.Status, &binding.PricingGroup, &binding.LastProjectedHash, &binding.LastSyncStatus, &binding.LastSyncError, &binding.CreatedAt); err != nil {
 				return err
 			}
 			if binding.Ownership == "manual" {
@@ -1087,17 +1087,18 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 			return err
 		}
 		if binding.ID == 0 {
-			id, err := s.insertID(ctx, tx, "site_channel_bindings", "site_account_id,projection_key,channel_id,ownership,status,last_projected_hash,last_sync_status,last_sync_error,created_at,updated_at", []any{input.SiteAccountID, input.ProjectionKey, channel.ID, "projected", "active", input.SourceHash, "success", "", now, now})
+			id, err := s.insertID(ctx, tx, "site_channel_bindings", "site_account_id,projection_key,channel_id,ownership,status,pricing_group,last_projected_hash,last_sync_status,last_sync_error,created_at,updated_at", []any{input.SiteAccountID, input.ProjectionKey, channel.ID, "projected", "active", input.PricingGroup, input.SourceHash, "success", "", now, now})
 			if err != nil {
 				return err
 			}
 			binding.ID = id
 			binding.CreatedAt = now
 		} else {
-			if _, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET channel_id=?,status='active',last_projected_hash=?,last_sync_status='success',last_sync_error='',updated_at=? WHERE id=?", channel.ID, input.SourceHash, now, binding.ID); err != nil {
+			if _, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET channel_id=?,status='active',pricing_group=?,last_projected_hash=?,last_sync_status='success',last_sync_error='',updated_at=? WHERE id=?", channel.ID, input.PricingGroup, input.SourceHash, now, binding.ID); err != nil {
 				return err
 			}
 		}
+		binding.PricingGroup = input.PricingGroup
 		binding.SiteAccountID, binding.ProjectionKey, binding.ChannelID = input.SiteAccountID, input.ProjectionKey, channel.ID
 		binding.Ownership, binding.Status, binding.LastProjectedHash, binding.LastSyncStatus = "projected", "active", input.SourceHash, "success"
 		binding.LastSyncError = ""

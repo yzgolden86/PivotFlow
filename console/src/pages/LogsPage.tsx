@@ -201,16 +201,19 @@ function LogRow({ entry }: { entry: LogEntry }) {
       <div><strong title={entry.actual_model && entry.actual_model !== entry.model ? `${entry.model} → ${entry.actual_model}` : entry.model}>{entry.model}</strong><span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
       <div><strong>{entry.duration ? `${entry.duration.toFixed(2)}s` : '—'}</strong><span>首字 {entry.first_byte_time ? `${entry.first_byte_time.toFixed(2)}s` : '—'}</span></div>
       <div><strong>{formatNumber(entry.input_tokens)} / {formatNumber(entry.output_tokens)}</strong><span>输入 / 输出</span></div>
-      <div><strong title={entry.cost_status ? costStatusLabel(entry.cost_status, entry.is_streaming) : undefined}>{formatMoney(effectiveCost)}</strong><span className={entry.cost_status ? `cost-status cost-status--${entry.cost_status}` : undefined}>{costStatusLabel(entry.cost_status, entry.is_streaming)}</span></div>
+      <div><strong title={costStatusLabel(entry.cost_status, entry.is_streaming, entry.cost_source)}>{formatMoney(effectiveCost)}</strong><span className={`${entry.cost_status ? `cost-status cost-status--${entry.cost_status}` : ''}${entry.cost_source === 'site_pricing' ? ' cost-status--site' : ''}`.trim() || undefined}>{costStatusLabel(entry.cost_status, entry.is_streaming, entry.cost_source)}</span></div>
     </article>
   )
 }
 
-function costStatusLabel(status: LogEntry['cost_status'], isStreaming: boolean): string {
+// 费用来源比统计口径更重要：站点价目表算出的接近上游真实扣费，
+// 本地估算用的是厂商标价，和中转站的倍率无关。
+function costStatusLabel(status: LogEntry['cost_status'], isStreaming: boolean, costSource?: string): string {
   if (status === 'usage_missing') return '未获取上游用量'
   if (status === 'unpriced_model') return '模型未识别定价'
   if (status === 'free_model') return '免费模型'
   if (status === 'local_free') return '本地免费渠道'
+  if (costSource === 'site_pricing') return isStreaming ? '站点价目表 · 流式' : '站点价目表 · 非流式'
   return isStreaming ? '本地估算 · 流式' : '本地估算 · 非流式'
 }
 

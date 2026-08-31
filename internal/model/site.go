@@ -165,6 +165,7 @@ type SiteChannelBinding struct {
 	SiteAccountID     int64  `json:"site_account_id"`
 	ProjectionKey     string `json:"projection_key"`
 	ChannelID         int64  `json:"channel_id,omitempty"`
+	PricingGroup      string `json:"pricing_group,omitempty"`
 	Ownership         string `json:"ownership"`
 	Status            string `json:"status"`
 	LastProjectedHash string `json:"last_projected_hash,omitempty"`
@@ -269,6 +270,10 @@ type SiteProjectionInput struct {
 	Models        []string
 	APIKey        string
 	SourceHash    string
+	// PricingGroup is the upstream token's group. Site price tables express a
+	// per-group multiplier, so the group must be persisted or cost cannot be
+	// computed with the site's own ratios.
+	PricingGroup string
 	// Enabled is used when creating a projection. For an existing projected
 	// channel, its persisted enabled flag is a local routing decision and is
 	// preserved during synchronization.
