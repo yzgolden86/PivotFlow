@@ -20,23 +20,31 @@ func NormalizeModelAliasGroups(groups []ModelAliasGroup) []ModelAliasGroup {
 		if group.Canonical == "" {
 			continue
 		}
+		// Two groups may not claim the same canonical name; that comparison is
+		// case-insensitive because one canonical entry point is one entry point
+		// however it is typed.
 		canonicalKey := strings.ToLower(group.Canonical)
 		if _, exists := seenCanonical[canonicalKey]; exists {
 			continue
 		}
 		seenCanonical[canonicalKey] = struct{}{}
-		seen := map[string]struct{}{canonicalKey: {}}
+
+		// Members are deduplicated by their EXACT spelling, not case-folded.
+		// Config.modelIndex is keyed on the exact model string, so "DeepSeek-V4-Flash"
+		// and "deepseek-v4-flash" are two distinct routing keys: dropping one as a
+		// "duplicate" would exclude every channel that declares only that spelling.
+		// The canonical name is pre-seeded so it is never repeated among the members.
+		seen := map[string]struct{}{group.Canonical: {}}
 		aliases := make([]string, 0, len(group.Aliases))
 		for _, alias := range group.Aliases {
 			alias = strings.TrimSpace(alias)
 			if alias == "" {
 				continue
 			}
-			key := strings.ToLower(alias)
-			if _, exists := seen[key]; exists {
+			if _, exists := seen[alias]; exists {
 				continue
 			}
-			seen[key] = struct{}{}
+			seen[alias] = struct{}{}
 			aliases = append(aliases, alias)
 		}
 		group.Aliases = aliases
