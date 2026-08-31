@@ -78,9 +78,9 @@ function StatsRow({ entry }: { entry: StatsEntry }) {
   </article>
 }
 
-// 分格显示成功率，像电池电量：一眼能数出格数，比连续细条更易读。
+// 分格显示成功率，细梳状：每格 2%，比粗格更精细，也比连续细条易读。
 // 百分比放在右侧同一行，不再占用下方一行。
-const healthSegments = 10
+const healthSegments = 50
 
 function HealthMeter({ rate, hasData }: { rate: number; hasData: boolean }) {
   const percent = rate * 100
