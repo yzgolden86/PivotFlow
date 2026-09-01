@@ -83,6 +83,7 @@ console-build:
 
 console-check:
 	@cd console && npm run typecheck
+	@cd console && npm test
 	@cd console && npm run build
 
 web-test: www-setup
