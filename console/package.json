@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit -p tsconfig.app.json && vite build",
-    "typecheck": "tsc --noEmit -p tsconfig.app.json --pretty false"
+    "typecheck": "tsc --noEmit -p tsconfig.app.json --pretty false && tsc --noEmit -p tsconfig.test.json --pretty false",
+    "test": "node --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
@@ -20,6 +21,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@types/node": "22.19.2",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
