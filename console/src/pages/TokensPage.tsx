@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, KeyRound, Pencil, Play, Plus, Power, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { createAuthToken, deleteAuthToken, getAuthTokens, getChannels, getSiteModels, revealAuthToken, updateAuthToken } from '../api'
 import type { AuthToken, Channel, DashboardRange } from '../types'
@@ -24,6 +24,7 @@ const emptyForm: TokenFormValue = {
 export default function TokensPage() {
   const [tokens, setTokens] = useState<AuthToken[]>([])
   const [range, setRange] = useState<DashboardRange>('today')
+  const loadSequence = useRef(0)
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -31,12 +32,20 @@ export default function TokensPage() {
   const [createdToken, setCreatedToken] = useState('')
   const [copiedId, setCopiedId] = useState<number | 'created' | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
 
+  // 手动刷新不带 AbortSignal，切换区间时旧请求不会被取消，按序号丢弃过期响应。
   const load = useCallback(async (signal?: AbortSignal) => {
+    const sequence = ++loadSequence.current
+    const stale = () => Boolean(signal?.aborted) || sequence !== loadSequence.current
     setLoading(true); setError('')
-    try { setTokens((await getAuthTokens(range, signal)).tokens || []) }
-    catch (reason) { if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '令牌加载失败') }
-    finally { if (!signal?.aborted) setLoading(false) }
+    try {
+      const result = await getAuthTokens(range, signal)
+      if (stale()) return
+      setTokens(result.tokens || [])
+    }
+    catch (reason) { if (!stale()) setError(reason instanceof Error ? reason.message : '令牌加载失败') }
+    finally { if (!stale()) setLoading(false) }
   }, [range])
 
   useEffect(() => {
@@ -111,7 +120,7 @@ export default function TokensPage() {
       <h1>令牌管理</h1>
       <div className="header-controls">
         <button className="primary-button" type="button" onClick={() => setEditing('new')}><Plus size={16} />创建令牌</button>
-        <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新令牌"><RefreshCw size={17} /></button>
+        <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新令牌"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
       </div>
     </header>
 

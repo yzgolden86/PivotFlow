@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, CircleDollarSign, Gauge, RefreshCw, Zap } from 'lucide-react'
 import { getStats, getStatsFilterOptions } from '../api'
 import type { DashboardRange, StatsEntry, StatsFilterOptions, StatsSnapshot } from '../types'
@@ -10,21 +10,27 @@ export default function StatsPage() {
   const [range, setRange] = useState<DashboardRange>('today')
   const [channel, setChannel] = useState('')
   const [model, setModel] = useState('')
+  const loadSequence = useRef(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
 
+  // 手动刷新不带 AbortSignal，切换区间/筛选时旧请求不会被取消，
+  // 因此按序号丢弃过期响应，避免旧区间的数字落在新筛选标签下。
   const load = useCallback(async (signal?: AbortSignal) => {
+    const sequence = ++loadSequence.current
     setLoading(true); setError('')
     try {
       const [data, filterOptions] = await Promise.all([
         getStats({ range, channel_name: channel, model }, signal),
         getStatsFilterOptions(range, signal),
       ])
+      if (sequence !== loadSequence.current) return
       setSnapshot(data)
       setOptions(filterOptions)
     }
-    catch (reason) { if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '统计加载失败') }
-    finally { if (!signal?.aborted) setLoading(false) }
+    catch (reason) { if (!signal?.aborted && sequence === loadSequence.current) setError(reason instanceof Error ? reason.message : '统计加载失败') }
+    finally { if (!signal?.aborted && sequence === loadSequence.current) setLoading(false) }
   }, [channel, model, range])
 
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
@@ -35,7 +41,7 @@ export default function StatsPage() {
     <div className="workspace-page">
       <header className="page-header">
         <h1>用量统计</h1>
-        <div className="header-controls"><button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新统计"><RefreshCw size={17} /></button></div>
+        <div className="header-controls"><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新统计"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></div>
       </header>
 
       <div className="filter-bar">

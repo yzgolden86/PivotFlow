@@ -35,8 +35,14 @@ export default function ChannelsPage() {
   const importInput = useRef<HTMLInputElement>(null)
   const focusedChannelRef = useRef(0)
   const loadedOnceRef = useRef(Boolean(initialResult))
+  const loadSequence = useRef(0)
 
+  // 手动刷新不带 AbortSignal，切换筛选时旧请求不会被取消，因此按序号丢弃过期响应。
+  // 否则强制刷新（走网络）可能在筛选切换后落地，覆盖掉缓存命中的新筛选结果，
+  // 出现「已启用」筛选下显示全部渠道的错配。
   const load = useCallback(async (signal?: AbortSignal, options: { silent?: boolean; force?: boolean } = {}) => {
+    const sequence = ++loadSequence.current
+    const stale = () => Boolean(signal?.aborted) || sequence !== loadSequence.current
     const filters = { search, status, source, sort, limit: pageSize, offset: (page - 1) * pageSize }
     const cached = peekChannels(filters)
     if (cached) {
@@ -48,14 +54,18 @@ export default function ChannelsPage() {
     setError('')
     try {
       const result = await getChannels(filters, signal, { force: options.force })
+      if (stale()) return
       setChannels(result.data)
       setTotal(result.count)
       setEnabledTotal(result.enabled_count ?? 0)
       loadedOnceRef.current = true
       setSelected((current) => new Set([...current].filter((id) => result.data.some((channel) => channel.id === id))))
     } catch (reason) {
-      if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '渠道加载失败')
+      if (!stale()) setError(reason instanceof Error ? reason.message : '渠道加载失败')
     } finally {
+      // 复位 loading 不看序号：被更新的 silent load 顶掉时，那一次不会碰 loading，
+      // 若这里也跳过复位，骨架屏就永久留在页面上。loading 只是 UI 标志，
+      // 提前复位最坏是短暂显示旧数据，而漏复位会卡死。数据写入仍由序号守卫把关。
       if (!signal?.aborted && !options.silent) setLoading(false)
     }
   }, [page, pageSize, search, sort, source, status])
@@ -65,6 +75,13 @@ export default function ChannelsPage() {
     void load(controller.signal)
     return () => controller.abort()
   }, [load])
+
+  // 分页在服务端，删完末页整页后 offset 会越界，请求返回 0 行，
+  // 页面显示「没有匹配的渠道」而汇总仍写着渠道总数。回退到最后一个有效页。
+  useEffect(() => {
+    const pages = Math.max(1, Math.ceil(total / pageSize))
+    if (page > pages) setPage(pages)
+  }, [page, pageSize, total])
 
   useEffect(() => { setPage(1); setSearchDraft(querySearch); setSearch(querySearch) }, [querySearch])
   useEffect(() => {

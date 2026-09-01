@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, CircleDollarSign, Clock3, RefreshCw, TrendingUp, Zap } from 'lucide-react'
 import { getDashboard } from '../api'
 import type { DashboardRange, DashboardSnapshot, MetricPoint } from '../types'
@@ -8,17 +8,26 @@ type TrendMetric = 'requests' | 'tokens' | 'cost'
 
 export default function TrendPage() {
   const [range, setRange] = useState<DashboardRange>('today')
+  const loadSequence = useRef(0)
   const [metric, setMetric] = useState<TrendMetric>('requests')
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
 
+  // 手动刷新不带 AbortSignal，切换区间时旧请求不会被取消，按序号丢弃过期响应，
+  // 否则「本月」的数字可能落在「今日」标签下。
   const load = useCallback(async (signal?: AbortSignal) => {
+    const sequence = ++loadSequence.current
+    const stale = () => Boolean(signal?.aborted) || sequence !== loadSequence.current
     setLoading(true); setError('')
-    try { setSnapshot(await getDashboard(range, signal)) }
-    catch (reason) { if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '趋势加载失败') }
-    finally { if (!signal?.aborted) setLoading(false) }
+    try {
+      const result = await getDashboard(range, signal)
+      if (stale()) return
+      setSnapshot(result)
+    }
+    catch (reason) { if (!stale()) setError(reason instanceof Error ? reason.message : '趋势加载失败') }
+    finally { if (!stale()) setLoading(false) }
   }, [range])
 
   useEffect(() => {

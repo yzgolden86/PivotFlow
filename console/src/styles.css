@@ -2839,8 +2839,9 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .model-alias-suggestion-members code { padding: 2px 6px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 4px; font-family: Consolas, monospace; font-size: 10px; }
 /* 批量创建映射的二级弹窗：左候选右待建，Word 式穿梭 */
 /* 穿梭框比常规弹窗更宽：左右两栏各要放完整模型名，760px 会挤 */
-.console-modal:has(.alias-transfer) { width: min(100%, 1040px); }
-.alias-transfer { display: grid; gap: 13px; }
+/* 宽度含正文的 32px 左右内边距，两栏净宽仍略宽于加内边距之前，芯片不会更早折行 */
+.console-modal:has(.alias-transfer) { width: min(100%, 1080px); }
+.alias-transfer { display: grid; gap: 13px; padding: 16px; }
 .alias-transfer-hint { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 19px; }
 .alias-transfer-panes { display: grid; grid-template-columns: 1fr 1fr; align-items: stretch; gap: 14px; }
 .alias-transfer-pane { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 9px; min-height: min(56vh, 480px); padding: 12px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 8px; }
@@ -2880,7 +2881,11 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .model-alias-member-empty { margin: 0; color: var(--text-muted); font-size: 10px; }
 
 /* Model picker modal */
-.model-picker { display: grid; gap: 10px; min-width: min(560px, 82vw); }
+/* 正文自带 16px 内边距（与 .console-form 一致）。不要改回 min-width 撑宽：
+   .console-modal 是 overflow:auto 的 flex 项，自动最小尺寸为 0，会收缩到声明宽度，
+   比它宽的正文只会被右侧裁掉，省略号生成在可视区之外。要变宽就改下面的 :has() 规则。 */
+.console-modal:has(.model-picker) { width: min(100%, 660px); }
+.model-picker { display: grid; gap: 10px; padding: 16px; }
 .model-picker-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .model-picker-search { display: flex; align-items: center; gap: 7px; flex: 1; padding: 0 9px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 7px; color: var(--text-muted); }
 .model-picker-search input { flex: 1; padding: 8px 0; background: none; border: none; color: var(--text); font-size: 12px; }
@@ -2900,7 +2905,6 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 
 @media (max-width: 900px) {
   .model-alias-suggestions li { flex-direction: column; align-items: stretch; }
-  .model-picker { min-width: 0; }
   /* 展开态的两列在窄屏会挤，改单列堆叠 */
   .model-alias-fields { grid-template-columns: minmax(0, 1fr); }
   .model-alias-summary { flex-wrap: wrap; }
