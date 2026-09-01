@@ -132,3 +132,78 @@ func TestPreferredCanonicalPrefersCleanSpelling(t *testing.T) {
 		})
 	}
 }
+
+// A group whose aliases normalize to DIFFERENT keys owns several keys, so several
+// buckets extend it. They must arrive as ONE suggestion: the console deduplicates
+// selections by canonical name, so separate suggestions would make all but the
+// first silently vanish, and the banner would keep re-prompting for the rest.
+func TestBuildModelAliasSuggestionsMergesSameOwnerBuckets(t *testing.T) {
+	existing := []ModelAliasGroup{{
+		Canonical: "gpt-5",
+		Aliases:   []string{"gpt-5-turbo", "openai/gpt-5-chat"},
+		Enabled:   true,
+	}}
+	names := []string{"GPT-5", "GPT-5-Turbo", "GPT-5-Chat"}
+
+	got := BuildModelAliasSuggestions(names, existing)
+	if len(got) != 1 {
+		t.Fatalf("len(suggestions)=%d, want 1 merged suggestion: %+v", len(got), got)
+	}
+	if got[0].ExtendsCanonical != "gpt-5" || got[0].Canonical != "gpt-5" {
+		t.Fatalf("Canonical=%q ExtendsCanonical=%q, want both gpt-5", got[0].Canonical, got[0].ExtendsCanonical)
+	}
+	want := []string{"GPT-5", "GPT-5-Chat", "GPT-5-Turbo"}
+	if len(got[0].Members) != len(want) {
+		t.Fatalf("Members=%v, want %v", got[0].Members, want)
+	}
+	for i, member := range want {
+		if got[0].Members[i] != member {
+			t.Fatalf("Members=%v, want %v", got[0].Members, want)
+		}
+	}
+}
+
+// Two distinct owners must stay distinct; merging is per-owner, not global.
+func TestBuildModelAliasSuggestionsKeepsDistinctOwnersApart(t *testing.T) {
+	existing := []ModelAliasGroup{
+		{Canonical: "gpt-5", Aliases: []string{"gpt-5-turbo"}, Enabled: true},
+		{Canonical: "glm-5.2", Aliases: []string{"z.ai/glm-5.2"}, Enabled: true},
+	}
+	names := []string{"GPT-5", "GPT-5-Turbo", "GLM-5.2"}
+
+	got := BuildModelAliasSuggestions(names, existing)
+	if len(got) != 2 {
+		t.Fatalf("len(suggestions)=%d, want 2: %+v", len(got), got)
+	}
+	byOwner := map[string]int{}
+	for _, s := range got {
+		byOwner[s.ExtendsCanonical] = len(s.Members)
+	}
+	if byOwner["gpt-5"] != 2 {
+		t.Fatalf("gpt-5 members=%d, want 2: %+v", byOwner["gpt-5"], got)
+	}
+	if byOwner["glm-5.2"] != 1 {
+		t.Fatalf("glm-5.2 members=%d, want 1: %+v", byOwner["glm-5.2"], got)
+	}
+}
+
+// No suggestion may repeat a canonical name, otherwise the console's
+// dedupe-by-canonical drops payload without telling anyone.
+func TestBuildModelAliasSuggestionsNeverRepeatsCanonical(t *testing.T) {
+	existing := []ModelAliasGroup{{
+		Canonical: "gpt-5",
+		Aliases:   []string{"gpt-5-turbo", "gpt-5-chat", "gpt-5-codex"},
+		Enabled:   true,
+	}}
+	names := []string{"GPT-5", "GPT-5-Turbo", "GPT-5-Chat", "GPT-5-Codex", "unrelated-a", "Unrelated-A"}
+
+	got := BuildModelAliasSuggestions(names, existing)
+	seen := map[string]struct{}{}
+	for _, s := range got {
+		key := strings.ToLower(strings.TrimSpace(s.Canonical))
+		if _, dup := seen[key]; dup {
+			t.Fatalf("canonical %q repeated across suggestions: %+v", s.Canonical, got)
+		}
+		seen[key] = struct{}{}
+	}
+}

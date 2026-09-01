@@ -113,18 +113,23 @@ func BuildModelAliasSuggestions(candidates []string, existing []ModelAliasGroup)
 	}
 
 	suggestions := make([]ModelAliasSuggestion, 0, len(buckets))
+	// One group can own several normalized keys (one per differently-normalizing
+	// alias), so several buckets may extend the SAME group. They must be merged
+	// into one suggestion: adopting them is a single action, and the consumer
+	// deduplicates by canonical name, so emitting them separately would make all
+	// but one silently disappear.
+	extendMembers := make(map[string][]string)
+	extendOwners := make([]string, 0, len(buckets))
 	for key, members := range buckets {
 		members = dedupeExact(members)
 		sort.Strings(members)
 		// An existing group already owns this model: even a single leftover name
 		// is worth surfacing, because it is currently routed separately.
 		if owner, owned := ownerByKey[key]; owned {
-			suggestions = append(suggestions, ModelAliasSuggestion{
-				Canonical:        owner,
-				Members:          members,
-				Reason:           "与已配置映射同名，建议补进该映射",
-				ExtendsCanonical: owner,
-			})
+			if _, seen := extendMembers[owner]; !seen {
+				extendOwners = append(extendOwners, owner)
+			}
+			extendMembers[owner] = append(extendMembers[owner], members...)
 			continue
 		}
 		if len(members) < 2 {
@@ -134,6 +139,19 @@ func BuildModelAliasSuggestions(candidates []string, existing []ModelAliasGroup)
 			Canonical: preferredCanonical(members),
 			Members:   members,
 			Reason:    "名称仅大小写、分隔符、厂商前缀或日期后缀不同",
+		})
+	}
+	// Bucket iteration is randomized, so sort the owners before emitting to keep
+	// the output stable across calls.
+	sort.Strings(extendOwners)
+	for _, owner := range extendOwners {
+		members := dedupeExact(extendMembers[owner])
+		sort.Strings(members)
+		suggestions = append(suggestions, ModelAliasSuggestion{
+			Canonical:        owner,
+			Members:          members,
+			Reason:           "与已配置映射同名，建议补进该映射",
+			ExtendsCanonical: owner,
 		})
 	}
 	// Most-members first, then alphabetical, so the UI order is stable.
