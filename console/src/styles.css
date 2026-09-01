@@ -17,7 +17,9 @@
   --surface-strong: #edf2f3;
   --text: #141d1a;
   --text-secondary: #46554f;
-  --text-muted: #86948e;
+  /* 三级文字必须在 surface / surface-muted / surface-strong / bg 四种底色上
+     都过 WCAG AA 4.5:1。原 #86948e 只有约 3.2:1，叠上 9-10px 字号几乎读不清。 */
+  --text-muted: #64716b;
   --border: #dbe3e0;
   --border-strong: #c7d3ce;
   --sidebar: #ffffff;
@@ -44,7 +46,7 @@
   --surface-strong: #252c28;
   --text: #f2f6f4;
   --text-secondary: #b6c1bb;
-  --text-muted: #78847e;
+  --text-muted: #89948e;
   --border: #2d3531;
   --border-strong: #3a443f;
   --sidebar: #111513;
@@ -106,7 +108,7 @@
   --surface-strong: #e8e1d7;
   --text: #2d2925;
   --text-secondary: #625b53;
-  --text-muted: #857c71;
+  --text-muted: #6b635b;
   --border: #ddd4c7;
   --border-strong: #cbbdac;
   --sidebar: #f8f5ef;
@@ -132,7 +134,7 @@
   --surface-strong: #37312b;
   --text: #f2ede5;
   --text-secondary: #c2b8aa;
-  --text-muted: #92877b;
+  --text-muted: #a2988e;
   --border: #403931;
   --border-strong: #554a40;
   --sidebar: #211e1a;
@@ -957,11 +959,11 @@ a:focus-visible {
 .balance-value--multiple b { font-size: 21px; line-height: 26px; }
 
 .balance-value small {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-family: "MiSans", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
-  line-height: 14px;
+  line-height: 15px;
 }
 
 .resource-strip {
@@ -2726,17 +2728,28 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .page-tabs .is-active { color: var(--text); background: var(--surface); box-shadow: 0 1px 3px rgba(20, 28, 24, .08); }
 .page-tabs--header { margin: 0; }
 
-.token-table-wrap { min-width: 0; overflow-x: auto; }
-.token-table-head { display: grid; min-width: 1080px; grid-template-columns: 38px minmax(170px, 1.1fr) minmax(180px, 1.1fr) 86px 105px 108px 112px 125px 106px; align-items: center; gap: 14px; padding: 0 13px 7px; color: var(--text-muted); font-size: 10px; font-weight: 700; }
+/* 表头和数据行共用 --token-columns：两边各写一份模板迟早会漂移（历史上就差了
+   18px，列错位）。同时这里是唯一的横向滚动容器——.token-list 不能再自己滚，
+   否则表头在 wrap 里、行在 list 里，滚行时表头不动。 */
+.token-table-wrap {
+  --token-columns: 38px minmax(160px, 1.05fr) minmax(180px, 1.1fr) 84px 104px 106px 112px 122px 106px;
+  /* 横向下限跟着列数走，收列后还锁 1080px 就白收了 */
+  --token-min: 1150px;
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: 5px;
+  scrollbar-gutter: stable;
+}
+.token-table-head { display: grid; min-width: var(--token-min); grid-template-columns: var(--token-columns); align-items: center; gap: 14px; padding: 0 13px 7px; color: var(--text-muted); font-size: 10px; font-weight: 700; }
 .token-table-head span:last-child { text-align: right; }
 /* 令牌列表头与其内容列左对齐（内容已改为左对齐） */
 .token-table-head span:nth-child(3) { text-align: left; }
-.token-list { display: grid; min-width: 1080px; gap: 8px; }
+.token-list { display: grid; min-width: var(--token-min); gap: 8px; }
 .token-row {
   display: grid;
   min-width: 0;
   min-height: 78px;
-  grid-template-columns: 38px minmax(170px, 1.1fr) minmax(180px, 1.1fr) 86px 105px 108px 112px 125px 106px;
+  grid-template-columns: var(--token-columns);
   align-items: center;
   gap: 14px;
   padding: 12px 13px;
@@ -2784,15 +2797,39 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 
 /* 站点价目表算出的费用：与本地估算区分开，前者接近上游真实扣费 */
 .cost-status--site { color: var(--green) !important; }
-.model-alias-fields { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(280px, 1.6fr); align-items: start; gap: 12px; }
-.model-alias-fields label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 10px; font-weight: 700; }
-.model-alias-fields input {
-  min-height: 38px; padding: 0 11px; color: var(--text); background: var(--surface);
-  border: 1px solid var(--border); border-radius: 7px; font-size: 12px;
+/* 展开态：左「对外名」→ 右「上游名」，中间一列画箭头说明方向。
+   两列各自是 .model-alias-field（head 等高 + body），所以标题行和输入框顶边对齐。
+   分隔线放在整块的上方，把摘要行和编辑区在视觉上分开。 */
+.model-alias-fields {
+  display: grid; grid-template-columns: minmax(200px, 1fr) auto minmax(280px, 1.55fr);
+  align-items: start; gap: 14px; padding-top: 11px; border-top: 1px solid var(--border);
 }
-.model-alias-fields input:focus { border-color: var(--green); outline: none; }
-.model-alias-fields textarea { min-height: 38px; padding: 8px 11px; color: var(--text-secondary); background: var(--surface-muted); border: 1px dashed var(--border); border-radius: 7px; font-family: Consolas, monospace; font-size: 11px; line-height: 19px; }
-.model-alias-fields textarea:focus { color: var(--text); background: var(--surface); border-style: solid; border-color: var(--green); outline: none; }
+.model-alias-field { display: grid; gap: 6px; min-width: 0; }
+.model-alias-field-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 18px; }
+.model-alias-field-head label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 11px; font-weight: 700; }
+/* 上游名称个数：跟在标题后的小圆标，避免再占一行 */
+.model-alias-field-head label em {
+  padding: 1px 6px; color: var(--green); background: color-mix(in srgb, var(--green) 13%, transparent);
+  border-radius: 999px; font-size: 10px; font-style: normal; font-weight: 700;
+}
+.model-alias-field-hint { margin: 0; color: var(--text-muted); font-size: 10px; line-height: 15px; }
+/* 箭头与输入框垂直居中对齐：上面是 18px 标题行 + 6px 间距，再半个输入框高度 */
+.model-alias-arrow { display: flex; align-items: center; justify-content: center; margin-top: calc(18px + 6px); min-height: 38px; color: var(--text-muted); }
+.model-alias-fields input {
+  width: 100%; min-height: 38px; padding: 0 11px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 7px; font-family: Consolas, monospace; font-size: 12px;
+}
+.model-alias-fields input::placeholder { font-family: var(--font-sans, inherit); }
+.model-alias-fields input:focus {
+  border-color: var(--green); outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 14%, transparent);
+}
+.model-alias-fields textarea { min-height: 38px; padding: 8px 11px; color: var(--text-secondary); background: var(--surface-muted); border: 1px dashed var(--border); border-radius: 7px; font-family: Consolas, monospace; font-size: 11px; line-height: 19px; resize: vertical; }
+.model-alias-fields textarea::placeholder { font-family: var(--font-sans, inherit); }
+.model-alias-fields textarea:focus {
+  color: var(--text); background: var(--surface); border-style: solid; border-color: var(--green); outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 14%, transparent);
+}
 /* 操作区已移入摘要行，不再需要为 align-items:end 补偿底距 */
 .model-alias-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 /* 带逐项悬浮说明的分段选择器（如渠道选择策略） */
@@ -2872,13 +2909,11 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .model-alias-suggestion-body small { color: var(--text-muted); font-size: 10px; }
 
 /* Selected upstream names as removable chips */
-.model-alias-member-field { display: grid; gap: 6px; }
-.model-alias-member-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text-secondary); font-size: 10px; font-weight: 700; }
 .model-alias-member-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-.model-alias-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 5px 2px 7px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 999px; font-family: Consolas, monospace; font-size: 10px; }
+.model-alias-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px 3px 8px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 999px; font-family: Consolas, monospace; font-size: 11px; }
 .model-alias-chip button { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; padding: 0; color: var(--text-muted); background: none; border: none; border-radius: 50%; cursor: pointer; font-size: 13px; line-height: 1; }
 .model-alias-chip button:hover { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
-.model-alias-member-empty { margin: 0; color: var(--text-muted); font-size: 10px; }
+.model-alias-member-empty { margin: 0; color: var(--text-muted); font-size: 11px; }
 
 /* Model picker modal */
 /* 正文自带 16px 内边距（与 .console-form 一致）。不要改回 min-width 撑宽：
@@ -2905,8 +2940,9 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 
 @media (max-width: 900px) {
   .model-alias-suggestions li { flex-direction: column; align-items: stretch; }
-  /* 展开态的两列在窄屏会挤，改单列堆叠 */
-  .model-alias-fields { grid-template-columns: minmax(0, 1fr); }
+  /* 展开态的两列在窄屏会挤，改单列堆叠；箭头转 90° 指向下一段 */
+  .model-alias-fields { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .model-alias-arrow { margin-top: 0; min-height: 0; justify-content: flex-start; transform: rotate(90deg); }
   .model-alias-summary { flex-wrap: wrap; }
 }
 
@@ -2987,8 +3023,15 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .debug-snapshot { max-height: 68vh; margin: 0; overflow: auto; padding: 16px; color: var(--text-secondary); background: var(--surface-muted); font: 10px/17px Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
 
 @media (max-width: 1180px) {
-  .token-row { grid-template-columns: 38px minmax(180px, 1fr) 90px 110px 112px; }
-  .token-row > :nth-child(6), .token-row > :nth-child(7) { display: none; }
+  /* 隐藏「限制」「创建时间」「最后使用」三列，模板同步降到 6 列；表头必须
+     隐藏同样的序号，否则标签和数据错开一整列。 */
+  .token-table-wrap { --token-columns: 38px minmax(180px, 1fr) minmax(170px, 1fr) 90px 110px 112px; --token-min: 796px; }
+  .token-row > :nth-child(6),
+  .token-row > :nth-child(7),
+  .token-row > :nth-child(8),
+  .token-table-head > :nth-child(6),
+  .token-table-head > :nth-child(7),
+  .token-table-head > :nth-child(8) { display: none; }
   .fingerprint-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .setting-row { grid-template-columns: minmax(200px, 1fr) minmax(170px, 280px) 34px; }
   .setting-default { display: none; }
@@ -3133,6 +3176,10 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
   .record-row.account-grid,
   .record-row.checkin-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 18px; }
   .record-row.checkin-account-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 18px; }
+  /* model-grid 六列固定下限约 956px，是唯一没有任何断点的表格：窄屏下既不
+     重排也没有 min-width 兜底，只能靠祖先滚动。跟其他表格一样降成三列。 */
+  .record-row.model-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 18px; }
+  .record-row.model-grid > * { display: flex; }
   .record-row.account-grid > *,
   .record-row.checkin-grid > *,
   .record-row.checkin-account-grid > * { display: flex; }
@@ -3288,9 +3335,13 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
   .delivery-last { width: 100%; white-space: normal; }
   .page-tabs--header { width: 100%; }
   .page-tabs--header a { flex: 1; justify-content: center; }
-  .token-row { grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; }
+  /* 窄屏只留图标+名称+操作，行不再横向滚动，表头整体收起 */
+  .token-table-wrap { --token-columns: 34px minmax(0, 1fr) auto; --token-min: 0; min-width: 0; }
+  .token-row { gap: 10px; }
   .token-row > :not(.token-icon):not(.token-identity):not(.row-actions) { display: none; }
   .token-row .row-actions { grid-column: 3; grid-row: 1; }
+  .token-table-head { display: none; }
+  .token-list { min-width: 0; }
   .settings-layout { grid-template-columns: 1fr; }
   .settings-groups { display: flex; overflow-x: auto; }
   .settings-groups button { min-width: max-content; border-right: 1px solid var(--border); border-bottom: 0; }
@@ -3381,6 +3432,81 @@ body { font-size: 14px; line-height: 1.5; }
 .webhook-endpoint-row > label,
 .rule-number { font-size: 12px; }
 
+/* 二级/三级小字统一下限 11px。这一段必须留在样式表末尾：上面各组件里
+   还散着 89 处 9-10px 声明，同权重靠后覆盖才生效，改前面那些会被这里盖掉。
+   9px 的一律提到 11px，10px 的补到 11px，配合上面调深的 --text-muted，
+   解决「字小 + 色浅」叠加后看不清的问题。 */
+.entity-chip { font-size: 11px !important; line-height: 17px; }
+.token-table-head,
+.search-results-label,
+.page-eyebrow,
+.usage-rank,
+.usage-meta,
+.tool-share,
+.tool-meta,
+.dashboard-footer,
+.trend-axis,
+.trend-caption,
+.trend-point-tooltip,
+.trend-point-tooltip strong,
+.trend-breakdown-list small,
+.trend-breakdown-list em,
+.fingerprint-card footer,
+.core-status small,
+.search-result small,
+.panel-header > span,
+.section-heading p,
+.stat-kpis small,
+.stat-kpis em,
+.composer-channel-state,
+.route-preview,
+.route-preview code,
+.test-result-empty span,
+.test-result-status span,
+.test-metrics small,
+.test-details > div,
+.test-response > span,
+.test-response pre,
+.probe-result-source span,
+.account-route-sync-row > div span,
+.model-selection-toolbar .selection-search > span,
+.model-selection-toolbar > small,
+.advanced-request-count,
+.advanced-rule-group > header small,
+.advanced-rule-empty,
+.advanced-list p,
+.credential-verification dt,
+.announcement-row footer,
+.announcement-detail-meta,
+.settings-section-header p,
+.notification-rule small,
+.delivery-state,
+.selection-panel > header span,
+.selection-option small,
+.model-alias-disclosure span,
+.model-alias-field-head label em,
+.model-alias-field-hint,
+.model-alias-suggestions > header span,
+.model-alias-suggestion-tag,
+.model-alias-suggestion-members code,
+.model-alias-suggestion-body small,
+.model-picker-count,
+.model-picker-entry small,
+.settings-groups strong,
+.setting-default,
+.system-access-row span:not(.token-icon),
+.system-access-identity > span,
+.webdav-fields label > small { font-size: 11px; }
+/* 行高跟着字号走，否则 11px 挤在 14px 行里更难读 */
+.usage-meta,
+.tool-meta,
+.trend-caption,
+.trend-breakdown-list small,
+.selection-option small,
+.model-alias-field-hint,
+.setting-default,
+.advanced-rule-empty { line-height: 16px; }
+
 .console-form input:not([type="checkbox"]),
 .console-form select,
 .credential-section input:not([type="checkbox"]),
@@ -3426,7 +3552,10 @@ body { font-size: 14px; line-height: 1.5; }
 .balance-delta--loss { color: var(--coral); background: var(--coral-soft); }
 .account-balance-amount { color: var(--blue) !important; font-family: Bahnschrift, "MiSans", sans-serif; font-size: 14px !important; font-weight: 750; }
 
-.token-row { grid-template-columns: 38px minmax(160px, 1.05fr) minmax(180px, 1.1fr) 84px 104px 106px 112px 122px 106px; }
+/* 这里原本重写了 .token-row 的九列模板。它是顶层规则又排在 1180px/620px 两个
+   媒体查询之后，媒体查询不加权重，所以窄屏收列全被它盖掉：模板还是九列，单元格
+   却被隐藏，行和表头整列错位。调好的列宽已并入上面 .token-table-wrap 的
+   --token-columns，不要在媒体查询后面再写顶层列模板。 */
 .source-menu-popover button { font-size: 13px; line-height: 20px; }
 .token-row .row-actions { flex-direction: row; justify-content: flex-end; }
 /* 令牌列与表头左对齐：内容靠右会和其他列的阅读起点脱节 */
@@ -3531,9 +3660,9 @@ body { font-size: 14px; line-height: 1.5; }
 .system-access-row:hover { border-color: color-mix(in srgb, var(--green) 30%, var(--border)); background: color-mix(in srgb, var(--green-soft) 22%, var(--surface-muted)); }
 .system-access-row > div { display: grid; min-width: 0; gap: 3px; }
 .system-access-row strong { overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.system-access-row span:not(.token-icon) { overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 17px; text-overflow: ellipsis; white-space: nowrap; }
+.system-access-row span:not(.token-icon) { overflow: hidden; color: var(--text-muted); font-size: 11px; line-height: 17px; text-overflow: ellipsis; white-space: nowrap; }
 .system-access-identity code { overflow: hidden; color: var(--blue); font: 600 11px/17px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.system-access-identity > span { overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.system-access-identity > span { overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .system-access-row .row-actions { display: flex; flex-direction: row; justify-content: flex-end; }
 .system-access-empty { display: grid; justify-items: center; gap: 7px; padding: 35px 18px; color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: 9px; text-align: center; }
 .system-access-empty svg { color: var(--green); }
@@ -3830,7 +3959,7 @@ body { font-size: 14px; line-height: 1.5; }
 .webdav-fields { display: grid; grid-template-columns: minmax(240px, 1.5fr) minmax(150px, .75fr) minmax(170px, .8fr); gap: 14px; padding: 18px 20px; }
 .webdav-fields label, .webdav-switch-field { display: grid; min-width: 0; align-content: start; gap: 7px; }
 .webdav-fields label > span, .webdav-switch-field > span { color: var(--text-secondary); font-size: 12px; font-weight: 650; }
-.webdav-fields label > small { color: var(--text-muted); font-size: 10px; line-height: 1.45; }
+.webdav-fields label > small { color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 .webdav-fields input, .webdav-fields select { width: 100%; min-height: 42px; padding: 9px 11px; color: var(--text); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 8px; outline: 0; font-size: 13px; }
 .webdav-fields input:focus, .webdav-fields select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 13%, transparent); }
 .webdav-switch-field { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
@@ -3925,9 +4054,10 @@ body { font-size: 14px; line-height: 1.5; }
 }
 
 @media (min-width: 881px) {
+  /* .token-list 不在这里：它的滚动容器是 .token-table-wrap，
+     两层都能滚会让表头和行各滚一套。 */
   .channel-list,
-  .site-list,
-  .token-list {
+  .site-list {
     overflow-x: auto;
     padding-bottom: 5px;
     scrollbar-gutter: stable;
@@ -3945,7 +4075,6 @@ body { font-size: 14px; line-height: 1.5; }
   }
   .site-probe { display: flex; }
 
-  .token-row { min-width: 1080px; }
   .account-records > .account-grid {
     min-width: 1080px;
     grid-template-columns: minmax(180px, 1.1fr) 120px 120px 120px 125px minmax(350px, 1.5fr);

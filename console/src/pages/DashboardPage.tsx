@@ -187,7 +187,6 @@ export default function DashboardPage() {
           <div className="section-heading">
             <div>
               <h2>工具消耗</h2>
-              <p>按客户端入口协议归类</p>
             </div>
           </div>
           <div className="tool-grid">
@@ -240,10 +239,13 @@ function BalanceValue({ balances }: { balances: DashboardBalance[] }) {
       className={`balance-value${balances.length > 1 ? ' balance-value--multiple' : ''}`}
       aria-label={balances.map((balance) => `${currencyName(balance.currency)} ${formatNumber(balance.amount, 2)}`).join('，')}
     >
+      {/* 币种名只在多币种并列时才写出来：单一币种下符号已经说明了一切，
+          再补一行「美元」是纯冗余。aria-label 与 title 始终保留完整币种，
+          屏幕阅读器和「$ 到底是美元还是港币」的悬浮确认都不受影响。 */}
       {balances.map((balance) => (
         <span key={balance.currency} title={`${currencyName(balance.currency)}（${balance.currency}）`}>
           <b>{currencySymbol(balance.currency)}{formatNumber(balance.amount, 2)}</b>
-          <small>{currencyName(balance.currency)}</small>
+          {balances.length > 1 && <small>{currencyName(balance.currency)}</small>}
         </span>
       ))}
     </span>
