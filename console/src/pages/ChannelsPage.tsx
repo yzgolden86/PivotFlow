@@ -31,6 +31,7 @@ export default function ChannelsPage() {
   const [editing, setEditing] = useState<number | 'new' | null>(null)
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
   const [syncOpen, setSyncOpen] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const importInput = useRef<HTMLInputElement>(null)
   const focusedChannelRef = useRef(0)
   const loadedOnceRef = useRef(Boolean(initialResult))
@@ -165,7 +166,7 @@ export default function ChannelsPage() {
           <input ref={importInput} className="visually-hidden" type="file" accept="application/json,.json" multiple onChange={(event) => void importCredentials(event.target.files)} />
 		  <div className="source-menu"><button className="secondary-button" type="button" aria-haspopup="menu" aria-expanded={sourceMenuOpen} onClick={() => setSourceMenuOpen((open) => !open)}><Layers3 size={16} />其他来源</button>{sourceMenuOpen && <div className="source-menu-popover" role="menu"><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); importInput.current?.click() }}><FileUp size={15} />导入 OAuth</button><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); setEditing('new') }}><Plus size={15} />手工渠道</button></div>}</div>
 		  <button className="primary-button" type="button" onClick={() => setSyncOpen(true)}><RefreshCw size={16} />同步站点渠道</button>
-          <button className="icon-button icon-button--surface" type="button" onClick={() => void load(undefined, { silent: true, force: true })} aria-label="刷新渠道" title="刷新渠道"><RefreshCw size={17} /></button>
+          <button className="icon-button icon-button--surface" type="button" disabled={refreshing} title="刷新渠道" onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新渠道"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
         </div>
       </header>
 

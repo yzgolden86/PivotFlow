@@ -2729,6 +2729,8 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .token-table-wrap { min-width: 0; overflow-x: auto; }
 .token-table-head { display: grid; min-width: 1080px; grid-template-columns: 38px minmax(170px, 1.1fr) minmax(180px, 1.1fr) 86px 105px 108px 112px 125px 106px; align-items: center; gap: 14px; padding: 0 13px 7px; color: var(--text-muted); font-size: 10px; font-weight: 700; }
 .token-table-head span:last-child { text-align: right; }
+/* 令牌列表头与其内容列左对齐（内容已改为左对齐） */
+.token-table-head span:nth-child(3) { text-align: left; }
 .token-list { display: grid; min-width: 1080px; gap: 8px; }
 .token-row {
   display: grid;
@@ -2782,9 +2784,15 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 
 /* 站点价目表算出的费用：与本地估算区分开，前者接近上游真实扣费 */
 .cost-status--site { color: var(--green) !important; }
-.model-alias-fields { display: grid; grid-template-columns: minmax(170px, .7fr) minmax(260px, 1.3fr); gap: 10px; }
+.model-alias-fields { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(280px, 1.6fr); align-items: start; gap: 12px; }
 .model-alias-fields label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 10px; font-weight: 700; }
-.model-alias-fields textarea { min-height: 72px; resize: vertical; font-family: Consolas, monospace; font-size: 11px; }
+.model-alias-fields input {
+  min-height: 38px; padding: 0 11px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 7px; font-size: 12px;
+}
+.model-alias-fields input:focus { border-color: var(--green); outline: none; }
+.model-alias-fields textarea { min-height: 38px; padding: 8px 11px; color: var(--text-secondary); background: var(--surface-muted); border: 1px dashed var(--border); border-radius: 7px; font-family: Consolas, monospace; font-size: 11px; line-height: 19px; }
+.model-alias-fields textarea:focus { color: var(--text); background: var(--surface); border-style: solid; border-color: var(--green); outline: none; }
 /* 操作区已移入摘要行，不再需要为 align-items:end 补偿底距 */
 .model-alias-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 /* 带逐项悬浮说明的分段选择器（如渠道选择策略） */
@@ -3417,7 +3425,8 @@ body { font-size: 14px; line-height: 1.5; }
 .token-row { grid-template-columns: 38px minmax(160px, 1.05fr) minmax(180px, 1.1fr) 84px 104px 106px 112px 122px 106px; }
 .source-menu-popover button { font-size: 13px; line-height: 20px; }
 .token-row .row-actions { flex-direction: row; justify-content: flex-end; }
-.token-secret-cell { display: flex !important; min-width: 0; flex-direction: row !important; align-items: center; justify-content: flex-end; gap: 7px; }
+/* 令牌列与表头左对齐：内容靠右会和其他列的阅读起点脱节 */
+.token-secret-cell { display: flex !important; min-width: 0; flex-direction: row !important; align-items: center; justify-content: flex-start; gap: 7px; }
 .token-secret-cell > code { overflow: hidden; padding: 3px 7px; color: var(--blue); background: var(--blue-soft); border-radius: 5px; font: 600 11px/17px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .token-secret-cell .icon-button { width: 30px; height: 30px; flex: 0 0 30px; }
 

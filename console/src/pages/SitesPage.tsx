@@ -41,6 +41,7 @@ export default function SitesPage() {
   const [busyId, setBusyId] = useState<number | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [batchBusy, setBatchBusy] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [editing, setEditing] = useState<Site | null | undefined>(undefined)
   const [form, setForm] = useState<SiteForm>(emptyForm)
   const [saving, setSaving] = useState(false)
@@ -222,7 +223,7 @@ export default function SitesPage() {
   return <div className="workspace-page">
     <header className="page-header">
 	  <h1>站点管理</h1>
-      <div className="header-controls"><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" onClick={() => void load(undefined, { silent: true, force: true })} aria-label="刷新站点"><RefreshCw size={17} /></button></div>
+      <div className="header-controls"><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新站点"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></div>
     </header>
     <section className="compact-summary"><span><strong>{sites.length}</strong>站点总数</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>已启用</span><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{healthy}</strong>健康账号</span></section>
     <div className="filter-bar"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部站点" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索站点、地址或平台" aria-label="搜索站点" /></label><select value={sort} onChange={(event) => { setSort(event.target.value); setPage(1) }} aria-label="站点排序"><option value="newest">新建优先</option><option value="name">名称 A-Z</option><option value="enabled">启用优先</option><option value="health">健康账号数</option></select><span className="filter-count"><Globe2 size={14} />{visible.length} 个站点</span></div>

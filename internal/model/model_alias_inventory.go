@@ -35,7 +35,13 @@ var vendorPrefixPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.\-]*/`)
 
 // dateSuffixPattern matches trailing dated build stamps such as "-20250219"
 // or "-2025-02-19", which upstreams append to otherwise identical models.
-var dateSuffixPattern = regexp.MustCompile(`[-_](20\d{2})[-_]?(\d{2})[-_]?(\d{2})$`)
+// An optional short build number ("-20250219-1", "-20250219v2") is tolerated.
+var dateSuffixPattern = regexp.MustCompile(`[-_](20\d{2})[-_]?(\d{2})[-_]?(\d{2})(?:[-_]?v?\d{1,3})?$`)
+
+// latestSuffixPattern strips the conventional "newest snapshot" marker, which
+// relays append without implying a distinct model. "preview" is NOT stripped:
+// preview builds are usually a separate, billable model.
+var latestSuffixPattern = regexp.MustCompile(`[-_]?latest$`)
 
 // separatorPattern matches characters upstreams use inconsistently between the
 // same model's variants (dots, underscores, spaces, dashes, colons).
@@ -53,6 +59,7 @@ func NormalizeModelNameForGrouping(name string) string {
 	// Strip at most one vendor prefix; nested paths are rare and meaningful.
 	key = vendorPrefixPattern.ReplaceAllString(key, "")
 	key = dateSuffixPattern.ReplaceAllString(key, "")
+	key = latestSuffixPattern.ReplaceAllString(key, "")
 	key = separatorPattern.ReplaceAllString(key, "")
 	return key
 }

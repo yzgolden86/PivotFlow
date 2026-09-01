@@ -43,6 +43,14 @@ export default function SystemSettingsPageV2() {
   const [appearance, setAppearance] = useState<ThemeCustomization>(readThemeCustomization)
   const [versionInfo, setVersionInfo] = useState<{ version: string; latest_version?: string; has_update?: boolean; release_url?: string; last_check?: string; message?: string; error?: string } | null>(null)
   const [checkingVersion, setCheckingVersion] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+
+  const reloadSettings = async () => {
+    // 有未保存修改时先确认：load 会用服务器值覆盖本地草稿。
+    if (dirty.size && !window.confirm(`有 ${dirty.size} 项未保存的修改，刷新将丢弃这些修改，继续？`)) return
+    setRefreshing(true)
+    try { await load() } finally { setRefreshing(false) }
+  }
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
@@ -169,7 +177,7 @@ export default function SystemSettingsPageV2() {
       <h1>系统设置</h1>
       {section === 'runtime' && group !== 'appearance' && <div className="header-controls">
         <button className="primary-button" type="button" onClick={() => void save()} disabled={!dirty.size || saving}><Save size={17} />{saving ? '保存中' : `保存${dirty.size ? ` (${dirty.size})` : ''}`}</button>
-        <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新系统设置" title="刷新"><RefreshCw size={18} /></button>
+        <button className="icon-button icon-button--surface" type="button" onClick={() => void reloadSettings()} disabled={refreshing} aria-label="刷新系统设置" title="从服务器重新读取"><RefreshCw size={18} className={refreshing ? 'spin' : undefined} /></button>
       </div>}
     </header>
 
@@ -372,7 +380,8 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
   const commit = (next: AliasDraft[]) => change(serializeAliasDraft(next))
   const update = (index: number, patch: Partial<AliasDraft>) => commit(groups.map((group, itemIndex) => itemIndex === index ? { ...group, ...patch } : group))
   // 新增的那条直接展开，否则点了「新增映射」看不到任何可填的地方。
-  const add = () => { commit([...groups, { canonical: '', aliases: '', enabled: true }]); setExpanded(groups.length); setFilter('') }
+  // 新增条目放最前：用户点「新增映射」后应立刻在列表顶部看到它，而不是去列表底部找。
+  const add = () => { commit([{ canonical: '', aliases: '', enabled: true }, ...groups]); setExpanded(0); setFilter('') }
   const remove = (index: number) => {
     commit(groups.filter((_, itemIndex) => itemIndex !== index))
     // 删除会让后续条目索引前移，展开态跟着挪，避免展开到别人身上。
@@ -401,10 +410,17 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
     commit([...groups, withMembers({ canonical: suggestion.canonical, aliases: '', enabled: true }, members)])
   }
 
+  // 建议要以「草稿」为准过滤：映射写入的是设置表单的本地草稿，
+  // 保存前数据库并不知道，只按数据库过滤会一直重复提示已添加的组合。
   const usableSuggestions = useMemo(() => {
     if (!inventory) return []
-    return inventory.suggestions.filter((suggestion) => suggestion.members.length > 0)
-  }, [inventory])
+    const claimed = new Set<string>()
+    for (const group of groups) {
+      claimed.add(group.canonical.trim())
+      for (const member of aliasMembers(group)) claimed.add(member)
+    }
+    return inventory.suggestions.filter((suggestion) => suggestion.members.some((member) => !claimed.has(member)))
+  }, [inventory, groups])
 
   // 批量套用：一次提交所有选中的建议，只写回一次，避免逐条 commit。
   // 两条建议指向同一统一名称时只取第一条（先到先得，后面的丢弃）。
