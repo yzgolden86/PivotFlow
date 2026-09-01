@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import type { SiteAccount } from '../types'
 
@@ -13,13 +14,19 @@ export function Modal({ title, children, close, wide = false }: {
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [close])
-  return (
+  // 必须挂到 body，不能留在页面容器里。.workspace-page/.dashboard-page 都带
+  // `animation: page-enter ... both`，而 page-enter 动的是 opacity——fill-mode
+  // both 让这个 opacity 一直生效，元素因此成为层叠上下文，把 position:fixed 的
+  // .modal-layer 也一起关了进去。于是 z-index:80 只在页面容器内部有效，
+  // 比不过外面 z-index:30 的侧边栏，窗口不够宽时弹窗左半边被侧边栏压住。
+  return createPortal(
     <div className="modal-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}>
       <section className={`console-modal${wide ? ' console-modal--wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <header><h2>{title}</h2><button className="icon-button icon-button--surface" type="button" onClick={close} aria-label="关闭弹窗"><X size={17} /></button></header>
         {children}
       </section>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

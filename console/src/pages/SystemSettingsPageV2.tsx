@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, Clock3, ExternalLink, FileClock, Gauge, Network,
+  Activity, ArrowRight, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, Clock3, ExternalLink, FileClock, Gauge, Network,
   DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
   KeyRound, ListPlus, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, SlidersHorizontal, TimerReset, Trash2, Type, Wrench, X,
 } from 'lucide-react'
@@ -426,7 +426,10 @@ function ModelAliasPanel({ value, change, refreshTick = 0 }: { value: string; ch
         // 默认折叠成一行：映射条数多时全部展开会把设置页拖得很长。
         // 展开态由 index 记录，新增的那条自动展开。
         const open = expanded === index
-        return <article className={`model-alias-row${open ? ' is-open' : ''}`} key={`${index}-${group.canonical}`}>
+        // key 必须只用稳定的原始 index。把 group.canonical 拼进 key 会让每敲一个字
+        // 就换一个 key，React 卸载重建整行，输入框随即丢失焦点——表现为「只能粘贴，
+        // 手打一个字符就中断」。行内所有输入都是受控的，index 作 key 不会串数据。
+        return <article className={`model-alias-row${open ? ' is-open' : ''}`} key={index}>
           <div className="model-alias-summary">
             <button className="model-alias-disclosure" type="button" aria-expanded={open} onClick={() => setExpanded(open ? null : index)}>
               <ChevronRight size={15} className="model-alias-caret" />
@@ -439,13 +442,23 @@ function ModelAliasPanel({ value, change, refreshTick = 0 }: { value: string; ch
             </div>
           </div>
           {open && <div className="model-alias-fields">
-            <label>统一名称<input value={group.canonical} onChange={(event) => update(index, { canonical: event.target.value })} placeholder="例如 glm-5.2" list="model-alias-known-names" /></label>
-            <div className="model-alias-member-field">
-              <div className="model-alias-member-head"><span>上游名称</span><button className="text-button" type="button" onClick={() => setPickerFor(index)} disabled={!inventory?.candidates.length}><Search size={14} />从渠道挑选{inventory ? `（${inventory.total_models}）` : ''}</button></div>
+            {/* 两列结构对称：各自都是 head + body，标题行等高，输入框顶边才对得齐。
+                中间的箭头列说明映射方向（对外名 → 上游名），窄屏由 CSS 转成竖排。 */}
+            <div className="model-alias-field">
+              <div className="model-alias-field-head"><label htmlFor={`alias-canonical-${index}`}>统一名称</label></div>
+              <input id={`alias-canonical-${index}`} value={group.canonical} onChange={(event) => update(index, { canonical: event.target.value })} placeholder="例如 glm-5.2" list="model-alias-known-names" autoComplete="off" spellCheck={false} />
+              <p className="model-alias-field-hint">客户端请求时使用的对外名称</p>
+            </div>
+            <div className="model-alias-arrow" aria-hidden="true"><ArrowRight size={15} /></div>
+            <div className="model-alias-field">
+              <div className="model-alias-field-head">
+                <label>上游名称{members.length ? <em>{members.length}</em> : null}</label>
+                <button className="text-button" type="button" onClick={() => setPickerFor(index)} disabled={!inventory?.candidates.length}><Search size={14} />从渠道挑选{inventory ? `（${inventory.total_models}）` : ''}</button>
+              </div>
               {members.length ? <div className="model-alias-member-chips">
                 {members.map((member) => <span className="model-alias-chip" key={member}>{member}<button type="button" onClick={() => update(index, withMembers(group, members.filter((item) => item !== member)))} aria-label={`移除 ${member}`} title="移除">×</button></span>)}
-              </div> : <p className="model-alias-member-empty">尚未选择上游名称</p>}
-              <textarea rows={2} value={group.aliases} onChange={(event) => update(index, { aliases: event.target.value })} placeholder={'也可直接粘贴，每行一个\nGLM-5.2\nz.ai/glm-5.2'} aria-label="上游名称，每行一个" />
+              </div> : <p className="model-alias-member-empty">尚未选择上游名称，可从渠道挑选或直接粘贴</p>}
+              <textarea rows={2} value={group.aliases} onChange={(event) => update(index, { aliases: event.target.value })} placeholder={'也可直接粘贴，每行一个\nGLM-5.2\nz.ai/glm-5.2'} aria-label="上游名称，每行一个" spellCheck={false} />
             </div>
           </div>}
         </article>
