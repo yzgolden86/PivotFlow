@@ -198,12 +198,39 @@ function LogRow({ entry }: { entry: LogEntry }) {
       <div><strong>{formatTime(entry.time)}</strong><span>{sourceLabel(entry.log_source)}</span></div>
       <div className="log-channel-cell"><strong title={entry.channel_name || undefined}>{channelName}</strong><span>{hasChannel ? `#${entry.channel_id}` : '未命中可用渠道'}</span></div>
       <div className="log-status"><div className="log-status-line"><span className={`status-badge status-badge--${success ? 'success' : 'danger'}`}>{statusText}</span>{entry.message && <button className="log-copy-button" type="button" onClick={() => void copyStatus()} aria-label="复制状态错误" title="复制状态和错误详情">{copied ? <Check size={13} /> : <Copy size={13} />}</button>}</div>{entry.message && <span className="record-message" title={entry.message}>{entry.message}</span>}</div>
-      <div><strong title={entry.actual_model && entry.actual_model !== entry.model ? `${entry.model} → ${entry.actual_model}` : entry.model}>{entry.model}</strong><span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
+      <div><strong title={modelRedirectTitle(entry.model, entry.actual_model)}>{entry.model}</strong><span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
       <div><strong>{entry.duration ? `${entry.duration.toFixed(2)}s` : '—'}</strong><span>首字 {entry.first_byte_time ? `${entry.first_byte_time.toFixed(2)}s` : '—'}</span></div>
       <div><strong>{formatNumber(entry.input_tokens)} / {formatNumber(entry.output_tokens)}</strong><span>输入 / 输出</span></div>
       <div><strong title={costStatusLabel(entry.cost_status, entry.is_streaming, entry.cost_source)}>{formatMoney(effectiveCost)}</strong><span className={`${entry.cost_status ? `cost-status cost-status--${entry.cost_status}` : ''}${entry.cost_source === 'site_pricing' ? ' cost-status--site' : ''}`.trim() || undefined}>{costStatusLabel(entry.cost_status, entry.is_streaming, entry.cost_source)}</span></div>
     </article>
   )
+}
+
+// 判断两个模型名是否只是前缀/后缀写法不同，此类差异不算模型重定向：
+// - gemini-3.6-flash-high vs gemini-3.6-flash（变体后缀）
+// - 773/deepseek-v4-flash vs deepseek-v4-flash（站点前缀）
+// - deepseek-v4-pro-ga-260813 vs deepseek-v4-pro-0813（共享首尾，中间展开）
+// 移植自 ccLoad 4.9 的同名判定（web/assets/js/logs.js），保持行为一致。
+export function isPrefixOrSuffixVariant(model?: string, actualModel?: string): boolean {
+  if (!model || !actualModel) return false
+  const a = model.toLowerCase()
+  const b = actualModel.toLowerCase()
+  if (a === b) return true
+  const short = a.length <= b.length ? a : b
+  const long = a.length <= b.length ? b : a
+  if (long.startsWith(short) || long.endsWith(short)) return true
+  let prefixLen = 0
+  while (prefixLen < short.length && short[prefixLen] === long[prefixLen]) prefixLen++
+  let suffixLen = 0
+  while (suffixLen < short.length - prefixLen &&
+         short[short.length - 1 - suffixLen] === long[long.length - 1 - suffixLen]) suffixLen++
+  return prefixLen > 0 && suffixLen > 0 && prefixLen + suffixLen === short.length
+}
+
+// 悬浮提示只在发生实质性重定向时展示请求模型 → 实际模型。
+function modelRedirectTitle(model?: string, actualModel?: string): string | undefined {
+  if (!actualModel || actualModel === model || isPrefixOrSuffixVariant(model, actualModel)) return undefined
+  return `${model} → ${actualModel}`
 }
 
 // 费用来源比统计口径更重要：站点价目表算出的接近上游真实扣费，
