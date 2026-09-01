@@ -109,6 +109,7 @@ export default function AccountsPage() {
   const [busy, setBusy] = useState<Map<number, AccountTaskKind>>(new Map())
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [batchBusy, setBatchBusy] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [routeSyncRun, setRouteSyncRun] = useState<RouteSyncRun | null>(null)
   const [openingCreate, setOpeningCreate] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -481,7 +482,7 @@ export default function AccountsPage() {
       <h1>账号管理</h1>
       <div className="header-controls">
         <button className="primary-button" type="button" onClick={() => void openCreate(siteFilter)} disabled={!sites.length || openingCreate}><Plus size={16} />添加账号</button>
-        <button className="icon-button icon-button--surface" type="button" onClick={() => void load(undefined, { silent: true, force: true })} aria-label="刷新账号"><RefreshCw size={17} /></button>
+        <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新账号"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
       </div>
     </header>
     <section className="compact-summary"><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{accounts.filter((item) => item.status === 'healthy').length}</strong>健康</span><span><strong>{accounts.filter((item) => item.auto_checkin).length}</strong>自动签到</span><span><strong>{accounts.filter((item) => item.credential_configured).length}</strong>凭证已配置</span></section>

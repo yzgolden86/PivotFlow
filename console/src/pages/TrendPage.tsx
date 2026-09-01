@@ -11,6 +11,7 @@ export default function TrendPage() {
   const [metric, setMetric] = useState<TrendMetric>('requests')
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
 
   const load = useCallback(async (signal?: AbortSignal) => {
@@ -39,7 +40,7 @@ export default function TrendPage() {
         <div className="range-control" role="radiogroup" aria-label="趋势时间范围">
           {([['today', '今日'], ['this_week', '本周'], ['this_month', '本月']] as const).map(([value, label]) => <button className={range === value ? 'is-active' : ''} type="button" role="radio" aria-checked={range === value} onClick={() => setRange(value)} key={value}>{label}</button>)}
         </div>
-        <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新趋势"><RefreshCw size={17} /></button>
+        <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新趋势"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
       </div>
     </header>
     {error && <OperationNotice tone="error">{error}</OperationNotice>}
