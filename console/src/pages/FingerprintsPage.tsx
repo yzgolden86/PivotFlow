@@ -17,11 +17,14 @@ export default function FingerprintsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
 
-  const load = useCallback(async (signal?: AbortSignal) => {
+  // 渠道列表要跟着一起强制刷新：它只喂「创建基线」的渠道下拉，
+  // 不传 force 会命中 getChannels 的 30s TTL 缓存，外部新增的渠道刷完仍然看不到。
+  const load = useCallback(async (signal?: AbortSignal, options: { force?: boolean } = {}) => {
     setLoading(true); setError('')
     try {
-      const [baselineData, resultData, channelData] = await Promise.all([getFingerprints(signal), getFingerprintResults(signal), getChannels({ limit: 1000, offset: 0 }, signal)])
+      const [baselineData, resultData, channelData] = await Promise.all([getFingerprints(signal), getFingerprintResults(signal), getChannels({ limit: 1000, offset: 0 }, signal, { force: options.force })])
       setFingerprints(baselineData); setResults(resultData); setChannels(channelData.data)
     } catch (reason) { if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '模型能力基线加载失败') }
     finally { if (!signal?.aborted) setLoading(false) }
@@ -41,7 +44,7 @@ export default function FingerprintsPage() {
   if (error && !fingerprints.length && !results.length) return <div className="workspace-page"><ErrorState message={error} retry={() => void load()} /></div>
 
   return <div className="workspace-page fingerprints-page">
-    <header className="page-header"><div><h1>模型能力基线</h1><span className="page-header-note">用固定采样记录响应耗时和结果特征，检查上游模型是否发生变化</span></div><div className="header-controls"><button className="secondary-button" type="button" onClick={() => setJobMode('test')} disabled={!fingerprints.length}><Play size={15} />开始对比</button><button className="primary-button" type="button" onClick={() => setJobMode('calibrate')}><Plus size={15} />创建基线</button><button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新模型能力基线"><RefreshCw size={17} /></button></div></header>
+    <header className="page-header"><div><h1>模型能力基线</h1><span className="page-header-note">用固定采样记录响应耗时和结果特征，检查上游模型是否发生变化</span></div><div className="header-controls"><button className="secondary-button" type="button" onClick={() => setJobMode('test')} disabled={!fingerprints.length}><Play size={15} />开始对比</button><button className="primary-button" type="button" onClick={() => setJobMode('calibrate')}><Plus size={15} />创建基线</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { force: true }) } finally { setRefreshing(false) } }} aria-label="刷新模型能力基线"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></div></header>
     {error && <OperationNotice tone="error">{error}</OperationNotice>}
     <div className="page-tabs" role="tablist"><button className={mode === 'baselines' ? 'is-active' : ''} type="button" role="tab" aria-selected={mode === 'baselines'} onClick={() => setMode('baselines')}><Fingerprint size={15} />能力基线 ({fingerprints.length})</button><button className={mode === 'results' ? 'is-active' : ''} type="button" role="tab" aria-selected={mode === 'results'} onClick={() => setMode('results')}><Beaker size={15} />对比记录 ({results.length})</button></div>
 

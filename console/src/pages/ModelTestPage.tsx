@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Boxes,
   CheckCircle2,
@@ -44,16 +44,23 @@ export default function ModelTestPage() {
   const [stream, setStream] = useState(true)
   const [results, setResults] = useState<Partial<Record<ProbeTarget, ProbeResult>>>({})
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [testing, setTesting] = useState(false)
   const [error, setError] = useState('')
+  // load 里要读当前选择做失效校验，但不能把它们放进 useCallback 依赖，
+  // 否则每次改选择都会重建 load 并触发挂载 effect 重新拉数。
+  const selectionRef = useRef<{ channelId: number; accountId: number; target: ProbeTarget }>({ channelId: 0, accountId: 0, target: 'channel' })
 
-  const load = useCallback(async (signal?: AbortSignal) => {
+  // keepSelection：手动刷新只重新取数，不能重放 URL 参数，否则用户当前选好的
+  // 渠道/账号/模型会被打回默认值。force：绕过 getChannels(30s) 与
+  // getSiteInventory(45s) 的 TTL 缓存，否则「刷新」可能拿回陈旧数据。
+  const load = useCallback(async (signal?: AbortSignal, options: { force?: boolean; keepSelection?: boolean } = {}) => {
     setLoading(true)
     setError('')
     try {
       const [channelResponse, inventory, modelResponse] = await Promise.all([
-        getChannels({ limit: 1000, offset: 0 }, signal),
-        getSiteInventory(signal),
+        getChannels({ limit: 1000, offset: 0 }, signal, { force: options.force }),
+        getSiteInventory(signal, { force: options.force }),
         getSiteModels({}, signal),
       ])
       const availableChannels = channelResponse.data
@@ -63,25 +70,47 @@ export default function ModelTestPage() {
       setAccounts(enabledAccounts)
       setSiteModels(modelResponse.data)
 
-      const requestedChannel = Number(params.get('channel'))
-      const requestedAccount = Number(params.get('account'))
-      const requestedModel = (params.get('model') || '').trim()
-      const selectedChannel = availableChannels.find((item) => item.id === requestedChannel) || (!requestedChannel ? availableChannels[0] : undefined)
-      const selectedAccount = enabledAccounts.find((item) => item.id === requestedAccount) || enabledAccounts.find((item) => modelResponse.data.some((fact) => fact.site_account_id === item.id && !fact.disabled))
-      setChannelId(selectedChannel?.id || (requestedChannel > 0 ? requestedChannel : 0))
-      setAccountId(selectedAccount?.id || 0)
-      if (params.has('account')) {
-        setView('probe')
-        setTarget('site_account')
-        const selectedModels = modelResponse.data.filter((item) => item.site_account_id === selectedAccount?.id && !item.disabled).map((item) => item.model)
-        setModel(requestedModel && selectedModels.includes(requestedModel) ? requestedModel : firstSiteModel(modelResponse.data, selectedAccount?.id || 0))
+      if (options.keepSelection) {
+        // 保留的选择可能已在上游被删除或停用。失效时按 changeChannel /
+        // changeAccount 的既有约定退回首个可用项，否则界面会停在一个
+        // 既选不动也测不了的空状态。
+        // 只处理当前页签对应的那一项：另一项失效与用户正在做的事无关，
+        // 动它会把用户已选好的模型无故清掉。
+        const kept = selectionRef.current
+        const keptChannel = availableChannels.find((item) => item.id === kept.channelId)
+        const nextChannel = kept.channelId > 0 && !keptChannel ? availableChannels[0] : keptChannel
+        if (kept.channelId > 0 && !keptChannel) setChannelId(nextChannel?.id || 0)
+        const accountGone = kept.accountId > 0 && !enabledAccounts.some((item) => item.id === kept.accountId)
+        const nextAccountId = accountGone ? 0 : kept.accountId
+        if (accountGone) setAccountId(0)
+        // 模型同样要校验：它可能被上游从清单里停用或删除。原来的参数重放路径
+        // 用 selectedModels.includes(...) 兜底，keepSelection 不能把这层丢掉，
+        // 否则下拉显示空白但「开始测试」仍可点，会把已停用的模型发给后端。
+        const models = kept.target === 'channel'
+          ? nextChannel?.models.filter((item) => !item.disabled).map((item) => item.model) || []
+          : modelResponse.data.filter((item) => item.site_account_id === nextAccountId && !item.disabled).map((item) => item.model)
+        setModel((current) => models.includes(current) ? current : (models[0] || ''))
       } else {
-        if (params.has('channel')) {
+        const requestedChannel = Number(params.get('channel'))
+        const requestedAccount = Number(params.get('account'))
+        const requestedModel = (params.get('model') || '').trim()
+        const selectedChannel = availableChannels.find((item) => item.id === requestedChannel) || (!requestedChannel ? availableChannels[0] : undefined)
+        const selectedAccount = enabledAccounts.find((item) => item.id === requestedAccount) || enabledAccounts.find((item) => modelResponse.data.some((fact) => fact.site_account_id === item.id && !fact.disabled))
+        setChannelId(selectedChannel?.id || (requestedChannel > 0 ? requestedChannel : 0))
+        setAccountId(selectedAccount?.id || 0)
+        if (params.has('account')) {
           setView('probe')
-          setTarget('channel')
+          setTarget('site_account')
+          const selectedModels = modelResponse.data.filter((item) => item.site_account_id === selectedAccount?.id && !item.disabled).map((item) => item.model)
+          setModel(requestedModel && selectedModels.includes(requestedModel) ? requestedModel : firstSiteModel(modelResponse.data, selectedAccount?.id || 0))
+        } else {
+          if (params.has('channel')) {
+            setView('probe')
+            setTarget('channel')
+          }
+          const selectedModels = selectedChannel?.models.filter((item) => !item.disabled).map((item) => item.model) || []
+          setModel(requestedModel && selectedModels.includes(requestedModel) ? requestedModel : selectedChannel ? firstChannelModel(selectedChannel) : '')
         }
-        const selectedModels = selectedChannel?.models.filter((item) => !item.disabled).map((item) => item.model) || []
-        setModel(requestedModel && selectedModels.includes(requestedModel) ? requestedModel : selectedChannel ? firstChannelModel(selectedChannel) : '')
       }
     } catch (reason) {
       if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '模型数据加载失败')
@@ -89,6 +118,8 @@ export default function ModelTestPage() {
       if (!signal?.aborted) setLoading(false)
     }
   }, [params])
+
+  useEffect(() => { selectionRef.current = { channelId, accountId, target } }, [channelId, accountId, target])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -175,7 +206,7 @@ export default function ModelTestPage() {
     <div className="workspace-page model-test-page">
       <header className="page-header">
         <h1>模型测试</h1>
-		<div className="header-controls"><button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新模型数据" title="刷新模型数据"><RefreshCw size={17} /></button></div>
+		<div className="header-controls"><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { force: true, keepSelection: true }) } finally { setRefreshing(false) } }} aria-label="刷新模型数据" title="刷新模型数据"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></div>
       </header>
 
       <div className="view-tabs" role="tablist" aria-label="模型视图">

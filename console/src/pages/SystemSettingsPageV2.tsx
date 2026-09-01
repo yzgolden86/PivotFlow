@@ -10,6 +10,8 @@ import { EmptyState, ErrorState, LoadingState, OperationNotice } from './shared'
 import { WebhookSettingsPanel } from './SettingsPage'
 import { BackupSettingsPanel } from './BackupSettingsPanel'
 import { Modal } from './siteShared'
+import { adoptSuggestions, aliasMembers, parseAliasDraft, serializeAliasDraft, withMembers } from './modelAliasDraft'
+import type { AliasDraft } from './modelAliasDraft'
 import { applyThemeCustomization, readThemeCustomization, resetThemeCustomization, themeFontOptions } from '../theme'
 import type { ThemeCustomization, ThemeFont, ThemePreference, ThemePreset, ThemeRadius } from '../theme'
 
@@ -44,12 +46,17 @@ export default function SystemSettingsPageV2() {
   const [versionInfo, setVersionInfo] = useState<{ version: string; latest_version?: string; has_update?: boolean; release_url?: string; last_check?: string; message?: string; error?: string } | null>(null)
   const [checkingVersion, setCheckingVersion] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [aliasRefreshTick, setAliasRefreshTick] = useState(0)
 
   const reloadSettings = async () => {
     // 有未保存修改时先确认：load 会用服务器值覆盖本地草稿。
     if (dirty.size && !window.confirm(`有 ${dirty.size} 项未保存的修改，刷新将丢弃这些修改，继续？`)) return
     setRefreshing(true)
-    try { await load() } finally { setRefreshing(false) }
+    try {
+      await load()
+      // 别名清单不在 getSystemSettings 里，要单独通知面板重拉。
+      setAliasRefreshTick((tick) => tick + 1)
+    } finally { setRefreshing(false) }
   }
 
   const load = useCallback(async (signal?: AbortSignal) => {
@@ -210,7 +217,7 @@ export default function SystemSettingsPageV2() {
           </div>
 
           {group === 'appearance' && !query.trim() ? <AppearancePanel customization={appearance} change={changeAppearance} reset={resetAppearance} /> : <>
-          {group === 'routing' && !query.trim() && <ModelAliasPanel value={values.model_alias_groups || '[]'} change={(value) => change('model_alias_groups', value)} />}
+          {group === 'routing' && !query.trim() && <ModelAliasPanel value={values.model_alias_groups || '[]'} change={(value) => change('model_alias_groups', value)} refreshTick={aliasRefreshTick} />}
           {group === 'advanced' && !query.trim() && <div className="settings-risk-note"><ShieldAlert size={17} /><span>这些设置用于特殊兼容场景。不了解具体影响时请保持默认值。</span></div>}
 
           {!visible.length ? <EmptyState label="没有符合条件的设置" /> : <div className="setting-list">
@@ -325,35 +332,10 @@ function SystemAccessTokenForm({ token, scopes, saving, close, save }: { token?:
 
 function toDateTimeLocal(value: number): string { const date = new Date(value - new Date(value).getTimezoneOffset() * 60_000); return date.toISOString().slice(0, 16) }
 
-type AliasDraft = { canonical: string; aliases: string; enabled: boolean }
-
-function parseAliasDraft(value: string): AliasDraft[] {
-  try {
-    const parsed = JSON.parse(value || '[]') as Array<{ canonical?: string; aliases?: string[]; enabled?: boolean }>
-    if (!Array.isArray(parsed)) return []
-    return parsed.map((item) => ({ canonical: item.canonical || '', aliases: Array.isArray(item.aliases) ? item.aliases.join('\n') : '', enabled: item.enabled !== false }))
-  } catch {
-    return []
-  }
-}
-
-function serializeAliasDraft(groups: AliasDraft[]): string {
-  return JSON.stringify(groups.map((group) => ({
-    canonical: group.canonical.trim(),
-    aliases: group.aliases.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
-    enabled: group.enabled,
-  })), null, 2)
-}
-
-function aliasMembers(group: AliasDraft): string[] {
-  return group.aliases.split(/[\n,]/).map((item) => item.trim()).filter(Boolean)
-}
-
-function withMembers(group: AliasDraft, members: string[]): AliasDraft {
-  return { ...group, aliases: Array.from(new Set(members)).join('\n') }
-}
-
-function ModelAliasPanel({ value, change }: { value: string; change: (value: string) => void }) {
+// refreshTick 由页面右上角的刷新按钮递增。清单（候选模型与可合并建议）是独立
+// 拉取的，不跟着 getSystemSettings 走，不接这个信号的话刷新后建议仍是旧的，
+// 在渠道分发同步完模型后回到这里会看不到新建议。
+function ModelAliasPanel({ value, change, refreshTick = 0 }: { value: string; change: (value: string) => void; refreshTick?: number }) {
   const groups = useMemo(() => parseAliasDraft(value), [value])
   const [inventory, setInventory] = useState<ModelAliasInventory | null>(null)
   const [loading, setLoading] = useState(true)
@@ -375,7 +357,7 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
     const controller = new AbortController()
     reload(controller.signal)
     return () => controller.abort()
-  }, [reload])
+  }, [reload, refreshTick])
 
   const commit = (next: AliasDraft[]) => change(serializeAliasDraft(next))
   const update = (index: number, patch: Partial<AliasDraft>) => commit(groups.map((group, itemIndex) => itemIndex === index ? { ...group, ...patch } : group))
@@ -396,20 +378,6 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
     return entries.filter(({ group }) => group.canonical.toLowerCase().includes(needle) || group.aliases.toLowerCase().includes(needle))
   }, [groups, filter])
 
-  // Adopting a suggestion either extends the group that already owns the model
-  // or appends a new group, so two canonical names never compete for one model.
-  const adopt = (suggestion: ModelAliasSuggestion) => {
-    if (suggestion.extends_canonical) {
-      const target = groups.findIndex((group) => group.canonical.trim() === suggestion.extends_canonical)
-      if (target >= 0) {
-        commit(groups.map((group, index) => index === target ? withMembers(group, [...aliasMembers(group), ...suggestion.members]) : group))
-        return
-      }
-    }
-    const members = suggestion.members.filter((member) => member !== suggestion.canonical)
-    commit([...groups, withMembers({ canonical: suggestion.canonical, aliases: '', enabled: true }, members)])
-  }
-
   // 建议要以「草稿」为准过滤：映射写入的是设置表单的本地草稿，
   // 保存前数据库并不知道，只按数据库过滤会一直重复提示已添加的组合。
   const usableSuggestions = useMemo(() => {
@@ -423,25 +391,9 @@ function ModelAliasPanel({ value, change }: { value: string; change: (value: str
   }, [inventory, groups])
 
   // 批量套用：一次提交所有选中的建议，只写回一次，避免逐条 commit。
-  // 两条建议指向同一统一名称时只取第一条（先到先得，后面的丢弃）。
+  // 合并规则见 modelAliasDraft.adoptSuggestions（有回归测试覆盖）。
   const adoptMany = (selections: ModelAliasSuggestion[]) => {
-    const next = [...groups]
-    const seenCanonical = new Set<string>()
-    for (const suggestion of selections) {
-      const key = suggestion.canonical.trim().toLowerCase()
-      if (seenCanonical.has(key)) continue
-      seenCanonical.add(key)
-      if (suggestion.extends_canonical) {
-        const target = next.findIndex((group) => group.canonical.trim() === suggestion.extends_canonical)
-        if (target >= 0) {
-          next[target] = withMembers(next[target], [...aliasMembers(next[target]), ...suggestion.members])
-          continue
-        }
-      }
-      const members = suggestion.members.filter((member) => member !== suggestion.canonical)
-      next.push(withMembers({ canonical: suggestion.canonical, aliases: '', enabled: true }, members))
-    }
-    commit(next)
+    commit(adoptSuggestions(groups, selections))
     setFilter('')
   }
 
@@ -752,12 +704,14 @@ function AliasTransferModal({ suggestions, close, apply }: {
   const [query, setQuery] = useState('')
   const [pending, setPending] = useState<ModelAliasSuggestion[]>([])
 
-  const pendingKeys = useMemo(() => new Set(pending.map((item) => item.canonical)), [pending])
+  // 按对象身份而不是统一名过滤：若两条建议共用统一名，按名字过滤会让另一条
+  // 从左栏消失，用户连单独选它都做不到。
+  const pendingItems = useMemo(() => new Set(pending), [pending])
   const available = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    return suggestions.filter((item) => !pendingKeys.has(item.canonical) &&
+    return suggestions.filter((item) => !pendingItems.has(item) &&
       (!needle || item.canonical.toLowerCase().includes(needle) || item.members.some((member) => member.toLowerCase().includes(needle))))
-  }, [suggestions, pendingKeys, query])
+  }, [suggestions, pendingItems, query])
 
   const add = (item: ModelAliasSuggestion) => setPending((current) => [...current, item])
   const addAll = () => setPending((current) => [...current, ...available])

@@ -5,6 +5,7 @@ import type { ActiveRequest, DashboardRange, LogEntry, LogsBootstrap } from '../
 import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
 import { Modal } from './siteShared'
+import { modelRedirectTitle } from './modelRedirect'
 
 const PAGE_SIZE = 20
 const EMPTY_BOOTSTRAP: LogsBootstrap = { channel_test_content: '', models: [], channels: [], status_codes: [] }
@@ -31,6 +32,7 @@ export default function LogsPage() {
   const [error, setError] = useState('')
   const [autoRefreshSeconds, setAutoRefreshSeconds] = useState(0)
   const [autoRefreshing, setAutoRefreshing] = useState(false)
+  const [manualRefreshing, setManualRefreshing] = useState(false)
   const loadSequence = useRef(0)
   const backgroundRefreshInFlight = useRef(false)
 
@@ -58,7 +60,10 @@ export default function LogsPage() {
       if (background) {
         backgroundRefreshInFlight.current = false
         if (!signal?.aborted) setAutoRefreshing(false)
-      } else if (!signal?.aborted && sequence === loadSequence.current) {
+      } else if (!signal?.aborted) {
+        // 复位 loading 不看序号：background load 会顶掉序号却从不碰 loading，
+        // 若这里也跳过复位，骨架屏会永久留在页面上（数据其实已经写进 state 了）。
+        // 数据写入仍由第 52 行的序号守卫把关。
         setLoading(false)
       }
     }
@@ -93,7 +98,7 @@ export default function LogsPage() {
     <div className="workspace-page">
       <header className="page-header">
         <h1>请求日志</h1>
-        <div className="header-controls"><div className="page-tabs page-tabs--header" role="tablist"><a className={view === 'history' ? 'is-active' : ''} href="#/logs" role="tab" aria-selected={view === 'history'}><History size={14} />历史请求</a><a className={view === 'active' ? 'is-active' : ''} href="#/logs?view=active" role="tab" aria-selected={view === 'active'}><Waves size={14} />进行中</a></div>{view === 'history' && <button className="icon-button icon-button--surface" type="button" onClick={() => void load()} aria-label="刷新日志" title={autoRefreshSeconds > 0 ? `已启用自动刷新：每 ${autoRefreshSeconds} 秒` : '刷新日志'}><RefreshCw className={autoRefreshing ? 'spin' : undefined} size={17} /></button>}</div>
+        <div className="header-controls"><div className="page-tabs page-tabs--header" role="tablist"><a className={view === 'history' ? 'is-active' : ''} href="#/logs" role="tab" aria-selected={view === 'history'}><History size={14} />历史请求</a><a className={view === 'active' ? 'is-active' : ''} href="#/logs?view=active" role="tab" aria-selected={view === 'active'}><Waves size={14} />进行中</a></div>{view === 'history' && <button className="icon-button icon-button--surface" type="button" disabled={manualRefreshing} onClick={async () => { setManualRefreshing(true); try { await load() } finally { setManualRefreshing(false) } }} aria-label="刷新日志" title={autoRefreshSeconds > 0 ? `已启用自动刷新：每 ${autoRefreshSeconds} 秒` : '刷新日志'}><RefreshCw className={autoRefreshing || manualRefreshing ? 'spin' : undefined} size={17} /></button>}</div>
       </header>
 
       {view === 'active' ? <ActiveRequestsView autoRefreshSeconds={autoRefreshSeconds} /> : <>
@@ -204,33 +209,6 @@ function LogRow({ entry }: { entry: LogEntry }) {
       <div><strong title={costStatusLabel(entry.cost_status, entry.is_streaming, entry.cost_source)}>{formatMoney(effectiveCost)}</strong><span className={`${entry.cost_status ? `cost-status cost-status--${entry.cost_status}` : ''}${entry.cost_source === 'site_pricing' ? ' cost-status--site' : ''}`.trim() || undefined}>{costStatusLabel(entry.cost_status, entry.is_streaming, entry.cost_source)}</span></div>
     </article>
   )
-}
-
-// 判断两个模型名是否只是前缀/后缀写法不同，此类差异不算模型重定向：
-// - gemini-3.6-flash-high vs gemini-3.6-flash（变体后缀）
-// - 773/deepseek-v4-flash vs deepseek-v4-flash（站点前缀）
-// - deepseek-v4-pro-ga-260813 vs deepseek-v4-pro-0813（共享首尾，中间展开）
-// 移植自 ccLoad 4.9 的同名判定（web/assets/js/logs.js），保持行为一致。
-export function isPrefixOrSuffixVariant(model?: string, actualModel?: string): boolean {
-  if (!model || !actualModel) return false
-  const a = model.toLowerCase()
-  const b = actualModel.toLowerCase()
-  if (a === b) return true
-  const short = a.length <= b.length ? a : b
-  const long = a.length <= b.length ? b : a
-  if (long.startsWith(short) || long.endsWith(short)) return true
-  let prefixLen = 0
-  while (prefixLen < short.length && short[prefixLen] === long[prefixLen]) prefixLen++
-  let suffixLen = 0
-  while (suffixLen < short.length - prefixLen &&
-         short[short.length - 1 - suffixLen] === long[long.length - 1 - suffixLen]) suffixLen++
-  return prefixLen > 0 && suffixLen > 0 && prefixLen + suffixLen === short.length
-}
-
-// 悬浮提示只在发生实质性重定向时展示请求模型 → 实际模型。
-function modelRedirectTitle(model?: string, actualModel?: string): string | undefined {
-  if (!actualModel || actualModel === model || isPrefixOrSuffixVariant(model, actualModel)) return undefined
-  return `${model} → ${actualModel}`
 }
 
 // 费用来源比统计口径更重要：站点价目表算出的接近上游真实扣费，
