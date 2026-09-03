@@ -261,8 +261,17 @@ def envelope(data, count=None):
 def mock_admin(route: Route):
     parsed = urlparse(route.request.url)
     path = parsed.path
-    if path == "/admin/dashboard":
+    if path == "/dashboard/session":
+        payload = {"success": True, "data": {"role": "admin"}}
+    elif path == "/admin/dashboard":
         payload = envelope(DASHBOARD)
+    elif path == "/admin/site-inventory":
+        all_accounts = []
+        for accounts in ACCOUNTS.values():
+            all_accounts.extend(accounts)
+        payload = envelope({"sites": SITES, "accounts": all_accounts})
+    elif path == "/admin/verify":
+        payload = {"success": True, "authenticated": True}
     elif path == "/admin/sites":
         payload = envelope(SITES, len(SITES))
     elif path.startswith("/admin/sites/") and path.endswith("/accounts"):
@@ -282,8 +291,9 @@ def mock_admin(route: Route):
 def prepare_page(context, hash_path: str):
     page = context.new_page()
     page.route("**/admin/**", mock_admin)
-    page.goto(f"{BASE_URL}/web/console/#{hash_path}", wait_until="networkidle")
-    page.wait_for_timeout(500)
+    page.route("**/dashboard/**", mock_admin)
+    page.goto(f"{BASE_URL}/web/console/#{hash_path}", wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(2000)
     return page
 
 
