@@ -216,6 +216,48 @@ func TestOpenAIModelsFetcher_APIError(t *testing.T) {
 	if !containsString(err.Error(), "401") {
 		t.Errorf("错误信息应包含HTTP 401: %v", err)
 	}
+	// 可分类的 JSON 错误体必须原样进 error：admin_models.go 要从这段文本里
+	// 抠回 body 交给 ClassifyHTTPResponseWithMeta 判 Key 级/渠道级。
+	if !containsString(err.Error(), `{"error": {"message": "Invalid API key"}}`) {
+		t.Errorf("JSON 错误体应原样保留，便于上层分级: %v", err)
+	}
+}
+
+// doHTTPRequest 绝不能把整个响应体拼进 error。上游 WAF 拦截页可达上百 KB，
+// 内嵌几万字符不含空白的 base64 字体，会一路传到控制台弹窗把「添加渠道」抻宽。
+func TestModelsFetcherDoesNotLeakHTMLBlockPage(t *testing.T) {
+	base64Payload := strings.Repeat("A", 42284)
+	blockPage := `<html lang="zh"><head> <title>访问已被拦截</title>` +
+		`<style>@font-face{src:url(data:font/woff2;base64,` + base64Payload + `)}</style>` +
+		`</head><body></body></html>`
+
+	fetcher := &OpenAIModelsFetcher{
+		client: newTestModelsFetcherClient(func(*http.Request) (*http.Response, error) {
+			resp := newJSONResponse(http.StatusForbidden, blockPage)
+			resp.Header.Set("Content-Type", "text/html; charset=utf-8")
+			return resp, nil
+		}),
+	}
+
+	_, err := fetcher.FetchModels(context.Background(), "https://blocked.test", "key")
+	if err == nil {
+		t.Fatal("期望返回错误，但成功了")
+	}
+
+	msg := err.Error()
+	if strings.Contains(msg, base64Payload[:64]) {
+		t.Fatalf("错误信息泄漏了 base64 载荷，长度 %d", len(msg))
+	}
+	if !strings.Contains(msg, "访问已被拦截") {
+		t.Fatalf("错误信息应保留拦截页 title: %q", msg)
+	}
+	if !strings.Contains(msg, "403") {
+		t.Fatalf("错误信息应包含 HTTP 403: %q", msg)
+	}
+	// 摘要上限 200 个字符，加上前缀不该超过这个量级。
+	if runes := len([]rune(msg)); runes > 260 {
+		t.Fatalf("错误信息过长（%d 个字符），弹窗会被撑宽: %q", runes, msg)
+	}
 }
 
 // ============================================================

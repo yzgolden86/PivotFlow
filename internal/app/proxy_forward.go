@@ -1578,7 +1578,7 @@ func (s *Server) handleResponse(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return s.handleErrorResponse(reqCtx, resp, hdrClone, readStats)
 	}
-	if looksLikeHTMLResponse(resp.Header.Get("Content-Type"), "") {
+	if util.LooksLikeHTMLResponse(resp.Header.Get("Content-Type"), "") {
 		log.Printf(
 			"[WARN] 渠道ID=%d 返回 HTTP %d HTML 页面，拒绝作为 API 成功响应",
 			cfg.ID,

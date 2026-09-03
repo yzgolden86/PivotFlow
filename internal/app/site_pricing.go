@@ -105,8 +105,24 @@ func (c *sitePricingCache) store(siteID int64, pricing provider.SitePricing, fai
 		return
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 防御性覆盖：并发 cache miss 可能触发多次 fetchSitePricing，有的成功、
+	// 有的超时或失败；若无条件覆盖，失败结果能覆盖刚写入的成功缓存，导致
+	// 同渠道在秒级内交替使用站点价目表和本地估算。
+	// 规则：失败结果不覆盖尚未过期的成功缓存，避免已有可用价格被随机失败污染。
+	if failed {
+		existing, ok := c.entries[siteID]
+		if ok && !existing.failed {
+			ttl := sitePricingTTL
+			if now.Sub(existing.fetchedAt) <= ttl {
+				// 已有成功结果且未过期，拒绝失败结果覆盖
+				return
+			}
+		}
+	}
+
 	c.entries[siteID] = &sitePricingEntry{pricing: pricing, fetchedAt: now, failed: failed}
-	c.mu.Unlock()
 }
 
 func (c *sitePricingCache) channelBindingsFresh(now time.Time) (map[int64]channelBinding, bool) {

@@ -919,13 +919,19 @@ a:focus-visible {
   box-shadow: 0 1px 3px rgba(20, 28, 24, 0.08);
 }
 
+/* 上游错误原文会直接进这里，可能是 URL、base64 或几万字符不含空白的整段 token。
+   .console-modal 是 overflow:auto 的 flex 项（自动最小尺寸 0），不换行的长 token
+   会顶开它、让弹窗横向滚动而不是折行，所以 min-width + overflow-wrap 缺一不可。
+   同样的写法见 .operation-notice__content。 */
 .inline-error {
+  min-width: 0;
   margin: -10px 0 18px;
   padding: 9px 12px;
   color: var(--coral-text);
   background: var(--coral-soft);
   border-left: 3px solid var(--coral);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .kpi-grid {
@@ -2878,7 +2884,7 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .model-alias-filter input { flex: 1; padding: 7px 0; color: var(--text); background: none; border: 0; font-size: 11px; }
 .model-alias-filter input:focus { outline: none; }
 
-/* 站点价目表算出的费用：与本地估算区分开，前者接近上游真实扣费 */
+/* 上游计算（站点价目表）的费用：与本地估算区分开，前者接近真实扣费 */
 .cost-status--site { color: var(--green-text) !important; }
 /* 展开态：左「对外名」→ 右「上游名」，中间一列画箭头说明方向。
    两列各自是 .model-alias-field（head 等高 + body），所以标题行和输入框顶边对齐。
@@ -2942,7 +2948,7 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .setting-choice-option:last-child:focus-visible .setting-choice-tip { transform: translateY(0); }
 
 .model-alias-header-actions { display: flex; align-items: center; gap: 8px; }
-.model-alias-inline-error { padding: 9px 11px; color: var(--red); background: color-mix(in srgb, var(--red) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--red) 26%, var(--border)); border-radius: 7px; font-size: 11px; }
+.model-alias-inline-error { min-width: 0; padding: 9px 11px; color: var(--red); background: color-mix(in srgb, var(--red) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--red) 26%, var(--border)); border-radius: 7px; font-size: 11px; overflow-wrap: anywhere; }
 
 /* Auto-detected merge suggestions */
 .model-alias-suggestions { display: grid; gap: 8px; padding: 11px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--green) 24%, var(--border)); border-radius: 7px; }

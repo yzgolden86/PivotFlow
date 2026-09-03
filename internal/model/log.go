@@ -97,7 +97,7 @@ type LogEntry struct {
 	Cache1hInputTokens       int     `json:"cache_1h_input_tokens"`       // 1小时缓存写入Token数（新增2025-12）
 	Cost                     float64 `json:"cost"`                        // 请求成本（美元，标准成本）
 	CostMultiplier           float64 `json:"cost_multiplier"`             // 写日志时快照的渠道倍率，默认1
-	// CostSource 记录 Cost 的来源：site_pricing 表示用站点自身价目表算出，
+	// CostSource 记录 Cost 的来源：site_pricing 表示上游计算（站点自身价目表），
 	// local_estimate 表示按厂商标价本地估算。空值按 local_estimate 处理（历史行）。
 	CostSource string `json:"cost_source,omitempty"`
 
