@@ -14,9 +14,24 @@ import (
 )
 
 // Action 表示冷却后的建议行动类型。
+//
+// Deprecated: Use Decision with separate RetryStrategy and Effect fields for new
+// code. Action conflates "what to try next" with "how to punish credentials",
+// making it impossible to express scenarios like "retry next key but cool the
+// model" (key fallback) or independently reason about retry vs punishment logic.
+//
+// Migration path:
+//   - Replace HandleError() calls with Decide() + ApplyEffect()
+//   - Replace HandleErrorWithKeyFallback() with ApplyEffectWithKeyFallback()
+//   - Use Decision.ToLegacyAction() during transition if Action-typed fields remain
+//
+// This type remains for backward compatibility with existing switch statements in
+// proxy_forward.go, proxy_handler.go, proxy_responses_websocket.go, and tests.
 type Action int
 
 // Action 常量定义冷却后的建议行动。
+//
+// Deprecated: See Action type documentation for migration path to Decision API.
 const (
 	ActionRetryKey     Action = iota // ActionRetryKey 表示重试当前渠道的其他Key
 	ActionRetryModel                 // ActionRetryModel 表示当前模型在该渠道不可用，切换渠道
@@ -168,7 +183,13 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 	case util.ErrorLevelClient:
 		decision.action = ActionReturnClient
 	case util.ErrorLevelKey:
-		decision.action = ActionRetryKey
+		// OAuth channels (NoKeyIndex) cannot cool individual keys.
+		// Promote to channel-level to ensure the decision is actionable.
+		if in.KeyIndex == NoKeyIndex {
+			decision.action = ActionRetryChannel
+		} else {
+			decision.action = ActionRetryKey
+		}
 	case util.ErrorLevelChannel:
 		decision.action = ActionRetryChannel
 	default:
@@ -232,7 +253,232 @@ func (m *Manager) DecideAction(ctx context.Context, in ErrorInput) Action {
 	return m.classifyDecision(in).action
 }
 
+// Decide performs error classification and returns a Decision separating retry
+// strategy from credential punishment effects. This is the new API that replaces
+// HandleError in Phase 2 migration.
+//
+// Unlike HandleError, Decide does not apply cooldowns — the caller must invoke
+// ApplyEffect separately. This separation enables:
+// - Protocol capability negotiation: {RetryNextChannel, EffectNone}
+// - Planned connection rotation: {RetryNextChannel, EffectNone}
+// - Success with cooldown clearing: {RetryNone, EffectClearCooldowns}
+//
+// The returned Decision is always valid (passes Decision.Validate()).
+func (m *Manager) Decide(ctx context.Context, in ErrorInput) (Decision, error) {
+	legacy := m.classifyDecision(in)
+	return m.legacyToDecision(legacy), nil
+}
+
+// legacyToDecision converts internal cooldownDecision to public Decision.
+func (m *Manager) legacyToDecision(cd cooldownDecision) Decision {
+	d := Decision{
+		Model:              cd.model,
+		PreventKeyFallback: cd.preventKeyFallback,
+
+		KeyCooldownUntil:        cd.keyCooldownUntil,
+		HasKeyCooldownUntil:     cd.hasKeyCooldownUntil,
+		ModelCooldownUntil:      cd.modelCooldownUntil,
+		HasModelCooldownUntil:   cd.hasModelCooldownUntil,
+		ChannelCooldownUntil:    cd.channelCooldownUntil,
+		HasChannelCooldownUntil: cd.hasChannelCooldownUntil,
+	}
+
+	// Determine CooldownReason (priority: key > model > channel)
+	if cd.hasKeyCooldownUntil && cd.keyCooldownReason != "" {
+		d.CooldownReason = cd.keyCooldownReason
+	} else if cd.hasChannelCooldownUntil && cd.channelCooldownReason != "" {
+		d.CooldownReason = cd.channelCooldownReason
+	}
+
+	// Map action to Retry + Effect
+	switch cd.action {
+	case ActionRetryKey:
+		d.Retry = RetryNextKey
+		d.Effect = EffectCoolKey
+	case ActionRetryModel:
+		d.Retry = RetryNextChannel
+		if cd.modelScoped && cd.model != "" {
+			d.Effect = EffectCoolModel
+		} else {
+			d.Effect = EffectCoolChannel
+		}
+	case ActionRetryChannel:
+		d.Retry = RetryNextChannel
+		d.Effect = EffectCoolChannel
+	case ActionReturnClient:
+		d.Retry = RetryNone
+		d.Effect = EffectNone
+	default:
+		d.Retry = RetryNone
+		d.Effect = EffectNone
+	}
+
+	return d
+}
+
+// ApplyEffect applies the cooldown effect from a Decision to the store.
+// Returns true if the effect resulted in resource exhaustion requiring channel switch.
+func (m *Manager) ApplyEffect(ctx context.Context, d Decision, channelID int64, keyIndex int, statusCode int) bool {
+	now := time.Now()
+
+	switch d.Effect {
+	case EffectNone:
+		// No side effects (client errors, protocol negotiation)
+		return false
+
+	case EffectCoolKey:
+		if keyIndex == NoKeyIndex {
+			// OAuth channels have no independent keys. Drop the effect silently
+			// rather than writing a cooldown that will never be consulted.
+			return false
+		}
+		if d.HasKeyCooldownUntil {
+			// Explicit cooldown time from headers/rules
+			if err := m.store.SetKeyCooldown(ctx, channelID, keyIndex, d.KeyCooldownUntil); err != nil {
+				log.Printf("[WARN] 按重置时间设置 Key 冷却失败 (channel=%d, key=%d, until=%v): %v",
+					channelID, keyIndex, d.KeyCooldownUntil, err)
+			} else {
+				duration := time.Until(d.KeyCooldownUntil)
+				reason := d.CooldownReason
+				if reason == "" {
+					reason = "unknown"
+				}
+				log.Printf("[COOLDOWN] Key冷却(%s): 渠道=%d Key=%d 禁用至 %s (%.1f分钟)",
+					reason, channelID, keyIndex,
+					d.KeyCooldownUntil.Format("2006-01-02 15:04:05"), duration.Minutes())
+			}
+		} else {
+			// Exponential backoff
+			_, err := m.store.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
+			if err != nil {
+				log.Printf("[WARN] 更新 Key 冷却失败 (channel=%d, key=%d): %v", channelID, keyIndex, err)
+			}
+		}
+		// Check if all keys are exhausted
+		return m.promoteExhaustedResources(ctx, ErrorInput{
+			ChannelID:  channelID,
+			KeyIndex:   keyIndex,
+			StatusCode: statusCode,
+			Model:      d.Model,
+		})
+
+	case EffectCoolModel:
+		if d.Model == "" {
+			log.Printf("[WARN] EffectCoolModel 但缺少模型名，跳过持久化 (channel=%d)", channelID)
+			return false
+		}
+		modelCooldownUntil := d.ModelCooldownUntil
+		persisted := false
+		if d.HasModelCooldownUntil {
+			// Explicit cooldown time from headers/rules
+			if err := m.store.SetModelCooldown(ctx, channelID, d.Model, modelCooldownUntil); err != nil {
+				log.Printf("[WARN] 设置模型冷却失败 (channel=%d, model=%s, until=%v): %v",
+					channelID, d.Model, modelCooldownUntil, err)
+			} else {
+				persisted = true
+			}
+		} else {
+			// Exponential backoff
+			duration, err := m.store.BumpModelCooldown(ctx, channelID, d.Model, now, statusCode)
+			if err != nil {
+				log.Printf("[WARN] 更新模型冷却失败 (channel=%d, model=%s): %v",
+					channelID, d.Model, err)
+			} else {
+				modelCooldownUntil = now.Add(duration)
+				persisted = true
+			}
+		}
+		if persisted {
+			duration := time.Until(modelCooldownUntil)
+			log.Printf("[COOLDOWN] 模型冷却: 渠道=%d 模型=%s 禁用至 %s (%.1f分钟)",
+				channelID, d.Model,
+				modelCooldownUntil.Format("2006-01-02 15:04:05"), duration.Minutes())
+		}
+		// Check if all models are exhausted
+		return m.promoteExhaustedResources(ctx, ErrorInput{
+			ChannelID:  channelID,
+			KeyIndex:   keyIndex,
+			StatusCode: statusCode,
+			Model:      d.Model,
+		})
+
+	case EffectCoolChannel:
+		if d.HasChannelCooldownUntil {
+			// Explicit cooldown time from headers/rules
+			if err := m.store.SetChannelCooldown(ctx, channelID, d.ChannelCooldownUntil); err != nil {
+				log.Printf("[WARN] 按重置时间设置渠道冷却失败 (channel=%d, until=%v): %v",
+					channelID, d.ChannelCooldownUntil, err)
+			} else {
+				duration := time.Until(d.ChannelCooldownUntil)
+				reason := d.CooldownReason
+				if reason == "" {
+					reason = "unknown"
+				}
+				log.Printf("[COOLDOWN] 渠道冷却(%s): 渠道=%d 禁用至 %s (%.1f分钟)",
+					reason, channelID,
+					d.ChannelCooldownUntil.Format("2006-01-02 15:04:05"), duration.Minutes())
+			}
+		} else {
+			// Exponential backoff
+			_, err := m.store.BumpChannelCooldown(ctx, channelID, now, statusCode)
+			if err != nil {
+				log.Printf("[WARN] 更新渠道冷却失败 (channel=%d): %v", channelID, err)
+			}
+		}
+		return false
+
+	case EffectClearCooldowns:
+		// Success case: clear all cooldowns for this channel
+		// ResetAllCooldowns clears key, model, and channel cooldowns
+		if err := m.store.ResetAllCooldowns(ctx, channelID); err != nil {
+			log.Printf("[WARN] 清除所有冷却失败 (channel=%d): %v", channelID, err)
+		}
+		return false
+
+	case EffectClearKeyCooldown:
+		// Granular success case: clear only key cooldown
+		if keyIndex == NoKeyIndex {
+			return false
+		}
+		if err := m.store.ResetKeyCooldown(ctx, channelID, keyIndex); err != nil {
+			log.Printf("[WARN] 清除Key冷却失败 (channel=%d, key=%d): %v", channelID, keyIndex, err)
+		}
+		return false
+
+	case EffectClearModelCooldown:
+		// Granular success case: clear only model cooldown
+		if d.Model == "" {
+			return false
+		}
+		if err := m.store.ResetModelCooldown(ctx, channelID, d.Model); err != nil {
+			log.Printf("[WARN] 清除模型冷却失败 (channel=%d, model=%s): %v", channelID, d.Model, err)
+		}
+		return false
+
+	case EffectClearChannelCooldown:
+		// Granular success case: clear only channel cooldown
+		if err := m.store.ResetChannelCooldown(ctx, channelID); err != nil {
+			log.Printf("[WARN] 清除渠道冷却失败 (channel=%d): %v", channelID, err)
+		}
+		return false
+
+	case EffectRecordFailure:
+		// Record failure without applying cooldown
+		// Used for metrics/logging without punishment
+		return false
+
+	default:
+		log.Printf("[WARN] 未知 Effect: %v (channel=%d)", d.Effect, channelID)
+		return false
+	}
+}
+
 // HandleError 统一错误处理与冷却决策。
+//
+// Deprecated: Use Decide() + ApplyEffect() for new code. This method remains for
+// backward compatibility and existing tests but conflates retry strategy with
+// credential punishment. The Decision API separates these concerns and supports
+// fine-grained control over exhaustion promotion.
 //
 // 输入:
 //   - ChannelID / KeyIndex: 目标渠道与Key（KeyIndex=NoKeyIndex 表示与特定Key无关）
@@ -248,6 +494,10 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 
 // HandleErrorWithKeyFallback applies the optional independent-key relay
 // fallback. Ordinary model- and channel-level failures are recorded against
+//
+// Deprecated: Use DecideWithKeyFallback() or ApplyEffectWithKeyFallback() for new
+// code. This method remains for backward compatibility and existing tests.
+//
 // the selected Key so that another Key can be tried first. Errors with an
 // explicit channel cooldown (for example, WebSocket connection-slot
 // exhaustion) retain their channel-wide semantics: another Key cannot resolve

@@ -1,6 +1,8 @@
 package cooldown
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -24,6 +26,16 @@ const (
 	maxCooldownDetectionCacheKeySize = 64 * 1024
 )
 
+// generateRuleID 生成一个稳定的规则标识符（8字节随机hex，16字符）
+func generateRuleID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based ID if random fails
+		return fmt.Sprintf("%016x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
 // DetectionInput contains the upstream response fields available to a
 // configured cooldown rule. Network failures deliberately do not enter this
 // matcher because they do not have a trustworthy upstream error body.
@@ -40,6 +52,7 @@ type DetectionEvaluation struct {
 	Message        string
 	Matched        bool
 	Actionable     bool
+	RuleID         string // 稳定的规则标识符（2026-09新增）
 	Priority       int
 	Scope          string
 	Mode           string
@@ -73,7 +86,18 @@ func NormalizeCooldownDetectionRules(rules *model.CooldownDetectionRules) error 
 	}
 
 	priorities := make(map[int]struct{}, len(rules.Rules))
+	seenIDs := make(map[string]struct{}, len(rules.Rules))
 	for i := range rules.Rules {
+		// 为没有 rule_id 的规则生成稳定 ID
+		if rules.Rules[i].RuleID == "" {
+			rules.Rules[i].RuleID = generateRuleID()
+		}
+		// 检查 rule_id 唯一性
+		if _, exists := seenIDs[rules.Rules[i].RuleID]; exists {
+			return fmt.Errorf("cooldown_detection_rules.rules[%d]: duplicate rule_id %q", i, rules.Rules[i].RuleID)
+		}
+		seenIDs[rules.Rules[i].RuleID] = struct{}{}
+
 		if rules.Rules[i].Priority < 0 {
 			return fmt.Errorf("cooldown_detection_rules.rules[%d]: priority must be >= 0", i)
 		}
@@ -312,6 +336,7 @@ func EvaluateCooldownDetectionRules(rules *model.CooldownDetectionRules, input D
 		}
 
 		evaluation.Matched = true
+		evaluation.RuleID = compiled.rule.RuleID
 		evaluation.Priority = compiled.rule.Priority
 		evaluation.Scope = compiled.rule.Scope
 		evaluation.Mode = compiled.rule.Mode

@@ -67,6 +67,9 @@ type AuthToken struct {
 
 	// 并发限制（2026-04新增）
 	MaxConcurrency int `json:"max_concurrency"` // 最大并发请求数，0表示无限制
+
+	// 协议限制（2026-09新增）
+	AllowedProtocols []string `json:"allowed_protocols,omitempty"` // 允许的协议列表，空表示无限制
 }
 
 // TokenRecoverable reports whether the administrator can reveal this token.
@@ -145,6 +148,21 @@ func (r ChannelRestriction) Allows(channelID int64) bool {
 		return !listed
 	}
 	return listed
+}
+
+// IsProtocolAllowed 检查协议是否被令牌允许访问
+// 如果 AllowedProtocols 为空，表示无限制，允许所有协议
+func (t *AuthToken) IsProtocolAllowed(protocol string) bool {
+	if len(t.AllowedProtocols) == 0 {
+		return true
+	}
+	protocol = strings.TrimSpace(strings.ToLower(protocol))
+	for _, p := range t.AllowedProtocols {
+		if strings.ToLower(strings.TrimSpace(p)) == protocol {
+			return true
+		}
+	}
+	return false
 }
 
 // ChannelRestriction 返回令牌的经过校验的渠道访问策略。
@@ -289,6 +307,7 @@ type authTokenJSON struct {
 	AllowedChannelIDs        []int64   `json:"allowed_channel_ids,omitempty"`
 	ChannelRestrictionMode   string    `json:"channel_restriction_mode,omitempty"`
 	MaxConcurrency           int       `json:"max_concurrency"`
+	AllowedProtocols         []string  `json:"allowed_protocols,omitempty"`
 }
 
 // MarshalJSON 自定义JSON序列化，将MicroUSD转换为USD浮点数
@@ -329,5 +348,6 @@ func (t AuthToken) MarshalJSON() ([]byte, error) {
 		AllowedChannelIDs:        t.AllowedChannelIDs,
 		ChannelRestrictionMode:   channelRestrictionMode,
 		MaxConcurrency:           t.MaxConcurrency,
+		AllowedProtocols:         t.AllowedProtocols,
 	})
 }

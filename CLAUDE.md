@@ -53,10 +53,11 @@ www/                 精简静态介绍页(`make www-setup` 同步品牌图和�
 
 Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶层会话；存在 `Thread-Id` 时组合两者，使 Codex 主代理/子代理 transcript、Response ID、turn lock 隔离；无 `Thread-Id` 时回退原 `Session-Id` 契约，禁止改用请求体 `session_id`、`prompt_cache_key` 或每回合变化的 request/turn/window ID。默认限制：下游连接全局 64、单 Token 16；上游每 45 秒发送 Ping，连续 5 分钟未收到任何帧/Pong 判定失活。下游全部断开满 5 分钟后由每分钟清理器关闭上游物理连接（实际约 5–6 分钟），稳定逻辑会话与已提交 transcript 在 `responses_ws_session_ttl_minutes` 到期前（新安装/重置默认 15 分钟，小内存机器可设 10；升级不改已有值）不会因容量/预算压力被逐出。`upstream_connection_reuse_limit_seconds`（默认 0，不限制）还可限制上游连接的复用时间；达到时限的空闲连接立即关闭，在途 turn 完成后再关闭，下一轮按需重连并重放完整 transcript，因为 Response ID 只在原物理 WebSocket 上有效。达到 `responses_ws_max_sessions` 只拒绝新会话身份；已提交 payload 超过 `responses_ws_max_transcript_bytes`（默认 128 MiB）后，所有新回合在触达上游前以 `429/rate_limit_error/rate_limit` 拒绝，已准入回合仍可提交，有限最坏超量为 `max_sessions × max_body_bytes`。`/admin/runtime-metrics` 的 `transcript_bytes` 只统计有效 payload，不是 Go 堆占用，并提供 `ttl_expired`、`capacity_rejected`、`budget_rejected`、`previous_response_misses` 进程累计计数。下一轮会优先原渠道/Key/URL 并按需重连。
 
-## 故障切换(`util/classifier.go` + `cooldown/detection.go`)
+## 故障切换(`util/classifier.go` + `cooldown/detection.go` + `cooldown/decision.go`)
 
+- **决策 API** (`cooldown/manager.go`):生产代码使用 `Decide(ctx, ErrorInput) (Decision, error)` + `ApplyEffect(ctx, Decision, channelID, keyIndex, statusCode) bool` 分离重试策略(`RetryStrategy`)与凭据惩罚(`Effect`)。`Decision` 包含:`Retry`(NextKey/NextURL/NextChannel/None/RefreshToken)、`Effect`(CoolKey/CoolModel/CoolChannel/ClearCooldowns/RecordFailure/None)、冷却时间戳(`Has*CooldownUntil` + `*CooldownUntil`)、原因(`CooldownReason`)、模型(`Model`)。`HandleError`/`HandleErrorWithKeyFallback` 与 `Action` 枚举已废弃(仍保留向后兼容),替换为 `DecideWithKeyFallback`/`ApplyEffectWithKeyFallback`
 - Key 级(401/403)→ 冷却当前 Key,重试同渠道其他 Key;所有启用 Key 均冷却时自动升级渠道冷却
-- 模型级(`model_cooldown`,上游 HTTP 400/499/5xx/520/524/429,597 服务类 SSE 错误,598/599 流故障,连接重置/HTTP2 流关闭/空响应/网络超时,404 模型不可用,410 明确模型退役)→ 写入 `(channel_id, 实际上游模型)` 冷却;直接切渠道,不再尝试同渠道其他 Key/URL,不影响其他模型;所有配置模型均冷却时自动升级渠道冷却
+- 模型级(`model_cooldown`,上游 HTTP 400/499/5xx/520/524/429,597 服务类 SSE 错误,598/599 流故障,连接重置/HTTP2 流关闭/空响应/网络超时,404 模型不可用,410 明确模型退役)→ 写入 `(channel_id, 实际上游模型)` 冷却;直接切渠道,不再尝试同渠道其他 Key;**但 598/599 流超时故障在多 URL 场景下会先尝试同渠道其他 URL**（超时是 URL 相关的网络延迟问题）;所有配置模型均冷却时自动升级渠道冷却
 - 渠道级(DNS/连接拒绝/网络或路由不可达)→ 切渠道
 - 原生协议能力不支持(响应未提交的 HTTP 400、非模型 404/405,或结构化 500 明确返回 `convert_request_failed` + `not implemented`)→ 能力协商事件,不记失败日志、不冷却 Key/模型/渠道/URL;auto 模式可转换时同渠道/Key/URL 探测其他协议,不可转换时切 URL/渠道
 - 客户端错误(406/413,404 非模型 `does not exist`)→ 直接返回,不重试
@@ -64,6 +65,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 - Key/模型/渠道共用指数退避策略:按错误类型取初始值(默认认证 5 min、服务端 2 min、超时/限流 1 min),随后翻倍并在 30 min 封顶;上游或自定义规则给出精确 reset 截止时间时优先使用
 - **冷却探测规则**(`cooldown/detection.go`):渠道 `cooldown_detection_rules` 为空时继承系统设置 `global_cooldown_detection_rules`;按 rules 数组顺序(提交后重编号 0..N-1)匹配 status+正则,命名捕获组可解析出精确 reset 时间。网络故障故意不进这个匹配器(没有可信上游错误体);规则命中但不可执行时回退内置分类器,不猜冷却时长。`EvaluateCooldownDetectionRules` 无副作用,代理链路与 admin 规则测试端点共用
 - **全冷却兜底**(`selector_cooldown.go`,`cooldown_fallback_enabled` 默认 true):所有渠道都冷却时不直接拒绝,而是挑「最早恢复」的渠道打 `CooldownFallback` 标记继续走正常流程,Key 也改选最早恢复的(`SelectCooldownFallbackKey`)。排查「明明全冷却了为什么还在发请求」先看这里;设 false 才直接拒绝
+- **Key 回退**(`RetryOtherKeysOnFailure`):模型/渠道级故障写入 Key 冷却以让其他 Key 先试。`DecideWithKeyFallback` 产生 `{RetryNextKey, EffectCoolKey}` 并复制模型冷却时间戳(如有)到 Key 冷却时间戳;有明确渠道冷却时间戳时不回退(WebSocket 槽位耗尽等全局故障)
 - Responses WebSocket 特例(仅首个语义输出前):非 WS→非 WS、原生 WS→非 WS/原生 WS 均在网关内部切换,其中 WS→非 WS 使用 execution session 的完整 transcript;非 WS 故障且下一候选为原生 WS 时返回 `status=502` 的 `server_error/upstream_unavailable` 并用 close code `1011` 断开,让 Codex 客户端完整 replay;已有语义输出后一律不切换或重放
 
 ## 自定义状态码(改相关代码前先读语义)
@@ -71,7 +73,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 - **499** 客户端取消:不计失败、不冷却;上游直接返回 499:模型级冷却
 - **596** 1308 配额超限 → Key 级冷却,不计健康度
 - **597** SSE error(HTTP 200+错误体)→ `classifySSEError` 按 error.type 动态判级
-- **598** 首字节超时 → 模型级;**599** 流式中断 → 模型级
+- **598** 首字节超时 → 模型级冷却,但多 URL 场景下会先尝试其他 URL;**599** 流式中断 → 模型级冷却,但多 URL 场景下会先尝试其他 URL
 - **`fwResult.StreamDiagMsg` 是 599 的判定开关,不只是日志字段**:非空即被 `forwardAttempt` 判为流不完整,置 599 并走模型级冷却。所以只有真实上游故障才允许写入,客户端断开必须先过 `isClientDisconnectError`(`buildStreamDiagnostics` 与 Codex 非流式收集器 `codex_wire.go` 各有一处),漏一处就会把 499 误升成 599。`markIncompleteStreamForwardResult` 不覆盖已经是 598 的状态码——两者冷却初值不同
 - **429** 统计页/健康时间线计入 ErrorCount 与成功率,`rate_limited` 是 ErrorCount 子集;健康度排序(`GetChannelSuccessRates`/effective priority)排除 429,真实渠道级限流交给冷却过滤
 

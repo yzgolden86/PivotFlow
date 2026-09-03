@@ -472,6 +472,12 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 			classification.ModelCooldownUntil = until
 			classification.HasModelCooldownUntil = true
 			classification.ModelCooldownReason = "anthropic_unified_reset"
+		} else if until, ok := parseRateLimitResetHeaders(headers, now); ok {
+			// 回退到标准 rate-limit reset 头部（anthropic-ratelimit-requests-reset 等）
+			classification.PreventKeyFallback = true
+			classification.ModelCooldownUntil = until
+			classification.HasModelCooldownUntil = true
+			classification.ModelCooldownReason = "rate_limit_reset_header"
 		}
 		return classification
 	}
@@ -503,7 +509,10 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 
 	// 仅分析401和403错误,其他状态码使用标准分类器
 	if statusCode != 401 && statusCode != 403 {
-		return HTTPResponseClassification{Level: ClassifyHTTPStatus(statusCode)}
+		return HTTPResponseClassification{
+			Level:       ClassifyHTTPStatus(statusCode),
+			ModelScoped: IsModelScopedHTTPStatus(statusCode),
+		}
 	}
 
 	// 401/403错误:分析响应体内容
@@ -538,6 +547,44 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	// 包括:认证失败、权限不足、额度用尽、余额不足等
 	// 让handleProxyError根据渠道Key数量决定是否升级为渠道级
 	return HTTPResponseClassification{Level: ErrorLevelKey}
+}
+
+// parseRateLimitResetHeaders 从标准 rate-limit 头部解析 reset 时间。
+// 按优先级尝试多种头部格式，返回第一个有效的未来时刻。
+// 支持的头部（按检查顺序）：
+//   - anthropic-ratelimit-requests-reset (Unix 秒)
+//   - anthropic-ratelimit-tokens-reset (Unix 秒)
+//   - x-ratelimit-reset-requests (Unix 秒)
+//   - x-ratelimit-reset (Unix 秒)
+func parseRateLimitResetHeaders(headers map[string][]string, now time.Time) (time.Time, bool) {
+	// 定义待检查的头部（按优先级顺序）
+	headerNames := []string{
+		"anthropic-ratelimit-requests-reset",
+		"anthropic-ratelimit-tokens-reset",
+		"x-ratelimit-reset-requests",
+		"x-ratelimit-reset",
+	}
+
+	for _, headerName := range headerNames {
+		for name, values := range headers {
+			if !strings.EqualFold(name, headerName) {
+				continue
+			}
+			for _, value := range values {
+				resetUnix, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+				if err != nil {
+					continue
+				}
+				until := time.Unix(resetUnix, 0)
+				if until.After(now) {
+					return ClampUpstreamResetTime(until, now), true
+				}
+			}
+			// 找到匹配的头部但值不可用时，尝试下一个头部
+			break
+		}
+	}
+	return time.Time{}, false
 }
 
 // classifyRateLimitError 分析 429 的限流范围。

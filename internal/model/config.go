@@ -387,6 +387,7 @@ const (
 // CooldownDetectionRule describes one configured upstream error policy.
 // Rules are evaluated by ascending Priority; the first match wins.
 type CooldownDetectionRule struct {
+	RuleID         string `json:"rule_id,omitempty"` // 稳定的规则标识符（2026-09新增）
 	Enabled        bool   `json:"enabled"`
 	Name           string `json:"name,omitempty"`
 	Priority       int    `json:"priority"`

@@ -138,17 +138,19 @@ func TestExecuteChannelTest_FailureAppliesCooldown(t *testing.T) {
 	if success, _ := result["success"].(bool); success {
 		t.Fatalf("expected failed result, got %+v", result)
 	}
-	if got, _ := result["cooldown_action"].(string); got != "channel_cooldown_applied" {
-		t.Fatalf("expected channel cooldown action, got %+v", result)
+	// 503 is model-scoped (ErrorLevelChannel + ModelScoped=true) → EffectCoolModel
+	if got, _ := result["cooldown_action"].(string); got != "model_cooldown_applied" {
+		t.Fatalf("expected model cooldown action for 503, got %+v", result)
 	}
 
 	channelCooldowns, err := srv.store.GetAllChannelCooldowns(ctx)
 	if err != nil {
 		t.Fatalf("GetAllChannelCooldowns failed: %v", err)
 	}
+	// 503 triggers model cooldown first; if all models are cooled, channel cooldown is promoted
 	until, ok := channelCooldowns[created.ID]
 	if !ok || !until.After(time.Now()) {
-		t.Fatalf("expected channel cooldown applied, got %v", until)
+		t.Fatalf("expected channel cooldown promoted (all models cooled), got %v", until)
 	}
 }
 

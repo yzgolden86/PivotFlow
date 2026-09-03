@@ -128,6 +128,7 @@ func DefineAuthTokensTable() *TableBuilder {
 		Column("allowed_channel_ids VARCHAR(2000) NOT NULL DEFAULT ''").
 		Column("channel_restriction_mode VARCHAR(16) NOT NULL DEFAULT 'allow'").
 		Column("max_concurrency INT NOT NULL DEFAULT 0").
+		Column("allowed_protocols VARCHAR(200) NOT NULL DEFAULT ''").
 		Index("idx_auth_tokens_active", "is_active").
 		Index("idx_auth_tokens_expires", "expires_at")
 }
@@ -469,6 +470,7 @@ func DefineLogsTable() *TableBuilder {
 		Column("cost_multiplier DOUBLE NOT NULL DEFAULT 1").
 		// site_pricing = 上游计算（站点自身价目表）；local_estimate = 厂商标价本地估算。
 		Column("cost_source VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("rule_id VARCHAR(64) NOT NULL DEFAULT ''"). // 命中的冷却规则标识符（2026-09新增）
 		Index("idx_logs_time_model", "time, model").
 		Index("idx_logs_time_status", "time, status_code").
 		Index("idx_logs_time_channel_model", "time, channel_id, model").
