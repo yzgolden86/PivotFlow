@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/cooldown"
@@ -20,10 +19,6 @@ import (
 // ============================================================================
 
 const cooldownWriteTimeout = 3 * time.Second
-
-var cooldownClearChannelFailCount atomic.Uint64
-var cooldownClearKeyFailCount atomic.Uint64
-var cooldownClearModelFailCount atomic.Uint64
 
 func cooldownWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	// 断开请求取消链，但保留 ctx.Value（例如 trace ID）。

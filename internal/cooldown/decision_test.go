@@ -10,10 +10,10 @@ func TestDecisionValidate(t *testing.T) {
 	future := now.Add(5 * time.Minute)
 
 	tests := []struct {
-		name    string
+		name     string
 		decision Decision
-		wantErr bool
-		errMsg  string
+		wantErr  bool
+		errMsg   string
 	}{
 		{
 			name: "valid: RetryNextKey with EffectCoolKey",
