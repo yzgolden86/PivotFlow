@@ -122,7 +122,7 @@ export default function ChannelsPage() {
   }
 
   const removeChannel = async (channel: Channel) => {
-    if (!window.confirm(`删除渠道“${channel.name}”？该渠道将立即退出路由。`)) return
+    if (!window.confirm(`删除渠道"${channel.name}"？该渠道将立即退出路由。`)) return
     setBusyId(channel.id); setError('')
     try { await deleteChannel(channel.id); await load(undefined, { silent: true, force: true }) }
     catch (reason) { setError(reason instanceof Error ? reason.message : '渠道删除失败') }
@@ -158,7 +158,7 @@ export default function ChannelsPage() {
       const snapshot = await getChannelEditor(channel.id)
       const payload = snapshotToMutation(snapshot, `${channel.name} 副本`)
       await createChannel(payload)
-      setNotice(`已复制渠道“${channel.name}”`)
+      setNotice(`已复制渠道"${channel.name}"`)
       await load(undefined, { silent: true, force: true })
     } catch (reason) { setError(reason instanceof Error ? reason.message : '渠道复制失败') }
     finally { setBusyId(null) }
@@ -379,7 +379,7 @@ interface EditorForm {
   name: string; authType: string; urls: string; models: ChannelModel[]; keys: string; keyStrategy: string
   priority: number; rpmLimit: number; maxConcurrency: number; costMultiplier: number; dailyCostLimit: number
   protocolMode: string; proxyURL: string; enabled: boolean; websockets: boolean; retryOtherKeys: boolean
-  availableTimeStart: string; availableTimeEnd: string; requestRules: RequestRulesForm
+  availableTimeStart: string; availableTimeEnd: string; requestRules: RequestRulesForm; modelDiscoveryProtocol: string
 }
 
 interface HeaderRuleForm {
@@ -409,6 +409,7 @@ const blankEditor: EditorForm = {
   name: '', authType: 'api_key', urls: '', models: [], keys: '', keyStrategy: 'sequential', priority: 0,
   rpmLimit: 0, maxConcurrency: 0, costMultiplier: 1, dailyCostLimit: 0, protocolMode: 'auto', proxyURL: '',
   enabled: true, websockets: false, retryOtherKeys: false, availableTimeStart: '', availableTimeEnd: '', requestRules: emptyRequestRules(),
+  modelDiscoveryProtocol: 'auto',
 }
 
 function ChannelEditor({ channelId, close, saved }: { channelId?: number; close: () => void; saved: () => void }) {
@@ -446,6 +447,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
         availableTimeStart: data.channel.available_time_start || '',
         availableTimeEnd: data.channel.available_time_end || '',
         requestRules: requestRulesToForm(data.channel.custom_request_rules),
+        modelDiscoveryProtocol: 'auto',
       })
     }).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '渠道详情加载失败') }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
@@ -490,7 +492,8 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
     if (!urls.length || !keys.length) { setError('请先填写上游 URL 和 API Key'); return }
     setDiscovering(true); setError('')
     try {
-      const result = await fetchChannelModelsPreview({ urls, api_keys: keys })
+      const protocol = form.modelDiscoveryProtocol === 'auto' ? undefined : form.modelDiscoveryProtocol
+      const result = await fetchChannelModelsPreview({ urls, api_keys: keys, protocol })
       const models = result.models.filter((item) => item.model.trim())
       if (!models.length) throw new Error('上游没有返回可用模型')
       setForm((current) => ({ ...current, models: mergeDiscoveredModels(current.models, models) }))
@@ -517,8 +520,17 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
       </div>
       <div className="form-help">可用时段按服务器本地时间判断；留空表示全天，开始晚于结束时按跨午夜窗口处理。窗口外渠道不会参与路由或定时巡检。</div>
       <label className="textarea-field">上游 URL<textarea required rows={3} value={form.urls} onChange={(event) => setForm({ ...form, urls: event.target.value })} placeholder="每行一个；可写 URL | anthropic, openai" /></label>
-      {form.authType === 'api_key' ? <label className="textarea-field">API Keys<textarea required rows={4} value={form.keys} onChange={(event) => setForm({ ...form, keys: event.target.value })} placeholder="每行一个；可写 key | 备注" /></label> : <div className="form-help">OAuth 渠道不在这里手填密钥，请使用顶部“导入凭证”导入 Codex 或 Antigravity 凭证文件。</div>}
-      {form.authType === 'api_key' && <div className="model-discovery-action"><div><strong>自动获取模型</strong><span>获取结果作为候选模型加入列表；勾选需要保留的模型后再保存渠道。</span></div><button className="secondary-button" type="button" onClick={() => void discoverModels()} disabled={discovering || !form.urls.trim() || !form.keys.trim()}>{discovering ? <RefreshCw className="spin" size={15} /> : <Sparkles size={15} />}{discovering ? '获取中' : '获取模型'}</button></div>}
+      {form.authType === 'api_key' ? <label className="textarea-field">API Keys<textarea required rows={4} value={form.keys} onChange={(event) => setForm({ ...form, keys: event.target.value })} placeholder="每行一个；可写 key | 备注" /></label> : <div className="form-help">OAuth 渠道不在这里手填密钥，请使用顶部"导入凭证"导入 Codex 或 Antigravity 凭证文件。</div>}
+      {form.authType === 'api_key' && <div className="model-discovery-action">
+        <div>
+          <strong>自动获取模型</strong>
+          <span>获取结果作为候选模型加入列表；勾选需要保留的模型后再保存渠道。</span>
+        </div>
+        <div className="model-discovery-controls">
+          <label>发现协议<select value={form.modelDiscoveryProtocol} onChange={(event) => setForm({ ...form, modelDiscoveryProtocol: event.target.value })}><option value="auto">自动尝试</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="codex">Codex</option><option value="gemini">Gemini</option></select></label>
+          <button className="secondary-button" type="button" onClick={() => void discoverModels()} disabled={discovering || !form.urls.trim() || !form.keys.trim()}>{discovering ? <RefreshCw className="spin" size={15} /> : <Sparkles size={15} />}{discovering ? '获取中' : '获取模型'}</button>
+        </div>
+      </div>}
       <EditableModelList models={form.models} selected={selectedModelIndexes} onSelectionChange={setSelectedModelIndexes} onChange={(models) => setForm((current) => ({ ...current, models }))} />
       <CustomRequestRulesEditor value={form.requestRules} onChange={(requestRules) => setForm((current) => ({ ...current, requestRules }))} />
       <div className="checkbox-grid"><label className="checkbox-field"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用渠道</label><label className="checkbox-field"><input type="checkbox" checked={form.websockets} onChange={(event) => setForm({ ...form, websockets: event.target.checked })} />WebSocket</label><label className="checkbox-field"><input type="checkbox" checked={form.retryOtherKeys} onChange={(event) => setForm({ ...form, retryOtherKeys: event.target.checked })} />失败时尝试其他 Key</label></div>
@@ -535,7 +547,7 @@ function CustomRequestRulesEditor({ value, onChange }: { value: RequestRulesForm
   return <details className="advanced-request-settings">
     <summary><span className="advanced-request-summary"><Settings2 size={16} /><span><strong>高级请求设置</strong><small>请求头覆盖、参数覆盖与安全透传</small></span></span><span className="advanced-request-count">{ruleCount ? `${ruleCount} 条规则` : '未配置'}</span></summary>
     <div className="advanced-request-content">
-      <p className="form-help">低频高级选项，默认不改变请求。普通请求头会按安全策略透传；协议转换选择“上游原生”可进行协议级透传。认证头由系统托管，不能通过这里覆盖。</p>
+      <p className="form-help">低频高级选项，默认不改变请求。普通请求头会按安全策略透传；协议转换选择"上游原生"可进行协议级透传。认证头由系统托管，不能通过这里覆盖。</p>
       <section className="advanced-rule-group">
         <header><div><strong>请求头规则</strong><small>按顺序删除、覆盖或追加上游请求头，最多 {maxCustomRuleEntries} 条</small></div><button className="text-button" type="button" disabled={value.headers.length >= maxCustomRuleEntries} title={value.headers.length >= maxCustomRuleEntries ? `最多添加 ${maxCustomRuleEntries} 条请求头规则` : '添加请求头规则'} onClick={() => onChange({ ...value, headers: [...value.headers, { action: 'override', name: '', value: '' }] })}><Plus size={14} />添加请求头</button></header>
         {value.headers.length === 0 ? <div className="advanced-rule-empty">未配置请求头规则</div> : <div className="advanced-rule-list">{value.headers.map((rule, index) => <div className="advanced-rule-row" key={`header-${index}`}>
@@ -627,7 +639,7 @@ function EditableModelList({ models, selected, onSelectionChange, onChange }: { 
   const unselectedCount = models.length - selected.size
   return <section className="selection-panel discovered-model-panel">
     <header><div><strong>渠道模型</strong><span>{models.length ? `${models.length} 个候选，已勾选 ${selected.size} 个；保存时只提交勾选模型` : '尚未配置模型'}</span></div><div className="model-list-actions"><button className="text-button" type="button" onClick={toggleVisible} disabled={!visibleIndexes.length}>{allVisibleSelected ? '取消当前结果' : '全选搜索结果'}</button>{selected.size > 0 && <button className="text-button" type="button" onClick={() => onSelectionChange(new Set())}>清空选择</button>}{unselectedCount > 0 && <button className="text-button danger-text-button" type="button" onClick={removeUnselected}><Trash2 size={14} />移除未选 ({unselectedCount})</button>}<button className="text-button" type="button" onClick={add}><Plus size={14} />添加模型</button></div></header>
-    {models.length ? <><div className="model-selection-toolbar"><label className="search-field selection-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索模型或映射名称" aria-label="搜索渠道模型" /><span>{visibleIndexes.length}/{models.length}</span></label><small>已跨搜索保留 {selected.size} 个勾选</small></div>{visibleIndexes.length ? <div className="editable-model-list">{visibleIndexes.map((index) => { const item = models[index]; return <div className="editable-model-row" key={index}><input type="checkbox" checked={selected.has(index)} onChange={() => { const next = new Set(selected); if (next.has(index)) next.delete(index); else next.add(index); onSelectionChange(next) }} aria-label={`保存模型 ${item.model || index + 1}`} /><input value={item.model} onChange={(event) => update(index, { model: event.target.value })} placeholder="对外模型名" aria-label={`第 ${index + 1} 个对外模型`} /><span aria-hidden="true">→</span><input value={item.redirect_model || ''} onChange={(event) => update(index, { redirect_model: event.target.value })} placeholder="映射到上游模型（可选）" aria-label={`第 ${index + 1} 个上游映射`} /><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除模型 ${item.model || index + 1}`} title="删除模型"><Trash2 size={15} /></button></div> })}</div> : <span className="selection-empty">没有匹配“{query.trim()}”的模型，已勾选的其他模型仍会保留。</span>}</> : <span className="selection-empty">填写 URL 和 API Key 后点击“获取模型”，也可以直接添加模型。</span>}
+    {models.length ? <><div className="model-selection-toolbar"><label className="search-field selection-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索模型或映射名称" aria-label="搜索渠道模型" /><span>{visibleIndexes.length}/{models.length}</span></label><small>已跨搜索保留 {selected.size} 个勾选</small></div>{visibleIndexes.length ? <div className="editable-model-list">{visibleIndexes.map((index) => { const item = models[index]; return <div className="editable-model-row" key={index}><input type="checkbox" checked={selected.has(index)} onChange={() => { const next = new Set(selected); if (next.has(index)) next.delete(index); else next.add(index); onSelectionChange(next) }} aria-label={`保存模型 ${item.model || index + 1}`} /><input value={item.model} onChange={(event) => update(index, { model: event.target.value })} placeholder="对外模型名" aria-label={`第 ${index + 1} 个对外模型`} /><span aria-hidden="true">→</span><input value={item.redirect_model || ''} onChange={(event) => update(index, { redirect_model: event.target.value })} placeholder="映射到上游模型（可选）" aria-label={`第 ${index + 1} 个上游映射`} /><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除模型 ${item.model || index + 1}`} title="删除模型"><Trash2 size={15} /></button></div> })}</div> : <span className="selection-empty">没有匹配"{query.trim()}"的模型，已勾选的其他模型仍会保留。</span>}</> : <span className="selection-empty">填写 URL 和 API Key 后点击"获取模型"，也可以直接添加模型。</span>}
   </section>
 }
 
