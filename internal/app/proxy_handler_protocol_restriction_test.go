@@ -199,12 +199,12 @@ func TestProxyHandler_NoProtocolRestriction(t *testing.T) {
 			// 无限制的 Token 不应该返回 403 协议错误
 			if w.Code == http.StatusForbidden {
 				var resp map[string]any
-				json.Unmarshal(w.Body.Bytes(), &resp)
-				if errMsg, ok := resp["error"].(string); ok && bytes.Contains([]byte(errMsg), []byte("protocol")) {
-					t.Errorf("unrestricted token should not block any protocol, got: %s", errMsg)
+				if err := json.Unmarshal(w.Body.Bytes(), &resp); err == nil {
+					if errMsg, ok := resp["error"].(string); ok && bytes.Contains([]byte(errMsg), []byte("protocol")) {
+						t.Errorf("unrestricted token should not block any protocol, got: %s", errMsg)
+					}
 				}
 			}
 		})
 	}
 }
-

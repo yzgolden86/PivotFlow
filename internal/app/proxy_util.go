@@ -175,8 +175,8 @@ type proxyResult struct {
 	duration                  float64
 	firstByteTime             float64
 	succeeded                 bool
-	isClientCanceled          bool                 // 客户端主动取消请求（context.Canceled）
-	nextAction                cooldown.Decision    // 统一重试决策：Decision API (Retry + Effect)
+	isClientCanceled          bool              // 客户端主动取消请求(context.Canceled)
+	nextAction                cooldown.Decision // 统一重试决策:Decision API (Retry + Effect)
 	deferredCooldown          *cooldown.ErrorInput
 	protocolCapabilityMissing bool
 	responsesTurn             responsesWebsocketTurnResult

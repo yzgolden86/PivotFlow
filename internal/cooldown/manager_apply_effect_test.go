@@ -401,4 +401,3 @@ func TestApplyEffect_EffectClearChannelCooldown(t *testing.T) {
 		t.Error("Channel cooldown should be cleared after EffectClearChannelCooldown")
 	}
 }
-

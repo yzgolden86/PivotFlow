@@ -137,12 +137,12 @@ func TestClassifyHTTPResponseWithMeta_RateLimitResetHeaders(t *testing.T) {
 			},
 			body: []byte(`{"error":{"type":"rate_limit_error","message":"Rate limited"}}`),
 			want: HTTPResponseClassification{
-				Level:                   ErrorLevelKey,
-				ModelScoped:             true,
-				PreventKeyFallback:      true,
-				ModelCooldownUntil:      now.Add(MaxUpstreamResetDuration), // Clamped
-				HasModelCooldownUntil:   true,
-				ModelCooldownReason:     "rate_limit_reset_header",
+				Level:                 ErrorLevelKey,
+				ModelScoped:           true,
+				PreventKeyFallback:    true,
+				ModelCooldownUntil:    now.Add(MaxUpstreamResetDuration), // Clamped
+				HasModelCooldownUntil: true,
+				ModelCooldownReason:   "rate_limit_reset_header",
 			},
 		},
 		{
@@ -153,12 +153,12 @@ func TestClassifyHTTPResponseWithMeta_RateLimitResetHeaders(t *testing.T) {
 			},
 			body: []byte(`{"error":"rate limited"}`),
 			want: HTTPResponseClassification{
-				Level:                   ErrorLevelKey,
-				ModelScoped:             true,
-				PreventKeyFallback:      true,
-				ModelCooldownUntil:      now.Add(MaxUpstreamResetDuration), // Clamped
-				HasModelCooldownUntil:   true,
-				ModelCooldownReason:     "rate_limit_reset_header",
+				Level:                 ErrorLevelKey,
+				ModelScoped:           true,
+				PreventKeyFallback:    true,
+				ModelCooldownUntil:    now.Add(MaxUpstreamResetDuration), // Clamped
+				HasModelCooldownUntil: true,
+				ModelCooldownReason:   "rate_limit_reset_header",
 			},
 		},
 		{
@@ -170,12 +170,12 @@ func TestClassifyHTTPResponseWithMeta_RateLimitResetHeaders(t *testing.T) {
 			},
 			body: []byte(`{"error":"rate limited"}`),
 			want: HTTPResponseClassification{
-				Level:                   ErrorLevelKey,
-				ModelScoped:             true,
-				PreventKeyFallback:      true,
-				ModelCooldownUntil:      now.Add(MaxUpstreamResetDuration), // Uses unified reset, clamped
-				HasModelCooldownUntil:   true,
-				ModelCooldownReason:     "anthropic_unified_reset",
+				Level:                 ErrorLevelKey,
+				ModelScoped:           true,
+				PreventKeyFallback:    true,
+				ModelCooldownUntil:    now.Add(MaxUpstreamResetDuration), // Uses unified reset, clamped
+				HasModelCooldownUntil: true,
+				ModelCooldownReason:   "anthropic_unified_reset",
 			},
 		},
 		{
@@ -184,10 +184,10 @@ func TestClassifyHTTPResponseWithMeta_RateLimitResetHeaders(t *testing.T) {
 			headers:    map[string][]string{},
 			body:       []byte(`{"error":"rate limited"}`),
 			want: HTTPResponseClassification{
-				Level:                   ErrorLevelKey,
-				ModelScoped:             true,
-				PreventKeyFallback:      false,
-				HasModelCooldownUntil:   false,
+				Level:                 ErrorLevelKey,
+				ModelScoped:           true,
+				PreventKeyFallback:    false,
+				HasModelCooldownUntil: false,
 			},
 		},
 	}

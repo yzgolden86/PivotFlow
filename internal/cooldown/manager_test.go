@@ -2066,10 +2066,6 @@ func sameTimeSecond(a, b time.Time) bool {
 	return a.Sub(b).Abs() <= 2*time.Second
 }
 
-func cooldownWithinResetSeconds(until time.Time, before time.Time, after time.Time, resetSeconds int) bool {
-	return cooldownWithinDuration(until, before, after, time.Duration(resetSeconds)*time.Second)
-}
-
 func cooldownWithinDuration(until time.Time, before time.Time, after time.Time, duration time.Duration) bool {
 	minUntil := before.Add(duration - 2*time.Second)
 	maxUntil := after.Add(duration + 2*time.Second)
