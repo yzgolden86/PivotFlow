@@ -163,11 +163,9 @@ function App() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
+      // 预载全部路由 chunk：首次点击导航时不出现载入闪烁
+      void Promise.allSettled(Object.values(pageLoaders).map((load) => load()))
       void Promise.allSettled([
-        loadSitesPage(),
-        loadAccountsPage(),
-        loadCheckinsPage(),
-        loadChannelsPage(),
         getSiteInventory(),
         getCheckinAttemptsBatch(100),
       ])
