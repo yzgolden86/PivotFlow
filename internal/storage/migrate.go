@@ -185,6 +185,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureLogsUpstreamProtocol(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs upstream_protocol: %w", err)
 			}
+			if err := ensureColumn(ctx, db, dialect, "logs", "rule_id",
+				"VARCHAR(64) NOT NULL DEFAULT ''",
+				"TEXT NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("migrate logs rule_id: %w", err)
+			}
 		}
 
 		// 增量迁移：确保channels表有daily_cost_limit字段（2026-01新增）
@@ -287,6 +292,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 			if err := ensureAuthTokensMaxConcurrency(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens max_concurrency: %w", err)
+			}
+			if err := ensureColumn(ctx, db, dialect, "auth_tokens", "allowed_protocols",
+				"VARCHAR(200) NOT NULL DEFAULT ''",
+				"TEXT NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("migrate auth_tokens allowed_protocols: %w", err)
 			}
 			if err := backfillAuthTokensCostLimitMaxConcurrency(ctx, db, dialect); err != nil {
 				return fmt.Errorf("backfill auth_tokens max_concurrency: %w", err)
