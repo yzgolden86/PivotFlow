@@ -18,6 +18,7 @@ var (
 
 // OutboundUserAgent 返回 PivotFlow 自身发出请求时使用的默认 User-Agent。
 // 用于版本检查、渠道健康检测（仅当 Tester 未显式伪装客户端时）等出站请求。
+// 使用标准 Chrome 浏览器 User-Agent 以避免被 CDN/防火墙识别为自动化工具。
 func OutboundUserAgent() string {
-	return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) PivotFlow/" + Version + " Chrome/146.0.7680.188 Electron/41.2.1 Safari/537.36"
+	return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 }
