@@ -23,6 +23,11 @@ const (
 
 	// MinCooldownDuration 最小冷却时长（指数退避下限）
 	MinCooldownDuration = 10 * time.Second
+
+	// MaxUpstreamResetDuration 上游精确 reset 时间的钳制上限。
+	// 上游声明 24 小时冷却会让模型整天不可用；实践中 1 小时足够让短期限流恢复，
+	// 持续性配额问题应通过站点充值解决而非无限期冷却单模型。
+	MaxUpstreamResetDuration = time.Hour
 )
 
 // CooldownSettings 冷却时长配置（单位：秒）。非正值表示保留内置默认值。
@@ -119,4 +124,18 @@ func CalculateCooldownDuration(until time.Time, now time.Time) int64 {
 		return 0
 	}
 	return int64(until.Sub(now) / time.Millisecond)
+}
+
+// ClampUpstreamResetTime 钳制上游给出的精确 reset 时间到合理上限。
+// 上游声明的 24 小时冷却会让模型整天不可用；钳制到 MaxUpstreamResetDuration
+// 让短期限流自然恢复，持续性配额问题应通过站点充值解决而非无限期冷却。
+func ClampUpstreamResetTime(until time.Time, now time.Time) time.Time {
+	if until.IsZero() || !until.After(now) {
+		return until
+	}
+	duration := until.Sub(now)
+	if duration > MaxUpstreamResetDuration {
+		return now.Add(MaxUpstreamResetDuration)
+	}
+	return until
 }

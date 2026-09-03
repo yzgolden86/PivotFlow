@@ -607,6 +607,7 @@ func classifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 // parseAnthropicRateLimitReset reads the Anthropic unified reset header and
 // returns the instant the limit lifts. A malformed or already-past value returns
 // false so the caller keeps its normal backoff instead of trusting bad input.
+// 返回的时间已钳制到 MaxUpstreamResetDuration 上限。
 func parseAnthropicRateLimitReset(headers map[string][]string, now time.Time) (time.Time, bool) {
 	for name, values := range headers {
 		if !strings.EqualFold(name, anthropicRateLimitUnifiedResetHeader) {
@@ -619,7 +620,7 @@ func parseAnthropicRateLimitReset(headers map[string][]string, now time.Time) (t
 			}
 			until := time.Unix(resetUnix, 0)
 			if until.After(now) {
-				return until, true
+				return ClampUpstreamResetTime(until, now), true
 			}
 		}
 		return time.Time{}, false
@@ -900,35 +901,35 @@ func structuredScalarString(value any) string {
 
 func parseStructuredCooldownUntil(quotaErr structuredQuotaError, now time.Time) (time.Time, bool) {
 	if quotaErr.resetSeconds > 0 {
-		return now.Add(time.Duration(quotaErr.resetSeconds) * time.Second), true
+		return ClampUpstreamResetTime(now.Add(time.Duration(quotaErr.resetSeconds)*time.Second), now), true
 	}
 
 	// resets_at: unix 时间戳（秒），必须在当前时刻之后
 	if quotaErr.resetsAt > 0 {
 		until := time.Unix(quotaErr.resetsAt, 0)
 		if until.After(now) {
-			return until, true
+			return ClampUpstreamResetTime(until, now), true
 		}
 	}
 
 	if quotaErr.quotaResetTimeStamp != "" {
 		until, err := time.Parse(time.RFC3339, quotaErr.quotaResetTimeStamp)
 		if err == nil && until.After(now) {
-			return until, true
+			return ClampUpstreamResetTime(until, now), true
 		}
 	}
 
 	if quotaErr.resetTime != "" {
 		duration, err := time.ParseDuration(quotaErr.resetTime)
 		if err == nil && duration > 0 {
-			return now.Add(duration), true
+			return ClampUpstreamResetTime(now.Add(duration), now), true
 		}
 	}
 
 	if quotaErr.quotaResetDelay != "" {
 		duration, err := time.ParseDuration(quotaErr.quotaResetDelay)
 		if err == nil && duration > 0 {
-			return now.Add(duration), true
+			return ClampUpstreamResetTime(now.Add(duration), now), true
 		}
 	}
 
@@ -992,7 +993,7 @@ func parseGlobalFixedWindowQuotaCooldownUntil(message string, now time.Time) (ti
 		return time.Time{}, false
 	}
 
-	return until, true
+	return ClampUpstreamResetTime(until, now), true
 }
 
 func nextLocalMidnight(now time.Time) time.Time {
@@ -1163,7 +1164,7 @@ func ParseResetTimeFrom1308Error(responseBody []byte) (time.Time, bool) {
 		return time.Time{}, false
 	}
 
-	return resetTime, true
+	return ClampUpstreamResetTime(resetTime, time.Now()), true
 }
 
 // ClassifyError 统一错误分类器（网络错误+HTTP错误）

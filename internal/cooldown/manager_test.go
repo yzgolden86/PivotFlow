@@ -1417,8 +1417,9 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 			t.Fatal("expected model cooldown")
 		}
 
-		if !cooldownWithinResetSeconds(cooldownUntil, before, after, 13792) {
-			t.Fatalf("model cooldownUntil=%s, want reset_seconds based cooldown",
+		// 上游声明 13792 秒（约 3.8 小时），应被钳制到 1 小时
+		if !cooldownWithinDuration(cooldownUntil, before, after, time.Hour) {
+			t.Fatalf("model cooldownUntil=%s, want clamped to 1h",
 				cooldownUntil.Format(time.RFC3339))
 		}
 		if keyCooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && keyCooldownUntil.After(time.Now()) {
@@ -1465,8 +1466,9 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 		if !exists {
 			t.Fatal("expected model cooldown")
 		}
-		if !cooldownWithinResetSeconds(modelCooldownUntil, before, after, 13792) {
-			t.Fatalf("model cooldownUntil=%s, want reset_seconds based cooldown",
+		// 上游声明 13792 秒（约 3.8 小时），应被钳制到 1 小时
+		if !cooldownWithinDuration(modelCooldownUntil, before, after, time.Hour) {
+			t.Fatalf("model cooldownUntil=%s, want clamped to 1h",
 				modelCooldownUntil.Format(time.RFC3339))
 		}
 
@@ -1817,14 +1819,10 @@ func TestHandleError_GlobalFixedWindowQuotaCoolsModelUntilRetryClock(t *testing.
 	if !exists {
 		t.Fatal("expected model cooldown")
 	}
-	beforeExpected := nextBeijingTime(before, 12, 0)
-	afterExpected := nextBeijingTime(after, 12, 0)
-	if !sameTimeSecond(modelCooldownUntil, beforeExpected) &&
-		!sameTimeSecond(modelCooldownUntil, afterExpected) {
-		t.Fatalf("model cooldownUntil=%s, want %s or %s",
-			modelCooldownUntil.Format(time.RFC3339),
-			beforeExpected.Format(time.RFC3339),
-			afterExpected.Format(time.RFC3339))
+	// "明天 12:00" 应被钳制到 1 小时
+	if !cooldownWithinDuration(modelCooldownUntil, before, after, time.Hour) {
+		t.Fatalf("model cooldownUntil=%s, want clamped to 1h",
+			modelCooldownUntil.Format(time.RFC3339))
 	}
 	channelCfg, err := store.GetConfig(ctx, cfg.ID)
 	if err != nil {
@@ -1872,9 +1870,10 @@ func TestHandleError_UsageLimitReachedMultiKeyCoolsKey(t *testing.T) {
 		t.Fatal("expected key cooldown")
 	}
 
-	duration := cooldownUntil.Sub(before)
-	if duration < 7250*time.Second || duration > 7270*time.Second {
-		t.Fatalf("cooldown duration=%v, want about 7260s", duration)
+	// 上游声明 7260 秒（约 2 小时），应被钳制到 1 小时
+	after := time.Now()
+	if !cooldownWithinDuration(cooldownUntil, before, after, time.Hour) {
+		t.Fatalf("cooldown duration=%v, want clamped to 1h", cooldownUntil.Sub(before))
 	}
 
 	// 渠道不应被冷却
@@ -1939,8 +1938,10 @@ func TestHandleError_AntigravityQuotaUsesMetadataResetTimestamp(t *testing.T) {
 	if !exists {
 		t.Fatal("expected model cooldown")
 	}
-	if !sameTimeSecond(until, resetAt) {
-		t.Fatalf("model cooldownUntil=%s, want metadata reset timestamp %s",
+	// 上游声明 3h40m30s，应被钳制到 1 小时
+	before := time.Now()
+	if !cooldownWithinDuration(until, before, before, time.Hour) {
+		t.Fatalf("model cooldownUntil=%s, want clamped to 1h (original reset was %s)",
 			until.Format(time.RFC3339), resetAt.Format(time.RFC3339))
 	}
 }
@@ -1984,9 +1985,10 @@ func TestHandleError_UsageLimitReachedWithoutKeyCoolsModel(t *testing.T) {
 	if !exists {
 		t.Fatal("expected model cooldown")
 	}
-	duration := cooldownUntil.Sub(before)
-	if duration < 7250*time.Second || duration > 7270*time.Second {
-		t.Fatalf("model cooldown duration=%v, want about 7260s", duration)
+	// 上游声明 7260 秒（约 2 小时），应被钳制到 1 小时
+	after := time.Now()
+	if !cooldownWithinDuration(cooldownUntil, before, after, time.Hour) {
+		t.Fatalf("model cooldown duration=%v, want clamped to 1h", cooldownUntil.Sub(before))
 	}
 	if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-5.4"); exists {
 		t.Fatal("unaffected model must not be cooled")
@@ -2038,9 +2040,11 @@ func TestHandleError_UsageLimitReachedSingleKeyCoolsChannel(t *testing.T) {
 		t.Fatal("channel should be cooled for single-key usage limit")
 	}
 
-	channelDuration := time.Unix(channelCfg.CooldownUntil, 0).Sub(before)
-	if channelDuration < 7250*time.Second || channelDuration > 7270*time.Second {
-		t.Fatalf("channel cooldown duration=%v, want about 7260s", channelDuration)
+	// 上游声明 7260 秒（约 2 小时），应被钳制到 1 小时
+	after := time.Now()
+	channelUntil := time.Unix(channelCfg.CooldownUntil, 0)
+	if !cooldownWithinDuration(channelUntil, before, after, time.Hour) {
+		t.Fatalf("channel cooldown duration=%v, want clamped to 1h", channelUntil.Sub(before))
 	}
 }
 

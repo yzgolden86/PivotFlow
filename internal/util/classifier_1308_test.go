@@ -133,10 +133,11 @@ func TestClassifyHTTPResponseWithMeta_ModelCooldownUsesResetSeconds(t *testing.T
 		t.Fatalf("Model=%q, want gpt-5.5", got.Model)
 	}
 
-	minUntil := before.Add(13792*time.Second - 2*time.Second)
-	maxUntil := after.Add(13792*time.Second + 2*time.Second)
+	// 上游声明 13792 秒（约 3.8 小时），应被钳制到 1 小时
+	minUntil := before.Add(time.Hour - 2*time.Second)
+	maxUntil := after.Add(time.Hour + 2*time.Second)
 	if got.ModelCooldownUntil.Before(minUntil) || got.ModelCooldownUntil.After(maxUntil) {
-		t.Fatalf("ModelCooldownUntil=%s, want between %s and %s",
+		t.Fatalf("ModelCooldownUntil=%s, want clamped to 1h between %s and %s",
 			got.ModelCooldownUntil.Format(time.RFC3339),
 			minUntil.Format(time.RFC3339),
 			maxUntil.Format(time.RFC3339))
