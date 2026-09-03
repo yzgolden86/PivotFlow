@@ -175,8 +175,8 @@ type proxyResult struct {
 	duration                  float64
 	firstByteTime             float64
 	succeeded                 bool
-	isClientCanceled          bool            // 客户端主动取消请求（context.Canceled）
-	nextAction                cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
+	isClientCanceled          bool                 // 客户端主动取消请求（context.Canceled）
+	nextAction                cooldown.Decision    // 统一重试决策：Decision API (Retry + Effect)
 	deferredCooldown          *cooldown.ErrorInput
 	protocolCapabilityMissing bool
 	responsesTurn             responsesWebsocketTurnResult
@@ -892,6 +892,7 @@ type logEntryParams struct {
 	// SiteCost 是用站点自身价目表算出的费用（不含工具费）。
 	// nil 表示站点价格不可用，buildLogEntry 会回退本地估算。
 	SiteCost *float64
+	RuleID   string // 命中的冷却规则标识符（2026-09新增）
 }
 
 // resolveProxyBillingModel 选择代理请求的计费模型。
@@ -1023,6 +1024,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		}
 	}
 	entry.DebugData = p.DebugData
+	entry.RuleID = p.RuleID
 	return entry
 }
 

@@ -1963,7 +1963,7 @@ func (s *Server) handleCommittedAwareProxyError(
 	duration float64,
 	reqCtx *proxyRequestContext,
 	deferChannelCooldown bool,
-) (*proxyResult, cooldown.Action) {
+) (*proxyResult, cooldown.Decision) {
 	if !res.ResponseCommitted {
 		return s.handleProxyErrorResponse(
 			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown, false,
@@ -1982,7 +1982,7 @@ func (s *Server) handleSuccessfulForwardAnomaly(
 	duration float64,
 	reqCtx *proxyRequestContext,
 	deferChannelCooldown bool,
-) (*proxyResult, cooldown.Action, bool) {
+) (*proxyResult, cooldown.Decision, bool) {
 	if res.SSEErrorEvent != nil {
 		log.Printf("[WARN]  [SSE错误处理] HTTP状态码200但检测到SSE error事件，触发冷却逻辑")
 		markSSEErrorForwardResult(res)
@@ -2001,7 +2001,7 @@ func (s *Server) handleSuccessfulForwardAnomaly(
 		return result, action, true
 	}
 
-	return nil, cooldown.ActionReturnClient, false
+	return nil, cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}, false
 }
 
 // forwardAttempt 单次转发尝试（包含错误处理和日志记录）
@@ -2017,7 +2017,7 @@ func (s *Server) forwardAttempt(
 	baseURL string, // 显式传入的URL（多URL场景）
 	w http.ResponseWriter,
 	deferChannelCooldown bool, // 多URL场景下，非最后一个URL不应触发渠道级冷却
-) (*proxyResult, cooldown.Action, error) {
+) (*proxyResult, cooldown.Decision, error) {
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
 	reqCtx.baseURL = baseURL
@@ -2046,8 +2046,8 @@ func (s *Server) forwardAttempt(
 			body:       []byte(err.Error()),
 			channelID:  &channelID,
 			succeeded:  false,
-			nextAction: cooldown.ActionRetryChannel,
-		}, cooldown.ActionRetryChannel, nil
+			nextAction: cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolChannel},
+		}, cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolChannel}, nil
 	}
 	var nativeAttempt *nativeCodexWebsocketAttempt
 	if reqCtx.nativeCodexWS != nil && cfg.Websockets && upstreamProtocol == protocol.Codex &&
@@ -2122,20 +2122,20 @@ func (s *Server) forwardAttempt(
 					body:                      []byte(err.Error()),
 					channelID:                 &cfg.ID,
 					succeeded:                 false,
-					nextAction:                cooldown.ActionRetryChannel,
+					nextAction:                cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectNone},
 					protocolCapabilityMissing: true,
-				}, cooldown.ActionRetryChannel, nil
+				}, cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectNone}, nil
 			}
 			return &proxyResult{
 				status:     http.StatusBadRequest,
 				body:       []byte(err.Error()),
 				channelID:  &cfg.ID,
 				succeeded:  false,
-				nextAction: cooldown.ActionReturnClient,
-			}, cooldown.ActionReturnClient, nil
+				nextAction: cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone},
+			}, cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}, nil
 		}
 		if errors.Is(err, ErrChannelRPMExceeded) || errors.Is(err, ErrChannelConcurrencyExceeded) {
-			return nil, cooldown.ActionRetryChannel, err
+			return nil, cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectNone}, err
 		}
 		if errors.Is(err, util.ErrUpstreamStreamTimeout) && res != nil {
 			res.StreamDiagMsg = err.Error()
@@ -2175,9 +2175,9 @@ func (s *Server) forwardAttempt(
 			channelID:                 &cfg.ID,
 			duration:                  duration,
 			succeeded:                 false,
-			nextAction:                cooldown.ActionRetryChannel,
+			nextAction:                cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectNone},
 			protocolCapabilityMissing: true,
-		}, cooldown.ActionRetryChannel, nil
+		}, cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectNone}, nil
 	}
 
 	// 处理错误响应
@@ -2616,7 +2616,7 @@ func buildCtxDoneResult(cfg *model.Config, ctxErr error) *proxyResult {
 		channelID:        &cfg.ID,
 		succeeded:        false,
 		isClientCanceled: isClientCanceled,
-		nextAction:       cooldown.ActionReturnClient,
+		nextAction:       cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone},
 	}
 }
 
@@ -2753,14 +2753,14 @@ func (s *Server) attemptKeyAcrossURLs(
 				body:                      []byte(`{"error":"upstream endpoint unsupported"}`),
 				channelID:                 &cfg.ID,
 				succeeded:                 false,
-				nextAction:                cooldown.ActionRetryChannel,
+				nextAction:                cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectNone},
 				protocolCapabilityMissing: true,
 			}
 			continue
 		}
 
 		var result *proxyResult
-		var nextAction cooldown.Action
+		var nextAction cooldown.Decision
 		for protocolIdx, upstreamProtocol := range protocolCandidates {
 			s.activeRequests.SetUpstreamProtocol(reqCtx.activeReqID, string(upstreamProtocol))
 			var attemptErr error
@@ -2799,23 +2799,32 @@ func (s *Server) attemptKeyAcrossURLs(
 		}
 
 		// Key级错误：换URL无意义，跳出URL循环
-		if nextAction == cooldown.ActionRetryKey {
+		if nextAction.Retry == cooldown.RetryNextKey {
 			break
 		}
 		// 模型级错误与 URL 无关，不要在同渠道继续浪费请求。
-		if nextAction == cooldown.ActionRetryModel {
+		// 但超时故障（598/599）是 URL 相关的网络问题，在多 URL 场景下应尝试下一个 URL。
+		if nextAction.Effect == cooldown.EffectCoolModel {
+			if urlsCount > 1 && result != nil && util.IsModelScopedStreamFailure(result.status) {
+				// 超时故障：冷却 URL 并继续下一个
+				if selector != nil {
+					selector.CooldownURL(cfg.ID, urlEntry.url)
+				}
+				continue
+			}
 			break
 		}
 		// 客户端错误：直接返回
-		if nextAction == cooldown.ActionReturnClient {
+		if nextAction.Retry == cooldown.RetryNone {
 			return urlLastFailure, nil, nil
 		}
-		// 渠道级错误 (ActionRetryChannel) 或网络错误：
+		// 渠道级错误 (RetryNextChannel) 或网络错误：
 		// 在多URL场景下，默认先尝试下一个URL
 		if urlsCount > 1 {
 			// 5xx 先按模型冷却；若恰好耗尽所有模型，动作会升级为渠道级。
 			// 无论是否升级，这种故障都与 URL 无关，不应改打同渠道的其他 URL。
-			if isModelScopedHTTPFailure(result) {
+			// 但超时故障（598/599）是 URL 相关的网络问题，应该尝试下一个 URL。
+			if isModelScopedHTTPFailure(result) && !util.IsModelScopedStreamFailure(result.status) {
 				if result.deferredCooldown != nil {
 					nextAction = s.applyCooldownDecision(ctx, cfg, *result.deferredCooldown)
 					result.nextAction = nextAction
@@ -2933,10 +2942,10 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		// URL循环结束后的Key级决策
 		if urlLastFailure != nil {
 			lastFailure = urlLastFailure
-			if urlLastFailure.nextAction == cooldown.ActionRetryKey {
+			if urlLastFailure.nextAction.Retry == cooldown.RetryNextKey {
 				continue // 下一个Key
 			}
-			break // ActionRetryChannel 或 ActionReturnClient
+			break // RetryNextChannel 或 RetryNone
 		}
 		break
 	}
@@ -2986,8 +2995,8 @@ func (s *Server) tryCodexOAuthChannel(
 			s.activeRequests.Retry(reqCtx.activeReqID)
 			continue
 		}
-		if result != nil && result.nextAction == cooldown.ActionRetryKey {
-			result.nextAction = cooldown.ActionRetryChannel
+		if result != nil && result.nextAction.Retry == cooldown.RetryNextKey {
+			result.nextAction.Retry = cooldown.RetryNextChannel
 		}
 		if immediate != nil {
 			return immediate, nil
@@ -3007,7 +3016,7 @@ func codexCredentialUnavailableResult(cfg *model.Config) *proxyResult {
 		body:       []byte(`{"error":{"message":"Codex channel credential is unavailable","type":"upstream_auth_error"}}`),
 		channelID:  &channelID,
 		succeeded:  false,
-		nextAction: cooldown.ActionRetryChannel,
+		nextAction: cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolChannel},
 	}
 }
 
@@ -3047,8 +3056,8 @@ func (s *Server) tryAntigravityOAuthChannel(
 			s.activeRequests.Retry(reqCtx.activeReqID)
 			continue
 		}
-		if result != nil && result.nextAction == cooldown.ActionRetryKey {
-			result.nextAction = cooldown.ActionRetryChannel
+		if result != nil && result.nextAction.Retry == cooldown.RetryNextKey {
+			result.nextAction.Retry = cooldown.RetryNextChannel
 		}
 		if immediate != nil {
 			return immediate, nil
@@ -3068,7 +3077,7 @@ func antigravityCredentialUnavailableResult(cfg *model.Config) *proxyResult {
 		body:       []byte(`{"error":{"message":"Antigravity channel credential is unavailable","type":"upstream_auth_error"}}`),
 		channelID:  &channelID,
 		succeeded:  false,
-		nextAction: cooldown.ActionRetryChannel,
+		nextAction: cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolChannel},
 	}
 }
 

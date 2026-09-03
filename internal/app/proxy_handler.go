@@ -277,6 +277,24 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	requestMethod := c.Request.Method
 
+	// 提前获取客户端协议和认证信息，在解析请求体前检查协议限制
+	clientProtocol, effectiveRequestPath := clientRequestMetadata(c)
+	tokenHashStr := ""
+	if v, ok := c.Get("token_hash"); ok {
+		tokenHashStr, _ = v.(string)
+	}
+
+	// 检查协议限制（2026-09新增）
+	// 必须在解析请求体之前检查，避免无权限请求消耗资源
+	if tokenHashStr != "" && clientProtocol != "" {
+		if !s.authService.IsProtocolAllowed(tokenHashStr, string(clientProtocol)) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": fmt.Sprintf("protocol '%s' is not allowed for this token", clientProtocol),
+			})
+			return
+		}
+	}
+
 	incoming, err := parseIncomingRequest(c, s.bodyLimits)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
@@ -290,7 +308,6 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	all := incoming.body
 	isStreaming := incoming.isStreaming
 
-	clientProtocol, effectiveRequestPath := clientRequestMetadata(c)
 	if err := validateClientBodyMatchesProtocol(clientProtocol, all); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -301,10 +318,6 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	thinkingEffort := extractThinkingEffortFromJSON(all)
 
-	tokenHashStr := ""
-	if v, ok := c.Get("token_hash"); ok {
-		tokenHashStr, _ = v.(string)
-	}
 	tokenID, _ := c.Get("token_id")
 	tokenIDInt64, _ := tokenID.(int64)
 
@@ -494,7 +507,7 @@ func shouldStopTryingChannels(result *proxyResult) bool {
 	if result.isClientCanceled {
 		return true
 	}
-	return result.nextAction == cooldown.ActionReturnClient
+	return result.nextAction.Retry == cooldown.RetryNone
 }
 
 // enforceTokenLimits 检查 token 的模型限制与费用限额。
@@ -625,9 +638,9 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 	}
 	if sawAlphaSearchUnsupported &&
 		protocol.DetectRequestFamily(reqCtx.requestPath) == protocol.RequestFamilyAlphaSearch &&
-		(lastResult == nil || (!lastResult.isClientCanceled && lastResult.nextAction != cooldown.ActionReturnClient)) {
+		(lastResult == nil || (!lastResult.isClientCanceled && lastResult.nextAction.Retry != cooldown.RetryNone)) {
 		writeEmptyAlphaSearchResponse(w)
-		return &proxyResult{status: http.StatusOK, succeeded: true, nextAction: cooldown.ActionReturnClient}, true
+		return &proxyResult{status: http.StatusOK, succeeded: true, nextAction: cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}}, true
 	}
 
 	return lastResult, false

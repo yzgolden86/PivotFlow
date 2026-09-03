@@ -161,6 +161,7 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 		ChannelRestrictionMode string   `json:"channel_restriction_mode"` // allow|deny，默认 allow
 		CostLimitUSD           *float64 `json:"cost_limit_usd"`           // 费用上限（0=无限制）
 		MaxConcurrency         *int     `json:"max_concurrency"`          // 最大并发请求数（0=无限制）
+		AllowedProtocols       []string `json:"allowed_protocols"`        // 允许的协议列表，空表示无限制（2026-09新增）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -212,6 +213,7 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 		AllowedModels:          req.AllowedModels,
 		AllowedChannelIDs:      req.AllowedChannelIDs,
 		ChannelRestrictionMode: channelRestrictionMode,
+		AllowedProtocols:       req.AllowedProtocols,
 	}
 	sealed, err := s.siteControl.cipher.Seal(tokenPlain)
 	if err != nil {
@@ -309,6 +311,7 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 		ChannelRestrictionMode *string           `json:"channel_restriction_mode"` // nil=不更新
 		CostLimitUSD           *float64          `json:"cost_limit_usd"`           // 费用上限（0=无限制）
 		MaxConcurrency         *int              `json:"max_concurrency"`          // 最大并发请求数（0=无限制）
+		AllowedProtocols       *[]string         `json:"allowed_protocols"`        // nil=不更新，空数组=清除限制（2026-09新增）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -367,6 +370,9 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 	if req.MaxConcurrency != nil {
 		token.MaxConcurrency = *req.MaxConcurrency
+	}
+	if req.AllowedProtocols != nil {
+		token.AllowedProtocols = *req.AllowedProtocols
 	}
 	if err := token.ValidateUsageLimits(); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, err.Error())

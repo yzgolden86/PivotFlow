@@ -35,33 +35,50 @@ func (s *Server) applyCooldownDecision(
 	ctx context.Context,
 	cfg *model.Config,
 	in cooldown.ErrorInput,
-) cooldown.Action {
+) cooldown.Decision {
 	cooldownCtx, cancel := cooldownWriteContext(ctx)
 	defer cancel()
 
 	in = s.completeCooldownInput(cfg, in)
 
-	var action cooldown.Action
+	var decision cooldown.Decision
 	if cfg.RetryOtherKeysOnFailure {
-		action = s.cooldownManager.HandleErrorWithKeyFallback(cooldownCtx, in)
+		var err error
+		decision, _, err = s.cooldownManager.ApplyEffectWithKeyFallback(cooldownCtx, in)
+		if err != nil {
+			log.Printf("[WARN] ApplyEffectWithKeyFallback failed (channel=%d, key=%d): %v", in.ChannelID, in.KeyIndex, err)
+			return cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}
+		}
+		// ApplyEffectWithKeyFallback already handles exhaustion promotion
 	} else {
-		action = s.cooldownManager.HandleError(cooldownCtx, in)
+		var err error
+		decision, err = s.cooldownManager.Decide(cooldownCtx, in)
+		if err != nil {
+			log.Printf("[WARN] Decide failed (channel=%d, key=%d): %v", in.ChannelID, in.KeyIndex, err)
+			return cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}
+		}
+		exhausted := s.cooldownManager.ApplyEffect(cooldownCtx, decision, in.ChannelID, in.KeyIndex, in.StatusCode)
+		if exhausted {
+			// Resource exhaustion: key/model cooldown promoted to channel cooldown
+			decision.Retry = cooldown.RetryNextChannel
+		}
 	}
 
-	if action == cooldown.ActionRetryKey || action == cooldown.ActionRetryModel || action == cooldown.ActionRetryChannel {
+	if decision.Retry == cooldown.RetryNextKey || decision.Retry == cooldown.RetryNextChannel {
 		s.invalidateChannelRelatedCache(cfg.ID)
 	}
 
-	return action
+	return decision
 }
 
 func (s *Server) decideCooldownAction(
 	ctx context.Context,
 	cfg *model.Config,
 	in cooldown.ErrorInput,
-) cooldown.Action {
+) cooldown.Decision {
 	in = s.completeCooldownInput(cfg, in)
-	return s.cooldownManager.DecideAction(ctx, in)
+	decision, _ := s.cooldownManager.Decide(ctx, in)
+	return decision
 }
 
 func (s *Server) completeCooldownInput(cfg *model.Config, in cooldown.ErrorInput) cooldown.ErrorInput {
@@ -77,6 +94,26 @@ func (s *Server) effectiveChannelCooldownDetectionRules(channelRules *model.Cool
 		return s.globalCooldownDetectionRules, true
 	}
 	return channelRules, false
+}
+
+// evaluateCooldownRuleID 仅用于日志记录：评估冷却规则并返回命中的 rule_id。
+// 只在有实际错误响应体时调用（网络错误无可信 body，不进规则匹配）。
+func (s *Server) evaluateCooldownRuleID(cfg *model.Config, statusCode int, errorBody []byte) string {
+	if cfg == nil || len(errorBody) == 0 {
+		return ""
+	}
+	rules, _ := s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
+	if rules == nil || rules.IsEmpty() {
+		return ""
+	}
+	evaluation := cooldown.EvaluateCooldownDetectionRules(rules, cooldown.DetectionInput{
+		StatusCode: statusCode,
+		ErrorBody:  errorBody,
+	}, time.Now())
+	if evaluation.Matched {
+		return evaluation.RuleID
+	}
+	return ""
 }
 
 func (s *Server) channelModelCooldownKeys(cfg *model.Config) []string {
@@ -167,6 +204,11 @@ func (s *Server) logProxyResult(
 	res *fwResult,
 	errMsg string,
 ) {
+	ruleID := ""
+	// 只在错误场景且有响应体时尝试匹配冷却规则（网络错误无可信 body）
+	if statusCode >= 400 && res != nil && len(res.Body) > 0 {
+		ruleID = s.evaluateCooldownRuleID(cfg, statusCode, res.Body)
+	}
 	s.AddLogAsync(buildLogEntry(logEntryParams{
 		RequestModel:     reqCtx.originalModel,
 		ActualModel:      actualModel,
@@ -188,6 +230,7 @@ func (s *Server) logProxyResult(
 		CostMultiplier:   cfg.CostMultiplier,
 		ThinkingEffort:   reqCtx.thinkingEffort,
 		SiteCost:         s.siteCostForLog(actualModel, reqCtx.originalModel, cfg, statusCode, res),
+		RuleID:           ruleID,
 	}))
 }
 
@@ -244,7 +287,7 @@ func (s *Server) handleNetworkError(
 	res *fwResult, // [FIX] 流式响应中途取消时，res 包含已解析的 token 统计
 	reqCtx *proxyRequestContext, // [FIX] 用于获取 tokenHash 和 isStreaming
 	deferChannelCooldown bool,
-) (*proxyResult, cooldown.Action) {
+) (*proxyResult, cooldown.Decision) {
 	statusCode, _, shouldRetry := util.ClassifyError(err)
 
 	// 记录日志：requestModel=原始请求模型，actualModel=实际转发模型
@@ -271,8 +314,8 @@ func (s *Server) handleNetworkError(
 	}
 
 	if !shouldRetry {
-		failure.nextAction = cooldown.ActionReturnClient
-		return failure, cooldown.ActionReturnClient
+		failure.nextAction = cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}
+		return failure, failure.nextAction
 	}
 
 	input := cooldownInputForModel(networkErrorInput(cfg.ID, keyIndex, statusCode), actualModel)
@@ -281,15 +324,15 @@ func (s *Server) handleNetworkError(
 		action := s.decideCooldownAction(ctx, cfg, input)
 		keyFallback := cfg.RetryOtherKeysOnFailure &&
 			s.cooldownManager.CanFallbackToOtherKey(s.completeCooldownInput(cfg, input))
-		if action == cooldown.ActionRetryChannel && !keyFallback {
+		if action.Retry == cooldown.RetryNextChannel && !keyFallback {
 			failure.nextAction = action
 			return failure, action
 		}
 	}
 
-	action := s.applyCooldownDecision(ctx, cfg, input)
-	failure.nextAction = action
-	return failure, action
+	decision := s.applyCooldownDecision(ctx, cfg, input)
+	failure.nextAction = decision
+	return failure, decision
 }
 
 // hasConsumedTokens 检查响应是否包含已消耗的 token 统计
@@ -473,34 +516,34 @@ func (s *Server) handleProxySuccess(
 	res *fwResult,
 	duration float64,
 	reqCtx *proxyRequestContext,
-) (*proxyResult, cooldown.Action) {
+) (*proxyResult, cooldown.Decision) {
 	cooldownCtx, cancel := cooldownWriteContext(ctx)
 	defer cancel()
 
-	// 使用 cooldownManager 清除冷却状态
-	// 设计原则: 清除失败不应影响用户请求成功
-	if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
-		count := cooldownClearChannelFailCount.Add(1)
-		if count%100 == 1 {
-			log.Printf("[WARN] ClearChannelCooldown 失败 (累计: %d): channel_id=%d err=%v", count, cfg.ID, err)
-		}
+	// Clear channel cooldown (always)
+	channelDecision := cooldown.Decision{
+		Retry:  cooldown.RetryNone,
+		Effect: cooldown.EffectClearChannelCooldown,
 	}
+	_ = s.cooldownManager.ApplyEffect(cooldownCtx, channelDecision, cfg.ID, keyIndex, res.Status)
+
+	// Clear key cooldown (only if keyIndex is valid)
 	if keyIndex != cooldown.NoKeyIndex {
-		if err := s.cooldownManager.ClearKeyCooldown(cooldownCtx, cfg.ID, keyIndex); err != nil {
-			count := cooldownClearKeyFailCount.Add(1)
-			if count%100 == 1 {
-				log.Printf("[WARN] ClearKeyCooldown 失败 (累计: %d): channel_id=%d key_index=%d err=%v", count, cfg.ID, keyIndex, err)
-			}
+		keyDecision := cooldown.Decision{
+			Retry:  cooldown.RetryNone,
+			Effect: cooldown.EffectClearKeyCooldown,
 		}
+		_ = s.cooldownManager.ApplyEffect(cooldownCtx, keyDecision, cfg.ID, keyIndex, res.Status)
 	}
+
+	// Clear model cooldown (only if model exists and has active cooldown)
 	if actualModel != "" && s.hasActiveModelCooldown(ctx, cfg.ID, actualModel) {
-		if err := s.cooldownManager.ClearModelCooldown(cooldownCtx, cfg.ID, actualModel); err != nil {
-			count := cooldownClearModelFailCount.Add(1)
-			if count%100 == 1 {
-				log.Printf("[WARN] ClearModelCooldown 失败 (累计: %d): channel_id=%d model=%s err=%v",
-					count, cfg.ID, actualModel, err)
-			}
+		modelDecision := cooldown.Decision{
+			Retry:  cooldown.RetryNone,
+			Effect: cooldown.EffectClearModelCooldown,
+			Model:  actualModel,
 		}
+		_ = s.cooldownManager.ApplyEffect(cooldownCtx, modelDecision, cfg.ID, keyIndex, res.Status)
 	}
 
 	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
@@ -523,10 +566,10 @@ func (s *Server) handleProxySuccess(
 		duration:         duration,
 		firstByteTime:    res.FirstByteTime,
 		succeeded:        true,
-		nextAction:       cooldown.ActionReturnClient,
+		nextAction:       cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone},
 		responsesTurn:    res.ResponsesTurnResult,
 		hasResponsesTurn: res.HasResponsesTurnResult,
-	}, cooldown.ActionReturnClient
+	}, cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}
 }
 
 // handleStreamingErrorNoRetry 处理流式响应中途检测到的错误（597/599）
@@ -541,7 +584,7 @@ func (s *Server) handleStreamingErrorNoRetry(
 	res *fwResult,
 	duration float64,
 	reqCtx *proxyRequestContext,
-) (*proxyResult, cooldown.Action) {
+) (*proxyResult, cooldown.Decision) {
 	// 记录错误日志
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, res.StreamDiagMsg)
 
@@ -554,8 +597,8 @@ func (s *Server) handleStreamingErrorNoRetry(
 		channelID:  &cfg.ID,
 		duration:   duration,
 		succeeded:  true, // 关键：标记为成功，避免触发重试逻辑
-		nextAction: cooldown.ActionReturnClient,
-	}, cooldown.ActionReturnClient
+		nextAction: cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone},
+	}, cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}
 }
 
 // handleProxyErrorResponse 处理代理错误响应（业务逻辑层）
@@ -572,7 +615,7 @@ func (s *Server) handleProxyErrorResponse(
 	reqCtx *proxyRequestContext,
 	deferChannelCooldown bool,
 	forceReturnClient bool,
-) (*proxyResult, cooldown.Action) {
+) (*proxyResult, cooldown.Decision) {
 	// 日志改进: 明确标识上游返回的499错误
 	errMsg := ""
 	if res.Status == 499 {
@@ -598,8 +641,8 @@ func (s *Server) handleProxyErrorResponse(
 	}
 
 	if forceReturnClient {
-		failure.nextAction = cooldown.ActionReturnClient
-		return failure, cooldown.ActionReturnClient
+		failure.nextAction = cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}
+		return failure, failure.nextAction
 	}
 
 	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
@@ -607,14 +650,14 @@ func (s *Server) handleProxyErrorResponse(
 		action := s.decideCooldownAction(ctx, cfg, input)
 		keyFallback := cfg.RetryOtherKeysOnFailure &&
 			s.cooldownManager.CanFallbackToOtherKey(s.completeCooldownInput(cfg, input))
-		if action == cooldown.ActionRetryChannel && !keyFallback {
+		if action.Retry == cooldown.RetryNextChannel && !keyFallback {
 			failure.nextAction = action
 			failure.deferredCooldown = &input
 			return failure, action
 		}
 	}
 
-	action := s.applyCooldownDecision(ctx, cfg, input)
-	failure.nextAction = action
-	return failure, action
+	decision := s.applyCooldownDecision(ctx, cfg, input)
+	failure.nextAction = decision
+	return failure, decision
 }

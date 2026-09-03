@@ -540,9 +540,9 @@ func isNativeCodexWebsocketCandidate(candidate *model.Config) bool {
 		configCanUseUpstreamProtocol(candidate, protocol.Codex)
 }
 
-func isResponsesWebsocketClientRetryAction(action cooldown.Action) bool {
-	switch action {
-	case cooldown.ActionRetryKey, cooldown.ActionRetryModel, cooldown.ActionRetryChannel:
+func isResponsesWebsocketClientRetryAction(decision cooldown.Decision) bool {
+	switch decision.Retry {
+	case cooldown.RetryNextKey, cooldown.RetryNextChannel:
 		return true
 	default:
 		return false

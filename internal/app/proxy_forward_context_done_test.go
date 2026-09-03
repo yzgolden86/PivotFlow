@@ -30,8 +30,8 @@ func TestTryChannelWithKeys_ContextCanceled_Returns499(t *testing.T) {
 	if !res.isClientCanceled {
 		t.Fatal("expected isClientCanceled=true")
 	}
-	if res.nextAction != cooldown.ActionReturnClient {
-		t.Fatalf("expected nextAction=ActionReturnClient, got %v", res.nextAction)
+	if res.nextAction.Retry != cooldown.RetryNone {
+		t.Fatalf("expected nextAction.Retry=RetryNone, got %v", res.nextAction.Retry)
 	}
 }
 
@@ -55,7 +55,7 @@ func TestTryChannelWithKeys_ContextDeadlineExceeded_Returns504(t *testing.T) {
 	if res.isClientCanceled {
 		t.Fatal("expected isClientCanceled=false")
 	}
-	if res.nextAction != cooldown.ActionReturnClient {
-		t.Fatalf("expected nextAction=ActionReturnClient, got %v", res.nextAction)
+	if res.nextAction.Retry != cooldown.RetryNone {
+		t.Fatalf("expected nextAction.Retry=RetryNone, got %v", res.nextAction.Retry)
 	}
 }

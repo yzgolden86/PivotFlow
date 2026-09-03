@@ -272,21 +272,21 @@ func TestDetermineFinalClientStatus(t *testing.T) {
 	}{
 		{"nil last => 503", nil, http.StatusServiceUnavailable},
 		{"status 0 => 503", &proxyResult{status: 0}, http.StatusServiceUnavailable},
-		{"negative => 502", &proxyResult{status: -1, nextAction: cooldown.ActionRetryChannel}, http.StatusBadGateway},
-		{"596 => 429", &proxyResult{status: util.StatusQuotaExceeded, nextAction: cooldown.ActionRetryKey}, http.StatusTooManyRequests},
-		{"597 => 502", &proxyResult{status: util.StatusSSEError, nextAction: cooldown.ActionRetryKey}, http.StatusBadGateway},
-		{"598 => 504", &proxyResult{status: util.StatusFirstByteTimeout, nextAction: cooldown.ActionRetryChannel}, http.StatusGatewayTimeout},
-		{"599 => 502", &proxyResult{status: util.StatusStreamIncomplete, nextAction: cooldown.ActionRetryChannel}, http.StatusBadGateway},
-		{"499 client-canceled passthrough", &proxyResult{status: 499, isClientCanceled: true, nextAction: cooldown.ActionReturnClient}, 499},
-		{"499 upstream mapped to 502", &proxyResult{status: 499, isClientCanceled: false, nextAction: cooldown.ActionRetryChannel}, http.StatusBadGateway},
-		{"401 Key-level mapped to 401 (透明代理)", &proxyResult{status: http.StatusUnauthorized, nextAction: cooldown.ActionRetryKey}, http.StatusUnauthorized},
-		{"5xx Channel-level passthrough", &proxyResult{status: http.StatusBadGateway, nextAction: cooldown.ActionRetryChannel}, http.StatusBadGateway},
+		{"negative => 502", &proxyResult{status: -1, nextAction: cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolChannel}}, http.StatusBadGateway},
+		{"596 => 429", &proxyResult{status: util.StatusQuotaExceeded, nextAction: cooldown.Decision{Retry: cooldown.RetryNextKey, Effect: cooldown.EffectCoolKey}}, http.StatusTooManyRequests},
+		{"597 => 502", &proxyResult{status: util.StatusSSEError, nextAction: cooldown.Decision{Retry: cooldown.RetryNextKey, Effect: cooldown.EffectCoolKey}}, http.StatusBadGateway},
+		{"598 => 504", &proxyResult{status: util.StatusFirstByteTimeout, nextAction: cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolModel}}, http.StatusGatewayTimeout},
+		{"599 => 502", &proxyResult{status: util.StatusStreamIncomplete, nextAction: cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolModel}}, http.StatusBadGateway},
+		{"499 client-canceled passthrough", &proxyResult{status: 499, isClientCanceled: true, nextAction: cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}}, 499},
+		{"499 upstream mapped to 502", &proxyResult{status: 499, isClientCanceled: false, nextAction: cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolChannel}}, http.StatusBadGateway},
+		{"401 Key-level mapped to 401 (透明代理)", &proxyResult{status: http.StatusUnauthorized, nextAction: cooldown.Decision{Retry: cooldown.RetryNextKey, Effect: cooldown.EffectCoolKey}}, http.StatusUnauthorized},
+		{"5xx Channel-level passthrough", &proxyResult{status: http.StatusBadGateway, nextAction: cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolChannel}}, http.StatusBadGateway},
 		// [FIX] 透明代理：所有上游状态码都透传，不映射
-		{"400 Key-level (invalid_api_key) => 400", &proxyResult{status: 400, nextAction: cooldown.ActionRetryKey}, 400},
-		{"400 Channel-level (参数错误) => 400", &proxyResult{status: 400, nextAction: cooldown.ActionRetryChannel}, 400},
-		{"404 Channel-level (BaseURL错误) => 404", &proxyResult{status: 404, nextAction: cooldown.ActionRetryChannel}, 404},
-		{"404 Client-level (模型不存在) => 404", &proxyResult{status: 404, nextAction: cooldown.ActionReturnClient}, 404},
-		{"429 Key-level => 429", &proxyResult{status: 429, nextAction: cooldown.ActionRetryKey}, 429},
+		{"400 Key-level (invalid_api_key) => 400", &proxyResult{status: 400, nextAction: cooldown.Decision{Retry: cooldown.RetryNextKey, Effect: cooldown.EffectCoolKey}}, 400},
+		{"400 Channel-level (参数错误) => 400", &proxyResult{status: 400, nextAction: cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolChannel}}, 400},
+		{"404 Channel-level (BaseURL错误) => 404", &proxyResult{status: 404, nextAction: cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolChannel}}, 404},
+		{"404 Client-level (模型不存在) => 404", &proxyResult{status: 404, nextAction: cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}}, 404},
+		{"429 Key-level => 429", &proxyResult{status: 429, nextAction: cooldown.Decision{Retry: cooldown.RetryNextKey, Effect: cooldown.EffectCoolKey}}, 429},
 	}
 
 	for _, tt := range tests {
@@ -307,12 +307,12 @@ func TestShouldStopTryingChannels(t *testing.T) {
 		expected bool
 	}{
 		{"nil => stop", nil, true},
-		{"client canceled => stop", &proxyResult{status: 499, isClientCanceled: true, nextAction: cooldown.ActionReturnClient}, true},
-		{"broken pipe => stop", &proxyResult{status: 499, nextAction: cooldown.ActionReturnClient}, true},
-		{"client-level => stop", &proxyResult{status: 404, nextAction: cooldown.ActionReturnClient}, true},
-		{"channel-level => continue", &proxyResult{status: 404, nextAction: cooldown.ActionRetryChannel}, false},
-		{"key-level (400 invalid_api_key) => continue", &proxyResult{status: 400, nextAction: cooldown.ActionRetryKey}, false},
-		{"key-level 429 => continue", &proxyResult{status: 429, nextAction: cooldown.ActionRetryKey}, false},
+		{"client canceled => stop", &proxyResult{status: 499, isClientCanceled: true, nextAction: cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}}, true},
+		{"broken pipe => stop", &proxyResult{status: 499, nextAction: cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}}, true},
+		{"client-level => stop", &proxyResult{status: 404, nextAction: cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}}, true},
+		{"channel-level => continue", &proxyResult{status: 404, nextAction: cooldown.Decision{Retry: cooldown.RetryNextChannel, Effect: cooldown.EffectCoolChannel}}, false},
+		{"key-level (400 invalid_api_key) => continue", &proxyResult{status: 400, nextAction: cooldown.Decision{Retry: cooldown.RetryNextKey, Effect: cooldown.EffectCoolKey}}, false},
+		{"key-level 429 => continue", &proxyResult{status: 429, nextAction: cooldown.Decision{Retry: cooldown.RetryNextKey, Effect: cooldown.EffectCoolKey}}, false},
 	}
 
 	for _, tt := range tests {

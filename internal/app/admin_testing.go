@@ -721,21 +721,28 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 	if upstreamStatusCode, ok := getResultInt(result["status_code"]); ok {
 		input.UpstreamStatusCode = upstreamStatusCode
 	}
-	action := s.applyCooldownDecision(
+	decision := s.applyCooldownDecision(
 		ctx,
 		cfg,
 		cooldownInputForModel(input, actualModel),
 	)
 
-	switch action {
-	case cooldown.ActionRetryKey:
+	switch decision.Retry {
+	case cooldown.RetryNextKey:
 		result["cooldown_action"] = "key_cooldown_applied"
-	case cooldown.ActionRetryModel:
-		result["cooldown_action"] = "model_cooldown_applied"
-	case cooldown.ActionRetryChannel:
-		result["cooldown_action"] = "channel_cooldown_applied"
-	case cooldown.ActionReturnClient:
+	case cooldown.RetryNextChannel:
+		// Could be model or channel cooldown depending on Effect
+		if decision.Effect == cooldown.EffectCoolModel {
+			result["cooldown_action"] = "model_cooldown_applied"
+		} else {
+			result["cooldown_action"] = "channel_cooldown_applied"
+		}
+	case cooldown.RetryNone:
 		result["cooldown_action"] = "client_error_no_cooldown"
+	case cooldown.RetryNextURL:
+		result["cooldown_action"] = "url_retry"
+	case cooldown.RetryRefreshToken:
+		result["cooldown_action"] = "refresh_token"
 	default:
 		result["cooldown_action"] = "unknown_action"
 	}

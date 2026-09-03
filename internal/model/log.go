@@ -100,6 +100,7 @@ type LogEntry struct {
 	// CostSource 记录 Cost 的来源：site_pricing 表示上游计算（站点自身价目表），
 	// local_estimate 表示按厂商标价本地估算。空值按 local_estimate 处理（历史行）。
 	CostSource string `json:"cost_source,omitempty"`
+	RuleID     string `json:"rule_id,omitempty"` // 命中的冷却规则标识符（2026-09新增）
 
 	// 瞬态字段：不持久化到 logs 表，仅用于传递 debug 数据到写入管道
 	DebugData *DebugLogEntry `json:"-"`
