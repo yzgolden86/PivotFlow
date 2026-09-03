@@ -77,10 +77,16 @@ func doHTTPRequest(client *http.Client, req *http.Request) ([]byte, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// [INFO] 修复：区分4xx和5xx错误，便于上层返回正确的HTTP状态码
+		//
+		// 响应体必须过 SanitizeUpstreamErrorBody 再拼进 error。WAF/CDN 拦截页能有上百 KB，
+		// 还内嵌几万字符没有空白的 base64 字体；原样拼进去会经 admin_models.go 的错误包装
+		// 一路传到控制台弹窗，把「添加渠道」抻得极宽。用 Sanitize 而不是 Summarize，是因为
+		// admin_models.go 还要从这段文本里抠回 body 做错误分级，JSON 错误体不能被改写。
+		summary := SanitizeUpstreamErrorBody(resp.Header.Get("Content-Type"), body)
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			return nil, fmt.Errorf("上游配置错误 (HTTP %d): %s", resp.StatusCode, string(body))
+			return nil, fmt.Errorf("上游配置错误 (HTTP %d): %s", resp.StatusCode, summary)
 		}
-		return nil, fmt.Errorf("上游服务器错误 (HTTP %d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("上游服务器错误 (HTTP %d): %s", resp.StatusCode, summary)
 	}
 
 	return body, nil

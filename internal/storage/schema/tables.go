@@ -467,7 +467,7 @@ func DefineLogsTable() *TableBuilder {
 		Column("cache_1h_input_tokens INT NOT NULL DEFAULT 0").       // 1小时缓存写入Token数（新增2025-12）
 		Column("cost DOUBLE NOT NULL DEFAULT 0.0").
 		Column("cost_multiplier DOUBLE NOT NULL DEFAULT 1").
-		// site_pricing = 用站点自身价目表算出；local_estimate = 厂商标价本地估算。
+		// site_pricing = 上游计算（站点自身价目表）；local_estimate = 厂商标价本地估算。
 		Column("cost_source VARCHAR(32) NOT NULL DEFAULT ''").
 		Index("idx_logs_time_model", "time, model").
 		Index("idx_logs_time_status", "time, status_code").

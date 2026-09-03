@@ -221,6 +221,29 @@ func TestSitePricingCacheTTLAndFailureThrottle(t *testing.T) {
 	if _, ok := cache.lookup(8, now.Add(sitePricingFailureTTL+time.Minute)); ok {
 		t.Error("negative result must expire so the site is retried eventually")
 	}
+
+	// Defensive store: concurrent cache miss can race, must not let failure
+	// overwrite a fresh success.
+	successTable := provider.SitePricing{
+		Models:     []provider.ModelPrice{{Model: "opus", ModelRatio: 1}},
+		GroupRatio: map[string]float64{"default": 1},
+	}
+	cache.store(9, successTable, false, now)
+	cache.store(9, provider.SitePricing{}, true, now) // racing failure
+	recovered, ok := cache.lookup(9, now)
+	if !ok {
+		t.Error("failed store must not evict an unexpired success")
+	}
+	if len(recovered.Models) != 1 {
+		t.Errorf("failed store overwrote success: got %d models, want 1", len(recovered.Models))
+	}
+
+	// Once the success expires, failure can store.
+	expiredNow := now.Add(sitePricingTTL + time.Minute)
+	cache.store(9, provider.SitePricing{}, true, expiredNow)
+	if _, ok := cache.lookup(9, expiredNow); !ok {
+		t.Error("failed store must succeed after success expires")
+	}
 }
 
 func TestSitePricingCacheInvalidate(t *testing.T) {
