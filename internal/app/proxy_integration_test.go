@@ -628,9 +628,11 @@ func TestProxy_CodexOAuthUsageLimitCoolsActualModel(t *testing.T) {
 		t.Fatalf("get model cooldowns: %v", err)
 	}
 	until := cooldowns[configs[0].ID]["gpt-5.4-mini"]
+	after := time.Now()
+	// 上游声明 7260 秒（约 2 小时），应被钳制到 1 小时
 	duration := until.Sub(before)
-	if duration < 7250*time.Second || duration > 7270*time.Second {
-		t.Fatalf("model cooldown duration=%v, want about 7260s", duration)
+	if duration < 59*time.Minute || until.After(after.Add(61*time.Minute)) {
+		t.Fatalf("model cooldown duration=%v, want clamped to 1h", duration)
 	}
 	if _, exists := cooldowns[configs[0].ID]["gpt-5.4"]; exists {
 		t.Fatal("unaffected Codex model must not be cooled")

@@ -5,160 +5,76 @@ import (
 	"time"
 )
 
-func TestCalculateBackoffDuration_504Error(t *testing.T) {
-	now := time.Now()
-	statusCode504 := 504
+func TestClampUpstreamResetTime(t *testing.T) {
+	now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name        string
-		prevMs      int64
-		until       time.Time
-		statusCode  *int
-		expectedMin time.Duration
-		expectedMax time.Duration
-		description string
+		name     string
+		until    time.Time
+		now      time.Time
+		want     time.Time
+		wantSame bool
 	}{
 		{
-			name:        "首次504错误应冷却2分钟",
-			prevMs:      0,
-			until:       time.Time{},
-			statusCode:  &statusCode504,
-			expectedMin: 2 * time.Minute,
-			expectedMax: 2 * time.Minute,
-			description: "504 Gateway Timeout should trigger 2-minute cooldown on first occurrence (exponential backoff: 2min -> 4min -> 8min ...)",
+			name:     "30 分钟内原样保留",
+			until:    now.Add(30 * time.Minute),
+			now:      now,
+			wantSame: true,
 		},
 		{
-			name:        "连续504错误应指数退避",
-			prevMs:      int64(2 * time.Minute / time.Millisecond),
-			until:       now.Add(2 * time.Minute),
-			statusCode:  &statusCode504,
-			expectedMin: 4 * time.Minute,
-			expectedMax: 4 * time.Minute,
-			description: "Subsequent 504 errors should double the cooldown (2min -> 4min)",
+			name:     "1 小时边界原样保留",
+			until:    now.Add(time.Hour),
+			now:      now,
+			wantSame: true,
+		},
+		{
+			name:  "2 小时钳制到 1 小时",
+			until: now.Add(2 * time.Hour),
+			now:   now,
+			want:  now.Add(time.Hour),
+		},
+		{
+			name:  "24 小时钳制到 1 小时",
+			until: now.Add(24 * time.Hour),
+			now:   now,
+			want:  now.Add(time.Hour),
+		},
+		{
+			name:     "零值原样返回",
+			until:    time.Time{},
+			now:      now,
+			wantSame: true,
+		},
+		{
+			name:     "已过期时间原样返回",
+			until:    now.Add(-10 * time.Minute),
+			now:      now,
+			wantSame: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			duration := CalculateBackoffDuration(tt.prevMs, tt.until, now, tt.statusCode)
-
-			if duration < tt.expectedMin || duration > tt.expectedMax {
-				t.Errorf("%s\n期望冷却时间: %v-%v\n实际冷却时间: %v",
-					tt.description, tt.expectedMin, tt.expectedMax, duration)
+			got := ClampUpstreamResetTime(tt.until, tt.now)
+			if tt.wantSame {
+				if !got.Equal(tt.until) {
+					t.Errorf("ClampUpstreamResetTime() = %v, want %v (same as input)", got, tt.until)
+				}
+			} else {
+				if !got.Equal(tt.want) {
+					t.Errorf("ClampUpstreamResetTime() = %v, want %v", got, tt.want)
+				}
 			}
 		})
 	}
 }
 
-func TestCalculateBackoffDuration_ChannelErrors(t *testing.T) {
+// TestClampUpstreamResetTimePreservesShortDurations 确保短时冷却不被拉长。
+func TestClampUpstreamResetTimePreservesShortDurations(t *testing.T) {
 	now := time.Now()
-
-	tests := []struct {
-		statusCode int
-		expected   time.Duration
-	}{
-		{500, 2 * time.Minute}, // Internal Server Error: 2min -> 4min -> 8min ...
-		{502, 2 * time.Minute}, // Bad Gateway: 2min -> 4min -> 8min ...
-		{503, 2 * time.Minute}, // Service Unavailable: 2min -> 4min -> 8min ...
-		{504, 2 * time.Minute}, // Gateway Timeout: 2min -> 4min -> 8min ...
-		{520, 2 * time.Minute}, // Web Server Returned an Unknown Error: 2min -> 4min -> 8min ...
-		{521, 2 * time.Minute}, // Web Server Is Down: 2min -> 4min -> 8min ...
-		{524, 2 * time.Minute}, // A Timeout Occurred: 2min -> 4min -> 8min ...
-		{599, 2 * time.Minute}, // Stream Incomplete (内部状态码): 2min -> 4min -> 8min ...
-	}
-
-	for _, tt := range tests {
-		t.Run("StatusCode_"+string(rune(tt.statusCode)), func(t *testing.T) {
-			duration := CalculateBackoffDuration(0, time.Time{}, now, &tt.statusCode)
-
-			if duration != tt.expected {
-				t.Errorf("状态码%d首次错误应冷却%v，实际%v",
-					tt.statusCode, tt.expected, duration)
-			}
-		})
-	}
-}
-
-func TestCalculateBackoffDuration_AuthErrors(t *testing.T) {
-	now := time.Now()
-
-	tests := []struct {
-		statusCode int
-		expected   time.Duration
-	}{
-		{401, 5 * time.Minute}, // Unauthorized
-		{402, 5 * time.Minute}, // Payment Required
-		{403, 5 * time.Minute}, // Forbidden
-	}
-
-	for _, tt := range tests {
-		t.Run("StatusCode_"+string(rune(tt.statusCode)), func(t *testing.T) {
-			duration := CalculateBackoffDuration(0, time.Time{}, now, &tt.statusCode)
-
-			if duration != tt.expected {
-				t.Errorf("认证错误%d首次应冷却%v，实际%v",
-					tt.statusCode, tt.expected, duration)
-			}
-		})
-	}
-}
-
-func TestCalculateBackoffDuration_OtherErrors(t *testing.T) {
-	now := time.Now()
-
-	tests := []struct {
-		statusCode int
-		expected   time.Duration
-	}{
-		{429, time.Minute}, // Too Many Requests - 1分钟冷却
-	}
-
-	for _, tt := range tests {
-		t.Run("StatusCode_"+string(rune(tt.statusCode)), func(t *testing.T) {
-			duration := CalculateBackoffDuration(0, time.Time{}, now, &tt.statusCode)
-
-			if duration != tt.expected {
-				t.Errorf("状态码%d首次错误应冷却%v，实际%v",
-					tt.statusCode, tt.expected, duration)
-			}
-		})
-	}
-}
-
-func TestCalculateBackoffDuration_TimeoutError(t *testing.T) {
-	now := time.Now()
-	statusCode598 := 598
-
-	duration := CalculateBackoffDuration(0, time.Time{}, now, &statusCode598)
-
-	if duration != TimeoutErrorCooldown {
-		t.Errorf("超时错误(598)应固定冷却%v，实际%v",
-			TimeoutErrorCooldown, duration)
-	}
-}
-
-func TestCalculateBackoffDuration_ExponentialBackoff(t *testing.T) {
-	now := time.Now()
-	statusCode := 500 // 使用服务器错误测试指数退避（2分钟起始）
-
-	// 测试指数退避序列：2min -> 4min -> 8min -> 16min -> 30min(上限)
-	expectedSequence := []time.Duration{
-		2 * time.Minute,  // 初始
-		4 * time.Minute,  // 2x
-		8 * time.Minute,  // 4x
-		16 * time.Minute, // 8x
-		30 * time.Minute, // 达到上限
-		30 * time.Minute, // 保持上限
-	}
-
-	prevMs := int64(0)
-	for i, expected := range expectedSequence {
-		duration := CalculateBackoffDuration(prevMs, time.Time{}, now, &statusCode)
-
-		if duration != expected {
-			t.Errorf("第%d次退避应为%v，实际%v", i+1, expected, duration)
-		}
-
-		prevMs = int64(duration / time.Millisecond)
+	until := now.Add(5 * time.Minute)
+	got := ClampUpstreamResetTime(until, now)
+	if !got.Equal(until) {
+		t.Errorf("5 分钟冷却被改成 %v，应原样保留", got.Sub(now))
 	}
 }

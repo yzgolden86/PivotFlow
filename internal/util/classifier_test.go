@@ -1336,7 +1336,9 @@ func TestClassifyHTTPResponseWithMeta_UsageLimitReached(t *testing.T) {
 
 	t.Run("resets_in_seconds in error object", func(t *testing.T) {
 		body := []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7260}}`)
+		before := time.Now()
 		result := ClassifyHTTPResponseWithMeta(429, nil, body)
+		after := time.Now()
 		if result.Level != ErrorLevelKey {
 			t.Fatalf("Level: got %v, want ErrorLevelKey", result.Level)
 		}
@@ -1346,9 +1348,14 @@ func TestClassifyHTTPResponseWithMeta_UsageLimitReached(t *testing.T) {
 		if result.KeyCooldownReason != "USAGE_LIMIT_REACHED" {
 			t.Fatalf("reason: got %q, want USAGE_LIMIT_REACHED", result.KeyCooldownReason)
 		}
-		duration := time.Until(result.KeyCooldownUntil)
-		if duration < 7250*time.Second || duration > 7270*time.Second {
-			t.Fatalf("cooldown duration=%v, want about 7260s", duration)
+		// 上游声明 7260 秒（约 2 小时），应被钳制到 1 小时
+		minUntil := before.Add(time.Hour - 2*time.Second)
+		maxUntil := after.Add(time.Hour + 2*time.Second)
+		if result.KeyCooldownUntil.Before(minUntil) || result.KeyCooldownUntil.After(maxUntil) {
+			t.Fatalf("KeyCooldownUntil=%s, want clamped to 1h between %s and %s",
+				result.KeyCooldownUntil.Format(time.RFC3339),
+				minUntil.Format(time.RFC3339),
+				maxUntil.Format(time.RFC3339))
 		}
 	})
 
@@ -1356,16 +1363,24 @@ func TestClassifyHTTPResponseWithMeta_UsageLimitReached(t *testing.T) {
 		resetsAt := time.Now().Add(2 * time.Hour).Unix()
 		body := []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_at":` +
 			fmt.Sprintf("%d", resetsAt) + `}}`)
+		before := time.Now()
 		result := ClassifyHTTPResponseWithMeta(429, nil, body)
+		after := time.Now()
 		if result.Level != ErrorLevelKey {
 			t.Fatalf("Level: got %v, want ErrorLevelKey", result.Level)
 		}
 		if !result.HasKeyCooldownUntil {
 			t.Fatal("expected HasKeyCooldownUntil")
 		}
-		cooldownDiff := result.KeyCooldownUntil.Unix() - resetsAt
-		if cooldownDiff < -2 || cooldownDiff > 2 {
-			t.Fatalf("cooldownUntil=%d, want resets_at=%d", result.KeyCooldownUntil.Unix(), resetsAt)
+		// 上游声明 2 小时后 reset，应被钳制到 1 小时
+		minUntil := before.Add(time.Hour - 2*time.Second)
+		maxUntil := after.Add(time.Hour + 2*time.Second)
+		if result.KeyCooldownUntil.Before(minUntil) || result.KeyCooldownUntil.After(maxUntil) {
+			t.Fatalf("KeyCooldownUntil=%s, want clamped to 1h between %s and %s (original resets_at=%d)",
+				result.KeyCooldownUntil.Format(time.RFC3339),
+				minUntil.Format(time.RFC3339),
+				maxUntil.Format(time.RFC3339),
+				resetsAt)
 		}
 	})
 

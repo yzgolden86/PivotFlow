@@ -1261,8 +1261,9 @@ func TestHandleChannelTest_CodexOAuthUsageLimitCoolsModel(t *testing.T) {
 		t.Fatalf("get model cooldowns: %v", err)
 	}
 	until := cooldowns[created.ID]["gpt-5.6-sol"]
-	if remaining := time.Until(until); remaining < 7250*time.Second || remaining > 7270*time.Second {
-		t.Fatalf("model cooldown remaining=%v, want about 7260s", remaining)
+	// 上游声明 7260 秒（约 2 小时），应被钳制到 1 小时
+	if remaining := time.Until(until); remaining < 59*time.Minute || remaining > 61*time.Minute {
+		t.Fatalf("model cooldown remaining=%v, want clamped to 1h", remaining)
 	}
 	if _, exists := cooldowns[created.ID]["gpt-5.4"]; exists {
 		t.Fatal("unaffected Codex model must not be cooled")
