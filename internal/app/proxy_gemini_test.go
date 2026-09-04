@@ -525,8 +525,10 @@ func TestProxyModelList_CanonicalizesAliasGroups(t *testing.T) {
 		}
 	})
 
-	t.Run("白名单按折叠后的名字求值", func(t *testing.T) {
+	t.Run("白名单按映射组求值", func(t *testing.T) {
 		server.authService = newTestAuthService(t)
+		// 整体替换 authService 会丢掉 Init 注入的映射展开，测试需按生产方式重接。
+		server.authService.modelAliasCandidates = server.modelAliases.namesFor
 		canonicalHash := model.HashToken("canonical-token")
 		aliasHash := model.HashToken("alias-token")
 		server.authService.authTokensMux.Lock()
@@ -537,10 +539,10 @@ func TestProxyModelList_CanonicalizesAliasGroups(t *testing.T) {
 		if ids := fetchOpenAIIDs(t, canonicalHash); len(ids) != 1 || !ids["glm-5.3"] {
 			t.Fatalf("canonical 白名单应只列出 glm-5.3, got %v", ids)
 		}
-		// 白名单只写了别名：canonical 已折叠，不在白名单内，整个组从列表消失。
-		// 手动请求 z-ai/glm-5.3 仍可通过路由。
-		if ids := fetchOpenAIIDs(t, aliasHash); len(ids) != 0 {
-			t.Fatalf("仅别名白名单不应展示折叠后的组, got %v", ids)
+		// 白名单只写了别名：映射组内任一名字命中即放行整组，
+		// 折叠后的 canonical 回到列表，与请求放行口径一致。
+		if ids := fetchOpenAIIDs(t, aliasHash); len(ids) != 1 || !ids["glm-5.3"] {
+			t.Fatalf("别名白名单应展示折叠后的 canonical, got %v", ids)
 		}
 	})
 }

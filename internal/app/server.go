@@ -311,6 +311,9 @@ func NewServer(store storage.Store) *Server {
 		s.loginRateLimiter,
 		store, // 传入store用于热更新令牌
 	)
+	// 白名单校验感知统一映射：把请求模型展开成映射组再对白名单求值，
+	// 组内任一名字（canonical 或别名）在白名单中即放行整组。
+	s.authService.modelAliasCandidates = s.modelAliases.namesFor
 	s.siteControl = newSiteControlService(store, s.baseCtx, &s.wg)
 	s.siteControl.configService = configService
 	s.siteControl.onProjectionChanged = func() {

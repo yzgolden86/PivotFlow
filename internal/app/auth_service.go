@@ -51,6 +51,11 @@ type AuthService struct {
 	// 数据库依赖（用于热更新令牌）
 	store storage.Store
 
+	// modelAliasCandidates 把一个模型名展开成统一映射组的所有名字
+	// （canonical + 别名），由 Server 在 Init 时注入。白名单校验用它把
+	// 「组内任一名字在白名单」视为整组放行；为 nil 时退化为纯字符串匹配。
+	modelAliasCandidates func(name string) []string
+
 	// 速率限制（防暴力破解）
 	loginRateLimiter       *util.LoginRateLimiter
 	apiTokenSessionLimiter *apiTokenSessionLimiter
@@ -815,6 +820,8 @@ func (s *AuthService) getAllowedModelSet(tokenHash string) (map[string]struct{},
 
 // FilterAllowedModels 按 token 的模型限制过滤候选模型列表。
 // 无限制时原样返回，保持"模型列表可见性"和"实际请求可用性"使用同一套规则。
+// modelAliasCandidates 由 Server 注入（见 model_aliases.go）：把候选展开成
+// 统一映射组后逐个名字求值，白名单写组内任一名字时整组可见。
 func (s *AuthService) FilterAllowedModels(tokenHash string, models []string) []string {
 	allowedSet, hasRestriction := s.getAllowedModelSet(tokenHash)
 	if !hasRestriction || len(models) == 0 {
@@ -823,7 +830,7 @@ func (s *AuthService) FilterAllowedModels(tokenHash string, models []string) []s
 
 	filtered := make([]string, 0, len(models))
 	for _, model := range models {
-		if _, ok := allowedSet[strings.ToLower(model)]; ok {
+		if s.allowedModelWithAliases(allowedSet, model) {
 			filtered = append(filtered, model)
 		}
 	}
@@ -831,14 +838,34 @@ func (s *AuthService) FilterAllowedModels(tokenHash string, models []string) []s
 }
 
 // IsModelAllowed 检查令牌是否允许访问指定模型
-// 如果令牌没有模型限制，返回 true
+// 如果令牌没有模型限制，返回 true。
+// 配置了统一映射时把请求模型展开成映射组：白名单写组内任一名字
+// （canonical 或别名）即放行整组，避免「别名能请求、canonical 被拒」
+// 的口径分裂。
 func (s *AuthService) IsModelAllowed(tokenHash, model string) bool {
 	allowedSet, hasRestriction := s.getAllowedModelSet(tokenHash)
 	if !hasRestriction {
 		return true // 无限制
 	}
-	_, ok := allowedSet[strings.ToLower(model)]
-	return ok
+	return s.allowedModelWithAliases(allowedSet, model)
+}
+
+// allowedModelWithAliases 对单个模型求白名单：先精确匹配，再按注入的
+// 映射展开逐个候选匹配（registry.namesFor 保证 canonical 排在首位，
+// 未注入时只检查原名）。
+func (s *AuthService) allowedModelWithAliases(allowedSet map[string]struct{}, model string) bool {
+	if _, ok := allowedSet[strings.ToLower(model)]; ok {
+		return true
+	}
+	if s.modelAliasCandidates == nil {
+		return false
+	}
+	for _, candidate := range s.modelAliasCandidates(model) {
+		if _, ok := allowedSet[strings.ToLower(candidate)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // IsProtocolAllowed 检查令牌是否允许访问指定协议

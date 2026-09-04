@@ -37,9 +37,9 @@ func (s *Server) filterVisibleModelsForRequest(c *gin.Context, _ string, models 
 					models = append(models, modelName)
 				}
 			}
-			// 先折叠到统一名称、再过令牌白名单：列表里出现的每个名字都必须是
-			// 「客户端按此名字请求能通过认证与路由」的名字，顺序反过来会出现
-			// 列表展示 canonical 但请求被 allowed_models 拒绝的错配。
+			// 先折叠到统一名称、再过令牌白名单：列表只展示 canonical 并去重；
+			// 白名单校验按映射组展开（见 AuthService.IsModelAllowed），组内
+			// 任一名字在白名单中即整组可见、整组可请求，列表与路由口径一致。
 			models = s.modelAliases.canonicalizeModelNames(models)
 			return s.authService.FilterAllowedModels(tokenHashStr, models)
 		}

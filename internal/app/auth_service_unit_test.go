@@ -81,6 +81,51 @@ func TestAuthService_IsModelAllowed(t *testing.T) {
 	}
 }
 
+// 白名单按统一映射组求值：写了组内任一名字（canonical 或别名）即放行整组；
+// 未注入展开回调时保持纯字符串匹配的旧语义。
+func TestAuthService_IsModelAllowedAliasExpansion(t *testing.T) {
+	t.Parallel()
+
+	registry := aliasRegistryFor(t, model.ModelAliasGroup{
+		Canonical: "glm-5.3",
+		Aliases:   []string{"z-ai/glm-5.3", "GLM-5.3-1M"},
+		Enabled:   true,
+	})
+	newService := func(whitelist []string, withExpander bool) *AuthService {
+		s := &AuthService{authTokenModels: map[string][]string{"t1": whitelist}}
+		if withExpander {
+			s.modelAliasCandidates = registry.namesFor
+		}
+		return s
+	}
+
+	// 白名单写别名：请求 canonical、请求组内另一别名都放行。
+	if !newService([]string{"z-ai/glm-5.3"}, true).IsModelAllowed("t1", "glm-5.3") {
+		t.Fatal("alias whitelist should admit canonical request")
+	}
+	if !newService([]string{"z-ai/glm-5.3"}, true).IsModelAllowed("t1", "GLM-5.3-1M") {
+		t.Fatal("alias whitelist should admit other alias in group")
+	}
+	// 白名单写 canonical：请求别名也放行（此前会被精确匹配拒绝）。
+	if !newService([]string{"glm-5.3"}, true).IsModelAllowed("t1", "z-ai/glm-5.3") {
+		t.Fatal("canonical whitelist should admit alias request")
+	}
+	// 组外模型不受映射影响。
+	if newService([]string{"z-ai/glm-5.3"}, true).IsModelAllowed("t1", "gpt-4o") {
+		t.Fatal("unrelated model must stay rejected")
+	}
+	// 未注入展开回调：精确匹配语义不变。
+	if newService([]string{"glm-5.3"}, false).IsModelAllowed("t1", "z-ai/glm-5.3") {
+		t.Fatal("without expander, exact-match semantics must be preserved")
+	}
+
+	// 列表过滤同口径：白名单写别名，折叠后的 canonical 回到列表。
+	filtered := newService([]string{"z-ai/glm-5.3"}, true).FilterAllowedModels("t1", []string{"glm-5.3", "gpt-4o"})
+	if len(filtered) != 1 || filtered[0] != "glm-5.3" {
+		t.Fatalf("filtered = %v, want [glm-5.3]", filtered)
+	}
+}
+
 func TestAuthService_IsChannelAllowed(t *testing.T) {
 	t.Parallel()
 
