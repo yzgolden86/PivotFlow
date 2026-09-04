@@ -3716,9 +3716,8 @@ body { font-size: 14px; line-height: 1.5; }
 .system-settings-page--v2 .settings-groups button.is-active { color: var(--green-text); background: var(--green-soft); }
 .settings-group-icon { display: grid; width: 36px; height: 36px; place-items: center; color: var(--text-muted); background: var(--surface-strong); border-radius: 8px; }
 .settings-groups button.is-active .settings-group-icon { color: var(--green); background: var(--surface); box-shadow: 0 2px 8px rgba(22, 92, 67, .08); }
-.settings-group-copy { display: grid; min-width: 0; gap: 3px; }
+.settings-group-copy { display: grid; min-width: 0; align-content: center; }
 .system-settings-page--v2 .settings-group-copy strong { color: inherit; font-size: 14px; line-height: 20px; }
-.settings-group-copy small { overflow: hidden; color: var(--text-muted); font-size: 11px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .system-settings-page--v2 .settings-groups em { display: grid; min-width: 24px; height: 24px; place-items: center; color: var(--text-muted); background: var(--surface-strong); border-radius: 7px; font-size: 11px; font-style: normal; font-weight: 700; }
 .system-settings-page--v2 .settings-groups button.is-active em { color: var(--green); background: var(--surface); }
 
@@ -3786,7 +3785,7 @@ body { font-size: 14px; line-height: 1.5; }
 
 .system-settings-page--v2 .setting-row {
   display: grid;
-  min-height: 112px;
+  min-height: 84px;
   grid-template-columns: minmax(280px, 1fr) minmax(250px, 360px) minmax(118px, .46fr);
   align-items: center;
   gap: 24px;
@@ -3801,8 +3800,14 @@ body { font-size: 14px; line-height: 1.5; }
 .system-settings-page--v2 .setting-row--dirty:hover { background: color-mix(in srgb, var(--green-soft) 72%, var(--surface)); }
 .system-settings-page--v2 .setting-copy { display: grid; min-width: 0; gap: 4px; }
 .system-settings-page--v2 .setting-copy strong { overflow: visible; color: var(--text); font-size: 14px; line-height: 21px; text-overflow: initial; white-space: normal; }
-.setting-copy p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 19px; }
-.system-settings-page--v2 .setting-copy code { overflow: hidden; color: var(--text-muted); font: 11px/18px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 问号提示：行面只留标题，解释与原始键名收进悬浮气泡 */
+.help-tip { position: relative; display: inline-flex; vertical-align: -3px; margin-left: 6px; }
+.help-tip-trigger { display: grid; width: 18px; height: 18px; place-items: center; padding: 0; color: var(--text-muted); background: transparent; border: 0; border-radius: 50%; cursor: help; }
+.help-tip-trigger:hover, .help-tip-trigger:focus-visible { color: var(--green-text); }
+.help-tip-bubble { position: absolute; top: calc(100% + 8px); left: -8px; z-index: 30; display: grid; width: 300px; gap: 6px; padding: 10px 12px; color: var(--text); background: var(--surface-strong); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 28px rgb(0 0 0 / 18%); font-size: 12px; font-weight: 400; line-height: 19px; text-align: left; white-space: normal; cursor: default; }
+.setting-row:last-child .help-tip-bubble { top: auto; bottom: calc(100% + 8px); }
+.help-tip-bubble code { color: var(--text-muted); font: 10px/16px Consolas, monospace; }
 .setting-control { position: relative; display: flex !important; min-width: 0; flex-direction: row !important; align-items: center; }
 .setting-control > span { position: absolute; right: 12px; color: var(--text-muted); font-size: 12px; pointer-events: none; }
 
@@ -3867,7 +3872,6 @@ body { font-size: 14px; line-height: 1.5; }
 .appearance-intro { display: flex; min-height: 40px; align-items: center; justify-content: space-between; gap: 14px; }
 .appearance-intro > div { display: flex; min-width: 0; align-items: baseline; gap: 10px; }
 .appearance-intro strong { color: var(--text); font-family: var(--font-display); font-size: 16px; line-height: 22px; }
-.appearance-intro span { color: var(--text-muted); font-size: 11px; }
 .appearance-intro .secondary-button { min-height: 36px; }
 .appearance-workbench { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); align-items: start; gap: 24px; }
 .appearance-controls { display: grid; gap: 20px; }

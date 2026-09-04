@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, ArrowRight, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, Clock3, ExternalLink, FileClock, Gauge, Network,
+  Activity, ArrowRight, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, ExternalLink, FileClock, Gauge, Network,
   DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
   KeyRound, ListPlus, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, SlidersHorizontal, TimerReset, Trash2, Type, Wrench, X,
 } from 'lucide-react'
@@ -15,18 +15,19 @@ import type { AliasDraft } from './modelAliasDraft'
 import { applyThemeCustomization, readThemeCustomization, resetThemeCustomization, themeFontOptions } from '../theme'
 import type { ThemeCustomization, ThemeFont, ThemePreference, ThemePreset, ThemeRadius } from '../theme'
 
+// 分组只留名字：副标题（如外观→“主题与显示偏好”）是对标题的复述，纯噪音。
 const groups = [
-  { key: 'appearance', label: '外观', description: '主题与显示偏好', icon: Sun },
-  { key: 'automation', label: '自动任务', description: '签到与后台任务时间', icon: CalendarClock },
-  { key: 'routing', label: '路由策略', description: '重试、兜底与模型匹配', icon: Route },
-  { key: 'timeouts', label: '请求超时', description: '连接、首字与总时限', icon: Clock3 },
-  { key: 'cooldown', label: '故障冷却', description: '异常退避与恢复节奏', icon: TimerReset },
-  { key: 'capacity', label: '并发容量', description: '并发数与请求体限制', icon: Gauge },
-  { key: 'health', label: '健康检测', description: '巡检、排序与模型目录', icon: Activity },
-  { key: 'logs', label: '日志界面', description: '保留周期与页面行为', icon: FileClock },
-  { key: 'websocket', label: '长连接', description: '会话数量与资源上限', icon: Network },
-  { key: 'maintenance', label: '更新维护', description: '版本检查与目录同步', icon: Wrench },
-  { key: 'advanced', label: '高级兼容', description: '仅在明确需要时调整', icon: ShieldAlert },
+  { key: 'appearance', label: '外观', icon: Sun },
+  { key: 'automation', label: '自动任务', icon: CalendarClock },
+  { key: 'routing', label: '路由策略', icon: Route },
+  { key: 'timeouts', label: '请求超时', icon: Clock3 },
+  { key: 'cooldown', label: '故障冷却', icon: TimerReset },
+  { key: 'capacity', label: '并发容量', icon: Gauge },
+  { key: 'health', label: '健康检测', icon: Activity },
+  { key: 'logs', label: '日志界面', icon: FileClock },
+  { key: 'websocket', label: '长连接', icon: Network },
+  { key: 'maintenance', label: '更新维护', icon: Wrench },
+  { key: 'advanced', label: '高级兼容', icon: ShieldAlert },
 ] as const
 
 type GroupKey = typeof groups[number]['key']
@@ -200,9 +201,9 @@ export default function SystemSettingsPageV2() {
       {error && <OperationNotice tone="error">{error}</OperationNotice>}
       <div className="settings-layout">
         <aside className="settings-groups" aria-label="设置分类">
-          {groups.map(({ key, label, description, icon: Icon }) => <button className={group === key && !query.trim() ? 'is-active' : ''} type="button" onClick={() => { setGroup(key); setQuery('') }} key={key}>
+          {groups.map(({ key, label, icon: Icon }) => <button className={group === key && !query.trim() ? 'is-active' : ''} type="button" onClick={() => { setGroup(key); setQuery('') }} key={key}>
             <span className="settings-group-icon"><Icon size={18} /></span>
-            <span className="settings-group-copy"><strong>{label}</strong><small>{description}</small></span>
+            <span className="settings-group-copy"><strong>{label}</strong></span>
             <em>{counts[key] || 0}</em>
           </button>)}
         </aside>
@@ -211,7 +212,8 @@ export default function SystemSettingsPageV2() {
           <div className="settings-editor-toolbar">
             <div className="settings-editor-heading">
               <span><ActiveGroupIcon size={19} /></span>
-              <div><h2>{query.trim() ? '搜索结果' : activeGroup.label}</h2><p>{query.trim() ? `在全部设置中查找“${query.trim()}”` : activeGroup.description}</p></div>
+              {/* 分组描述只在搜索时保留一句引导；平时的“主题与显示偏好”式副标题是对标题的复述 */}
+              <div><h2>{query.trim() ? '搜索结果' : activeGroup.label}</h2>{query.trim() && <p>在全部设置中查找“{query.trim()}”</p>}</div>
             </div>
             <label className="search-field settings-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索全部设置" /></label>
           </div>
@@ -222,7 +224,7 @@ export default function SystemSettingsPageV2() {
 
           {!visible.length ? <EmptyState label="没有符合条件的设置" /> : <div className="setting-list">
             {visible.map((setting) => <article className={`setting-row${dirty.has(setting.key) ? ' setting-row--dirty' : ''}`} key={setting.key}>
-              <div className="setting-copy"><strong>{settingLabel(setting)}</strong><p>{settingHelp(setting)}</p><code>{setting.key}</code></div>
+              <div className="setting-copy"><strong title={setting.key}>{settingLabel(setting)}{helps[setting.key] && <HelpTip label={settingLabel(setting)} text={helps[setting.key]} code={setting.key} />}</strong></div>
               <div className="setting-control">
                 <SettingInput setting={setting} value={values[setting.key] ?? ''} change={(value) => change(setting.key, value)} />
                 {setting.value_type !== 'bool' && settingUnit(setting.key) && <span>{settingUnit(setting.key)}</span>}
@@ -241,6 +243,16 @@ export default function SystemSettingsPageV2() {
       </div>
     </>}
   </div>
+}
+
+// 问号提示：只在有人工撰写的说明时渲染（helps 字典），悬浮或点击展开。
+// 兜底的键名翻译不上屏；原始设置键收进气泡里，行面只留标题。
+function HelpTip({ label, text, code }: { label: string; text: string; code?: string }) {
+  const [open, setOpen] = useState(false)
+  return <span className="help-tip" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+    <button className="help-tip-trigger" type="button" aria-label={`${label} 的说明`} aria-expanded={open} onClick={(event) => { event.stopPropagation(); setOpen((value) => !value) }} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}><CircleHelp size={14} /></button>
+    {open && <span className="help-tip-bubble" role="tooltip">{text}{code && <code>{code}</code>}</span>}
+  </span>
 }
 
 function formatSystemTokenDate(value?: number): string {
@@ -543,7 +555,7 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
     ['soft', '柔和'],
   ]
   return <div className="appearance-panel">
-    <div className="appearance-intro"><div><strong>外观偏好</strong><span>保存在当前浏览器</span></div><button className="secondary-button" type="button" onClick={reset}><RotateCcw size={15} />恢复默认</button></div>
+    <div className="appearance-intro"><div><strong>外观偏好<HelpTip label="外观偏好" text="主题、字体、圆角等偏好只保存在当前浏览器，不会同步到服务器。" /></strong></div><button className="secondary-button" type="button" onClick={reset}><RotateCcw size={15} />恢复默认</button></div>
 
     <div className="appearance-workbench">
       <div className="appearance-controls">
