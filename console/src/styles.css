@@ -1842,12 +1842,15 @@ a:focus-visible {
 .record-row strong { overflow: hidden; color: var(--text); font-size: 11px; font-style: normal; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .record-row span { overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .record-message { max-width: 100%; color: var(--coral-text) !important; user-select: text; }
-.log-grid { grid-template-columns: 100px minmax(176px, 1.1fr) minmax(270px, 1.55fr) minmax(104px, .62fr) 82px 100px 96px; }
-.log-channel-cell strong { white-space: normal; overflow-wrap: anywhere; }
+.log-grid { grid-template-columns: 100px minmax(200px, 1.1fr) minmax(270px, 1.55fr) minmax(104px, .62fr) 82px 100px 96px; }
+/* 渠道名单行显示，超长省略号，完整名走悬浮 title（基础 .record-row strong 规则）。
+   此前允许折行会让行高被渠道名撑开，影响整行布局。 */
 .log-grid > div:nth-child(4) { min-width: 0; }
-/* 模型列的行内重定向：请求名 → 实际上游名。箭头弱化，模型名可换行，与协议箭头（客户端 → 上游）同向。 */
-.log-model-name { overflow-wrap: anywhere; }
-.log-model-name .log-model-arrow { color: var(--text-muted); font-weight: 500; overflow-wrap: anywhere; }
+/* 模型列的行内重定向：请求名 → 实际上游名。箭头弱化；需覆盖基础规则的
+   nowrap（特异性 .record-row .log-model-name > .record-row strong），窄窗口
+   时折行而不是把实际模型名截成省略号。 */
+.record-row .log-model-name { white-space: normal; overflow-wrap: anywhere; }
+.record-row .log-model-name .log-model-arrow { color: var(--text-muted); font-weight: 500; overflow-wrap: anywhere; }
 .log-status { gap: 4px; }
 .log-status-line { display: flex !important; min-width: 0; align-items: center; flex-direction: row !important; gap: 6px; }
 .log-copy-button { display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; flex: 0 0 24px; padding: 0; color: var(--text-muted); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 5px; cursor: pointer; }
@@ -3160,7 +3163,7 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 
   .channel-row { grid-template-columns: minmax(180px, 1fr) minmax(210px, 1.2fr) 120px minmax(150px, 1fr) 112px; }
   .channel-limits { display: none; }
-  .log-grid { grid-template-columns: 100px minmax(160px, 1fr) minmax(250px, 1.35fr) minmax(100px, .6fr) 78px 92px 96px; }
+  .log-grid { grid-template-columns: 100px minmax(180px, 1fr) minmax(250px, 1.35fr) minmax(100px, .6fr) 78px 92px 96px; }
   .log-grid > :nth-child(6) { display: none; }
   .stats-grid { grid-template-columns: minmax(170px, 1.1fr) 110px 105px 100px 75px 115px; }
   .stats-grid > :nth-child(6) { display: none; }
