@@ -1845,6 +1845,9 @@ a:focus-visible {
 .log-grid { grid-template-columns: 100px minmax(176px, 1.1fr) minmax(270px, 1.55fr) minmax(104px, .62fr) 82px 100px 96px; }
 .log-channel-cell strong { white-space: normal; overflow-wrap: anywhere; }
 .log-grid > div:nth-child(4) { min-width: 0; }
+/* 模型列的行内重定向：请求名 → 实际上游名。箭头弱化，模型名可换行，与协议箭头（客户端 → 上游）同向。 */
+.log-model-name { overflow-wrap: anywhere; }
+.log-model-name .log-model-arrow { color: var(--text-muted); font-weight: 500; overflow-wrap: anywhere; }
 .log-status { gap: 4px; }
 .log-status-line { display: flex !important; min-width: 0; align-items: center; flex-direction: row !important; gap: 6px; }
 .log-copy-button { display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; flex: 0 0 24px; padding: 0; color: var(--text-muted); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 5px; cursor: pointer; }
