@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
@@ -451,6 +452,95 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 		if len(resp.Models) != 1 || resp.Models[0].Name != "models/gemini-1.5-pro" {
 			t.Fatalf("unexpected filtered resp: %+v", resp)
+		}
+	})
+}
+
+// 下游模型列表必须把映射组折叠成 canonical：别名仍可手动请求，但不再出现在列表里。
+func TestProxyModelList_CanonicalizesAliasGroups(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	for _, modelName := range []string{"z-ai/glm-5.3", "GLM-5.3-1M", "glm-5.3", "gpt-4o"} {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:         "c-" + modelName,
+			URLs:         model.ChannelURLs{{URL: "https://example.com"}},
+			Priority:     1,
+			Enabled:      true,
+			ModelEntries: []model.ModelEntry{{Model: modelName}},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig %s failed: %v", modelName, err)
+		}
+	}
+
+	registry := &modelAliasRegistry{byName: make(map[string]model.ModelAliasGroup)}
+	for _, group := range model.NormalizeModelAliasGroups([]model.ModelAliasGroup{{
+		Canonical: "glm-5.3",
+		Aliases:   []string{"z-ai/glm-5.3", "GLM-5.3-1M"},
+		Enabled:   true,
+	}}) {
+		registry.groups = append(registry.groups, group)
+		registry.byName[strings.ToLower(group.Canonical)] = group
+		for _, alias := range group.Aliases {
+			registry.byName[strings.ToLower(alias)] = group
+		}
+	}
+	server.modelAliases = registry
+
+	fetchOpenAIIDs := func(t testing.TB, tokenHash string) map[string]bool {
+		t.Helper()
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1/models", nil))
+		if tokenHash != "" {
+			c.Set("token_hash", tokenHash)
+		}
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		ids := make(map[string]bool, len(resp.Data))
+		for _, item := range resp.Data {
+			ids[item.ID] = true
+		}
+		return ids
+	}
+
+	t.Run("无令牌时别名折叠为 canonical", func(t *testing.T) {
+		ids := fetchOpenAIIDs(t, "")
+		want := map[string]bool{"glm-5.3": true, "gpt-4o": true}
+		if len(ids) != len(want) {
+			t.Fatalf("models=%v, want exactly %v", ids, want)
+		}
+		for name := range want {
+			if !ids[name] {
+				t.Fatalf("missing canonical %q: %v", name, ids)
+			}
+		}
+	})
+
+	t.Run("白名单按折叠后的名字求值", func(t *testing.T) {
+		server.authService = newTestAuthService(t)
+		canonicalHash := model.HashToken("canonical-token")
+		aliasHash := model.HashToken("alias-token")
+		server.authService.authTokensMux.Lock()
+		server.authService.authTokenModels[canonicalHash] = []string{"glm-5.3"}
+		server.authService.authTokenModels[aliasHash] = []string{"z-ai/glm-5.3"}
+		server.authService.authTokensMux.Unlock()
+
+		if ids := fetchOpenAIIDs(t, canonicalHash); len(ids) != 1 || !ids["glm-5.3"] {
+			t.Fatalf("canonical 白名单应只列出 glm-5.3, got %v", ids)
+		}
+		// 白名单只写了别名：canonical 已折叠，不在白名单内，整个组从列表消失。
+		// 手动请求 z-ai/glm-5.3 仍可通过路由。
+		if ids := fetchOpenAIIDs(t, aliasHash); len(ids) != 0 {
+			t.Fatalf("仅别名白名单不应展示折叠后的组, got %v", ids)
 		}
 	})
 }

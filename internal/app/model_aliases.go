@@ -77,3 +77,34 @@ func (r *modelAliasRegistry) supports(cfg *model.Config, requested string) bool 
 	}
 	return false
 }
+
+// canonicalModelFor 返回 name 所属映射组的 canonical 名称；不在任何组内时原样返回。
+func (r *modelAliasRegistry) canonicalModelFor(name string) string {
+	if r == nil {
+		return name
+	}
+	if group, ok := r.byName[strings.ToLower(strings.TrimSpace(name))]; ok {
+		return group.Canonical
+	}
+	return name
+}
+
+// canonicalizeModelNames 把模型列表折叠到统一名称：组内任何成员都收敛成
+// canonical 并去重。路由层本就把 canonical 与别名视为可互换，别名只是不再
+// 出现在列表里，手动输入仍然可用，能力无损失。
+func (r *modelAliasRegistry) canonicalizeModelNames(names []string) []string {
+	if r == nil || len(r.byName) == 0 || len(names) == 0 {
+		return names
+	}
+	seen := make(map[string]struct{}, len(names))
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		canonical := r.canonicalModelFor(name)
+		if _, duplicate := seen[canonical]; duplicate {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		out = append(out, canonical)
+	}
+	return out
+}

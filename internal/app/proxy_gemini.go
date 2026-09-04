@@ -14,37 +14,39 @@ import (
 // ============================================================================
 
 func (s *Server) filterVisibleModelsForRequest(c *gin.Context, _ string, models []string) []string {
-	if s.authService == nil {
-		return models
-	}
-
-	tokenHash, _ := c.Get("token_hash")
-	tokenHashStr, _ := tokenHash.(string)
-	if tokenHashStr == "" {
-		return models
-	}
-
-	if restriction, hasRestriction := s.authService.getChannelRestriction(tokenHashStr); hasRestriction {
-		channels, err := s.GetEnabledChannelsByModel(c.Request.Context(), "*")
-		if err != nil {
-			return nil
-		}
-		modelSet := make(map[string]struct{})
-		for _, cfg := range channels {
-			if cfg == nil || !restriction.Allows(cfg.ID) {
-				continue
+	if s.authService != nil {
+		tokenHash, _ := c.Get("token_hash")
+		tokenHashStr, _ := tokenHash.(string)
+		if tokenHashStr != "" {
+			if restriction, hasRestriction := s.authService.getChannelRestriction(tokenHashStr); hasRestriction {
+				channels, err := s.GetEnabledChannelsByModel(c.Request.Context(), "*")
+				if err != nil {
+					return nil
+				}
+				modelSet := make(map[string]struct{})
+				for _, cfg := range channels {
+					if cfg == nil || !restriction.Allows(cfg.ID) {
+						continue
+					}
+					for _, modelName := range cfg.GetModels() {
+						modelSet[modelName] = struct{}{}
+					}
+				}
+				models = make([]string, 0, len(modelSet))
+				for modelName := range modelSet {
+					models = append(models, modelName)
+				}
 			}
-			for _, modelName := range cfg.GetModels() {
-				modelSet[modelName] = struct{}{}
-			}
-		}
-		models = make([]string, 0, len(modelSet))
-		for modelName := range modelSet {
-			models = append(models, modelName)
+			// 先折叠到统一名称、再过令牌白名单：列表里出现的每个名字都必须是
+			// 「客户端按此名字请求能通过认证与路由」的名字，顺序反过来会出现
+			// 列表展示 canonical 但请求被 allowed_models 拒绝的错配。
+			models = s.modelAliases.canonicalizeModelNames(models)
+			return s.authService.FilterAllowedModels(tokenHashStr, models)
 		}
 	}
 
-	return s.authService.FilterAllowedModels(tokenHashStr, models)
+	// 无令牌上下文同样折叠：别名只是不再出现在列表里，手动输入仍可路由。
+	return s.modelAliases.canonicalizeModelNames(models)
 }
 
 // handleListGeminiModels 处理 GET /v1beta/models 请求，返回本地 Gemini 模型列表
