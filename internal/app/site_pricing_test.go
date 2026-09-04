@@ -262,6 +262,76 @@ func TestSitePricingCacheInvalidate(t *testing.T) {
 	}
 }
 
+// Channel-list invalidation must drop only the channel→site bindings, keeping
+// the price tables: channel edits, model refreshes and credential refresh
+// callbacks never change a site-wide table, and dropping it would force one
+// refetch (and its 15-minute failure window) per unrelated operation.
+func TestSitePricingCacheInvalidateBindingsKeepsTables(t *testing.T) {
+	cache := newSitePricingCache()
+	now := time.Now()
+	cache.store(1, provider.SitePricing{
+		Models:     []provider.ModelPrice{{Model: "m", ModelRatio: 1}},
+		GroupRatio: map[string]float64{"default": 1},
+	}, false, now)
+	cache.storeChannelBindings(map[int64]channelBinding{5: {siteID: 1, group: "vip"}}, now)
+
+	cache.invalidateBindings()
+
+	if got, ok := cache.lookup(1, now); !ok || len(got.Models) != 1 {
+		t.Fatal("price tables must survive a bindings-only invalidation")
+	}
+	if _, ok := cache.channelBindingsFresh(now); ok {
+		t.Error("channel bindings must be dropped")
+	}
+}
+
+// The once-per-site log for permanently unavailable pricing re-arms only after
+// a later success or a full invalidation.
+func TestSitePricingUnsupportedLogThrottle(t *testing.T) {
+	cache := newSitePricingCache()
+	if !cache.shouldLogUnsupported(3) {
+		t.Fatal("first occurrence should log")
+	}
+	if cache.shouldLogUnsupported(3) {
+		t.Fatal("second occurrence must not log")
+	}
+	if !cache.shouldLogUnsupported(4) {
+		t.Fatal("first occurrence for another site should log")
+	}
+	// A success re-arms the notice: fixing credentials deserves visibility again.
+	cache.store(3, provider.SitePricing{Models: []provider.ModelPrice{{Model: "m"}}}, false, time.Now())
+	if !cache.shouldLogUnsupported(3) {
+		t.Fatal("log should be re-armed after a successful fetch")
+	}
+	// A full drop also re-arms.
+	cache.invalidate()
+	if !cache.shouldLogUnsupported(3) {
+		t.Fatal("log should be re-armed after full invalidation")
+	}
+}
+
+// The channel-list invalidation hook must keep price tables and drop only the
+// channel→site bindings, so editing a channel does not send every site back to
+// local estimation.
+func TestInvalidateChannelListCacheKeepsPriceTables(t *testing.T) {
+	server := &Server{sitePricing: newSitePricingCache()}
+	now := time.Now()
+	server.sitePricing.store(1, provider.SitePricing{
+		Models:     []provider.ModelPrice{{Model: "m", ModelRatio: 1}},
+		GroupRatio: map[string]float64{"default": 1},
+	}, false, now)
+	server.sitePricing.storeChannelBindings(map[int64]channelBinding{5: {siteID: 1, group: "vip"}}, now)
+
+	server.InvalidateChannelListCache()
+
+	if _, ok := server.sitePricing.lookup(1, now); !ok {
+		t.Error("channel-list invalidation must not drop price tables")
+	}
+	if _, ok := server.sitePricing.channelBindingsFresh(now); ok {
+		t.Error("channel-list invalidation must drop channel bindings")
+	}
+}
+
 // A nil cache must be safe: pricing is optional and every method is called on
 // the hot path.
 func TestSitePricingCacheNilSafe(t *testing.T) {

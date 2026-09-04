@@ -78,6 +78,14 @@ func (p *Veloera) ListModels(ctx context.Context, req AccountRequest) ([]ModelSn
 	return p.family.ListModels(ctx, req)
 }
 
+// FetchPricing reads the site's own price table. Veloera keeps the New API
+// /api/pricing layout, and applyAuth already sends the Veloera-User header
+// variant alongside the family ones, so the family implementation applies
+// unchanged.
+func (p *Veloera) FetchPricing(ctx context.Context, req AccountRequest) (SitePricing, error) {
+	return p.family.FetchPricing(ctx, req)
+}
+
 func (p *Veloera) Checkin(ctx context.Context, req AccountRequest) (CheckinResult, error) {
 	if req.Credentials.AccessToken == "" && req.Credentials.Cookie == "" {
 		return CheckinResult{Status: CheckinUnsupported}, &Error{Code: CodeUnsupported, Message: "Veloera check-in requires a session token"}

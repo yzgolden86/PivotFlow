@@ -38,6 +38,10 @@ type sitePricingCache struct {
 	byChannel   map[int64]channelBinding
 	channelsAt  time.Time
 	channelsTTL time.Duration
+	// unsupportedLogged throttles the reason log for sites whose pricing is
+	// permanently unavailable (platform without the endpoint, account without
+	// a management credential). Re-armed by a later success or a full drop.
+	unsupportedLogged map[int64]bool
 }
 
 type sitePricingEntry struct {
@@ -55,20 +59,39 @@ type channelBinding struct {
 
 func newSitePricingCache() *sitePricingCache {
 	return &sitePricingCache{
-		entries:     make(map[int64]*sitePricingEntry),
-		byChannel:   make(map[int64]channelBinding),
-		channelsTTL: 5 * time.Minute,
+		entries:           make(map[int64]*sitePricingEntry),
+		byChannel:         make(map[int64]channelBinding),
+		unsupportedLogged: make(map[int64]bool),
+		channelsTTL:       5 * time.Minute,
 	}
 }
 
-// invalidate drops every cached table. Called when sites, accounts or channels
-// change, since a re-projection can move a token to a different group.
+// invalidate drops every cached table. Called when the site control plane
+// changes (site CRUD, account projection, route sync), since a site's base URL
+// or platform may have changed and its table must be re-read.
 func (c *sitePricingCache) invalidate() {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	c.entries = make(map[int64]*sitePricingEntry)
+	c.byChannel = make(map[int64]channelBinding)
+	c.channelsAt = time.Time{}
+	c.unsupportedLogged = make(map[int64]bool)
+	c.mu.Unlock()
+}
+
+// invalidateBindings drops only the channel→site bindings, keeping cached
+// price tables. It is the hook for channel-list invalidation: channel edits,
+// model refreshes and credential refresh callbacks change which channels
+// exist, but never the site-wide price tables themselves. Dropping tables
+// there would force one refetch (and its 15-minute failure window) per
+// unrelated admin operation, which is why logs filled with 本地估算.
+func (c *sitePricingCache) invalidateBindings() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
 	c.byChannel = make(map[int64]channelBinding)
 	c.channelsAt = time.Time{}
 	c.mu.Unlock()
@@ -123,6 +146,30 @@ func (c *sitePricingCache) store(siteID int64, pricing provider.SitePricing, fai
 	}
 
 	c.entries[siteID] = &sitePricingEntry{pricing: pricing, fetchedAt: now, failed: failed}
+	if !failed {
+		// 成功后重新武装「不可用原因」日志：凭证补齐等修复值得再次可见。
+		delete(c.unsupportedLogged, siteID)
+	}
+}
+
+// shouldLogUnsupported reports whether the caller should log why this site's
+// pricing is unavailable: once per site until it next succeeds or the cache is
+// fully dropped. Permanent conditions (platform without the endpoint, account
+// without a management credential) would otherwise repeat once per failure TTL.
+func (c *sitePricingCache) shouldLogUnsupported(siteID int64) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.unsupportedLogged == nil {
+		c.unsupportedLogged = make(map[int64]bool)
+	}
+	if c.unsupportedLogged[siteID] {
+		return false
+	}
+	c.unsupportedLogged[siteID] = true
+	return true
 }
 
 func (c *sitePricingCache) channelBindingsFresh(now time.Time) (map[int64]channelBinding, bool) {
@@ -185,7 +232,14 @@ func (s *Server) resolveChannelPricing(ctx context.Context, channelID int64) (ch
 	pricing, err := s.fetchSitePricing(ctx, binding.siteID)
 	if err != nil {
 		s.sitePricing.store(binding.siteID, provider.SitePricing{}, true, now)
-		if provider.ErrorCode(err) != provider.CodeUnsupported {
+		if provider.ErrorCode(err) == provider.CodeUnsupported {
+			// 长期不可用的原因也要可见：平台无价目表接口、账号缺管理凭证
+			// 或站点未暴露该端点都会让站点持续走本地估算。每站点只提示
+			// 一次（成功后重新提示），避免每 15 分钟刷屏。
+			if s.sitePricing.shouldLogUnsupported(binding.siteID) {
+				log.Printf("[PRICING] 站点 %d 价目表不可用（%v），费用将持续按本地估算；可检查站点平台是否支持或账号是否配置管理凭证", binding.siteID, err)
+			}
+		} else {
 			log.Printf("[PRICING] 站点 %d 价目表读取失败，回退本地估算: %v", binding.siteID, err)
 		}
 		return channelPricing{}, false

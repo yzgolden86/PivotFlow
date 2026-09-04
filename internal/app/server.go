@@ -319,6 +319,9 @@ func NewServer(store storage.Store) *Server {
 	s.siteControl.onProjectionChanged = func() {
 		s.InvalidateChannelListCache()
 		s.InvalidateAllAPIKeysCache()
+		// 站点控制面变化（站点增删改、账号投影、同步路由）可能改了站点本身：
+		// URL/平台变更要立即重新读取价目表，而不是等 1 小时 TTL。
+		s.sitePricing.invalidate()
 	}
 
 	// 启动后台 worker（Token 统计 / Token 清理 / 状态清理）
@@ -933,8 +936,12 @@ func (s *Server) InvalidateChannelListCache() {
 	//     并由 Cleanup(24h) 回收；
 	//   - 权重每轮实时重算，改 KeyCount / 优先级会在随后几轮内自行收敛。
 	//
-	// 渠道拓扑变了，渠道→站点/分组的映射可能失效：重新投影会把令牌换到别的分组。
-	s.sitePricing.invalidate()
+	// 渠道拓扑变了，渠道→站点/分组的绑定可能失效：重新投影会把令牌换到
+	// 别的分组。价目表是站点级事实（自带 1 小时 TTL），不随渠道缓存失效
+	// 清空——否则每次编辑渠道、保存模型列表或凭证刷新回调都会让全部站点
+	// 重新拉表，失败窗口内整段退回本地估算。站点级变化走 onProjectionChanged
+	// 的全量失效。
+	s.sitePricing.invalidateBindings()
 
 	// 渠道被删除时仍会通过 keySelector.RemoveChannelCounter 精确清理 Key 级游标。
 	// URL 或上游协议配置可能已变化，丢弃运行时学习结果。
