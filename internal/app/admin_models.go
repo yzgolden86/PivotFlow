@@ -515,6 +515,12 @@ func (s *Server) fetchModelsWithURLFallback(
 	}
 
 	var lastErr error
+	// auto 模式保持 5s 短超时快速试探；显式指定协议时放宽到与 HTTP 客户端一致的
+	// 30s，给 Cloudflare 等防护站点偶发的慢响应留足时间（否则会在等响应时被自己掐死）
+	attemptTimeout := 5 * time.Second
+	if overrideProtocol != "" {
+		attemptTimeout = 30 * time.Second
+	}
 	attemptedProtocols := make([]string, 0, len(modelDiscoveryProtocolOrder))
 	attemptedSet := make(map[string]struct{}, len(modelDiscoveryProtocolOrder))
 	for _, sorted := range sortedURLs {
@@ -545,7 +551,7 @@ func (s *Server) fetchModelsWithURLFallback(
 			}
 			for _, apiKey := range apiKeys {
 				start := time.Now()
-				resp, err := fetchModelsForConfig(ctx, upstreamProtocol, sorted.url, apiKey)
+				resp, err := fetchModelsForConfig(ctx, upstreamProtocol, sorted.url, apiKey, attemptTimeout)
 				if err == nil {
 					if selectorEnabled {
 						latency := time.Since(start)
@@ -645,7 +651,7 @@ func parseFetchModelsStatus(errMsg string) (statusCode int, body string, ok bool
 	return code, strings.TrimSpace(body), true
 }
 
-func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, apiKey string) (*FetchModelsResponse, error) {
+func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, apiKey string, attemptTimeout time.Duration) (*FetchModelsResponse, error) {
 	normalizedProtocol := util.NormalizeProtocol(upstreamProtocol)
 	source := determineSource(upstreamProtocol)
 
@@ -663,7 +669,7 @@ func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, api
 		}
 		fetcherStr = "predefined"
 	} else {
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, attemptTimeout)
 		defer cancel()
 
 		fetcher := util.NewModelsFetcher(upstreamProtocol)
