@@ -61,7 +61,6 @@ var systemSettingRuntimeEffects = map[string]string{
 	"stream_timeout":                          "流式请求总超时",
 	"non_stream_timeout":                      "非流式请求总超时",
 	"route_strategy":                          "渠道选择策略",
-	"model_fuzzy_match":                       "模型候选选择器",
 	"model_alias_groups":                      "全局模型统一映射",
 	"channel_test_content":                    "手动测试与定时巡检",
 	"channel_check_interval_hours":            "渠道定时巡检调度器",

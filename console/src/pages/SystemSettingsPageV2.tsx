@@ -657,7 +657,7 @@ function settingGroup(key: string): GroupKey {
 }
 
 const labels: Record<string, string> = {
-  max_key_retries: '单渠道密钥重试次数', model_fuzzy_match: '模型名称模糊匹配', cooldown_fallback_enabled: '全渠道冷却时继续尝试',
+  max_key_retries: '单渠道密钥重试次数', cooldown_fallback_enabled: '全渠道冷却时继续尝试',
   route_strategy: '渠道选择策略',
   upstream_first_byte_timeout: '全局首字超时', upstream_connection_reuse_limit_seconds: '上游连接复用时限', stream_timeout: '流式请求总时限', non_stream_timeout: '非流式请求总时限',
   anthropic_first_byte_timeout: 'Anthropic 首字超时', anthropic_non_stream_timeout: 'Anthropic 非流式超时', codex_first_byte_timeout: 'Codex 首字超时', codex_non_stream_timeout: 'Codex 非流式超时', openai_first_byte_timeout: 'OpenAI 首字超时', openai_non_stream_timeout: 'OpenAI 非流式超时', gemini_first_byte_timeout: 'Gemini 首字超时', gemini_non_stream_timeout: 'Gemini 非流式超时',
@@ -672,7 +672,7 @@ const labels: Record<string, string> = {
 }
 
 const helps: Record<string, string> = {
-  max_key_retries: '一次请求在同一渠道内最多尝试多少把上游密钥。', model_fuzzy_match: '精确匹配失败后尝试兼容带日期或版本后缀的模型名。', cooldown_fallback_enabled: '所有渠道都在冷却时，仍选择当前最优渠道进行最后一次尝试。',
+  max_key_retries: '一次请求在同一渠道内最多尝试多少把上游密钥。', cooldown_fallback_enabled: '所有渠道都在冷却时，仍选择当前最优渠道进行最后一次尝试。',
   route_strategy: '同一模型有多个可用渠道时如何挑选。两种策略都先比优先级，只在优先级相同的渠道之间才有差别。鼠标移到选项上看详细取舍。',
   channel_test_content: '自动巡检渠道时发送的最小测试内容。', channel_check_interval_hours: '设为 0 可关闭定时巡检，小数支持分钟级间隔。', enable_health_score: '根据近期成功率动态调整同优先级渠道的顺序。', enable_ttfb_score: '在健康度排序中考虑首字响应速度。',
   site_daily_checkin_time: '到达该时间后，为当天尚未执行过的账号触发签到；分别按账号或站点时区计算。',

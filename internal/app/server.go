@@ -92,7 +92,6 @@ type Server struct {
 	responsesWebsocketPingIntervalOverride time.Duration
 	protocolTimeouts                       map[string]protocolTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
-	modelFuzzyMatch   bool                // 未命中时启用模糊匹配（子串匹配+版本排序）
 	modelAliases      *modelAliasRegistry // 全局统一模型名称映射
 	routeStrategyMode string              // 渠道选择策略（启动时加载，修改后重启生效）
 	stickyRouter      *stickyRouter       // 粘性路由：记录每个模型上次成功的渠道
@@ -189,7 +188,6 @@ func NewServer(store storage.Store) *Server {
 		upstreamConnectionMaxAge: runtimeCfg.UpstreamConnectionMaxAge,
 		protocolTimeouts:         runtimeCfg.ProtocolTimeouts,
 		// 模型匹配配置（启动时加载，修改后重启生效）
-		modelFuzzyMatch:              runtimeCfg.ModelFuzzyMatch,
 		modelAliases:                 loadModelAliasRegistry(configService),
 		routeStrategyMode:            runtimeCfg.RouteStrategy,
 		stickyRouter:                 newStickyRouter(),
@@ -410,7 +408,6 @@ type serverRuntimeConfig struct {
 	UpstreamConnectionMaxAge     time.Duration
 	ProtocolTimeouts             map[string]protocolTimeoutConfig
 	LogRetentionDays             int
-	ModelFuzzyMatch              bool
 	RouteStrategy                string
 	GlobalCooldownDetectionRules *model.CooldownDetectionRules
 	Cooldown                     util.CooldownSettings
@@ -491,11 +488,6 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 
 	logRetentionDays := cs.GetInt("log_retention_days", 7)
 
-	modelFuzzyMatch := cs.GetBool("model_fuzzy_match", false)
-	if modelFuzzyMatch {
-		log.Print("[INFO] 已启用模型模糊匹配：未命中时进行子串匹配并按版本排序选择最新模型")
-	}
-
 	routeStrategy := normalizeRouteStrategy(cs.GetString(routeStrategySettingKey, RouteStrategyBalanced))
 	if routeStrategy == RouteStrategySticky {
 		log.Print("[INFO] 渠道选择策略：粘性轮询（沿用上次成功的渠道，失败后切换；优先级仍优先）")
@@ -512,7 +504,6 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		UpstreamConnectionMaxAge:     upstreamConnectionMaxAge,
 		ProtocolTimeouts:             protocolTimeouts,
 		LogRetentionDays:             logRetentionDays,
-		ModelFuzzyMatch:              modelFuzzyMatch,
 		RouteStrategy:                routeStrategy,
 		GlobalCooldownDetectionRules: loadGlobalCooldownDetectionRules(cs),
 		Cooldown:                     loadCooldownSettings(cs),

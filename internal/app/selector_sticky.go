@@ -119,7 +119,7 @@ func normalizeRouteStrategy(value string) string {
 //
 // 取启动时加载的快照而不是每次查配置：ConfigService 的缓存在设置更新后并不刷新
 // （见 ConfigService.UpdateSetting 的注释），实时读取只会拿到启动时的旧值，
-// 反而给人「改了却没生效」的错觉。该项按需重启生效，与 model_fuzzy_match 一致。
+// 反而给人「改了却没生效」的错觉。该项按需重启生效，与 model_alias_groups 一致。
 func (s *Server) routeStrategy() string {
 	if s == nil {
 		return RouteStrategyBalanced

@@ -1541,7 +1541,6 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"openai_non_stream_timeout",
 		"gemini_first_byte_timeout",
 		"gemini_non_stream_timeout",
-		"model_fuzzy_match",
 		"channel_test_content",
 		"channel_check_interval_hours",
 		"auto_update_interval_hours",

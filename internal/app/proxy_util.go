@@ -572,13 +572,17 @@ func buildCodexResponsesPath() string {
 	return "/v1/responses"
 }
 
-// prepareRequestBody 准备请求体（处理模型重定向和模糊匹配）
+// prepareRequestBody 准备请求体（处理模型重定向）
 // 遵循SRP原则：单一职责 - 负责模型名解析和请求体准备
 //
 // 模型名解析优先级：
 // 1. 精确匹配的重定向（redirect_model 配置）
-// 2. 模糊匹配（启用 model_fuzzy_match 时）
-// 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
+// 2. 统一映射（model_alias_groups）：组内任一名字命中渠道模型即采用
+// 3. 精确匹配的重定向（链式解析：映射结果若另有 redirect_model 配置）
+//
+// 历史上的「模糊匹配」(model_fuzzy_match) 已移除：子串包含语义过于贪婪
+// (glm-5.3 会命中 glm-5.3-flash)，会绕过用户建立的统一映射并混淆计费。
+// 同模型不同写法的兼容由统一映射承担，语义精确、用户显式声明。
 func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) string {
 	actualModel := originalModel
 	// 1. 检查模型重定向（精确匹配优先）
@@ -589,19 +593,8 @@ func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) str
 		actualModel = s.modelAliases.actualModelFor(cfg, originalModel)
 	}
 
-	// 2. 模糊匹配回退（仅当未触发重定向时）
-	if actualModel == originalModel && s.modelFuzzyMatch {
-		// 先检查精确匹配，避免不必要的模糊匹配
-		if !cfg.SupportsModel(originalModel) {
-			if matched, ok := cfg.FuzzyMatchModel(originalModel); ok {
-				actualModel = matched
-			}
-		}
-	}
-
-	// 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
-	// 场景：请求 gemini-3-flash → 模糊匹配 gemini-3-flash-preview → 重定向 gemini-3-flash-preview-0719
-	// 仅当模型已变更且变更后的模型有重定向配置时触发
+	// 2. 链式解析：重定向或映射结果若另有 redirect_model 配置则继续展开
+	// 场景：请求 gemini-3-flash → 映射 gemini-3-flash-preview → 重定向 gemini-3-flash-preview-0719
 	if actualModel != originalModel {
 		if redirectModel, ok := cfg.GetRedirectModel(actualModel); ok && redirectModel != "" {
 			actualModel = redirectModel

@@ -116,7 +116,7 @@ function settingGroup(key: string): string {
   if (/log|check_interval|debug/.test(key)) return 'logs'
   if (/websocket|responses_ws/.test(key)) return 'websocket'
   if (/update|catalog/.test(key)) return 'updates'
-  if (/antigravity|model_fuzzy|health_|ttfb_|auto_refresh/.test(key)) return 'advanced'
+  if (/antigravity|health_|ttfb_|auto_refresh/.test(key)) return 'advanced'
   if (/timeout|proxy|priority|strategy/.test(key)) return 'routing'
   return 'other'
 }

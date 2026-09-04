@@ -31,7 +31,6 @@ func createDiagnosticChannel(t *testing.T, server *Server, name string, priority
 func TestBuildChannelRouteDiagnosticsExplainsPriorityAndWeightedShare(t *testing.T) {
 	server, _, cleanup := setupAdminTestServer(t)
 	defer cleanup()
-	server.modelFuzzyMatch = false
 
 	target := createDiagnosticChannel(t, server, "target", 1, 1)
 	_ = createDiagnosticChannel(t, server, "peer", 1, 3)

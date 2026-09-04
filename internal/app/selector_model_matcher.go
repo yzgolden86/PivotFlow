@@ -12,27 +12,12 @@ func (s *Server) configSupportsModel(cfg *modelpkg.Config, model string) bool {
 	return cfg.SupportsModel(model) || (s.modelAliases != nil && s.modelAliases.supports(cfg, model))
 }
 
-// configSupportsModelWithFuzzyMatch 检查渠道是否支持指定模型（含模糊匹配）
+// configSupportsModelWithFuzzyMatch 检查渠道是否支持指定模型。
 //
-// 匹配策略（按优先级）：
-// 1. 精确匹配：cfg.SupportsModel(model)
-// 2. 模糊匹配（需启用 model_fuzzy_match）：sonnet → claude-sonnet-4-5-20250929
-//
-// 模糊匹配会返回匹配到的完整模型名，在 prepareRequestBody 中用于替换请求体中的模型名。
+// 历史上带「模糊匹配」回退（子串包含 + 版本排序），但子串语义过于贪婪
+// (glm-5.3 会命中 glm-5.3-flash) 并绕过统一映射，已移除。保留函数名仅供
+// 候选筛选与路由诊断调用方沿用，语义退化为精确匹配 + 统一映射，行为
+// 与 configSupportsModel 一致。
 func (s *Server) configSupportsModelWithFuzzyMatch(cfg *modelpkg.Config, model string) bool {
-	if s.configSupportsModel(cfg, model) {
-		return true
-	}
-	if model == "*" {
-		return false
-	}
-
-	// 模糊匹配：sonnet -> claude-sonnet-4-5-20250929
-	if s.modelFuzzyMatch {
-		if _, ok := cfg.FuzzyMatchModel(model); ok {
-			return true
-		}
-	}
-
-	return false
+	return s.configSupportsModel(cfg, model)
 }
