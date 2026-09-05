@@ -103,7 +103,7 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 						s.runScheduledAccountTask(ctx, sem, site, account, "checkin")
 					}
 				}
-				if account.AutoRefresh && (account.LastRefreshAt == 0 || now.UnixMilli()-account.LastRefreshAt >= siteRefreshInterval.Milliseconds()) {
+				if account.AutoRefresh && siteRefreshDue(account, now) {
 					s.runScheduledAccountTask(ctx, sem, site, account, "refresh")
 				}
 			}
@@ -113,6 +113,11 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 }
 
 func (s *siteControlService) runScheduledAnnouncementTask(ctx context.Context, sem chan struct{}, site *model.Site, localDay string) {
+	releaseGate, ok := s.acquireSiteGate(ctx, site.ID)
+	if !ok {
+		return
+	}
+	defer releaseGate()
 	select {
 	case sem <- struct{}{}:
 	case <-ctx.Done():
@@ -148,7 +153,26 @@ func dailyCheckinDue(localNow time.Time, scheduledMinute int) bool {
 	return localNow.Hour()*60+localNow.Minute() >= scheduledMinute
 }
 
+// siteRefreshJitter staggers the 6h refresh expiry by account ID so accounts
+// provisioned together do not all fall due in the same minute and contend
+// for the scheduler's global slots. Deterministic: no persisted state.
+func siteRefreshJitter(accountID int64) time.Duration {
+	return time.Duration(accountID%30) * time.Minute
+}
+
+func siteRefreshDue(account *model.SiteAccount, now time.Time) bool {
+	if account.LastRefreshAt == 0 {
+		return true
+	}
+	return now.UnixMilli()-account.LastRefreshAt >= (siteRefreshInterval + siteRefreshJitter(account.ID)).Milliseconds()
+}
+
 func (s *siteControlService) runScheduledAccountTask(ctx context.Context, sem chan struct{}, site *model.Site, account *model.SiteAccount, kind string) {
+	releaseGate, ok := s.acquireSiteGate(ctx, site.ID)
+	if !ok {
+		return
+	}
+	defer releaseGate()
 	select {
 	case sem <- struct{}{}:
 	case <-ctx.Done():

@@ -37,6 +37,11 @@ type siteControlService struct {
 	stopped             bool
 	webhookSender       sitewebhook.Sender
 	onProjectionChanged func()
+	// siteGates holds one cap-1 semaphore per site ID so every upstream site
+	// operation (scheduled refresh/checkin/announcement, manual refresh) for
+	// the same site queues up instead of hitting CF-protected upstreams
+	// concurrently (map[int64]chan struct{}).
+	siteGates sync.Map
 }
 
 const credentialRefreshLead = 2 * time.Minute
@@ -175,6 +180,48 @@ func (s *siteControlService) leaseContext(parent context.Context, taskKey, owner
 		cancel()
 		<-done
 	}
+}
+
+// acquireSiteGate serializes all upstream operations against one site. A
+// manual refresh must not run concurrently with a scheduled refresh/checkin
+// on the same site: bursty parallel requests to CF-protected upstreams get
+// throttled and blow the client timeout, flagging healthy accounts as
+// provider_timeout. The gate is in-process state; the store lease keeps
+// covering cross-restart mutual exclusion per account and kind.
+func (s *siteControlService) acquireSiteGate(ctx context.Context, siteID int64) (func(), bool) {
+	gate, _ := s.siteGates.LoadOrStore(siteID, make(chan struct{}, 1))
+	select {
+	case gate.(chan struct{}) <- struct{}{}:
+		return func() { <-gate.(chan struct{}) }, true
+	case <-ctx.Done():
+		return nil, false
+	}
+}
+
+// retryOnTimeout wraps one site management upstream call with the same
+// bounded backoff the check-in loop uses: a request throttled by the upstream
+// often only fails once, so a timed-out call is retried twice (1s, 2s) before
+// the failure is recorded on the account. The timeout applies per attempt.
+func retryOnTimeout[T any](ctx context.Context, perTryTimeout time.Duration, call func(ctx context.Context) (T, error)) (T, error) {
+	var zero T
+	var last T
+	var err error
+	for try := 1; try <= 3; try++ {
+		callCtx, cancel := context.WithTimeout(ctx, perTryTimeout)
+		last, err = call(callCtx)
+		cancel()
+		if err == nil || provider.ErrorCode(err) != provider.CodeTimeout {
+			return last, err
+		}
+		if try < 3 {
+			select {
+			case <-ctx.Done():
+				return zero, ctx.Err()
+			case <-time.After(time.Duration(try) * time.Second):
+			}
+		}
+	}
+	return last, err
 }
 
 func (s *siteControlService) adapter(site *model.Site) (provider.SiteAdapter, error) {
@@ -711,15 +758,17 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 		return
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
-	defer cancel()
-	snapshot, err := adapter.RefreshAccount(callCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
+	request := provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds}
+	snapshot, err := retryOnTimeout(ctx, 35*time.Second, func(callCtx context.Context) (provider.AccountSnapshot, error) {
+		return adapter.RefreshAccount(callCtx, request)
+	})
 	if provider.ErrorCode(err) == provider.CodeExpired {
 		if refreshed, refreshErr := s.refreshExpiredCredentials(ctx, account, site, adapter, creds); refreshErr == nil {
 			creds = refreshed
-			retryCtx, retryCancel := context.WithTimeout(ctx, 35*time.Second)
-			snapshot, err = adapter.RefreshAccount(retryCtx, provider.RefreshAccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
-			retryCancel()
+			request.Credentials = creds
+			snapshot, err = retryOnTimeout(ctx, 35*time.Second, func(callCtx context.Context) (provider.AccountSnapshot, error) {
+				return adapter.RefreshAccount(callCtx, request)
+			})
 		} else {
 			err = refreshErr
 		}
@@ -763,15 +812,17 @@ func (s *siteControlService) routingSnapshots(ctx context.Context, account *mode
 	if !ok {
 		return nil, &provider.Error{Code: provider.CodeRoutingKeyUnavailable, Message: "routing API key discovery is unavailable"}
 	}
-	keyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	keys, err := keyProvider.ListRoutingKeys(keyCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
-	cancel()
+	keyRequest := provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds}
+	keys, err := retryOnTimeout(ctx, 20*time.Second, func(callCtx context.Context) ([]provider.RoutingKeySnapshot, error) {
+		return keyProvider.ListRoutingKeys(callCtx, keyRequest)
+	})
 	if provider.ErrorCode(err) == provider.CodeExpired {
 		if refreshed, refreshErr := s.refreshExpiredCredentials(ctx, account, site, adapter, creds); refreshErr == nil {
 			creds = refreshed
-			retryCtx, retryCancel := context.WithTimeout(ctx, 20*time.Second)
-			keys, err = keyProvider.ListRoutingKeys(retryCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
-			retryCancel()
+			keyRequest.Credentials = creds
+			keys, err = retryOnTimeout(ctx, 20*time.Second, func(callCtx context.Context) ([]provider.RoutingKeySnapshot, error) {
+				return keyProvider.ListRoutingKeys(callCtx, keyRequest)
+			})
 		} else {
 			err = refreshErr
 		}
@@ -837,9 +888,9 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 	for index, item := range keys {
 		names := normalizedModelNames(item.Models)
 		snapshotNames[index] = names
-		modelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		items, err := adapter.ListModels(modelCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: provider.Credentials{APIKey: strings.TrimSpace(item.Key)}})
-		cancel()
+		items, err := retryOnTimeout(ctx, 30*time.Second, func(callCtx context.Context) ([]provider.ModelSnapshot, error) {
+			return adapter.ListModels(callCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: provider.Credentials{APIKey: strings.TrimSpace(item.Key)}})
+		})
 		if err != nil {
 			keyErrors[index] = err
 			continue
@@ -869,9 +920,9 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 				continue
 			}
 			managementAttempted[index] = true
-			modelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			items, err := modelProvider.ListModelsForRoutingKey(modelCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: managementCreds}, item)
-			cancel()
+			items, err := retryOnTimeout(ctx, 30*time.Second, func(callCtx context.Context) ([]provider.ModelSnapshot, error) {
+				return modelProvider.ListModelsForRoutingKey(callCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: managementCreds}, item)
+			})
 			if err != nil {
 				if keyErrors[index] == nil {
 					keyErrors[index] = err
@@ -917,9 +968,9 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 			// the key endpoint is unavailable.
 			names = normalizedModelNames(item.Models)
 			if len(names) == 0 {
-				modelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				items, err := adapter.ListModels(modelCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: managementCreds})
-				cancel()
+				items, err := retryOnTimeout(ctx, 30*time.Second, func(callCtx context.Context) ([]provider.ModelSnapshot, error) {
+					return adapter.ListModels(callCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: managementCreds})
+				})
 				if err == nil {
 					names = modelSnapshotNames(items)
 				}

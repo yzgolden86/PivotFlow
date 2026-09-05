@@ -389,6 +389,12 @@ func (s *siteControlService) enqueueAccountTask(c *gin.Context, kind string, wit
 		return
 	}
 	if !s.runAsync(task.ID, func(ctx context.Context) {
+		releaseGate, gateOK := s.acquireSiteGate(ctx, account.SiteID)
+		if !gateOK {
+			s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", "排队等待同站点任务时被取消")
+			return
+		}
+		defer releaseGate()
 		leaseKey := fmt.Sprintf("site:%d:account:%d:%s", account.SiteID, id, kind)
 		now := time.Now().UnixMilli()
 		acquired, leaseErr := s.store.AcquireSiteTaskLease(ctx, leaseKey, task.ID, now, now+siteTaskLeaseDuration.Milliseconds())
@@ -496,10 +502,17 @@ func (s *siteControlService) handleAnnouncementsRefresh(c *gin.Context) {
 	}
 	if !s.runAsync(task.ID, func(ctx context.Context) {
 		var refreshErr error
-		s.updateTask(ctx, task, model.SiteTaskStatusRunning, "", "")
 		if req.SiteID > 0 {
+			releaseGate, gateOK := s.acquireSiteGate(ctx, req.SiteID)
+			if !gateOK {
+				s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", "排队等待同站点任务时被取消")
+				return
+			}
+			defer releaseGate()
+			s.updateTask(ctx, task, model.SiteTaskStatusRunning, "", "")
 			refreshErr = s.refreshAnnouncements(ctx, req.SiteID)
 		} else {
+			s.updateTask(ctx, task, model.SiteTaskStatusRunning, "", "")
 			sites, e := s.store.ListSites(ctx, model.SiteListFilter{})
 			if e != nil {
 				refreshErr = e
@@ -525,6 +538,11 @@ func (s *siteControlService) handleAnnouncementsRefresh(c *gin.Context) {
 							return
 						}
 						defer func() { <-semaphore }()
+						releaseGate, gateOK := s.acquireSiteGate(ctx, site.ID)
+						if !gateOK {
+							return
+						}
+						defer releaseGate()
 						if e := s.refreshAnnouncements(ctx, site.ID); e != nil {
 							if provider.ErrorCode(e) == provider.CodeUnsupported {
 								return
