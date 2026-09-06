@@ -490,6 +490,10 @@ func fingerprintNameWithSuffix(name string, suffix int) string {
 }
 
 func cleanupRemovedSettings(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	// Fuzzy routing was removed; upgraded installations must not advertise it.
+	if err := deleteSystemSetting(ctx, db, dialect, "model_fuzzy_match"); err != nil {
+		return err
+	}
 	// skip_tls_verify 已移除：仅允许通过环境变量 PIVOTFLOW_ALLOW_INSECURE_TLS 控制
 	if err := deleteSystemSetting(ctx, db, dialect, "skip_tls_verify"); err != nil {
 		return err

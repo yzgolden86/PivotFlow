@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -524,5 +525,71 @@ func TestSiteRefreshDueJitter(t *testing.T) {
 	due := &model.SiteAccount{ID: 1, LastRefreshAt: now.Add(-siteRefreshInterval - siteRefreshJitter(1)).UnixMilli()}
 	if !siteRefreshDue(due, now) {
 		t.Fatal("account 1 must be due once 6h plus its jitter elapsed")
+	}
+}
+
+type scheduledModelRefreshAdapter struct {
+	projectionTestAdapter
+	calls atomic.Int32
+	err   error
+}
+
+func (a *scheduledModelRefreshAdapter) ListRoutingKeys(context.Context, provider.AccountRequest) ([]provider.RoutingKeySnapshot, error) {
+	return []provider.RoutingKeySnapshot{{ID: "scheduled", Key: "test-routing-key", Enabled: true}}, nil
+}
+
+func (a *scheduledModelRefreshAdapter) ListModels(ctx context.Context, req provider.AccountRequest) ([]provider.ModelSnapshot, error) {
+	a.calls.Add(1)
+	if a.err != nil {
+		return nil, a.err
+	}
+	return a.projectionTestAdapter.ListModels(ctx, req)
+}
+
+func TestScheduledModelRefreshRecordsAttemptAndWaitsUntilDue(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		name, wantStatus := "success", model.SiteTaskStatusSuccess
+		adapter := &scheduledModelRefreshAdapter{}
+		if fail {
+			name, wantStatus = "failure", model.SiteTaskStatusFailed
+			adapter.err = &provider.Error{Code: provider.CodeUnsupported, Message: "model discovery unavailable"}
+		}
+		t.Run(name, func(t *testing.T) {
+			service, _, account := newSiteRefreshTestService(t, adapter)
+			ctx := context.Background()
+			account.AutoRefresh = true
+			if _, err := service.store.UpdateSiteAccount(ctx, account.ID, account); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			service.runSchedule(ctx, now)
+			firstCalls := adapter.calls.Load()
+			if firstCalls == 0 {
+				t.Fatal("first schedule did not attempt model discovery")
+			}
+			after, err := service.store.GetSiteAccount(ctx, account.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.LastRefreshAt < now.UnixMilli() || after.LastRefreshStatus != wantStatus {
+				t.Fatalf("refresh state=%d/%s, want current timestamp/%s", after.LastRefreshAt, after.LastRefreshStatus, wantStatus)
+			}
+			if after.BalanceUpdatedAt != account.BalanceUpdatedAt {
+				t.Fatal("model refresh must not mark the balance as freshly retrieved")
+			}
+			service.runSchedule(ctx, now.Add(time.Minute))
+			if got := adapter.calls.Load(); got != firstCalls {
+				t.Fatalf("consecutive minute ticks made %d model calls, want %d", got, firstCalls)
+			}
+			due := time.UnixMilli(after.LastRefreshAt).Add(siteRefreshInterval + siteRefreshJitter(account.ID))
+			service.runSchedule(ctx, due.Add(-time.Millisecond))
+			if got := adapter.calls.Load(); got != firstCalls {
+				t.Fatalf("refresh ran early: %d calls", got)
+			}
+			service.runSchedule(ctx, due)
+			if got := adapter.calls.Load(); got != 2*firstCalls {
+				t.Fatalf("due refresh made %d calls in total, want %d", got, 2*firstCalls)
+			}
+		})
 	}
 }

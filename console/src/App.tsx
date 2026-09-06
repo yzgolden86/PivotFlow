@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
   Activity,
@@ -106,7 +106,7 @@ const navigation: NavGroup[] = [
     ],
   },
   {
-    label: '观测',
+    label: '统计',
     entries: [
       { label: '请求日志', href: '/logs', icon: ScrollText },
       { label: '用量统计', href: '/stats', icon: BarChart3 },
@@ -124,11 +124,58 @@ const navigation: NavGroup[] = [
 
 function App() {
   const [mobileOpen, setMobileOpen] = useState(false)
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem('pivotflow_sidebar_collapsed') === 'true' } catch { return false }
+  })
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference)
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(readThemePreference()))
   const [themePickerOpen, setThemePickerOpen] = useState(false)
   const location = useLocation()
+  const sidebar = useRef<HTMLElement>(null)
+  const mobileTrigger = useRef<HTMLButtonElement>(null)
+  const themePicker = useRef<HTMLDivElement>(null)
+  const showLabels = !collapsed || mobileOpen
+  const currentPage = navigation.flatMap((group) => group.entries).find((entry) => entry.href === location.pathname)?.label || '控制台'
+
+  useEffect(() => {
+    try { localStorage.setItem('pivotflow_sidebar_collapsed', String(collapsed)) } catch { /* Storage may be disabled. */ }
+  }, [collapsed])
+
+  useEffect(() => {
+    if (!mobileOpen) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    sidebar.current?.querySelector<HTMLButtonElement>('.sidebar-mobile-close')?.focus()
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileOpen(false)
+      if (event.key !== 'Tab') return
+      const items = Array.from(sidebar.current?.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), input') || []).filter((item) => item.getClientRects().length)
+      const first = items[0]
+      const last = items.at(-1)
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', handleKey)
+      mobileTrigger.current?.focus()
+    }
+  }, [mobileOpen])
+
+  useEffect(() => {
+    if (!themePickerOpen) return
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !themePicker.current?.contains(event.target)) setThemePickerOpen(false)
+    }
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setThemePickerOpen(false) }
+    document.addEventListener('pointerdown', outside)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('pointerdown', outside)
+      document.removeEventListener('keydown', escape)
+    }
+  }, [themePickerOpen])
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -195,15 +242,23 @@ function App() {
 
   return (
     <div className={shellClass}>
+      <a className="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById('main-content')?.focus() }}>跳到主要内容</a>
+      <header className="mobile-topbar">
       <button
+        ref={mobileTrigger}
         className="mobile-menu-button icon-button"
         type="button"
         onClick={() => setMobileOpen(true)}
         aria-label="打开导航"
         title="打开导航"
+        aria-expanded={mobileOpen}
+        aria-controls="primary-sidebar"
       >
         <Menu size={19} />
       </button>
+      <a className="mobile-brand" href="#/"><img src="/web/brand-mark.svg" alt="" /><strong>枢衡</strong></a>
+      <span className="mobile-page-name">{currentPage}</span>
+      </header>
 
       {mobileOpen && (
         <button
@@ -214,12 +269,13 @@ function App() {
         />
       )}
 
-      <aside className={`sidebar${mobileOpen ? ' sidebar--open' : ''}`}>
+      <aside ref={sidebar} id="primary-sidebar" className={`sidebar${mobileOpen ? ' sidebar--open' : ''}`} aria-label="控制台导航" role={mobileOpen ? 'dialog' : undefined} aria-modal={mobileOpen || undefined}>
         <div className="sidebar-brand">
           <img className="brand-mark" src="/web/brand-mark.svg" alt="" />
-          {!collapsed && (
+          {showLabels && (
             <div className="brand-copy">
               <strong>枢衡</strong>
+              <span>PivotFlow</span>
             </div>
           )}
           <button
@@ -238,18 +294,18 @@ function App() {
         <nav className="sidebar-nav" aria-label="主导航">
           {navigation.map((group) => (
             <div className="nav-group" key={group.label}>
-              {!collapsed && <div className="nav-group-label">{group.label}</div>}
+              {showLabels && <div className="nav-group-label">{group.label}</div>}
               {group.entries.map((entry) => {
                 const Icon = entry.icon
                 const active = location.pathname === entry.href
                 const content = (
                   <>
                     <Icon size={18} aria-hidden="true" />
-                    {!collapsed && <span>{entry.label}</span>}
+                    {showLabels && <span>{entry.label}</span>}
                   </>
                 )
 
-                return <a className={`nav-item${active ? ' nav-item--active' : ''}`} href={`#${entry.href}`} key={entry.label} title={collapsed ? entry.label : undefined} onMouseEnter={() => preloadPage(entry.href)} onFocus={() => preloadPage(entry.href)}>{content}</a>
+                return <a className={`nav-item${active ? ' nav-item--active' : ''}`} href={`#${entry.href}`} key={entry.label} aria-current={active ? 'page' : undefined} title={!showLabels ? entry.label : undefined} onMouseEnter={() => preloadPage(entry.href)} onFocus={() => preloadPage(entry.href)}>{content}</a>
               })}
             </div>
           ))}
@@ -257,7 +313,7 @@ function App() {
 
         <div className="sidebar-footer">
           <div className="sidebar-actions">
-            <div className="sidebar-theme-wrap">
+            <div className="sidebar-theme-wrap" ref={themePicker}>
               <button
                 className="sidebar-theme-button"
                 type="button"
@@ -267,7 +323,7 @@ function App() {
                 aria-expanded={themePickerOpen}
               >
                 {resolvedTheme === 'light' ? <Sun size={17} /> : <Moon size={17} />}
-                {!collapsed && <span>{themePreference === 'system' ? '跟随系统' : themePreference === 'dark' ? '暗色' : '亮色'}</span>}
+                {showLabels && <span>{themePreference === 'system' ? '跟随系统' : themePreference === 'dark' ? '暗色' : '亮色'}</span>}
               </button>
               {themePickerOpen && <div className="theme-picker" role="menu" aria-label="界面主题">
                 {([['system', '跟随系统', Monitor], ['light', '亮色', Sun], ['dark', '暗色', Moon]] as const).map(([value, label, Icon]) => <button className={themePreference === value ? 'is-selected' : ''} type="button" role="menuitemradio" aria-checked={themePreference === value} onClick={() => { setThemePreference(value); setThemePickerOpen(false); window.dispatchEvent(new CustomEvent('fusion:theme-changed', { detail: value })) }} key={value}><Icon size={16} /><span>{label}</span>{themePreference === value && <i />}</button>)}
@@ -295,7 +351,7 @@ function App() {
         </div>
       </aside>
 
-      <main className="main-content">
+      <main className="main-content" id="main-content" tabIndex={-1}>
         <Suspense fallback={<PageLoading />}>
           <Routes>
             <Route path="/" element={<DashboardPage />} />

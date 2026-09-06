@@ -116,6 +116,7 @@ export default function DashboardPage() {
           label="站点余额"
           value={<BalanceValue balances={snapshot.balances} />}
           meta={`${snapshot.healthy_accounts}/${snapshot.account_count} 个健康账号`}
+          href="#/accounts"
         />
         <MetricCard
           icon={CircleDollarSign}
@@ -123,6 +124,7 @@ export default function DashboardPage() {
           label="消耗额度"
           value={formatMoney(snapshot.totals.effective_cost)}
           meta={`标准成本 ${formatMoney(snapshot.totals.cost)}`}
+          href="#/trend"
         />
         <MetricCard
           icon={Zap}
@@ -130,6 +132,7 @@ export default function DashboardPage() {
           label="请求与 Token"
           value={formatCompact(snapshot.totals.requests)}
           meta={`${formatCompact(totalTokens)} tokens`}
+          href="#/stats"
         />
         <MetricCard
           icon={ShieldCheck}
@@ -137,6 +140,7 @@ export default function DashboardPage() {
           label="路由成功率"
           value={snapshot.totals.requests ? `${successRate.toFixed(1)}%` : '—'}
           meta={`${formatCompact(snapshot.totals.errors)} 次失败`}
+          href={`#/logs?range=${range}`}
         />
       </section>
 
@@ -146,24 +150,28 @@ export default function DashboardPage() {
           label="站点"
           value={`${snapshot.enabled_sites}/${snapshot.site_count}`}
           suffix="启用"
+          href="#/sites"
         />
         <ResourceStatus
           icon={Route}
           label="路由渠道"
           value={`${snapshot.enabled_channels}/${snapshot.channel_count}`}
           suffix="启用"
+          href="#/channels"
         />
         <ResourceStatus
           icon={Database}
           label="站点账号"
           value={`${snapshot.healthy_accounts}/${snapshot.account_count}`}
           suffix="健康"
+          href="#/accounts"
         />
         <ResourceStatus
           icon={BadgeDollarSign}
           label="缓存命中"
           value={formatCompact(snapshot.totals.cache_read_tokens)}
           suffix="tokens"
+          href="#/stats"
         />
       </section>
 
@@ -213,22 +221,24 @@ function MetricCard({
   label,
   value,
   meta,
+  href,
 }: {
   icon: typeof WalletCards
   tone: string
   label: string
   value: React.ReactNode
   meta: string
+  href: string
 }) {
   return (
-    <article className={`metric-card metric-card--${tone}`}>
+    <a className={`metric-card metric-card--${tone}`} href={href} aria-label={`${label}，查看详情`}>
       <div className="metric-card-top">
         <span className="metric-label">{label}</span>
         <span className="metric-icon"><Icon size={18} /></span>
       </div>
       <div className="metric-value">{value}</div>
-      <div className="metric-meta">{meta}</div>
-    </article>
+      <div className="metric-meta">{meta}<ArrowUpRight size={15} aria-hidden="true" /></div>
+    </a>
   )
 }
 
@@ -257,19 +267,21 @@ function ResourceStatus({
   label,
   value,
   suffix,
+  href,
 }: {
   icon: typeof Server
   label: string
   value: string
   suffix: string
+  href: string
 }) {
   return (
-    <div className="resource-status">
+    <a className="resource-status" href={href}>
       <Icon size={17} />
       <span>{label}</span>
       <strong>{value}</strong>
       <small>{suffix}</small>
-    </div>
+    </a>
   )
 }
 

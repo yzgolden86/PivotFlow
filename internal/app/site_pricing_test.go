@@ -337,6 +337,7 @@ func TestInvalidateChannelListCacheKeepsPriceTables(t *testing.T) {
 func TestSitePricingCacheNilSafe(t *testing.T) {
 	var cache *sitePricingCache
 	cache.invalidate()
+	cache.invalidateSite(1)
 	cache.store(1, provider.SitePricing{}, false, time.Now())
 	cache.storeChannelBindings(nil, time.Now())
 	if _, ok := cache.lookup(1, time.Now()); ok {

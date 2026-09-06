@@ -25,18 +25,19 @@ import (
 )
 
 type siteControlService struct {
-	store               storage.Store
-	configService       *ConfigService
-	cipher              *credential.Cipher
-	registry            *provider.Registry
-	baseCtx             context.Context
-	wg                  *sync.WaitGroup
-	taskMu              sync.Mutex
-	webhookMu           sync.Mutex
-	tasks               map[string]context.CancelFunc
-	stopped             bool
-	webhookSender       sitewebhook.Sender
-	onProjectionChanged func()
+	store                  storage.Store
+	configService          *ConfigService
+	cipher                 *credential.Cipher
+	registry               *provider.Registry
+	baseCtx                context.Context
+	wg                     *sync.WaitGroup
+	taskMu                 sync.Mutex
+	webhookMu              sync.Mutex
+	tasks                  map[string]context.CancelFunc
+	stopped                bool
+	webhookSender          sitewebhook.Sender
+	onProjectionChanged    func()
+	onPricingSourceChanged func(int64)
 	// siteGates holds one cap-1 semaphore per site ID so every upstream site
 	// operation (scheduled refresh/checkin/announcement, manual refresh) for
 	// the same site queues up instead of hitting CF-protected upstreams
@@ -102,6 +103,12 @@ func cascadeVerb(enable bool) string {
 func (s *siteControlService) projectionChanged() {
 	if s != nil && s.onProjectionChanged != nil {
 		s.onProjectionChanged()
+	}
+}
+
+func (s *siteControlService) pricingSourceChanged(siteID int64) {
+	if s != nil && s.onPricingSourceChanged != nil {
+		s.onPricingSourceChanged(siteID)
 	}
 }
 
@@ -484,6 +491,7 @@ func (s *siteControlService) createAccount(ctx context.Context, siteID int64, re
 			site.LastError = ""
 			if updated, updateErr := s.store.UpdateSite(ctx, site.ID, site); updateErr == nil {
 				site = updated
+				s.pricingSourceChanged(site.ID)
 			}
 		} else if credentialType == model.CredentialTypeAPIKey && strings.TrimSpace(req.Credential.APIKey) != "" {
 			// A model-call key does not require a management-plane provider. If
@@ -494,6 +502,7 @@ func (s *siteControlService) createAccount(ctx context.Context, siteID int64, re
 			site.LastError = ""
 			if updated, updateErr := s.store.UpdateSite(ctx, site.ID, site); updateErr == nil {
 				site = updated
+				s.pricingSourceChanged(site.ID)
 			}
 		}
 	}
@@ -522,7 +531,11 @@ func (s *siteControlService) createAccount(ctx context.Context, siteID int64, re
 	if credType == model.CredentialTypeAPIKey {
 		autoRefresh = false
 	}
-	return s.store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: siteID, Label: label, CredentialType: credType, CredentialCiphertext: sealed, CredentialKeyVersion: s.cipher.Version(), Enabled: enabled, AutoCheckin: autoCheckin, AutoRefresh: autoRefresh, Timezone: strings.TrimSpace(req.Timezone), Status: model.SiteAccountStatusUnknown, LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
+	account, err := s.store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: siteID, Label: label, CredentialType: credType, CredentialCiphertext: sealed, CredentialKeyVersion: s.cipher.Version(), Enabled: enabled, AutoCheckin: autoCheckin, AutoRefresh: autoRefresh, Timezone: strings.TrimSpace(req.Timezone), Status: model.SiteAccountStatusUnknown, LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
+	if err == nil {
+		s.pricingSourceChanged(siteID)
+	}
+	return account, err
 }
 
 func (s *siteControlService) prepareAccountCredential(ctx context.Context, site *model.Site, requestedType string, credentials provider.Credentials) (string, provider.Credentials, error) {
@@ -660,6 +673,25 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 	if err != nil {
 		s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", "not_found")
 		return
+	}
+	if modelRefresh {
+		defer func() {
+			if ctx.Err() != nil {
+				return
+			}
+			// Reload after credential/projection updates; only the refresh result
+			// belongs to this finalizer. Balance freshness has its own timestamp.
+			latest, saveErr := s.store.GetSiteAccount(ctx, accountID)
+			if saveErr == nil {
+				latest.LastRefreshAt = time.Now().UnixMilli()
+				latest.LastRefreshStatus = task.Status
+				_, saveErr = s.store.UpdateSiteAccount(ctx, accountID, latest)
+			}
+			if saveErr != nil {
+				log.Printf("[SITE] persist model refresh result for account %d: %v", accountID, saveErr)
+				s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(saveErr))
+			}
+		}()
 	}
 	site, err := s.store.GetSite(ctx, account.SiteID)
 	if err != nil {
@@ -1500,6 +1532,7 @@ func (s *siteControlService) handleSiteByID(c *gin.Context) {
 			RespondErrorMsg(c, 400, "invalid_request")
 			return
 		}
+		previous := *site
 		if req.Name != nil {
 			site.Name = strings.TrimSpace(*req.Name)
 		}
@@ -1553,6 +1586,9 @@ func (s *siteControlService) handleSiteByID(c *gin.Context) {
 		}
 
 		s.projectionChanged()
+		if previous.BaseURL != site.BaseURL || previous.Platform != site.Platform || previous.ProxyURL != site.ProxyURL || previous.UseSystemProxy != site.UseSystemProxy || enabledChanged {
+			s.pricingSourceChanged(id)
+		}
 		if cascade != nil {
 			// 保持返回体仍是一个 Site：级联结果作为附加字段挂上去，
 			// 换成 {site, cascade} 会破坏既有前端契约。
@@ -1566,6 +1602,7 @@ func (s *siteControlService) handleSiteByID(c *gin.Context) {
 			return
 		}
 		s.projectionChanged()
+		s.pricingSourceChanged(id)
 		RespondJSON(c, 200, gin.H{"id": id, "deleted": true})
 	}
 }

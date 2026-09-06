@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, ArrowRight, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, ExternalLink, FileClock, Gauge, Network,
+  Activity, ArrowRight, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, Clock3, ExternalLink, FileClock, Gauge, Network,
   DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
   KeyRound, ListPlus, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, SlidersHorizontal, TimerReset, Trash2, Type, Wrench, X,
 } from 'lucide-react'
@@ -10,6 +10,7 @@ import { EmptyState, ErrorState, LoadingState, OperationNotice } from './shared'
 import { WebhookSettingsPanel } from './SettingsPage'
 import { BackupSettingsPanel } from './BackupSettingsPanel'
 import { Modal } from './siteShared'
+import HelpTip from '../components/HelpTip'
 import { adoptSuggestions, aliasMembers, parseAliasDraft, serializeAliasDraft, withMembers } from './modelAliasDraft'
 import type { AliasDraft } from './modelAliasDraft'
 import { applyThemeCustomization, readThemeCustomization, resetThemeCustomization, themeFontOptions } from '../theme'
@@ -38,6 +39,7 @@ export default function SystemSettingsPageV2() {
   const [values, setValues] = useState<Record<string, string>>({})
   const [dirty, setDirty] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
+  const [onlyModified, setOnlyModified] = useState(false)
   const [group, setGroup] = useState<GroupKey>('routing')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -50,6 +52,7 @@ export default function SystemSettingsPageV2() {
   const [aliasRefreshTick, setAliasRefreshTick] = useState(0)
 
   const reloadSettings = async () => {
+    if (saving || refreshing) return
     // 有未保存修改时先确认：load 会用服务器值覆盖本地草稿。
     if (dirty.size && !window.confirm(`有 ${dirty.size} 项未保存的修改，刷新将丢弃这些修改，继续？`)) return
     setRefreshing(true)
@@ -87,16 +90,33 @@ export default function SystemSettingsPageV2() {
     return () => window.removeEventListener('fusion:theme-changed', update)
   }, [])
 
+  useEffect(() => {
+    if (!dirty.size) return
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [dirty.size])
+
   const counts = useMemo(() => Object.fromEntries(groups.map(({ key }) => [key, settings.filter((item) => settingGroup(item.key) === key).length])), [settings])
   const activeGroup = groups.find((item) => item.key === group) || groups[0]
   const visible = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     return settings.filter((setting) => {
       if (setting.key === 'model_alias_groups') return false
+      if (onlyModified && !dirty.has(setting.key)) return false
       const searchable = `${settingLabel(setting)} ${settingHelp(setting)} ${setting.key} ${setting.description}`.toLowerCase()
-      return normalized ? searchable.includes(normalized) : settingGroup(setting.key) === group
+      return normalized ? searchable.includes(normalized) : onlyModified || settingGroup(setting.key) === group
     })
-  }, [group, query, settings])
+  }, [dirty, group, onlyModified, query, settings])
+  const showAliases = (!onlyModified || dirty.has('model_alias_groups')) && (query.trim()
+    ? '模型统一映射 别名 model_alias_groups'.includes(query.trim().toLowerCase()) : onlyModified || group === 'routing')
+
+  const discard = () => {
+    if (!window.confirm(`放弃 ${dirty.size} 项未保存的修改？`)) return
+    setValues(Object.fromEntries(settings.map((setting) => [setting.key, setting.value])))
+    setDirty(new Set())
+    setOnlyModified(false)
+  }
 
   const change = (key: string, value: string) => {
     setValues((current) => ({ ...current, [key]: value }))
@@ -110,7 +130,7 @@ export default function SystemSettingsPageV2() {
   }
 
   const save = async () => {
-    if (!dirty.size) return
+    if (!dirty.size || saving || refreshing) return
     if (!window.confirm(`保存 ${dirty.size} 项设置？`)) return
     setSaving(true)
     setError('')
@@ -137,7 +157,11 @@ export default function SystemSettingsPageV2() {
       const result = await resetSystemSetting(setting.key)
       setValues((current) => ({ ...current, [setting.key]: setting.default_value }))
       setSettings((current) => current.map((item) => item.key === setting.key ? { ...item, value: setting.default_value } : item))
-      setDirty(new Set())
+      setDirty((current) => {
+        const next = new Set(current)
+        next.delete(setting.key)
+        return next
+      })
       setNotice(result.message)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '重置失败')
@@ -184,8 +208,8 @@ export default function SystemSettingsPageV2() {
     <header className="page-header">
       <h1>系统设置</h1>
       {section === 'runtime' && group !== 'appearance' && <div className="header-controls">
-        <button className="primary-button" type="button" onClick={() => void save()} disabled={!dirty.size || saving}><Save size={17} />{saving ? '保存中' : `保存${dirty.size ? ` (${dirty.size})` : ''}`}</button>
-        <button className="icon-button icon-button--surface" type="button" onClick={() => void reloadSettings()} disabled={refreshing} aria-label="刷新系统设置" title="从服务器重新读取"><RefreshCw size={18} className={refreshing ? 'spin' : undefined} /></button>
+        <label className="settings-modified-filter"><input type="checkbox" checked={onlyModified} onChange={(event) => setOnlyModified(event.target.checked)} />仅看已修改{dirty.size > 0 && <span>{dirty.size}</span>}</label>
+        <button className="icon-button icon-button--surface" type="button" onClick={() => void reloadSettings()} disabled={refreshing || saving} aria-label="刷新系统设置" title="从服务器重新读取"><RefreshCw size={18} className={refreshing ? 'spin' : undefined} /></button>
       </div>}
     </header>
 
@@ -201,10 +225,10 @@ export default function SystemSettingsPageV2() {
       {error && <OperationNotice tone="error">{error}</OperationNotice>}
       <div className="settings-layout">
         <aside className="settings-groups" aria-label="设置分类">
-          {groups.map(({ key, label, icon: Icon }) => <button className={group === key && !query.trim() ? 'is-active' : ''} type="button" onClick={() => { setGroup(key); setQuery('') }} key={key}>
+          {groups.map(({ key, label, icon: Icon }) => <button className={group === key && !query.trim() && !onlyModified ? 'is-active' : ''} type="button" aria-pressed={group === key && !query.trim() && !onlyModified} onClick={() => { setGroup(key); setQuery(''); setOnlyModified(false) }} key={key}>
             <span className="settings-group-icon"><Icon size={18} /></span>
-            <span className="settings-group-copy"><strong>{label}</strong></span>
-            <em>{counts[key] || 0}</em>
+            <span className="settings-group-copy"><strong>{label}{[...dirty].some((item) => settingGroup(item) === key) && <i className="settings-dirty-marker" aria-label="有未保存修改" />}</strong></span>
+            {key !== 'appearance' && <em>{counts[key] || 0}</em>}
           </button>)}
         </aside>
 
@@ -212,18 +236,18 @@ export default function SystemSettingsPageV2() {
           <div className="settings-editor-toolbar">
             <div className="settings-editor-heading">
               <span><ActiveGroupIcon size={19} /></span>
-              {/* 分组描述只在搜索时保留一句引导；平时的“主题与显示偏好”式副标题是对标题的复述 */}
-              <div><h2>{query.trim() ? '搜索结果' : activeGroup.label}</h2>{query.trim() && <p>在全部设置中查找“{query.trim()}”</p>}</div>
+              <div><h2>{onlyModified ? '未保存修改' : query.trim() ? '搜索结果' : activeGroup.label}</h2>{query.trim() && <p>{visible.length + Number(showAliases)} 项结果</p>}</div>
             </div>
-            <label className="search-field settings-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索全部设置" /></label>
+            <label className="search-field settings-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索全部设置" aria-label="搜索全部设置" />{query && <button type="button" className="search-clear" aria-label="清除设置搜索" title="清除搜索" onClick={() => setQuery('')}><X size={15} /></button>}</label>
           </div>
 
-          {group === 'appearance' && !query.trim() ? <AppearancePanel customization={appearance} change={changeAppearance} reset={resetAppearance} /> : <>
-          {group === 'routing' && !query.trim() && <ModelAliasPanel value={values.model_alias_groups || '[]'} change={(value) => change('model_alias_groups', value)} refreshTick={aliasRefreshTick} />}
+          <fieldset className="settings-fields" disabled={saving || refreshing}>
+          {group === 'appearance' && !query.trim() && !onlyModified ? <AppearancePanel customization={appearance} change={changeAppearance} reset={resetAppearance} /> : <>
+          {showAliases && <ModelAliasPanel value={values.model_alias_groups || '[]'} change={(value) => change('model_alias_groups', value)} refreshTick={aliasRefreshTick} />}
           {group === 'advanced' && !query.trim() && <div className="settings-risk-note"><ShieldAlert size={17} /><span>这些设置用于特殊兼容场景。不了解具体影响时请保持默认值。</span></div>}
 
-          {!visible.length ? <EmptyState label="没有符合条件的设置" /> : <div className="setting-list">
-            {visible.map((setting) => <article className={`setting-row${dirty.has(setting.key) ? ' setting-row--dirty' : ''}`} key={setting.key}>
+          {!visible.length && !showAliases ? <EmptyState label={onlyModified ? '没有未保存的修改' : '没有符合条件的设置'} /> : <div className="setting-list">
+            {visible.map((setting) => <article className={`setting-row${dirty.has(setting.key) ? ' setting-row--dirty' : ''}`} key={setting.key} data-setting-key={setting.key}>
               <div className="setting-copy"><strong title={setting.key}>{settingLabel(setting)}{helps[setting.key] && <HelpTip label={settingLabel(setting)} text={helps[setting.key]} code={setting.key} />}</strong></div>
               <div className="setting-control">
                 <SettingInput setting={setting} value={values[setting.key] ?? ''} change={(value) => change(setting.key, value)} />
@@ -239,20 +263,15 @@ export default function SystemSettingsPageV2() {
           </div>}
           {group === 'maintenance' && !query.trim() && <UpdatePanel info={versionInfo} checking={checkingVersion} check={checkUpdates} />}
           </>}
+          </fieldset>
         </section>
       </div>
     </>}
+    {dirty.size > 0 && <footer className="settings-savebar" aria-label="未保存的设置">
+      <span role="status"><i aria-hidden="true" /><strong>{dirty.size} 项未保存</strong></span>
+      <div><button className="secondary-button" type="button" disabled={saving || refreshing} onClick={discard}><RotateCcw size={16} />放弃修改</button><button className="primary-button" type="button" disabled={saving || refreshing} onClick={() => void save()}><Save size={16} />{saving ? '保存中' : '保存更改'}</button></div>
+    </footer>}
   </div>
-}
-
-// 问号提示：只在有人工撰写的说明时渲染（helps 字典），悬浮或点击展开。
-// 兜底的键名翻译不上屏；原始设置键收进气泡里，行面只留标题。
-function HelpTip({ label, text, code }: { label: string; text: string; code?: string }) {
-  const [open, setOpen] = useState(false)
-  return <span className="help-tip" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
-    <button className="help-tip-trigger" type="button" aria-label={`${label} 的说明`} aria-expanded={open} onClick={(event) => { event.stopPropagation(); setOpen((value) => !value) }} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}><CircleHelp size={14} /></button>
-    {open && <span className="help-tip-bubble" role="tooltip">{text}{code && <code>{code}</code>}</span>}
-  </span>
 }
 
 function formatSystemTokenDate(value?: number): string {
@@ -614,8 +633,8 @@ function UpdatePanel({ info, checking, check }: { info: { version: string; lates
 }
 
 function SettingInput({ setting, value, change }: { setting: SystemSetting; value: string; change: (value: string) => void }) {
-  if (setting.value_type === 'bool') return <button className={`setting-switch${normalizeBool(value) === 'true' ? ' is-on' : ''}`} type="button" role="switch" aria-checked={normalizeBool(value) === 'true'} onClick={() => change(normalizeBool(value) === 'true' ? 'false' : 'true')} disabled={!setting.editable}><span>{normalizeBool(value) === 'true' ? '已启用' : '已停用'}</span><i /></button>
-  if (setting.key === 'site_daily_checkin_time' || setting.key === 'site_daily_announcement_time') return <input type="time" step="60" value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
+  if (setting.value_type === 'bool') return <button className={`setting-switch${normalizeBool(value) === 'true' ? ' is-on' : ''}`} type="button" role="switch" aria-label={settingLabel(setting)} aria-checked={normalizeBool(value) === 'true'} onClick={() => change(normalizeBool(value) === 'true' ? 'false' : 'true')} disabled={!setting.editable}><span>{normalizeBool(value) === 'true' ? '已启用' : '已停用'}</span><i /></button>
+  if (setting.key === 'site_daily_checkin_time' || setting.key === 'site_daily_announcement_time') return <input type="time" step="60" aria-label={settingLabel(setting)} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
   const options = settingOptions(setting.key)
   const tips = optionTips[setting.key]
   // 有逐项说明时用分段按钮：原生 <option> 的 title 在各浏览器表现不一致，
@@ -634,10 +653,10 @@ function SettingInput({ setting, value, change }: { setting: SystemSetting; valu
       {tips[optionValue] && <span className="setting-choice-tip" role="tooltip">{tips[optionValue]}</span>}
     </button>)}
   </div>
-  if (options) return <select value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable}>{options.map(([optionValue, label]) => <option value={optionValue} key={optionValue}>{label}</option>)}</select>
-  if (setting.value_type === 'json') return <textarea rows={4} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} spellCheck={false} />
+  if (options) return <select value={value} aria-label={settingLabel(setting)} onChange={(event) => change(event.target.value)} disabled={!setting.editable}>{options.map(([optionValue, label]) => <option value={optionValue} key={optionValue}>{label}</option>)}</select>
+  if (setting.value_type === 'json') return <textarea rows={4} value={value} aria-label={settingLabel(setting)} onChange={(event) => change(event.target.value)} disabled={!setting.editable} spellCheck={false} />
   const type = ['int', 'float', 'duration'].includes(setting.value_type) ? 'number' : 'text'
-  return <input type={type} step={setting.value_type === 'float' ? '0.1' : '1'} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
+  return <input type={type} aria-label={settingLabel(setting)} step={setting.value_type === 'float' ? '0.1' : '1'} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
 }
 
 function normalizeBool(value: string): string { return value === 'true' || value === '1' ? 'true' : 'false' }

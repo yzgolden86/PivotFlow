@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Bug, Check, Copy, History, RefreshCw, Search, Waves } from 'lucide-react'
+import { Bug, Check, Copy, History, RefreshCw, RotateCcw, Search, Waves } from 'lucide-react'
 import { getActiveRequestDebug, getActiveRequests, getLogs, getLogsBootstrap, getSystemSettings } from '../api'
 import type { ActiveRequest, DashboardRange, LogEntry, LogsBootstrap } from '../types'
 import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, Pagination } from './shared'
@@ -19,11 +19,13 @@ function readAutoRefreshSeconds(settings: { key: string; value: string }[]): num
 export default function LogsPage() {
   const location = useLocation()
   const view = new URLSearchParams(location.search).get('view') === 'active' ? 'active' : 'history'
+  const requestedRange = new URLSearchParams(location.search).get('range')
+  const initialRange: DashboardRange = requestedRange === 'this_week' || requestedRange === 'this_month' ? requestedRange : 'today'
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [options, setOptions] = useState<LogsBootstrap>(EMPTY_BOOTSTRAP)
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
-  const [range, setRange] = useState<DashboardRange>('today')
+  const [range, setRange] = useState<DashboardRange>(initialRange)
   const [channel, setChannel] = useState('')
   const [model, setModel] = useState('')
   const [status, setStatus] = useState('')
@@ -35,6 +37,8 @@ export default function LogsPage() {
   const [manualRefreshing, setManualRefreshing] = useState(false)
   const loadSequence = useRef(0)
   const backgroundRefreshInFlight = useRef(false)
+
+  useEffect(() => { setRange(initialRange); setPage(1) }, [initialRange])
 
   const load = useCallback(async (signal?: AbortSignal, background = false) => {
     if (background && backgroundRefreshInFlight.current) return
@@ -109,6 +113,7 @@ export default function LogsPage() {
         <select value={status} onChange={(event) => { setPage(1); setStatus(event.target.value) }} aria-label="响应状态"><option value="">全部状态</option>{options.status_codes.map((item) => <option value={item} key={item}>{item}</option>)}</select>
         <select value={source} onChange={(event) => { setPage(1); setSource(event.target.value) }} aria-label="日志来源"><option value="proxy">网关请求</option><option value="manual_test">手动测试</option><option value="manual_chat">手动对话</option><option value="scheduled_check">定时巡检</option><option value="all">全部来源</option></select>
         <span className="filter-count"><Search size={14} />{total} 条记录</span>
+        {(channel || model || status || source !== 'proxy' || range !== 'today') && <button className="icon-button icon-button--surface" type="button" title="清除筛选" aria-label="清除日志筛选" onClick={() => { setChannel(''); setModel(''); setStatus(''); setSource('proxy'); setRange('today'); setPage(1) }}><RotateCcw size={16} /></button>}
       </div>
 
       {loading ? <LoadingState label="正在加载请求日志" /> : error ? <ErrorState message={error} retry={() => void load()} /> : logs.length === 0 ? <EmptyState label="当前筛选条件下暂无请求日志" /> : (

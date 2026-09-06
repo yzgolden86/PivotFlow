@@ -66,9 +66,7 @@ func newSitePricingCache() *sitePricingCache {
 	}
 }
 
-// invalidate drops every cached table. Called when the site control plane
-// changes (site CRUD, account projection, route sync), since a site's base URL
-// or platform may have changed and its table must be re-read.
+// invalidate drops all pricing state, for a full cache reset only.
 func (c *sitePricingCache) invalidate() {
 	if c == nil {
 		return
@@ -78,6 +76,18 @@ func (c *sitePricingCache) invalidate() {
 	c.byChannel = make(map[int64]channelBinding)
 	c.channelsAt = time.Time{}
 	c.unsupportedLogged = make(map[int64]bool)
+	c.mu.Unlock()
+}
+
+// invalidateSite is reserved for changes to a site's pricing source, not
+// route reconciliation. Other sites retain their valid and negative entries.
+func (c *sitePricingCache) invalidateSite(siteID int64) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	delete(c.entries, siteID)
+	delete(c.unsupportedLogged, siteID)
 	c.mu.Unlock()
 }
 

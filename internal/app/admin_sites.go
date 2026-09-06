@@ -18,13 +18,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const (
+	siteTaskQueueTimeout = 10 * time.Minute
+	siteTaskRunTimeout   = 2 * time.Minute
+)
+
 func (s *siteControlService) runAsync(taskID string, fn func(context.Context)) bool {
 	s.taskMu.Lock()
 	if s.stopped {
 		s.taskMu.Unlock()
 		return false
 	}
-	ctx, cancel := context.WithTimeout(s.baseCtx, 2*time.Minute)
+	ctx, cancel := context.WithCancel(s.baseCtx)
 	s.tasks[taskID] = cancel
 	if s.wg != nil {
 		s.wg.Add(1)
@@ -44,6 +49,26 @@ func (s *siteControlService) runAsync(taskID string, fn func(context.Context)) b
 		fn(ctx)
 	}()
 	return true
+}
+
+// Queue time must not consume the upstream execution budget. Both phases
+// remain cancellable through the task's registered lifetime context.
+func (s *siteControlService) acquireManualSiteTask(ctx context.Context, siteID int64) (context.Context, func(), error) {
+	waitCtx, stopWaiting := context.WithTimeout(ctx, siteTaskQueueTimeout)
+	release, ok := s.acquireSiteGate(waitCtx, siteID)
+	err := waitCtx.Err()
+	stopWaiting()
+	if !ok || err != nil {
+		if ok {
+			release()
+		}
+		return nil, nil, err
+	}
+	runCtx, cancel := context.WithTimeout(ctx, siteTaskRunTimeout)
+	return runCtx, func() {
+		cancel()
+		release()
+	}, nil
 }
 
 func (s *siteControlService) cancelTask(taskID string) {
@@ -80,6 +105,7 @@ func (s *siteControlService) handleSiteProbe(c *gin.Context) {
 		return
 	}
 	var result provider.DetectionResult
+	previousPlatform := site.Platform
 	if strings.EqualFold(strings.TrimSpace(site.Platform), model.SitePlatformUnknown) || strings.TrimSpace(site.Platform) == "" {
 		result, err = s.registry.Detect(c.Request.Context(), site.BaseURL)
 	} else {
@@ -103,7 +129,13 @@ func (s *siteControlService) handleSiteProbe(c *gin.Context) {
 	} else {
 		site.LastProbeStatus = "unsupported"
 	}
-	_, _ = s.store.UpdateSite(c.Request.Context(), id, site)
+	if _, updateErr := s.store.UpdateSite(c.Request.Context(), id, site); updateErr != nil {
+		RespondError(c, http.StatusInternalServerError, updateErr)
+		return
+	}
+	if site.Platform != previousPlatform {
+		s.pricingSourceChanged(id)
+	}
 	RespondJSON(c, 200, result)
 }
 
@@ -284,6 +316,9 @@ func (s *siteControlService) handleSiteAccountByID(c *gin.Context) {
 		// Account updates can disable projected channels in the store. Evict the
 		// router snapshots so the data plane observes that change immediately.
 		s.projectionChanged()
+		if manualEnabledToggle || req.Credential != nil {
+			s.pricingSourceChanged(account.SiteID)
+		}
 		s.decorateAccountCredentialMetadata(out)
 		RespondJSON(c, 200, out)
 	case http.MethodDelete:
@@ -292,6 +327,7 @@ func (s *siteControlService) handleSiteAccountByID(c *gin.Context) {
 			return
 		}
 		s.projectionChanged()
+		s.pricingSourceChanged(account.SiteID)
 		RespondJSON(c, 200, gin.H{"id": id, "deleted": true})
 	}
 }
@@ -389,12 +425,13 @@ func (s *siteControlService) enqueueAccountTask(c *gin.Context, kind string, wit
 		return
 	}
 	if !s.runAsync(task.ID, func(ctx context.Context) {
-		releaseGate, gateOK := s.acquireSiteGate(ctx, account.SiteID)
-		if !gateOK {
-			s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", "排队等待同站点任务时被取消")
+		runCtx, finish, queueErr := s.acquireManualSiteTask(ctx, account.SiteID)
+		if queueErr != nil {
+			s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", "排队等待同站点任务结束: "+queueErr.Error())
 			return
 		}
-		defer releaseGate()
+		defer finish()
+		ctx = runCtx
 		leaseKey := fmt.Sprintf("site:%d:account:%d:%s", account.SiteID, id, kind)
 		now := time.Now().UnixMilli()
 		acquired, leaseErr := s.store.AcquireSiteTaskLease(ctx, leaseKey, task.ID, now, now+siteTaskLeaseDuration.Milliseconds())
@@ -503,14 +540,14 @@ func (s *siteControlService) handleAnnouncementsRefresh(c *gin.Context) {
 	if !s.runAsync(task.ID, func(ctx context.Context) {
 		var refreshErr error
 		if req.SiteID > 0 {
-			releaseGate, gateOK := s.acquireSiteGate(ctx, req.SiteID)
-			if !gateOK {
-				s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", "排队等待同站点任务时被取消")
+			runCtx, finish, queueErr := s.acquireManualSiteTask(ctx, req.SiteID)
+			if queueErr != nil {
+				s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", "排队等待同站点任务结束: "+queueErr.Error())
 				return
 			}
-			defer releaseGate()
+			defer finish()
 			s.updateTask(ctx, task, model.SiteTaskStatusRunning, "", "")
-			refreshErr = s.refreshAnnouncements(ctx, req.SiteID)
+			refreshErr = s.refreshAnnouncements(runCtx, req.SiteID)
 		} else {
 			s.updateTask(ctx, task, model.SiteTaskStatusRunning, "", "")
 			sites, e := s.store.ListSites(ctx, model.SiteListFilter{})
@@ -538,12 +575,15 @@ func (s *siteControlService) handleAnnouncementsRefresh(c *gin.Context) {
 							return
 						}
 						defer func() { <-semaphore }()
-						releaseGate, gateOK := s.acquireSiteGate(ctx, site.ID)
-						if !gateOK {
+						runCtx, finish, queueErr := s.acquireManualSiteTask(ctx, site.ID)
+						if queueErr != nil {
+							mu.Lock()
+							failures = append(failures, fmt.Sprintf("%s: %s", site.Name, queueErr))
+							mu.Unlock()
 							return
 						}
-						defer releaseGate()
-						if e := s.refreshAnnouncements(ctx, site.ID); e != nil {
+						defer finish()
+						if e := s.refreshAnnouncements(runCtx, site.ID); e != nil {
 							if provider.ErrorCode(e) == provider.CodeUnsupported {
 								return
 							}
@@ -558,6 +598,10 @@ func (s *siteControlService) handleAnnouncementsRefresh(c *gin.Context) {
 					}()
 				}
 				wg.Wait()
+				if ctx.Err() != nil {
+					s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", ctx.Err().Error())
+					return
+				}
 				if len(failures) > 1 {
 					// Concurrent refreshes finish in arbitrary order; keep task messages stable.
 					slices.Sort(failures)
