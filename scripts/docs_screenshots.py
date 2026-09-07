@@ -143,6 +143,27 @@ ACCOUNTS = {
     ],
 }
 
+# Synthetic per-Key observations used by the Key health visual smoke test.
+# This endpoint intentionally carries only masked identifiers, never credentials.
+KEY_HEALTH = {
+    "channel_id": 101, "channel_name": "星河主路由",
+    "models": ["gpt-5.4", "claude-sonnet-4-6", "gemini-3-pro"],
+    "keys": [
+        {"id": 701, "key_index": 0, "masked_key": "sk-.A01", "note": "主账号 · 日常使用", "disabled": False, "cooldown_until": 0,
+         "health": {"status": "healthy", "reason": "最近一次请求成功；不代表所有模型可用或余额充足", "status_code": 200, "checked_at": 1788766920000}},
+        {"id": 702, "key_index": 1, "masked_key": "sk-.B02", "note": "备用账号 · 需要核对凭证", "disabled": False, "cooldown_until": 0,
+         "health": {"status": "invalid", "reason": "认证失败，Key 可能无效、过期或已撤销，请核对后复检", "status_code": 401, "checked_at": 1788766860000}},
+        {"id": 703, "key_index": 2, "masked_key": "sk-.C03", "note": "开发测试 · 月度额度", "disabled": False, "cooldown_until": 0,
+         "health": {"status": "quota_exhausted", "reason": "上游提示余额或配额不足，请到服务商确认额度及恢复时间", "status_code": 429, "checked_at": 1788766800000}},
+        {"id": 704, "key_index": 3, "masked_key": "sk-.D04", "note": "高峰期备用 · 稍后再试", "disabled": False, "cooldown_until": 0,
+         "health": {"status": "rate_limited", "reason": "上游暂时限流，请稍后复检；不代表 Key 已失效", "status_code": 429, "checked_at": 1788766740000}},
+        {"id": 705, "key_index": 4, "masked_key": "sk-.E05", "note": "新添加 · 尚未使用", "disabled": False, "cooldown_until": 0,
+         "health": {"status": "", "reason": "", "status_code": 0, "checked_at": 0}},
+        {"id": 706, "key_index": 5, "masked_key": "sk-.F06", "note": "归档账号 · 手动停用", "disabled": True, "cooldown_until": 0,
+         "health": {"status": "", "reason": "", "status_code": 0, "checked_at": 0}},
+    ],
+}
+
 CHANNELS = [
     {
         "id": 101,

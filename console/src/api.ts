@@ -2,6 +2,7 @@ import type {
   APIResponse,
   Channel,
   ChannelEditorSnapshot,
+  ChannelKeyHealthSnapshot,
   ChannelFilters,
   ChannelMutation,
   ChannelModelsPreview,
@@ -169,9 +170,10 @@ export async function apiRequest<T>(path: string, signal?: AbortSignal): Promise
   return payload.data
 }
 
-export async function apiMutation<T>(path: string, body?: unknown, method = 'POST'): Promise<T> {
+export async function apiMutation<T>(path: string, body?: unknown, method = 'POST', signal?: AbortSignal): Promise<T> {
   const payload = await requestEnvelope<T>(path, {
     method,
+    signal,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
@@ -255,6 +257,20 @@ export function getChannelEditor(channelId: number, signal?: AbortSignal): Promi
   return apiRequest<ChannelEditorSnapshot>(`/admin/channels/${channelId}/editor`, signal)
 }
 
+export function getChannelKeyHealth(channelId: number, signal?: AbortSignal): Promise<ChannelKeyHealthSnapshot> {
+  return apiRequest<ChannelKeyHealthSnapshot>(`/admin/channels/${channelId}/key-health`, signal)
+}
+
+export async function setChannelKeyEnabled(channelId: number, keyIndex: number, keyId: number, enabled: boolean): Promise<void> {
+  await apiMutation(`/admin/channels/${channelId}/key-${enabled ? 'enable' : 'disable'}`, { key_index: keyIndex, key_id: keyId })
+  invalidateChannels()
+}
+
+export async function deleteChannelKey(channelId: number, keyIndex: number, keyId: number): Promise<void> {
+  await apiMutation(`/admin/channels/${channelId}/keys/${keyIndex}?key_id=${keyId}`, undefined, 'DELETE')
+  invalidateChannels()
+}
+
 export async function createChannel(payload: ChannelMutation): Promise<Channel> {
   const result = await apiMutation<Channel>('/admin/channels', payload)
   invalidateChannels()
@@ -314,9 +330,10 @@ export function getStatsFilterOptions(range: DashboardRange, signal?: AbortSigna
 
 export function testChannel(
   channelId: number,
-  payload: { model: string; content: string; stream: boolean; client_protocol: string },
+  payload: { model: string; content: string; stream: boolean; client_protocol: string; key_index?: number; key_id?: number; max_tokens?: number },
+  signal?: AbortSignal,
 ): Promise<ChannelTestResult> {
-  return apiMutation<ChannelTestResult>(`/admin/channels/${channelId}/test`, payload)
+  return apiMutation<ChannelTestResult>(`/admin/channels/${channelId}/test`, payload, 'POST', signal)
 }
 
 export function getSites(signal?: AbortSignal): Promise<Site[]> {

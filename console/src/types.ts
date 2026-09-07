@@ -125,6 +125,7 @@ export interface Channel {
   cost_multiplier: number
   key_count: number
   effective_key_count?: number
+  key_health_issue_count?: number
   key_strategy?: string
   cooldown_until?: string
   cooldown_remaining_ms?: number
@@ -151,6 +152,31 @@ export interface ChannelAPIKey {
   note?: string
   key_strategy?: string
   disabled?: boolean
+  health?: APIKeyHealth
+}
+
+export interface APIKeyHealth {
+  status: string
+  reason: string
+  status_code: number
+  checked_at: number
+}
+
+export interface ChannelKeyHealthItem {
+  id: number
+  key_index: number
+  masked_key: string
+  note: string
+  disabled: boolean
+  cooldown_until: number
+  health: APIKeyHealth
+}
+
+export interface ChannelKeyHealthSnapshot {
+  channel_id: number
+  channel_name: string
+  models: string[]
+  keys: ChannelKeyHealthItem[]
 }
 
 export interface ChannelEditorSnapshot {
@@ -316,6 +342,7 @@ export interface StatsFilters {
 
 export interface ChannelTestResult {
   success: boolean
+  key_health?: APIKeyHealth
   status?: 'pass' | 'fail' | 'unsupported' | 'inconclusive' | 'skipped'
   reason?: string
   error?: string

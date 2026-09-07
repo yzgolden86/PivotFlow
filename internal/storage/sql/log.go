@@ -185,11 +185,18 @@ func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 		if err := insertLogsWithDebug(ctx, s, tx, []*model.LogEntry{e}); err != nil {
 			return err
 		}
-		return tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		s.recordAPIKeyHealth(ctx, []*model.LogEntry{e})
+		return nil
 	}
 
 	// 复用 logRowArgs 统一构造参数（脱敏、时间标准化等逻辑集中维护）
 	_, err := s.ExecContext(ctx, logsInsertColumns+logRowPlaceholders, logRowArgs(e)...)
+	if err == nil {
+		s.recordAPIKeyHealth(ctx, []*model.LogEntry{e})
+	}
 	return err
 }
 
@@ -240,7 +247,11 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.recordAPIKeyHealth(ctx, logs)
+	return nil
 }
 
 func (s *SQLStore) filterDeletedChannelLogs(logs []*model.LogEntry) []*model.LogEntry {

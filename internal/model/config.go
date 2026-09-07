@@ -728,8 +728,9 @@ type APIKey struct {
 	APIKey    string `json:"api_key"`
 	Note      string `json:"note"`
 
-	KeyStrategy string `json:"key_strategy"` // "sequential" | "round_robin"
-	Disabled    bool   `json:"disabled"`
+	KeyStrategy string       `json:"key_strategy"` // "sequential" | "round_robin"
+	Disabled    bool         `json:"disabled"`
+	Health      APIKeyHealth `json:"health"`
 
 	// Key级冷却（从key_cooldowns表迁移）
 	CooldownUntil      int64 `json:"cooldown_until"`
@@ -737,6 +738,15 @@ type APIKey struct {
 
 	CreatedAt JSONTime `json:"created_at"`
 	UpdatedAt JSONTime `json:"updated_at"`
+}
+
+// APIKeyHealth is the latest observed outcome, independent of routing cooldowns.
+// CheckedAt is Unix milliseconds; zero means this key has not been observed yet.
+type APIKeyHealth struct {
+	Status     string `json:"status"`
+	Reason     string `json:"reason"`
+	StatusCode int    `json:"status_code"`
+	CheckedAt  int64  `json:"checked_at"`
 }
 
 // IsCoolingDown 检查密钥是否处于冷却状态

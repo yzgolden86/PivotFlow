@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 func selectScheduledCheckModel(cfg *model.Config) (string, string) {
@@ -37,6 +38,7 @@ func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualMo
 		ClientProtocol:   getResultString(result, "client_protocol"),
 		UpstreamProtocol: getResultString(result, "upstream_protocol"),
 		StatusCode:       getResultIntOrDefault(result, "status_code", 0),
+		SkipKeyHealth:    getResultBoolOrDefault(result, "rpm_limited", false) || getResultBoolOrDefault(result, "concurrency_limited", false),
 		Duration:         float64(getResultInt64OrDefault(result, "duration_ms", 0)) / 1000,
 		FirstByteTime:    float64(getResultInt64OrDefault(result, "first_byte_duration_ms", 0)) / 1000,
 		Cost:             getResultFloat64OrDefault(result, "cost_usd", 0),
@@ -51,6 +53,14 @@ func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualMo
 	}
 	populateDetectionUsage(entry, result, entry.UpstreamProtocol)
 	entry.Message = detectionMessage(result)
+	// Some upstreams return HTTP 200 with an error payload or an unreadable body.
+	// A failed probe must not become a successful health observation or log.
+	if success, ok := result["success"].(bool); ok && !success && entry.StatusCode >= 200 && entry.StatusCode < 300 {
+		entry.StatusCode = util.StatusSSEError
+		if message := getResultString(result, "error"); strings.TrimSpace(message) != "" {
+			entry.Message = message
+		}
+	}
 	if debugData, ok := getResultDebugData(result, "debug_data"); ok {
 		entry.DebugData = debugData
 	}

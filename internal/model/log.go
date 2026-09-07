@@ -78,6 +78,7 @@ type LogEntry struct {
 	FirstByteTime        float64  `json:"first_byte_time"`              // 上游首字节响应时间（秒）
 	APIKeyUsed           string   `json:"api_key_used"`                 // 使用的API Key（写入时强制脱敏为 abc.xyz 格式，数据库不存明文）
 	APIKeyHash           string   `json:"api_key_hash,omitempty"`       // API Key 的 SHA256（仅用于后台精确定位 key_index，不泄露明文）
+	SkipKeyHealth        bool     `json:"-"`                            // Local admission/validation outcomes provide no upstream credential evidence.
 	AuthTokenID          int64    `json:"auth_token_id"`                // 客户端使用的API令牌ID（新增2025-12，0表示未使用token）
 	AuthTokenDescription string   `json:"auth_token_description"`       // API令牌描述（查询时从auth_tokens表JOIN获取）
 	ClientProtocol       string   `json:"client_protocol,omitempty"`    // 客户端入口协议（anthropic/openai/gemini/codex）

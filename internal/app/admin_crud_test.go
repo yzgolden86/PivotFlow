@@ -1661,9 +1661,11 @@ func TestHandleUpdateChannelPreservesDisabledKeysWhenRebuilding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
+	disabledHealth := model.APIKeyHealth{Status: "invalid", Reason: "认证失败", StatusCode: 401, CheckedAt: 3000}
+	liveHealth := model.APIKeyHealth{Status: "healthy", Reason: "最近一次请求成功", StatusCode: 200, CheckedAt: 4000}
 	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-disabled", KeyStrategy: model.KeyStrategySequential},
-		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-live", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-disabled", KeyStrategy: model.KeyStrategySequential, Health: disabledHealth},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-live", KeyStrategy: model.KeyStrategySequential, Health: liveHealth},
 	}); err != nil {
 		t.Fatalf("创建测试 keys 失败: %v", err)
 	}
@@ -1704,6 +1706,11 @@ func TestHandleUpdateChannelPreservesDisabledKeysWhenRebuilding(t *testing.T) {
 	assertKey(0, "sk-live", false)
 	assertKey(1, "sk-disabled", true)
 	assertKey(2, "sk-new", false)
+	for index, want := range []model.APIKeyHealth{liveHealth, disabledHealth, {}} {
+		if keys[index].Health != want {
+			t.Fatalf("keys[%d].Health = %+v, want %+v", index, keys[index].Health, want)
+		}
+	}
 }
 
 func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {

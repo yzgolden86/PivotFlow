@@ -18,7 +18,8 @@ import (
 func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
+		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at,
+		       health_status, health_reason, health_status_code, health_checked_at
 		FROM api_keys
 		WHERE channel_id = ?
 		ORDER BY key_index ASC
@@ -47,6 +48,7 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 			&disabled,
 			&createdAt,
 			&updatedAt,
+			&key.Health.Status, &key.Health.Reason, &key.Health.StatusCode, &key.Health.CheckedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan api key: %w", err)
@@ -77,7 +79,8 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
+		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at,
+		       health_status, health_reason, health_status_code, health_checked_at
 		FROM api_keys
 		WHERE channel_id = ? AND key_index = ?
 	`
@@ -99,6 +102,7 @@ func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int)
 		&disabled,
 		&createdAt,
 		&updatedAt,
+		&key.Health.Status, &key.Health.Reason, &key.Health.StatusCode, &key.Health.CheckedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -159,14 +163,15 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 		// 构建 VALUES 部分
 		var sb strings.Builder
 		sb.WriteString(`INSERT INTO api_keys (channel_id, key_index, api_key, note, key_strategy,
-		                      cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at) VALUES `)
+		                      cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at,
+		                      health_status, health_reason, health_status_code, health_checked_at) VALUES `)
 
-		args := make([]any, 0, len(batch)*10)
+		args := make([]any, 0, len(batch)*14)
 		for j, key := range batch {
 			if j > 0 {
 				sb.WriteString(",")
 			}
-			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 
 			strategy := key.KeyStrategy
 			if strategy == "" {
@@ -177,7 +182,8 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 				return fmt.Errorf("encrypt API key %d for channel %d: %w", key.KeyIndex, key.ChannelID, err)
 			}
 			args = append(args, key.ChannelID, key.KeyIndex, storedAPIKey, key.Note, strategy,
-				key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix)
+				key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix,
+				key.Health.Status, key.Health.Reason, key.Health.StatusCode, key.Health.CheckedAt)
 		}
 
 		if _, err := s.execTx(ctx, tx, sb.String(), args...); err != nil {
@@ -612,7 +618,8 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
+		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at,
+		       health_status, health_reason, health_status_code, health_checked_at
 		FROM api_keys
 		ORDER BY channel_id ASC, key_index ASC
 	`
@@ -640,6 +647,7 @@ func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey
 			&disabled,
 			&createdAt,
 			&updatedAt,
+			&key.Health.Status, &key.Health.Reason, &key.Health.StatusCode, &key.Health.CheckedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan api key: %w", err)

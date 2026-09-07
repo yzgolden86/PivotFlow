@@ -462,6 +462,9 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 	channelKeyCooldowns := ectx.keyCooldownsMap[cfg.ID]
 	for _, apiKey := range apiKeys {
 		keyInfo := KeyCooldownInfo{KeyIndex: apiKey.KeyIndex}
+		if apiKey.Health.CheckedAt > 0 && apiKey.Health.Status != "healthy" {
+			oc.KeyHealthIssueCount++
+		}
 		if until, cooled := channelKeyCooldowns[apiKey.KeyIndex]; cooled && until.After(ectx.now) {
 			u := until
 			keyInfo.CooldownUntil = &u
@@ -884,7 +887,8 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 	}
 
 	var req struct {
-		KeyIndex *int `json:"key_index"`
+		KeyIndex *int   `json:"key_index"`
+		KeyID    *int64 `json:"key_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "key_index is required")
@@ -899,8 +903,12 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 		return
 	}
 
-	if _, err := s.store.GetAPIKey(c.Request.Context(), id, keyIndex); err != nil {
+	key, err := s.store.GetAPIKey(c.Request.Context(), id, keyIndex)
+	if err != nil {
 		RespondErrorMsg(c, http.StatusNotFound, "api key not found")
+		return
+	}
+	if !requireAPIKeyIdentity(c, req.KeyID, key.ID) {
 		return
 	}
 
@@ -1055,7 +1063,9 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		// OAuth 凭证只由登录、导入和刷新链路维护。
 	} else if keyChanged {
 		disabledByAPIKey := make(map[string]bool, len(oldKeys))
+		healthByAPIKey := make(map[string]model.APIKeyHealth, len(oldKeys))
 		for _, oldKey := range oldKeys {
+			healthByAPIKey[oldKey.APIKey] = oldKey.Health
 			if oldKey.Disabled {
 				disabledByAPIKey[oldKey.APIKey] = true
 			}
@@ -1075,6 +1085,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				Note:        key.Note,
 				KeyStrategy: keyStrategy,
 				Disabled:    disabledByAPIKey[key.APIKey],
+				Health:      healthByAPIKey[key.APIKey],
 				CreatedAt:   model.JSONTime{Time: now},
 				UpdatedAt:   model.JSONTime{Time: now},
 			})
@@ -1199,9 +1210,21 @@ func (s *Server) HandleDeleteAPIKey(c *gin.Context) {
 		return
 	}
 
+	var expectedID *int64
+	if rawID, provided := c.GetQuery("key_id"); provided {
+		parsedID, parseErr := strconv.ParseInt(rawID, 10, 64)
+		if parseErr != nil || parsedID <= 0 {
+			RespondErrorMsg(c, http.StatusBadRequest, "invalid key_id")
+			return
+		}
+		expectedID = &parsedID
+	}
 	found := false
 	for _, k := range apiKeys {
 		if k.KeyIndex == keyIndex {
+			if !requireAPIKeyIdentity(c, expectedID, k.ID) {
+				return
+			}
 			found = true
 			break
 		}
@@ -1228,6 +1251,7 @@ func (s *Server) HandleDeleteAPIKey(c *gin.Context) {
 	// 失效缓存
 	s.InvalidateAPIKeysCache(channelID)
 	s.invalidateCooldownCache()
+	s.InvalidateChannelListCache()
 
 	RespondJSON(c, http.StatusOK, gin.H{
 		"remaining_keys": remaining,

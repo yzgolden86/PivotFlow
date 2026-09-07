@@ -913,6 +913,20 @@ func ensureAPIKeysNote(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		"TEXT NOT NULL DEFAULT ''")
 }
 
+func ensureAPIKeysHealth(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	for _, column := range []struct{ name, definition, sqlite string }{
+		{"health_status", "VARCHAR(32) NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''"},
+		{"health_reason", "VARCHAR(512) NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''"},
+		{"health_status_code", "INT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"},
+		{"health_checked_at", "BIGINT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := ensureColumn(ctx, db, dialect, "api_keys", column.name, column.definition, column.sqlite); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ensureAuthTokensEffectiveCost 确保auth_tokens表有effective_cost_usd字段（2026-07新增）
 func ensureAuthTokensEffectiveCost(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	if err := ensureColumn(ctx, db, dialect, "auth_tokens", "effective_cost_usd",

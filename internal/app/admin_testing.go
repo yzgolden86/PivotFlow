@@ -557,6 +557,17 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
+	if testReq.KeyID != nil {
+		var actualID int64
+		for _, key := range apiKeys {
+			if key.KeyIndex == testReq.KeyIndex && testReq.APIKey == "" {
+				actualID = key.ID
+			}
+		}
+		if !requireAPIKeyIdentity(c, testReq.KeyID, actualID) {
+			return
+		}
+	}
 	runtimeCfg, keySelection, err := s.prepareChannelTestAuth(
 		c.Request.Context(), cfg, apiKeys, testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
 	)
@@ -581,7 +592,11 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 
 	requestedModel := testReq.Model
 	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), runtimeCfg, keySelection.keyIndex, keySelection.apiKey, &testReq, keySelection.updatePersistedCooldown)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, channelTestActualModel(testResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, testResult))
+	entry := detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, channelTestActualModel(testResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, testResult)
+	s.persistDetectionLog(c.Request.Context(), entry)
+	if health, ok := model.ObserveAPIKeyHealth(entry); ok {
+		testResult["key_health"] = health
+	}
 	testResult["tested_key_index"] = keySelection.keyIndex
 	testResult["total_keys"] = len(apiKeys)
 
