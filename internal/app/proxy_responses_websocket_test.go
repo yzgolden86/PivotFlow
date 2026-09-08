@@ -5023,15 +5023,29 @@ func TestResponsesWebsocketExposesActualUpstreamTransportWhileActive(t *testing.
 		t.Fatal("upstream websocket request did not start")
 	}
 
-	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/active_requests", nil))
-	env.server.HandleActiveRequests(c)
-	if w.Code != http.StatusOK {
-		t.Fatalf("active requests status=%d, want %d", w.Code, http.StatusOK)
-	}
 	var activeResponse struct {
 		Data []ActiveRequest `json:"data"`
 	}
-	mustUnmarshalJSON(t, w.Body.Bytes(), &activeResponse)
+	// The upstream can read the frame before the proxy's write returns and its
+	// transport observer runs. Keep the response blocked while waiting for the
+	// admin snapshot, so this still proves visibility before response completion.
+	deadline := time.Now().Add(time.Second)
+	for {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/active_requests", nil))
+		env.server.HandleActiveRequests(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("active requests status=%d, want %d", w.Code, http.StatusOK)
+		}
+		activeResponse.Data = nil
+		mustUnmarshalJSON(t, w.Body.Bytes(), &activeResponse)
+		if len(activeResponse.Data) == 1 && activeResponse.Data[0].UpstreamWebsocket {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if len(activeResponse.Data) != 1 {
 		t.Fatalf("active requests=%d, want 1", len(activeResponse.Data))
 	}
