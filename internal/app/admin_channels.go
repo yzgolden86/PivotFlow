@@ -329,20 +329,6 @@ func filterChannelConfigsBySource(cfgs []*model.Config, source string, projected
 	})
 }
 
-func (s *Server) projectedChannelIDs(ctx context.Context) (map[int64]struct{}, error) {
-	bindings, err := s.store.ListSiteChannelBindings(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list site channel bindings: %w", err)
-	}
-	ids := make(map[int64]struct{}, len(bindings))
-	for _, binding := range bindings {
-		if binding != nil && binding.ChannelID > 0 && strings.EqualFold(strings.TrimSpace(binding.Ownership), "projected") {
-			ids[binding.ChannelID] = struct{}{}
-		}
-	}
-	return ids, nil
-}
-
 // sortChannelsByEffectivePriority 原地排序 cfgs。
 // 健康度开启时：用 healthCache 计算 effectivePriority 与 successRate（仅 SampleCount>0），
 // 按 effective 降序；关闭时按 priority DESC, name ASC（与前端 filterChannels 排序键对齐）。

@@ -202,7 +202,11 @@ func TestEnsureAPIKeysCostMultiplier_BackfillsLegacyChannelMultiplierOnce(t *tes
 	if err != nil {
 		t.Fatalf("query migrated key multipliers: %v", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Errorf("close migrated key multiplier rows: %v", err)
+		}
+	}()
 	want := map[int64]float64{11: 0.35, 12: 0.35, 21: 0, 31: 1}
 	for rows.Next() {
 		var id int64
