@@ -101,6 +101,59 @@ func TestSiteControlSQLiteCRUDAndProjection(t *testing.T) {
 	}
 }
 
+func TestSiteAccountBalanceSnapshotKeepsLatestDailyValue(t *testing.T) {
+	store, err := CreateSQLiteStore(t.TempDir() + "/balance-snapshots.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	site, err := store.CreateSite(ctx, &model.Site{Name: "balance-history", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "main", CredentialType: model.CredentialTypeAPIKey, CredentialCiphertext: "snap.test", CredentialKeyVersion: "v1", Enabled: true, BalanceCurrency: "CNY"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for index, balance := range []float64{10, 11.5, 12.25} {
+		err := store.UpsertSiteAccountBalanceSnapshot(ctx, &model.SiteAccountBalanceSnapshot{
+			SiteAccountID: account.ID,
+			LocalDay:      "2026-09-14",
+			Currency:      "cny",
+			Balance:       balance,
+			UpdatedAt:     int64(1000 + index),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.UpsertSiteAccountBalanceSnapshot(ctx, &model.SiteAccountBalanceSnapshot{
+		SiteAccountID: account.ID,
+		LocalDay:      "2026-09-13",
+		Currency:      "CNY",
+		Balance:       9,
+		UpdatedAt:     900,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshots, err := store.ListSiteAccountBalanceSnapshots(ctx, "2026-09-13", "2026-09-14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshots=%+v, want one row per day", snapshots)
+	}
+	if snapshots[0].LocalDay != "2026-09-13" || snapshots[0].Balance != 9 || snapshots[0].Currency != "CNY" {
+		t.Fatalf("previous day snapshot=%+v", snapshots[0])
+	}
+	if snapshots[1].LocalDay != "2026-09-14" || snapshots[1].Balance != 12.25 || snapshots[1].Currency != "CNY" || snapshots[1].UpdatedAt != 1002 {
+		t.Fatalf("latest daily snapshot=%+v", snapshots[1])
+	}
+}
+
 func TestSiteProjectionSyncPreservesManuallyDisabledChannel(t *testing.T) {
 	store, err := CreateSQLiteStore(t.TempDir() + "/site-preserve-enabled.db")
 	if err != nil {
@@ -455,6 +508,85 @@ func TestPruneSiteProjectionsDeletesOnlyRemovedProjectedChannels(t *testing.T) {
 	}
 	if _, err := store.GetConfig(ctx, manual.ID); err != nil {
 		t.Fatalf("manual channel was deleted: %v", err)
+	}
+}
+
+func TestSiteProjectionManualOwnershipLifecycle(t *testing.T) {
+	store, err := CreateSQLiteStore(t.TempDir() + "/site-manual-ownership.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	site, err := store.CreateSite(ctx, &model.Site{Name: "manual-ownership", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://example.com", Enabled: true, Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "main", CredentialType: model.CredentialTypeAPIKey, CredentialCiphertext: "fc1.test", CredentialKeyVersion: "v1", Enabled: true, Status: "healthy", BalanceCurrency: "USD", LastRefreshStatus: "unknown", LastCheckinStatus: "unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: "default", Name: "site/manual", BaseURL: site.BaseURL, Protocols: []string{"openai"}, Models: []string{"gpt-5"}, APIKey: "sk-main", Enabled: true}
+	projection, err := store.UpsertSiteProjection(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	channel, err := store.GetConfig(ctx, projection.Channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel.ModelEntries = []model.ModelEntry{{Model: "manual-only"}}
+	if _, err := store.UpdateConfig(ctx, channel.ID, channel); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := store.GetSiteChannelBinding(ctx, account.ID, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Ownership != "manual" || binding.LastSyncStatus != "manual" {
+		t.Fatalf("manual edit did not take ownership: %+v", binding)
+	}
+
+	scheduled := base
+	scheduled.Models = []string{"gpt-5.1"}
+	skipped, err := store.UpsertSiteProjection(ctx, scheduled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped.Action != "conflict" || skipped.Binding.Ownership != "manual" {
+		t.Fatalf("scheduled sync did not skip manual channel: %+v", skipped)
+	}
+	kept, err := store.GetConfig(ctx, channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept.ModelEntries) != 1 || kept.ModelEntries[0].Model != "manual-only" {
+		t.Fatalf("scheduled sync overwrote manual models: %+v", kept.ModelEntries)
+	}
+
+	manual := scheduled
+	manual.Force = true
+	manual.OverrideManual = true
+	updated, err := store.UpsertSiteProjection(ctx, manual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Action != "updated" || updated.Binding.Ownership != "manual" {
+		t.Fatalf("manual sync did not preserve manual ownership: %+v", updated)
+	}
+
+	if err := store.SetSiteProjectionOwnership(ctx, channel.ID, "projected"); err != nil {
+		t.Fatal(err)
+	}
+	next := base
+	next.Models = []string{"gpt-5.2"}
+	resumed, err := store.UpsertSiteProjection(ctx, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Action != "updated" || resumed.Binding.Ownership != "projected" {
+		t.Fatalf("automatic sync did not resume: %+v", resumed)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestDecodeProviderJSONAcceptsBOMAndXSSIPrefix(t *testing.T) {
@@ -88,6 +89,25 @@ func TestNewAPIChallengeAndRateLimitClassification(t *testing.T) {
 			t.Fatalf("error=%v", err)
 		}
 	})
+}
+
+func TestNewAPICheckedInTodayUsesMonthStatus(t *testing.T) {
+	month := time.Now().Format("2006-01")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/user/checkin" || r.URL.Query().Get("month") != month {
+			t.Fatalf("request=%s?%s, want /api/user/checkin?month=%s", r.URL.Path, r.URL.RawQuery, month)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"enabled":true,"stats":{"checked_in_today":true,"checkin_count":1}}}`))
+	}))
+	defer server.Close()
+
+	checked, err := NewNewAPI(ClientFactory{AllowPrivate: true}).CheckedInToday(context.Background(), AccountRequest{
+		BaseURL: server.URL, Credentials: Credentials{AccessToken: "session"},
+	})
+	if err != nil || !checked {
+		t.Fatalf("checked=%v err=%v, want true without error", checked, err)
+	}
 }
 
 func TestNewAPILoginAcceptsSessionCookieAndDiscoversRoutingKey(t *testing.T) {

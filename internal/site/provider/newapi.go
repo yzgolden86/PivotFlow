@@ -522,6 +522,34 @@ func (p *NewAPI) Checkin(ctx context.Context, req AccountRequest) (CheckinResult
 	return CheckinResult{Status: CheckinFailed, Message: message}, responseError(payload, http.StatusOK)
 }
 
+func (p *NewAPI) CheckedInToday(ctx context.Context, req AccountRequest) (bool, error) {
+	if req.Credentials.AccessToken == "" && req.Credentials.Cookie == "" {
+		return false, &Error{Code: CodeUnsupported, Message: "check-in status requires a session token"}
+	}
+	month := time.Now().Format("2006-01")
+	var payload envelope
+	if err := p.doJSON(ctx, req, http.MethodGet, "/api/user/checkin?month="+url.QueryEscape(month), nil, &payload); err != nil {
+		return false, err
+	}
+	if !payload.Success {
+		return false, responseError(payload, http.StatusOK)
+	}
+	return envelopeCheckedInToday(payload), nil
+}
+
+func envelopeCheckedInToday(payload envelope) bool {
+	data, ok := payload.Data.(map[string]any)
+	if !ok {
+		return false
+	}
+	stats, ok := data["stats"].(map[string]any)
+	if !ok {
+		return false
+	}
+	checked, _ := stats["checked_in_today"].(bool)
+	return checked
+}
+
 func (p *NewAPI) ListAnnouncements(ctx context.Context, req AccountRequest) ([]Announcement, error) {
 	var payload envelope
 	if err := p.doJSON(ctx, req, http.MethodGet, "/api/notice", nil, &payload); err != nil {

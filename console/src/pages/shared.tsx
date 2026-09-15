@@ -1,5 +1,25 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight, Eye, EyeOff, RefreshCw, X } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+
+export function PageHeader({ icon: Icon, title, actions, className = '' }: {
+  icon: LucideIcon
+  title: ReactNode
+  actions?: ReactNode
+  className?: string
+}) {
+  return (
+    <header className={`page-header page-header--elevated${className ? ` ${className}` : ''}`}>
+      <div className="page-header-copy">
+        <span className="page-header-icon" aria-hidden="true"><Icon size={20} /></span>
+        <div className="page-header-title">
+          <h1>{title}</h1>
+        </div>
+      </div>
+      {actions && <div className="header-controls">{actions}</div>}
+    </header>
+  )
+}
 
 export function OperationNotice({ children, persistent = false, onDismiss, tone = 'success' }: { children: ReactNode; persistent?: boolean; onDismiss?: () => void; tone?: 'success' | 'warning' | 'error' }) {
   const [visible, setVisible] = useState(true)

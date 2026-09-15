@@ -539,6 +539,51 @@ func (s *SQLStore) ListSiteAccountModels(ctx context.Context, filter model.SiteM
 	return result, rows.Err()
 }
 
+func (s *SQLStore) UpsertSiteAccountBalanceSnapshot(ctx context.Context, snapshot *model.SiteAccountBalanceSnapshot) error {
+	if snapshot == nil || snapshot.SiteAccountID <= 0 || len(snapshot.LocalDay) != 10 || strings.TrimSpace(snapshot.Currency) == "" {
+		return errors.New("invalid site account balance snapshot")
+	}
+	now := siteNow()
+	if snapshot.UpdatedAt == 0 {
+		snapshot.UpdatedAt = now
+	}
+	snapshot.Currency = strings.ToUpper(strings.TrimSpace(snapshot.Currency))
+	query := `INSERT INTO site_account_balance_snapshots(site_account_id,local_day,currency,balance,updated_at,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(site_account_id,local_day,currency) DO UPDATE SET balance=excluded.balance,updated_at=excluded.updated_at`
+	_, err := s.ExecContext(ctx, query, snapshot.SiteAccountID, snapshot.LocalDay, snapshot.Currency, snapshot.Balance, snapshot.UpdatedAt, now)
+	if err != nil && s.IsMySQL() {
+		_, err = s.ExecContext(ctx, `INSERT INTO site_account_balance_snapshots(site_account_id,local_day,currency,balance,updated_at,created_at) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE balance=VALUES(balance),updated_at=VALUES(updated_at)`, snapshot.SiteAccountID, snapshot.LocalDay, snapshot.Currency, snapshot.Balance, snapshot.UpdatedAt, now)
+	}
+	return err
+}
+
+func (s *SQLStore) ListSiteAccountBalanceSnapshots(ctx context.Context, sinceDay, untilDay string) ([]*model.SiteAccountBalanceSnapshot, error) {
+	query := "SELECT s.site_account_id,s.local_day,s.currency,s.balance,s.updated_at,s.created_at FROM site_account_balance_snapshots s JOIN site_accounts a ON a.id=s.site_account_id WHERE a.deleted_at=0"
+	args := make([]any, 0, 2)
+	if sinceDay != "" {
+		query += " AND s.local_day>=?"
+		args = append(args, sinceDay)
+	}
+	if untilDay != "" {
+		query += " AND s.local_day<=?"
+		args = append(args, untilDay)
+	}
+	query += " ORDER BY s.local_day ASC,s.currency ASC,s.site_account_id ASC"
+	rows, err := s.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	result := make([]*model.SiteAccountBalanceSnapshot, 0)
+	for rows.Next() {
+		item := &model.SiteAccountBalanceSnapshot{}
+		if err := rows.Scan(&item.SiteAccountID, &item.LocalDay, &item.Currency, &item.Balance, &item.UpdatedAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 func (s *SQLStore) UpsertSiteAnnouncements(ctx context.Context, announcements []model.SiteAnnouncement) error {
 	now := siteNow()
 	return s.WithTransaction(ctx, func(tx *sql.Tx) error {
@@ -905,6 +950,75 @@ func (s *SQLStore) ListSiteChannelBindings(ctx context.Context) ([]*model.SiteCh
 	return bindings, nil
 }
 
+func (s *SQLStore) SetSiteProjectionOwnership(ctx context.Context, channelID int64, ownership string) error {
+	ownership = strings.ToLower(strings.TrimSpace(ownership))
+	if ownership != "projected" && ownership != "manual" {
+		return errors.New("invalid site projection ownership")
+	}
+	if ownership == "projected" {
+		return s.WithTransaction(ctx, func(tx *sql.Tx) error {
+			return s.restoreProjectedBindingTx(ctx, tx, channelID)
+		})
+	}
+	lastSyncStatus := "pending"
+	lastSyncError := "automatic sync restored; the next synchronization will overwrite manual edits"
+	if ownership == "manual" {
+		lastSyncStatus = "manual"
+		lastSyncError = "manually managed channel; automatic synchronization is skipped"
+	}
+	result, err := s.ExecContext(ctx, `
+		UPDATE site_channel_bindings
+		SET ownership=?, status='active', last_sync_status=?, last_sync_error=?, updated_at=?
+		WHERE channel_id=?
+	`, ownership, lastSyncStatus, lastSyncError, siteNow(), channelID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return errors.New("not found")
+	}
+	return nil
+}
+
+func (s *SQLStore) restoreProjectedBindingTx(ctx context.Context, tx *sql.Tx, channelID int64) error {
+	actualHash, exists, err := s.projectionSourceHashTx(ctx, tx, channelID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		actualHash = ""
+	}
+	result, err := s.execTx(ctx, tx, `
+		UPDATE site_channel_bindings
+		SET ownership='projected', status='active', last_projected_hash=?, last_sync_status='pending', last_sync_error='automatic sync restored', updated_at=?
+		WHERE channel_id=? AND ownership='manual'
+	`, actualHash, siteNow(), channelID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return errors.New("not found")
+	}
+	return nil
+}
+
+func (s *SQLStore) MarkSiteProjectionManual(ctx context.Context, channelID int64) error {
+	_, err := s.ExecContext(ctx, `
+		UPDATE site_channel_bindings
+		SET ownership='manual', status='active', last_sync_status='manual', last_sync_error='manually managed channel; automatic synchronization is skipped', updated_at=?
+		WHERE channel_id=? AND ownership='projected'
+	`, siteNow(), channelID)
+	return err
+}
+
 func (s *SQLStore) projectionSourceHashTx(ctx context.Context, tx *sql.Tx, channelID int64) (string, bool, error) {
 	var urls model.ChannelURLs
 	var authType string
@@ -997,6 +1111,7 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 	channel := &model.Config{Name: channelName, AuthType: model.AuthTypeAPIKey, URLs: urls, Priority: 0, Enabled: input.Enabled, ProtocolTransformMode: model.ProtocolTransformModeAuto, ModelEntries: entries}
 	var binding model.SiteChannelBinding
 	action := "created"
+	ownership := "projected"
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		if err := s.queryRowTx(ctx, tx, "SELECT id FROM site_channel_bindings WHERE site_account_id=? AND projection_key=?", input.SiteAccountID, input.ProjectionKey).Scan(&binding.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -1007,11 +1122,14 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 				return err
 			}
 			if binding.Ownership == "manual" {
-				action = "conflict"
-				binding.LastSyncStatus = "conflict"
-				binding.LastSyncError = "projection binding is manual"
-				_, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET last_sync_status='conflict',last_sync_error=?,updated_at=? WHERE id=?", binding.LastSyncError, now, binding.ID)
-				return err
+				if !input.OverrideManual {
+					action = "conflict"
+					binding.LastSyncStatus = "conflict"
+					binding.LastSyncError = "projection binding is manual"
+					_, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET last_sync_status='conflict',last_sync_error=?,updated_at=? WHERE id=?", binding.LastSyncError, now, binding.ID)
+					return err
+				}
+				ownership = "manual"
 			}
 			channel.ID = binding.ChannelID
 		}
@@ -1094,13 +1212,13 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 			binding.ID = id
 			binding.CreatedAt = now
 		} else {
-			if _, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET channel_id=?,status='active',pricing_group=?,last_projected_hash=?,last_sync_status='success',last_sync_error='',updated_at=? WHERE id=?", channel.ID, input.PricingGroup, input.SourceHash, now, binding.ID); err != nil {
+			if _, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET channel_id=?,ownership=?,status='active',pricing_group=?,last_projected_hash=?,last_sync_status='success',last_sync_error='',updated_at=? WHERE id=?", channel.ID, ownership, input.PricingGroup, input.SourceHash, now, binding.ID); err != nil {
 				return err
 			}
 		}
 		binding.PricingGroup = input.PricingGroup
 		binding.SiteAccountID, binding.ProjectionKey, binding.ChannelID = input.SiteAccountID, input.ProjectionKey, channel.ID
-		binding.Ownership, binding.Status, binding.LastProjectedHash, binding.LastSyncStatus = "projected", "active", input.SourceHash, "success"
+		binding.Ownership, binding.Status, binding.LastProjectedHash, binding.LastSyncStatus = ownership, "active", input.SourceHash, "success"
 		binding.LastSyncError = ""
 		binding.UpdatedAt = now
 		return nil

@@ -113,6 +113,10 @@ export interface ChannelCooldown {
 export interface Channel {
   id: number
   name: string
+  source?: string
+  site_sync_ownership?: 'projected' | 'manual'
+  site_account_id?: number
+  projection_key?: string
   auth_type: string
   protocol_transform_mode: string
   urls: ChannelURL[]
@@ -153,6 +157,9 @@ export interface ChannelAPIKey {
   key_strategy?: string
   disabled?: boolean
   health?: APIKeyHealth
+  allowed_models?: string[]
+  model_scope_empty?: boolean
+  cost_multiplier?: number
 }
 
 export interface APIKeyHealth {
@@ -170,13 +177,72 @@ export interface ChannelKeyHealthItem {
   disabled: boolean
   cooldown_until: number
   health: APIKeyHealth
+  allowed_models?: string[]
+  model_scope_empty?: boolean
+  cost_multiplier?: number
 }
 
 export interface ChannelKeyHealthSnapshot {
-  channel_id: number
-  channel_name: string
-  models: string[]
-  keys: ChannelKeyHealthItem[]
+	channel_id: number
+	channel_name: string
+	models: string[]
+	keys: ChannelKeyHealthItem[]
+}
+
+export interface RouteDiagnosticReason {
+	code: string
+	message: string
+	blocking: boolean
+}
+
+export interface ChannelRouteDiagnostic {
+	channel_id: number
+	channel_name: string
+	enabled: boolean
+	base_priority: number
+	effective_priority: number
+	success_rate: number
+	health_sample_count: number
+	exact_model_match: boolean
+	fuzzy_model_match: boolean
+	model_eligible_key_count: number
+	active_key_count: number
+	enabled_key_count: number
+	rpm_limit: number
+	current_rpm: number
+	max_concurrency: number
+	active_concurrency: number
+	candidate: boolean
+	candidate_position?: number
+	higher_priority_count: number
+	same_priority_count: number
+	estimated_traffic_share: number
+	actual_requests: number
+	actual_share: number
+	reasons: RouteDiagnosticReason[]
+}
+
+export interface RouteDiagnosticSticky {
+	channel_id: number
+	channel_name: string
+	remembered_at: string
+	expires_at: string
+	in_candidate_pool: boolean
+}
+
+export interface RouteDiagnosticResponse {
+	model: string
+	client_protocol: string
+	token_id?: number
+	route_strategy: string
+	pool_mode: string
+	health_score_enabled: boolean
+	target: ChannelRouteDiagnostic
+	candidates: ChannelRouteDiagnostic[]
+	sticky?: RouteDiagnosticSticky
+	actual_window: string
+	actual_total_requests: number
+	summary: string[]
 }
 
 export interface ChannelEditorSnapshot {
@@ -185,6 +251,21 @@ export interface ChannelEditorSnapshot {
   model_stats: { available: boolean; items: Array<{ model: string; success: number; error: number; total: number }> }
   url_stats: { available: boolean; items: unknown[] }
   features: { scheduled_check_enabled: boolean }
+}
+
+export interface OAuthUsageWindow {
+  limit_name: string
+  kind: string
+  used_percent: number
+  remaining_percent: number
+  limit_window_seconds: number
+  reset_at: number
+}
+
+export interface OAuthUsageSummary {
+  provider: string
+  plan_type?: string
+  windows: OAuthUsageWindow[]
 }
 
 export interface ChannelModelsPreview {
@@ -197,7 +278,7 @@ export interface ChannelModelsPreview {
 export interface ChannelMutation {
   name: string
   auth_type: string
-  api_keys: Array<{ api_key: string; note?: string }>
+  api_keys: Array<{ api_key: string; note?: string; allowed_models?: string[]; model_scope_empty?: boolean; cost_multiplier?: number }>
   key_strategy?: string
   urls: ChannelURL[]
   priority: number
@@ -241,6 +322,7 @@ export interface LogChannelOption {
 
 export interface LogsBootstrap {
   channel_test_content: string
+  auth_tokens: AuthToken[]
   models: string[]
   channels: LogChannelOption[]
   status_codes: number[]
@@ -267,6 +349,8 @@ export interface LogEntry {
   cache_creation_input_tokens: number
   cost: number
   cost_multiplier: number
+  auth_token_id?: number
+  auth_token_description?: string
   cost_status?: 'estimated' | 'usage_missing' | 'unpriced_model' | 'free_model' | 'local_free'
   // site_pricing = 上游计算（站点自身价目表）；local_estimate 或空 = 厂商标价本地估算。
   cost_source?: 'site_pricing' | 'local_estimate'
@@ -275,6 +359,7 @@ export interface LogEntry {
 export interface LogFilters {
   range: DashboardRange
   channel_name?: string
+  auth_token_id?: string | number
   model?: string
   status_code?: string
   log_source?: string
@@ -295,6 +380,8 @@ export interface StatsEntry {
   channel_name: string
   channel_priority?: number
   cost_multiplier?: number
+  actual_cost_multiplier_min?: number
+  actual_cost_multiplier_max?: number
   model: string
   success: number
   error: number
@@ -322,11 +409,20 @@ export interface RPMStats {
   recent_qps: number
 }
 
+export interface SiteBalanceHistoryPoint {
+  day: string
+  currency: string
+  balance: number
+  accounts: number
+  updated_at: number
+}
+
 export interface StatsSnapshot {
   stats: StatsEntry[]
   duration_seconds: number
   rpm_stats: RPMStats
   is_today: boolean
+  balance_history?: SiteBalanceHistoryPoint[]
 }
 
 export interface StatsFilterOptions {

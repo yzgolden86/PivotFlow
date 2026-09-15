@@ -10,24 +10,43 @@ import (
 func TestStickyRouterRemembersAndForgets(t *testing.T) {
 	router := newStickyRouter()
 	now := time.Now()
+	scope := stickyScopeKey("token-a")
 
-	if got := router.preferred("glm-5.2", now); got != 0 {
+	if got := router.preferred(scope, "glm-5.2", now); got != 0 {
 		t.Fatalf("preferred=%d, want 0 before anything succeeded", got)
 	}
 
-	router.remember("glm-5.2", 44)
-	if got := router.preferred("glm-5.2", now); got != 44 {
+	router.remember(scope, "glm-5.2", 44)
+	if got := router.preferred(scope, "glm-5.2", now); got != 44 {
 		t.Fatalf("preferred=%d, want 44", got)
 	}
 
 	// 其他模型互不影响：粘性按模型独立记录。
-	if got := router.preferred("claude-opus-5", now); got != 0 {
+	if got := router.preferred(scope, "claude-opus-5", now); got != 0 {
 		t.Fatalf("preferred(other model)=%d, want 0", got)
 	}
 
-	router.forget("glm-5.2")
-	if got := router.preferred("glm-5.2", now); got != 0 {
+	router.forget(scope, "glm-5.2")
+	if got := router.preferred(scope, "glm-5.2", now); got != 0 {
 		t.Fatalf("preferred=%d, want 0 after forget", got)
+	}
+}
+
+// 粘性记录必须按访问令牌隔离：一个令牌的上次成功渠道不能替另一个令牌
+// 选择渠道，否则多客户端并发时会人为把流量集中到少数渠道。
+func TestStickyRouterScopesByToken(t *testing.T) {
+	router := newStickyRouter()
+	now := time.Now()
+	first := stickyScopeKey("token-a")
+	second := stickyScopeKey("token-b")
+
+	router.remember(first, "gpt-5.6-sol", 41)
+
+	if got := router.preferred(first, "gpt-5.6-sol", now); got != 41 {
+		t.Fatalf("first token preferred=%d, want 41", got)
+	}
+	if got := router.preferred(second, "gpt-5.6-sol", now); got != 0 {
+		t.Fatalf("second token preferred=%d, want 0 before its own success", got)
 	}
 }
 
@@ -36,19 +55,19 @@ func TestStickyRouterForgetChannelClearsEveryModel(t *testing.T) {
 	router := newStickyRouter()
 	now := time.Now()
 
-	router.remember("glm-5.2", 44)
-	router.remember("claude-opus-5", 44)
-	router.remember("gpt-5.6-sol", 47)
+	router.remember("token-a", "glm-5.2", 44)
+	router.remember("token-a", "claude-opus-5", 44)
+	router.remember("token-a", "gpt-5.6-sol", 47)
 
 	router.forgetChannel(44)
 
-	if got := router.preferred("glm-5.2", now); got != 0 {
+	if got := router.preferred("token-a", "glm-5.2", now); got != 0 {
 		t.Errorf("glm-5.2 preferred=%d, want 0", got)
 	}
-	if got := router.preferred("claude-opus-5", now); got != 0 {
+	if got := router.preferred("token-a", "claude-opus-5", now); got != 0 {
 		t.Errorf("claude-opus-5 preferred=%d, want 0", got)
 	}
-	if got := router.preferred("gpt-5.6-sol", now); got != 47 {
+	if got := router.preferred("token-a", "gpt-5.6-sol", now); got != 47 {
 		t.Errorf("gpt-5.6-sol preferred=%d, want 47 (untouched)", got)
 	}
 }
@@ -56,39 +75,60 @@ func TestStickyRouterForgetChannelClearsEveryModel(t *testing.T) {
 // 超过 TTL 的记录不再生效，避免长期空闲的模型被永久钉在一个可能已变慢的渠道。
 func TestStickyRouterEntryExpires(t *testing.T) {
 	router := newStickyRouter()
-	router.remember("glm-5.2", 44)
+	router.remember("token-a", "glm-5.2", 44)
 
 	stale := time.Now().Add(stickyEntryTTL + time.Minute)
-	if got := router.preferred("glm-5.2", stale); got != 0 {
+	if got := router.preferred("token-a", "glm-5.2", stale); got != 0 {
 		t.Fatalf("preferred=%d, want 0 after TTL", got)
 	}
 	// 过期读取应顺手清掉记录。
 	router.mu.RLock()
-	_, exists := router.entries["glm-5.2"]
+	_, exists := router.entries[stickyRouteKey{scope: "token-a", model: "glm-5.2"}]
 	router.mu.RUnlock()
 	if exists {
 		t.Error("expired entry should be dropped on read")
 	}
 }
 
+func TestStickyRouterSnapshotDoesNotMutateEntries(t *testing.T) {
+	router := newStickyRouter()
+	router.remember("token-a", "glm-5.2", 44)
+
+	stale := time.Now().Add(stickyEntryTTL + time.Minute)
+	if _, ok := router.snapshot("token-a", "glm-5.2", stale); ok {
+		t.Fatal("expired snapshot should not be reported")
+	}
+	router.mu.RLock()
+	_, exists := router.entries[stickyRouteKey{scope: "token-a", model: "glm-5.2"}]
+	router.mu.RUnlock()
+	if !exists {
+		t.Fatal("read-only snapshot must not delete an expired entry")
+	}
+
+	snapshot, ok := router.snapshot("token-a", "glm-5.2", time.Now())
+	if !ok || snapshot.ChannelID != 44 || snapshot.RememberedAt.IsZero() {
+		t.Fatalf("snapshot=%+v ok=%v, want live channel 44", snapshot, ok)
+	}
+}
+
 func TestStickyRouterCleanupDropsOldEntries(t *testing.T) {
 	router := newStickyRouter()
-	router.remember("old-model", 44)
-	router.remember("fresh-model", 47)
+	router.remember("token-a", "old-model", 44)
+	router.remember("token-a", "fresh-model", 47)
 
 	// 手工把一条记录改旧。
 	router.mu.Lock()
-	router.entries["old-model"] = stickyEntry{channelID: 44, at: time.Now().Add(-2 * time.Hour)}
+	router.entries[stickyRouteKey{scope: "token-a", model: "old-model"}] = stickyEntry{channelID: 44, at: time.Now().Add(-2 * time.Hour)}
 	router.mu.Unlock()
 
 	router.cleanup(time.Hour)
 
 	router.mu.RLock()
 	defer router.mu.RUnlock()
-	if _, exists := router.entries["old-model"]; exists {
+	if _, exists := router.entries[stickyRouteKey{scope: "token-a", model: "old-model"}]; exists {
 		t.Error("old entry should be reclaimed")
 	}
-	if _, exists := router.entries["fresh-model"]; !exists {
+	if _, exists := router.entries[stickyRouteKey{scope: "token-a", model: "fresh-model"}]; !exists {
 		t.Error("fresh entry must survive cleanup")
 	}
 }
@@ -96,11 +136,11 @@ func TestStickyRouterCleanupDropsOldEntries(t *testing.T) {
 // nil 接收者必须安全：策略关闭时这些方法仍会被调用。
 func TestStickyRouterNilSafe(t *testing.T) {
 	var router *stickyRouter
-	router.remember("glm-5.2", 44)
-	router.forget("glm-5.2")
+	router.remember("token-a", "glm-5.2", 44)
+	router.forget("token-a", "glm-5.2")
 	router.forgetChannel(44)
 	router.cleanup(time.Hour)
-	if got := router.preferred("glm-5.2", time.Now()); got != 0 {
+	if got := router.preferred("token-a", "glm-5.2", time.Now()); got != 0 {
 		t.Fatalf("preferred=%d, want 0 on nil router", got)
 	}
 }

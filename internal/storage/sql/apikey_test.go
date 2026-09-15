@@ -117,6 +117,42 @@ func TestAPIKey_NotesPersistAndUpdate(t *testing.T) {
 	}
 }
 
+func TestAPIKey_ModelScopeAndCostMultiplierPersistAndUpdate(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "scope-cost.db")
+	ctx := context.Background()
+	channelID := createTestChannel(t, ctx, store, "scope-cost-channel")
+	keys := []*model.APIKey{{
+		ChannelID: channelID, KeyIndex: 0, APIKey: "sk-scoped", KeyStrategy: model.KeyStrategySequential,
+		AllowedModels: []string{"gpt-4"}, CostMultiplier: 0, CostMultiplierSet: true,
+	}}
+	if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	got, err := store.GetAPIKey(ctx, channelID, 0)
+	if err != nil {
+		t.Fatalf("get api key: %v", err)
+	}
+	if len(got.AllowedModels) != 1 || got.AllowedModels[0] != "gpt-4" || got.CostMultiplier != 0 {
+		t.Fatalf("created metadata = %+v, want scoped free key", got)
+	}
+
+	if err := store.UpdateAPIKeyMetadata(ctx, channelID, map[int]model.APIKey{0: {
+		AllowedModels: []string{"claude-3"}, CostMultiplier: 1.25, CostMultiplierSet: true,
+	}}); err != nil {
+		t.Fatalf("update api key metadata: %v", err)
+	}
+	got, err = store.GetAPIKey(ctx, channelID, 0)
+	if err != nil {
+		t.Fatalf("get updated api key: %v", err)
+	}
+	if len(got.AllowedModels) != 1 || got.AllowedModels[0] != "claude-3" || got.CostMultiplier != 1.25 {
+		t.Fatalf("updated metadata = %+v, want claude-3 x1.25", got)
+	}
+}
+
 func TestAPIKey_Delete(t *testing.T) {
 	t.Parallel()
 
@@ -278,6 +314,7 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 				Name:                  "imported-channel-1",
 				URLs:                  model.ChannelURLs{{URL: "https://api1.example.com"}},
 				Priority:              10,
+				CostMultiplier:        0.73,
 				Enabled:               true,
 				ScheduledCheckEnabled: true,
 				CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
@@ -291,7 +328,7 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 			},
 			APIKeys: []model.APIKey{
 				{KeyIndex: 0, APIKey: "sk-import-key-1", KeyStrategy: model.KeyStrategySequential},
-				{KeyIndex: 1, APIKey: "sk-import-key-2", KeyStrategy: model.KeyStrategySequential},
+				{KeyIndex: 1, APIKey: "sk-import-key-2", KeyStrategy: model.KeyStrategySequential, CostMultiplierSet: true},
 			},
 		},
 		{
@@ -374,6 +411,9 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 	}
 	if len(keys1) != 2 {
 		t.Fatalf("expected 2 keys for imported-channel-1, got %d", len(keys1))
+	}
+	if keys1[0].CostMultiplier != 0.73 || keys1[1].CostMultiplier != 0 {
+		t.Fatalf("imported key multipliers=%v, want [0.73 0]", []float64{keys1[0].CostMultiplier, keys1[1].CostMultiplier})
 	}
 	keys2, err := store.GetAPIKeys(ctx, id2)
 	if err != nil {

@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	neturl "net/url"
 	"strings"
 	"time"
@@ -44,8 +45,11 @@ type ChannelRequest struct {
 
 // ChannelAPIKeyRequest describes one submitted API key and its admin-only note.
 type ChannelAPIKeyRequest struct {
-	APIKey string `json:"api_key"`
-	Note   string `json:"note,omitempty"`
+	APIKey          string   `json:"api_key"`
+	Note            string   `json:"note,omitempty"`
+	AllowedModels   []string `json:"allowed_models,omitempty"`
+	ModelScopeEmpty *bool    `json:"model_scope_empty,omitempty"`
+	CostMultiplier  *float64 `json:"cost_multiplier,omitempty"`
 }
 
 const maxAPIKeyNoteLength = 512
@@ -59,8 +63,11 @@ func (cr *ChannelRequest) normalizeAPIKeys() []ChannelAPIKeyRequest {
 				continue
 			}
 			keys = append(keys, ChannelAPIKeyRequest{
-				APIKey: apiKey,
-				Note:   strings.TrimSpace(item.Note),
+				APIKey:          apiKey,
+				Note:            strings.TrimSpace(item.Note),
+				AllowedModels:   normalizeAPIKeyModels(item.AllowedModels),
+				ModelScopeEmpty: item.ModelScopeEmpty,
+				CostMultiplier:  normalizeAPIKeyMultiplier(item.CostMultiplier),
 			})
 		}
 		return keys
@@ -72,6 +79,58 @@ func (cr *ChannelRequest) normalizeAPIKeys() []ChannelAPIKeyRequest {
 		keys = append(keys, ChannelAPIKeyRequest{APIKey: apiKey})
 	}
 	return keys
+}
+
+func normalizeAPIKeyModels(models []string) []string {
+	if models == nil {
+		return nil
+	}
+	if len(models) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(models))
+	result := make([]string, 0, len(models))
+	for _, raw := range models {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, value)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func apiKeyModelsEqual(left, right []string) bool {
+	left = normalizeAPIKeyModels(left)
+	right = normalizeAPIKeyModels(right)
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if !strings.EqualFold(left[index], right[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeAPIKeyMultiplier(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	normalized := *value
+	if normalized < 0 || math.IsNaN(normalized) || math.IsInf(normalized, 0) {
+		return value
+	}
+	return &normalized
 }
 
 func apiKeyStrings(keys []ChannelAPIKeyRequest) []string {
@@ -196,6 +255,11 @@ func (cr *ChannelRequest) Validate() error {
 		if strings.Contains(key.Note, "\x00") {
 			return fmt.Errorf("api_keys[%d].note contains illegal characters", i)
 		}
+		if key.CostMultiplier != nil {
+			if *key.CostMultiplier < 0 || math.IsNaN(*key.CostMultiplier) || math.IsInf(*key.CostMultiplier, 0) {
+				return fmt.Errorf("api_keys[%d].cost_multiplier must be a finite number >= 0", i)
+			}
+		}
 	}
 	cr.APIKeys = apiKeys
 	cr.APIKey = strings.Join(apiKeyStrings(apiKeys), ",")
@@ -216,6 +280,17 @@ func (cr *ChannelRequest) Validate() error {
 			return fmt.Errorf("models[%d]: duplicate model %q (already defined at models[%d])", i, cr.Models[i].Model, firstIdx)
 		}
 		seenModels[modelKey] = i
+	}
+	_, channelHasWildcardModel := seenModels["*"]
+	for i := range apiKeys {
+		for _, allowedModel := range apiKeys[i].AllowedModels {
+			if allowedModel == "*" {
+				continue
+			}
+			if _, exists := seenModels[strings.ToLower(allowedModel)]; !exists && !channelHasWildcardModel {
+				return fmt.Errorf("api_keys[%d].allowed_models contains model %q not present in channel models", i, allowedModel)
+			}
+		}
 	}
 
 	cr.ScheduledCheckModel = strings.TrimSpace(cr.ScheduledCheckModel)
@@ -454,6 +529,10 @@ type ChannelModelStats struct {
 // ChannelWithCooldown 带冷却状态的渠道响应结构
 type ChannelWithCooldown struct {
 	*model.Config
+	Source                       string              `json:"source,omitempty"`
+	SiteSyncOwnership            string              `json:"site_sync_ownership,omitempty"`
+	SiteAccountID                int64               `json:"site_account_id,omitempty"`
+	ProjectionKey                string              `json:"projection_key,omitempty"`
 	CodexPlanType                string              `json:"codex_plan_type,omitempty"`
 	CodexSubscriptionActiveUntil *time.Time          `json:"codex_subscription_active_until,omitempty"`
 	AntigravityPaidTier          string              `json:"antigravity_paid_tier,omitempty"`

@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
-import type { SiteAccount } from '../types'
+import type { Site, SiteAccount } from '../types'
 
 export function Modal({ title, children, close, wide = false }: {
   title: string
@@ -50,6 +50,27 @@ export function statusLabel(status?: string): string {
   return labels[status || ''] || status || '未知'
 }
 
+const BROWSER_CHECKIN_PATHS: Record<string, string> = {
+  'new-api-family': '/console/personal',
+  veloera: '/app/me',
+}
+
+export function siteCheckinURL(site?: Pick<Site, 'base_url' | 'external_checkin_url' | 'platform'>): string {
+  const configured = site?.external_checkin_url?.trim()
+  if (configured) return configured
+  const path = BROWSER_CHECKIN_PATHS[site?.platform || '']
+  if (!site?.base_url || !path) return ''
+  try {
+    const target = new URL(site.base_url)
+    target.pathname = path
+    target.search = ''
+    target.hash = ''
+    return target.toString()
+  } catch {
+    return ''
+  }
+}
+
 export function formatAccountBalance(account: SiteAccount): string {
   if (account.balance == null) return '—'
   const currency = (account.balance_currency || 'USD').toUpperCase()
@@ -63,7 +84,7 @@ export function siteErrorMessage(reason: unknown): string {
 	const code = separator > 0 ? raw.slice(0, separator) : raw
 	const detail = separator > 0 ? raw.slice(separator + 2).trim() : ''
   const labels: Record<string, string> = {
-	credential_locked: '凭证加密密钥不可用，请检查数据目录是否可写或主密钥配置是否正确', browser_required: '该站点需要打开浏览器完成验证',
+	credential_locked: '凭证加密密钥不可用，请检查数据目录是否可写或主密钥配置是否正确', browser_required: '该站点需要打开浏览器完成验证；完成上游页面操作后回到这里重试，系统会识别今日已签到',
     provider_timeout: '站点请求超时', provider_rate_limited: '站点触发限流，请稍后再试', api_key_required: '投影需要 API Key',
 		models_required: '请先同步账号模型', routing_api_key_unavailable: '没有读取到可用的模型 API Key，请先在上游站点创建一个 Key 后再次同步', unsupported: '当前站点不支持此操作', conflict: '已有任务运行或投影存在冲突', expired: '系统访问令牌或登录会话已失效，请在账号管理中更新凭证',
 		user_id_required: '无法识别或验证上游用户 ID，请核对用户个人中心显示的数字 ID', credential_required: '请填写新的登录凭证', site_name_exists: '已有同名站点，请修改名称或检查未删除的数据',

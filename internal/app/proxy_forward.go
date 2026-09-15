@@ -2722,7 +2722,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			APIKey:           selectedKey,
 			TokenID:          reqCtx.tokenID,
 			BaseURL:          urlEntry.url,
-			CostMultiplier:   cfg.CostMultiplier,
+			CostMultiplier:   requestCostMultiplier(reqCtx, cfg),
 			ThinkingEffort:   reqCtx.thinkingEffort,
 		})
 
@@ -2865,6 +2865,8 @@ func prioritizePinnedCodexWebsocketURL(
 
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
 	reqCtx.channelStartTime = time.Now()
+	reqCtx.selectedKeyCostMultiplier = 0
+	reqCtx.selectedKeyCostMultiplierSet = false
 
 	// Fail-fast：ctx 已结束（客户端断开/请求超时）时不要再做任何 I/O（查库、选Key、发请求）。
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -2883,9 +2885,15 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		return nil, fmt.Errorf("failed to get API keys: %w", err)
 	}
 
+	configuredKeyCount := len(apiKeys)
+	apiKeys = filterAPIKeysForModel(apiKeys, reqCtx.originalModel)
+
 	// 计算实际重试次数
 	actualKeyCount := len(apiKeys)
 	if actualKeyCount == 0 {
+		if configuredKeyCount > 0 {
+			return nil, fmt.Errorf("no API keys available for model %q in channel %d", reqCtx.originalModel, cfg.ID)
+		}
 		return nil, fmt.Errorf("no API keys configured for channel %d", cfg.ID)
 	}
 
@@ -2927,6 +2935,16 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 		// 标记Key为已尝试
 		triedKeys[keyIndex] = true
+		for _, apiKey := range apiKeys {
+			if apiKey != nil && apiKey.KeyIndex == keyIndex {
+				reqCtx.selectedKeyCostMultiplier = apiKey.CostMultiplier
+				if reqCtx.selectedKeyCostMultiplier < 0 {
+					reqCtx.selectedKeyCostMultiplier = cfg.CostMultiplier
+				}
+				reqCtx.selectedKeyCostMultiplierSet = true
+				break
+			}
+		}
 
 		// URL循环（单URL时退化为单次迭代）
 		immediate, urlLastFailure, attemptErr := s.attemptKeyAcrossURLs(

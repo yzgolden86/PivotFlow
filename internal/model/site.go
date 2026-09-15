@@ -100,6 +100,28 @@ type SiteAccountModel struct {
 	UpdatedAt     int64  `json:"updated_at"`
 }
 
+// SiteAccountBalanceSnapshot keeps the latest known balance for one account
+// on its local calendar day. Repeated refreshes on the same day replace the
+// value so the history reflects the day's closing observation, not every probe.
+type SiteAccountBalanceSnapshot struct {
+	SiteAccountID int64   `json:"site_account_id"`
+	LocalDay      string  `json:"local_day"`
+	Currency      string  `json:"currency"`
+	Balance       float64 `json:"balance"`
+	UpdatedAt     int64   `json:"updated_at"`
+	CreatedAt     int64   `json:"created_at"`
+}
+
+// SiteBalanceHistoryPoint aggregates all account snapshots for one local day
+// and currency. Account IDs are collapsed before leaving the storage layer.
+type SiteBalanceHistoryPoint struct {
+	Day       string  `json:"day"`
+	Currency  string  `json:"currency"`
+	Balance   float64 `json:"balance"`
+	Accounts  int     `json:"accounts"`
+	UpdatedAt int64   `json:"updated_at"`
+}
+
 // SiteAnnouncement is a sanitized, deduplicated upstream announcement.
 type SiteAnnouncement struct {
 	ID                int64  `json:"id"`
@@ -279,6 +301,9 @@ type SiteProjectionInput struct {
 	// preserved during synchronization.
 	Enabled bool
 	Force   bool
+	// OverrideManual lets an explicit manual reconciliation update a channel
+	// whose binding is manually managed. The binding stays manual afterwards.
+	OverrideManual bool
 }
 
 // SiteProjectionResult reports the idempotent projection outcome.

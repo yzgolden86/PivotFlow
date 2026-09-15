@@ -34,7 +34,9 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
 			SUM(COALESCE(cost, 0.0)) as total_cost,
-			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) as effective_cost
+			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) as effective_cost,
+			MIN(CASE WHEN status_code != 499 THEN COALESCE(cost_multiplier, 1) ELSE NULL END) as actual_cost_multiplier_min,
+			MAX(CASE WHEN status_code != 499 THEN COALESCE(cost_multiplier, 1) ELSE NULL END) as actual_cost_multiplier_max
 		FROM logs`
 
 	startMs := startTime.UnixMilli()
@@ -72,7 +74,7 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 		var avgFirstByteTime, avgDuration sql.NullFloat64
 		var lastSuccessAt sql.NullInt64
 		var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
-		var totalCost, effectiveCost sql.NullFloat64
+		var totalCost, effectiveCost, actualCostMultiplierMin, actualCostMultiplierMax sql.NullFloat64
 
 		scanArgs := []any{
 			&entry.ChannelID, &entry.Model,
@@ -84,7 +86,7 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 		}
 		scanArgs = append(scanArgs,
 			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens,
-			&totalCost, &effectiveCost,
+			&totalCost, &effectiveCost, &actualCostMultiplierMin, &actualCostMultiplierMax,
 		)
 
 		if err := rows.Scan(scanArgs...); err != nil {
@@ -118,6 +120,12 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 		}
 		if effectiveCost.Valid && (effectiveCost.Float64 > 0 || (totalCost.Valid && totalCost.Float64 > 0)) {
 			entry.EffectiveCost = &effectiveCost.Float64
+		}
+		if actualCostMultiplierMin.Valid && actualCostMultiplierMin.Float64 >= 0 {
+			entry.ActualCostMultiplierMin = &actualCostMultiplierMin.Float64
+		}
+		if actualCostMultiplierMax.Valid && actualCostMultiplierMax.Float64 >= 0 {
+			entry.ActualCostMultiplierMax = &actualCostMultiplierMax.Float64
 		}
 
 		if entry.ChannelID != nil {

@@ -249,6 +249,13 @@ type RoutingModelProvider interface {
 	ListModelsForRoutingKey(ctx context.Context, req AccountRequest, key RoutingKeySnapshot) ([]ModelSnapshot, error)
 }
 
+// CheckinStatusProvider reports whether the credential has already checked in
+// today. It lets a browser-challenged check-in endpoint be reconciled after
+// the user completes the action in the site's own web UI.
+type CheckinStatusProvider interface {
+	CheckedInToday(ctx context.Context, req AccountRequest) (bool, error)
+}
+
 // ModelPrice is one model's billing terms as the upstream site itself declares
 // them. Relay sites apply their own ratios, so a cost computed from vendor list
 // prices diverges from what the site actually deducts; these are the numbers

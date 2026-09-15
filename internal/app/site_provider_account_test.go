@@ -250,6 +250,207 @@ func (a *balanceCheckinAdapter) ListAnnouncements(context.Context, provider.Acco
 	return nil, nil
 }
 
+// balanceFreshnessAdapter keeps refresh results independent of check-in outcomes.
+// An error may accompany a partial snapshot; callers must not mark that as fresh.
+type balanceFreshnessAdapter struct {
+	projectionTestAdapter
+	preSnapshot, postSnapshot provider.AccountSnapshot
+	preErr, postErr           error
+	checkinStatus             string
+	checkinErr                error
+	refreshCalls              int
+}
+
+func (a *balanceFreshnessAdapter) RefreshAccount(context.Context, provider.RefreshAccountRequest) (provider.AccountSnapshot, error) {
+	a.refreshCalls++
+	if a.refreshCalls == 1 {
+		return a.preSnapshot, a.preErr
+	}
+	return a.postSnapshot, a.postErr
+}
+
+func (a *balanceFreshnessAdapter) Checkin(context.Context, provider.AccountRequest) (provider.CheckinResult, error) {
+	return provider.CheckinResult{Status: a.checkinStatus}, a.checkinErr
+}
+
+type browserCheckinStatusAdapter struct {
+	projectionTestAdapter
+	checkedToday bool
+	statusErr    error
+	statusCalls  int
+}
+
+func (a *browserCheckinStatusAdapter) RefreshAccount(context.Context, provider.RefreshAccountRequest) (provider.AccountSnapshot, error) {
+	return provider.AccountSnapshot{}, nil
+}
+
+func (a *browserCheckinStatusAdapter) Checkin(context.Context, provider.AccountRequest) (provider.CheckinResult, error) {
+	return provider.CheckinResult{Status: provider.CheckinBrowserRequired}, &provider.Error{Code: provider.CodeBrowserRequired, Message: "browser verification is required"}
+}
+
+func (a *browserCheckinStatusAdapter) CheckedInToday(context.Context, provider.AccountRequest) (bool, error) {
+	a.statusCalls++
+	return a.checkedToday, a.statusErr
+}
+
+func TestBrowserRequiredCheckinReconcilesUpstreamStatus(t *testing.T) {
+	tests := []struct {
+		name         string
+		checkedToday bool
+		statusErr    error
+		wantStatus   string
+	}{
+		{name: "already checked in browser", checkedToday: true, wantStatus: provider.CheckinAlreadyChecked},
+		{name: "still pending in browser", checkedToday: false, wantStatus: provider.CheckinBrowserRequired},
+		{name: "status endpoint unavailable", statusErr: &provider.Error{Code: provider.CodeTimeout}, wantStatus: provider.CheckinBrowserRequired},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &browserCheckinStatusAdapter{checkedToday: tt.checkedToday, statusErr: tt.statusErr}
+			service, _, account := newSiteRefreshTestService(t, adapter)
+			ctx := context.Background()
+			task := &model.SiteTask{ID: newSiteTaskID(), Kind: "checkin", Status: model.SiteTaskStatusRunning, SiteID: account.SiteID, SiteAccountID: account.ID, ProgressJSON: "{}"}
+			if err := service.store.CreateSiteTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			service.checkinWithTrigger(ctx, task, account.ID, "manual", "manual:"+task.ID)
+			updated, err := service.store.GetSiteAccount(ctx, account.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated.LastCheckinStatus != tt.wantStatus {
+				t.Fatalf("check-in status=%q, want %q", updated.LastCheckinStatus, tt.wantStatus)
+			}
+			if adapter.statusCalls != 1 {
+				t.Fatalf("status calls=%d, want 1", adapter.statusCalls)
+			}
+		})
+	}
+}
+
+func TestCheckinBalanceFreshness(t *testing.T) {
+	fresh, zero, post := 12.5, 0.0, 15.0
+	unavailable := &provider.Error{Code: provider.CodeExpired, Message: "test refresh unavailable"}
+	tests := []struct {
+		name            string
+		initialBalance  *float64
+		status          string
+		checkinErr      error
+		preBalance      *float64
+		preErr          error
+		postBalance     *float64
+		postErr         error
+		wantBalance     float64
+		wantFresh       bool
+		wantPostRefresh bool
+	}{
+		{name: "already checked", status: provider.CheckinAlreadyChecked, preBalance: &fresh, wantBalance: fresh, wantFresh: true},
+		{name: "browser required", status: provider.CheckinBrowserRequired, checkinErr: &provider.Error{Code: provider.CodeBrowserRequired}, preBalance: &fresh, wantBalance: fresh, wantFresh: true},
+		{name: "checkin failed", status: provider.CheckinFailed, checkinErr: unavailable, preBalance: &fresh, wantBalance: fresh, wantFresh: true},
+		{name: "unsupported", status: provider.CheckinUnsupported, checkinErr: &provider.Error{Code: provider.CodeUnsupported}, preBalance: &fresh, wantBalance: fresh, wantFresh: true},
+		{name: "zero balance", status: provider.CheckinAlreadyChecked, preBalance: &zero, wantBalance: zero, wantFresh: true},
+		{name: "unchanged balance is still fresh", status: provider.CheckinAlreadyChecked, preBalance: &fresh, wantBalance: fresh, wantFresh: true},
+		{name: "no balance returned", status: provider.CheckinAlreadyChecked, wantBalance: fresh},
+		{name: "failed refresh with partial data", status: provider.CheckinAlreadyChecked, preBalance: &zero, preErr: unavailable, wantBalance: fresh},
+		{name: "success but post refresh fails", status: provider.CheckinSuccess, preBalance: &zero, postBalance: &post, postErr: unavailable, wantBalance: zero, wantFresh: true},
+		{name: "success but post balance missing", status: provider.CheckinSuccess, preBalance: &zero, wantBalance: zero, wantFresh: true},
+		{name: "successful post refresh", status: provider.CheckinSuccess, preBalance: &zero, postBalance: &post, wantBalance: post, wantFresh: true, wantPostRefresh: true},
+		{name: "only post refresh succeeds", status: provider.CheckinSuccess, preErr: unavailable, postBalance: &post, wantBalance: post, wantFresh: true, wantPostRefresh: true},
+		{name: "both refreshes fail", status: provider.CheckinSuccess, preErr: unavailable, postErr: unavailable, wantBalance: fresh},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &balanceFreshnessAdapter{
+				preSnapshot:  provider.AccountSnapshot{Balance: tt.preBalance, Currency: " USD "},
+				postSnapshot: provider.AccountSnapshot{Balance: tt.postBalance, Currency: " EUR "},
+				preErr:       tt.preErr, postErr: tt.postErr, checkinStatus: tt.status, checkinErr: tt.checkinErr,
+			}
+			service, site, account := newSiteRefreshTestService(t, adapter)
+			ctx := context.Background()
+			oldTimestamp := time.Now().Add(-48 * time.Hour).UnixMilli()
+			oldBalance := fresh
+			if tt.name == "already checked" {
+				oldBalance = 5
+			}
+			account.Balance, account.BalanceUpdatedAt = &oldBalance, oldTimestamp
+			account.LastRefreshAt, account.LastCheckinAt = oldTimestamp, oldTimestamp
+			if _, err := service.store.UpdateSiteAccount(ctx, account.ID, account); err != nil {
+				t.Fatal(err)
+			}
+			task := &model.SiteTask{ID: newSiteTaskID(), Kind: "checkin", Status: model.SiteTaskStatusRunning, SiteID: site.ID, SiteAccountID: account.ID, ProgressJSON: "{}"}
+			if err := service.store.CreateSiteTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			startedAt := time.Now().UnixMilli()
+			service.checkinWithTrigger(ctx, task, account.ID, "manual", "manual:"+task.ID)
+			finishedAt := time.Now().UnixMilli()
+			updated, err := service.store.GetSiteAccount(ctx, account.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated.Balance == nil || *updated.Balance != tt.wantBalance {
+				t.Fatalf("balance=%v, want %v", updated.Balance, tt.wantBalance)
+			}
+			if tt.wantFresh {
+				if updated.BalanceUpdatedAt < startedAt || updated.BalanceUpdatedAt > finishedAt {
+					t.Errorf("balance timestamp=%d, want within refresh window [%d, %d]", updated.BalanceUpdatedAt, startedAt, finishedAt)
+				}
+			} else if updated.BalanceUpdatedAt != oldTimestamp {
+				t.Errorf("missing/failed balance refresh changed timestamp from %d to %d", oldTimestamp, updated.BalanceUpdatedAt)
+			}
+			wantCurrency := "CNY"
+			if tt.wantPostRefresh {
+				wantCurrency = "EUR"
+				if updated.LastRefreshAt != updated.BalanceUpdatedAt || updated.LastRefreshStatus != "success" {
+					t.Error("post-checkin balance and successful refresh timestamps must agree")
+				}
+			} else {
+				if tt.wantFresh {
+					wantCurrency = "USD"
+				}
+				if updated.LastRefreshAt != oldTimestamp || updated.LastRefreshStatus != account.LastRefreshStatus {
+					t.Error("best-effort balance refresh must not overwrite the scheduled sync state")
+				}
+			}
+			if updated.BalanceCurrency != wantCurrency {
+				t.Errorf("currency=%q, want %q", updated.BalanceCurrency, wantCurrency)
+			}
+			if updated.LastCheckinStatus != tt.status {
+				t.Errorf("check-in status=%q, want %q", updated.LastCheckinStatus, tt.status)
+			}
+			if tt.status != provider.CheckinSuccess && tt.status != provider.CheckinAlreadyChecked && updated.LastCheckinAt != oldTimestamp {
+				t.Error("balance refresh must not fabricate a successful check-in timestamp")
+			}
+			attempts, err := service.store.ListCheckinAttempts(ctx, account.ID, 10)
+			if err != nil || len(attempts) != 1 {
+				t.Fatalf("attempts=%v, err=%v", attempts, err)
+			}
+			attempt := attempts[0]
+			wantBefore := oldBalance
+			if tt.preErr == nil && tt.preBalance != nil {
+				wantBefore = *tt.preBalance
+			}
+			if attempt.BalanceBefore == nil || *attempt.BalanceBefore != wantBefore {
+				t.Errorf("balance before=%v, want %v", attempt.BalanceBefore, wantBefore)
+			}
+			if tt.wantPostRefresh {
+				if attempt.BalanceAfter == nil || *attempt.BalanceAfter != tt.wantBalance || attempt.BalanceDelta == nil || *attempt.BalanceDelta != tt.wantBalance-wantBefore {
+					t.Errorf("post-checkin balance/reward delta not preserved: %+v", attempt)
+				}
+			} else if attempt.BalanceAfter != nil || attempt.BalanceDelta != nil {
+				t.Error("no successful post refresh: do not fabricate balance after or reward delta")
+			}
+			wantCalls := 1
+			if tt.status == provider.CheckinSuccess {
+				wantCalls = 2
+			}
+			if adapter.refreshCalls != wantCalls {
+				t.Errorf("refresh calls=%d, want %d", adapter.refreshCalls, wantCalls)
+			}
+		})
+	}
+}
+
 func TestCreateAnyRouterCookieAccountStoresEncryptedUserContext(t *testing.T) {
 	srv := newInMemoryServer(t)
 	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "provider-account-test")
@@ -478,6 +679,13 @@ func TestCheckinPersistsBalanceIncrease(t *testing.T) {
 	updated, err := srv.store.GetSiteAccount(ctx, account.ID)
 	if err != nil || updated.Balance == nil || *updated.Balance != 12.5 || updated.LastCheckinStatus != provider.CheckinSuccess {
 		t.Fatalf("account=%+v err=%v", updated, err)
+	}
+	snapshots, err := srv.store.ListSiteAccountBalanceSnapshots(ctx, "", "")
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("balance snapshots=%+v err=%v", snapshots, err)
+	}
+	if snapshots[0].SiteAccountID != account.ID || snapshots[0].Balance != 12.5 || snapshots[0].Currency != "CNY" {
+		t.Fatalf("balance snapshot=%+v", snapshots[0])
 	}
 	storedTask, err := srv.store.GetSiteTask(ctx, task.ID)
 	if err != nil || storedTask.Status != model.SiteTaskStatusSuccess {

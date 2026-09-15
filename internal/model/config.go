@@ -732,12 +732,39 @@ type APIKey struct {
 	Disabled    bool         `json:"disabled"`
 	Health      APIKeyHealth `json:"health"`
 
+	// AllowedModels 为空表示该 Key 允许渠道全部模型；支持通配符 "*"。
+	// ModelScopeEmpty 为 true 表示该 Key 不允许任何模型（等价于按模型维度禁用 Key）。
+	AllowedModels   []string `json:"allowed_models,omitempty"`
+	ModelScopeEmpty bool     `json:"model_scope_empty,omitempty"`
+
+	// CostMultiplier 是 Key 级成本倍率；0 表示免费，负值在落库/读取时按 1 处理。
+	CostMultiplier    float64 `json:"cost_multiplier"`
+	CostMultiplierSet bool    `json:"-"`
+
 	// Key级冷却（从key_cooldowns表迁移）
 	CooldownUntil      int64 `json:"cooldown_until"`
 	CooldownDurationMs int64 `json:"cooldown_duration_ms"`
 
 	CreatedAt JSONTime `json:"created_at"`
 	UpdatedAt JSONTime `json:"updated_at"`
+}
+
+// UnmarshalJSON keeps track of whether cost_multiplier was explicitly present.
+// This lets backup/import preserve an explicit free multiplier (0) while still
+// defaulting legacy payloads without the field to 1 at persistence boundaries.
+func (k *APIKey) UnmarshalJSON(data []byte) error {
+	type apiKeyAlias APIKey
+	var decoded apiKeyAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*k = APIKey(decoded)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	_, k.CostMultiplierSet = fields["cost_multiplier"]
+	return nil
 }
 
 // APIKeyHealth is the latest observed outcome, independent of routing cooldowns.
@@ -752,6 +779,28 @@ type APIKeyHealth struct {
 // IsCoolingDown 检查密钥是否处于冷却状态
 func (k *APIKey) IsCoolingDown(now time.Time) bool {
 	return k.CooldownUntil > now.Unix()
+}
+
+// AllowsModel 报告该 Key 是否允许转发指定请求模型。
+// 语义与 ccLoad 的单 Key 模型范围保持一致：
+//   - ModelScopeEmpty 为 true 时不允许任何模型；
+//   - 白名单为空或包含 "*" 时允许所有模型；
+//   - 否则按大小写不敏感、忽略首尾空白比较。
+func (k *APIKey) AllowsModel(modelName string) bool {
+	if k == nil || k.ModelScopeEmpty {
+		return false
+	}
+	if len(k.AllowedModels) == 0 {
+		return true
+	}
+	normalized := strings.TrimSpace(modelName)
+	for _, allowed := range k.AllowedModels {
+		value := strings.TrimSpace(allowed)
+		if value == "*" || strings.EqualFold(value, normalized) {
+			return true
+		}
+	}
+	return false
 }
 
 // ChannelWithKeys 渠道和API Keys的完整数据

@@ -927,6 +927,68 @@ func ensureAPIKeysHealth(ctx context.Context, db *sql.DB, dialect Dialect) error
 	return nil
 }
 
+func ensureAPIKeysModelScope(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if err := ensureColumn(ctx, db, dialect, "api_keys", "allowed_models",
+		"TEXT NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return ensureColumn(ctx, db, dialect, "api_keys", "model_scope_empty",
+		"TINYINT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
+}
+
+const apiKeysCostMultiplierBackfillVersion = "api_keys_cost_multiplier_backfill_v1"
+
+func ensureAPIKeysCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	// The key-level multiplier is authoritative for API-key channels. When this
+	// column is introduced to an existing installation, preserve the historical
+	// channel-level pricing by copying it to every existing API key exactly once.
+	// A migration marker, rather than the column's presence, records completion:
+	// the process may stop after ALTER TABLE but before the data backfill.
+	if err := ensureColumn(ctx, db, dialect, "api_keys", "cost_multiplier",
+		"DOUBLE NOT NULL DEFAULT 1",
+		"REAL NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if hasMigration(ctx, db, apiKeysCostMultiplierBackfillVersion, dialect) {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin api_keys.cost_multiplier backfill: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// API keys historically belong only to API-key channels. The auth_type
+	// predicate keeps this safe if a future OAuth implementation stores helper
+	// rows in api_keys as well.
+	if _, err := tx.ExecContext(ctx, rebindIfPostgres(dialect, `
+		UPDATE api_keys
+		SET cost_multiplier = COALESCE((
+			SELECT CASE WHEN c.cost_multiplier < 0 THEN 1 ELSE c.cost_multiplier END
+			FROM channels c
+			WHERE c.id = api_keys.channel_id
+			  AND COALESCE(c.auth_type, 'api_key') = 'api_key'
+		), 1)
+		WHERE EXISTS (
+			SELECT 1 FROM channels c
+			WHERE c.id = api_keys.channel_id
+			  AND COALESCE(c.auth_type, 'api_key') = 'api_key'
+		)
+	`)); err != nil {
+		return fmt.Errorf("backfill api_keys.cost_multiplier from channels: %w", err)
+	}
+	if err := recordMigrationTx(ctx, tx, apiKeysCostMultiplierBackfillVersion, dialect); err != nil {
+		return fmt.Errorf("record api_keys.cost_multiplier backfill: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit api_keys.cost_multiplier backfill: %w", err)
+	}
+	return nil
+}
+
 // ensureAuthTokensEffectiveCost 确保auth_tokens表有effective_cost_usd字段（2026-07新增）
 func ensureAuthTokensEffectiveCost(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	if err := ensureColumn(ctx, db, dialect, "auth_tokens", "effective_cost_usd",

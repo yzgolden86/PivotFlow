@@ -55,8 +55,10 @@ type HealthPoint struct {
 type StatsEntry struct {
 	ChannelID               *int     `json:"channel_id,omitempty"`
 	ChannelName             string   `json:"channel_name"`
-	ChannelPriority         *int     `json:"channel_priority,omitempty"` // 渠道优先级（用于前端排序）
-	CostMultiplier          *float64 `json:"cost_multiplier,omitempty"`  // 渠道配置倍率（默认1，前端角标仅显示该值）
+	ChannelPriority         *int     `json:"channel_priority,omitempty"`           // 渠道优先级（用于前端排序）
+	CostMultiplier          *float64 `json:"cost_multiplier,omitempty"`            // 渠道配置倍率（兼容旧客户端）
+	ActualCostMultiplierMin *float64 `json:"actual_cost_multiplier_min,omitempty"` // 统计范围内请求实际倍率下限
+	ActualCostMultiplierMax *float64 `json:"actual_cost_multiplier_max,omitempty"` // 统计范围内请求实际倍率上限
 	Model                   string   `json:"model"`
 	Success                 int      `json:"success"`
 	Error                   int      `json:"error"`

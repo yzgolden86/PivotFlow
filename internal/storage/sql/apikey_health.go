@@ -19,7 +19,7 @@ func (s *SQLStore) recordAPIKeyHealth(ctx context.Context, entries []*model.LogE
 		if latest[entry.ChannelID] == nil {
 			latest[entry.ChannelID] = make(map[string]model.APIKeyHealth)
 		}
-		if health.CheckedAt > latest[entry.ChannelID][entry.APIKeyUsed].CheckedAt {
+		if health.CheckedAt >= latest[entry.ChannelID][entry.APIKeyUsed].CheckedAt {
 			latest[entry.ChannelID][entry.APIKeyUsed] = health
 		}
 	}
@@ -31,13 +31,13 @@ func (s *SQLStore) recordAPIKeyHealth(ctx context.Context, entries []*model.LogE
 		}
 		for _, key := range keys {
 			health, ok := byValue[key.APIKey]
-			if !ok || health.CheckedAt <= key.Health.CheckedAt {
+			if !ok || health.CheckedAt < key.Health.CheckedAt {
 				continue
 			}
 			// Indices shift after deletion. Match the actual credential then its
 			// persistent ID; removed/replaced credentials cannot taint another key.
 			_, err := s.ExecContext(ctx, `UPDATE api_keys SET health_status = ?, health_reason = ?,
-				health_status_code = ?, health_checked_at = ? WHERE id = ? AND health_checked_at < ?`,
+				health_status_code = ?, health_checked_at = ? WHERE id = ? AND health_checked_at <= ?`,
 				health.Status, health.Reason, health.StatusCode, health.CheckedAt, key.ID, health.CheckedAt)
 			if err != nil {
 				log.Printf("[WARN] persist API key health (channel=%d, key_id=%d): %v", channelID, key.ID, err)

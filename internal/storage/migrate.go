@@ -72,6 +72,7 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineSitesTable,
 		schema.DefineSiteAccountsTable,
 		schema.DefineSiteAccountModelsTable,
+		schema.DefineSiteAccountBalanceSnapshotsTable,
 		schema.DefineSiteAnnouncementsTable,
 		schema.DefineCheckinRunsTable,
 		schema.DefineCheckinAttemptsTable,
@@ -261,6 +262,12 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 			if err := ensureAPIKeysHealth(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys health: %w", err)
+			}
+			if err := ensureAPIKeysModelScope(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate api_keys model scope: %w", err)
+			}
+			if err := ensureAPIKeysCostMultiplier(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate api_keys cost multiplier: %w", err)
 			}
 		}
 

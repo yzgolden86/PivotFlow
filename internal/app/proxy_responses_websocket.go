@@ -395,7 +395,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		}
 	}
 
-	candidates, err := s.selectCandidatesByModelAndClientProtocol(ctx, modelName, string(protocol.Codex))
+	candidates, err := s.selectCandidatesByModelAndClientProtocol(ctx, modelName, string(protocol.Codex), stickyScopeKey(tokenHashString))
 	if err != nil {
 		return responsesWebsocketTurnResult{}, fmt.Errorf("select upstream candidates: %w", err)
 	}

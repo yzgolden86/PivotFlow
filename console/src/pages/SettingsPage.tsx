@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { BellRing, Bot, CheckCircle2, RefreshCw, Send, Trash2, WalletCards } from 'lucide-react'
 import { getWebhookConfig, testWebhook, updateWebhookConfig } from '../api'
+import HelpTip from '../components/HelpTip'
 import type { WebhookConfig } from '../types'
 import { ErrorState, LoadingState, OperationNotice, formatTime } from './shared'
 import { siteErrorMessage, StatusBadge } from './siteShared'
@@ -108,7 +109,7 @@ export function WebhookSettingsPanel() {
     <form className="webhook-settings" onSubmit={save}>
       <header className="settings-section-header">
         <span className="settings-section-icon"><BellRing size={19} /></span>
-        <div><h2>通知通道</h2><p>余额与签到告警会发送到已启用的通道</p></div>
+        <div className="heading-with-hint"><h2>通知通道</h2><HelpTip label="通知通道" text="余额与签到告警会发送到已启用的通道" /></div>
         <div className="settings-header-status"><StatusBadge status={config?.last_delivery_status} /></div>
       </header>
 

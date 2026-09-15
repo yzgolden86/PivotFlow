@@ -198,5 +198,5 @@ func (s *siteControlService) runScheduledAccountTask(ctx context.Context, sem ch
 		s.checkinWithTrigger(taskCtx, task, account.ID, "schedule", "daily")
 		return
 	}
-	s.refreshAccount(taskCtx, task, account.ID, true)
+	s.refreshAccountScheduled(taskCtx, task, account.ID, true)
 }

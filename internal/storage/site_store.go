@@ -27,6 +27,8 @@ type SiteStore interface {
 	ReplaceSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error
 	MergeSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error
 	ListSiteAccountModels(ctx context.Context, filter model.SiteModelFilter) ([]model.SiteAccountModel, error)
+	UpsertSiteAccountBalanceSnapshot(ctx context.Context, snapshot *model.SiteAccountBalanceSnapshot) error
+	ListSiteAccountBalanceSnapshots(ctx context.Context, sinceDay, untilDay string) ([]*model.SiteAccountBalanceSnapshot, error)
 
 	UpsertSiteAnnouncements(ctx context.Context, announcements []model.SiteAnnouncement) error
 	ListSiteAnnouncements(ctx context.Context, filter model.SiteAnnouncementFilter) ([]*model.SiteAnnouncement, int, error)
@@ -58,6 +60,8 @@ type SiteStore interface {
 
 	GetSiteChannelBinding(ctx context.Context, siteAccountID int64, projectionKey string) (*model.SiteChannelBinding, error)
 	ListSiteChannelBindings(ctx context.Context) ([]*model.SiteChannelBinding, error)
+	MarkSiteProjectionManual(ctx context.Context, channelID int64) error
+	SetSiteProjectionOwnership(ctx context.Context, channelID int64, ownership string) error
 	UpsertSiteProjection(ctx context.Context, input model.SiteProjectionInput) (*model.SiteProjectionResult, error)
 	DeactivateSiteProjectionsExcept(ctx context.Context, siteAccountID int64, activeProjectionKeys []string) error
 	PruneSiteProjectionsExcept(ctx context.Context, siteAccountID int64, activeProjectionKeys []string) error

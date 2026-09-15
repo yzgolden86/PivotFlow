@@ -158,6 +158,142 @@ func TestMigrate_SQLite_RenamesLegacyCodexCredentialToOAuthCredential(t *testing
 	}
 }
 
+func TestEnsureAPIKeysCostMultiplier_BackfillsLegacyChannelMultiplierOnce(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at INTEGER NOT NULL
+		);
+		CREATE TABLE channels (
+			id INTEGER PRIMARY KEY,
+			auth_type TEXT NOT NULL DEFAULT 'api_key',
+			cost_multiplier REAL NOT NULL DEFAULT 1
+		);
+		CREATE TABLE api_keys (
+			id INTEGER PRIMARY KEY,
+			channel_id INTEGER NOT NULL,
+			key_index INTEGER NOT NULL
+		);
+		INSERT INTO channels(id, auth_type, cost_multiplier) VALUES
+			(1, 'api_key', 0.35),
+			(2, 'api_key', 0),
+			(3, 'codex_oauth', 0.2);
+		INSERT INTO api_keys(id, channel_id, key_index) VALUES
+			(11, 1, 0), (12, 1, 1), (21, 2, 0), (31, 3, 0);
+	`); err != nil {
+		t.Fatalf("create legacy key tables: %v", err)
+	}
+
+	if err := ensureAPIKeysCostMultiplier(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("ensure key multiplier: %v", err)
+	}
+	var columns map[string]bool
+	columns, err := sqliteExistingColumns(ctx, db, "api_keys")
+	if err != nil {
+		t.Fatalf("list api_keys columns: %v", err)
+	}
+	if !columns["cost_multiplier"] {
+		t.Fatalf("api_keys missing cost_multiplier: %v", columns)
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT id, cost_multiplier FROM api_keys ORDER BY id")
+	if err != nil {
+		t.Fatalf("query migrated key multipliers: %v", err)
+	}
+	defer rows.Close()
+	want := map[int64]float64{11: 0.35, 12: 0.35, 21: 0, 31: 1}
+	for rows.Next() {
+		var id int64
+		var multiplier float64
+		if err := rows.Scan(&id, &multiplier); err != nil {
+			t.Fatalf("scan migrated key multiplier: %v", err)
+		}
+		if multiplier != want[id] {
+			t.Fatalf("key %d multiplier=%v, want %v", id, multiplier, want[id])
+		}
+		delete(want, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate migrated key multipliers: %v", err)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing migrated key multipliers: %v", want)
+	}
+
+	// A later startup must not overwrite an administrator's per-key changes.
+	if _, err := db.ExecContext(ctx, "UPDATE api_keys SET cost_multiplier = 1.75 WHERE id = 11"); err != nil {
+		t.Fatalf("update key multiplier: %v", err)
+	}
+	if err := ensureAPIKeysCostMultiplier(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("repeat ensure key multiplier: %v", err)
+	}
+	var changed float64
+	if err := db.QueryRowContext(ctx, "SELECT cost_multiplier FROM api_keys WHERE id = 11").Scan(&changed); err != nil {
+		t.Fatalf("read changed key multiplier: %v", err)
+	}
+	if changed != 1.75 {
+		t.Fatalf("repeat ensure overwrote key multiplier=%v, want 1.75", changed)
+	}
+	if !hasMigration(ctx, db, apiKeysCostMultiplierBackfillVersion, DialectSQLite) {
+		t.Fatal("key multiplier backfill migration should be recorded")
+	}
+}
+
+func TestEnsureAPIKeysCostMultiplier_ResumesWhenColumnExistsWithoutMarker(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at INTEGER NOT NULL
+		);
+		CREATE TABLE channels (
+			id INTEGER PRIMARY KEY,
+			auth_type TEXT NOT NULL DEFAULT 'api_key',
+			cost_multiplier REAL NOT NULL DEFAULT 1
+		);
+		CREATE TABLE api_keys (
+			id INTEGER PRIMARY KEY,
+			channel_id INTEGER NOT NULL,
+			key_index INTEGER NOT NULL,
+			cost_multiplier REAL NOT NULL DEFAULT 1
+		);
+		INSERT INTO channels(id, auth_type, cost_multiplier) VALUES (1, 'api_key', 0.42);
+		INSERT INTO api_keys(id, channel_id, key_index, cost_multiplier) VALUES (11, 1, 0, 1);
+	`); err != nil {
+		t.Fatalf("create interrupted migration state: %v", err)
+	}
+
+	if err := ensureAPIKeysCostMultiplier(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("resume key multiplier backfill: %v", err)
+	}
+	var multiplier float64
+	if err := db.QueryRowContext(ctx, "SELECT cost_multiplier FROM api_keys WHERE id = 11").Scan(&multiplier); err != nil {
+		t.Fatalf("read resumed key multiplier: %v", err)
+	}
+	if multiplier != 0.42 {
+		t.Fatalf("resumed key multiplier=%v, want 0.42", multiplier)
+	}
+	if !hasMigration(ctx, db, apiKeysCostMultiplierBackfillVersion, DialectSQLite) {
+		t.Fatal("resumed key multiplier backfill should be recorded")
+	}
+
+	if _, err := db.ExecContext(ctx, "UPDATE api_keys SET cost_multiplier = 1.75 WHERE id = 11"); err != nil {
+		t.Fatalf("update key multiplier after resume: %v", err)
+	}
+	if err := ensureAPIKeysCostMultiplier(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("repeat resumed key multiplier migration: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT cost_multiplier FROM api_keys WHERE id = 11").Scan(&multiplier); err != nil {
+		t.Fatalf("read preserved key multiplier: %v", err)
+	}
+	if multiplier != 1.75 {
+		t.Fatalf("repeat migration overwrote key multiplier=%v, want 1.75", multiplier)
+	}
+}
+
 func TestMigrate_SQLite_FullFlow(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

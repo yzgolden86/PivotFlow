@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -21,13 +22,18 @@ const routeStrategySettingKey = "route_strategy"
 // 避免长期空闲的模型把流量永久钉在一个可能早已变慢的渠道上。
 const stickyEntryTTL = 30 * time.Minute
 
-// stickyRouter 记录每个模型最近一次成功的渠道。
+// stickyRouter 记录每个调用范围 + 模型最近一次成功的渠道。
 //
 // 只保存「上次成功」这一个事实，不做任何计数或健康评估：粘性策略的语义就是
 // 成功即继续、失败即切换，评分工作交给健康度排序（另一个独立开关）。
 type stickyRouter struct {
 	mu      sync.RWMutex
-	entries map[string]stickyEntry // key: 模型名
+	entries map[stickyRouteKey]stickyEntry
+}
+
+type stickyRouteKey struct {
+	scope string
+	model string
 }
 
 type stickyEntry struct {
@@ -35,28 +41,43 @@ type stickyEntry struct {
 	at        time.Time
 }
 
-func newStickyRouter() *stickyRouter {
-	return &stickyRouter{entries: make(map[string]stickyEntry)}
+type stickySnapshot struct {
+	ChannelID    int64
+	RememberedAt time.Time
 }
 
-// remember 记录某模型最近一次成功的渠道。
-func (r *stickyRouter) remember(modelName string, channelID int64) {
-	if r == nil || modelName == "" || channelID <= 0 {
+func newStickyRouter() *stickyRouter {
+	return &stickyRouter{entries: make(map[stickyRouteKey]stickyEntry)}
+}
+
+// stickyScopeKey 把访问令牌哈希收敛为路由命名空间。空值表示管理端手动
+// 测试等无令牌请求；不同令牌互不共享粘性记录，避免多个调用方互相抢渠道。
+func stickyScopeKey(tokenHash string) string {
+	tokenHash = strings.TrimSpace(tokenHash)
+	if tokenHash == "" {
+		return "anonymous"
+	}
+	return "token:" + tokenHash
+}
+
+// remember 记录某调用范围下某模型最近一次成功的渠道。
+func (r *stickyRouter) remember(scope, modelName string, channelID int64) {
+	if r == nil || scope == "" || modelName == "" || channelID <= 0 {
 		return
 	}
 	r.mu.Lock()
-	r.entries[modelName] = stickyEntry{channelID: channelID, at: time.Now()}
+	r.entries[stickyRouteKey{scope: scope, model: modelName}] = stickyEntry{channelID: channelID, at: time.Now()}
 	r.mu.Unlock()
 }
 
-// forget 清除某模型的粘性，使下一个请求回到正常轮询顺序。
+// forget 清除某调用范围下某模型的粘性，使下一个请求回到正常轮询顺序。
 // 渠道失败时调用：粘性的语义是「成功才继续用」。
-func (r *stickyRouter) forget(modelName string) {
-	if r == nil || modelName == "" {
+func (r *stickyRouter) forget(scope, modelName string) {
+	if r == nil || scope == "" || modelName == "" {
 		return
 	}
 	r.mu.Lock()
-	delete(r.entries, modelName)
+	delete(r.entries, stickyRouteKey{scope: scope, model: modelName})
 	r.mu.Unlock()
 }
 
@@ -66,30 +87,46 @@ func (r *stickyRouter) forgetChannel(channelID int64) {
 		return
 	}
 	r.mu.Lock()
-	for modelName, entry := range r.entries {
+	for key, entry := range r.entries {
 		if entry.channelID == channelID {
-			delete(r.entries, modelName)
+			delete(r.entries, key)
 		}
 	}
 	r.mu.Unlock()
 }
 
-// preferred 返回该模型应优先使用的渠道 ID；0 表示没有可用的粘性记录。
-func (r *stickyRouter) preferred(modelName string, now time.Time) int64 {
-	if r == nil || modelName == "" {
+// preferred 返回该调用范围下该模型应优先使用的渠道 ID；0 表示没有可用的粘性记录。
+func (r *stickyRouter) preferred(scope, modelName string, now time.Time) int64 {
+	if r == nil || scope == "" || modelName == "" {
 		return 0
 	}
 	r.mu.RLock()
-	entry, ok := r.entries[modelName]
+	key := stickyRouteKey{scope: scope, model: modelName}
+	entry, ok := r.entries[key]
 	r.mu.RUnlock()
 	if !ok {
 		return 0
 	}
 	if now.Sub(entry.at) > stickyEntryTTL {
-		r.forget(modelName)
+		r.forget(scope, modelName)
 		return 0
 	}
 	return entry.channelID
+}
+
+// snapshot is the read-only form used by diagnostics. It must not delete an
+// expired entry or otherwise mutate router state.
+func (r *stickyRouter) snapshot(scope, modelName string, now time.Time) (stickySnapshot, bool) {
+	if r == nil || scope == "" || modelName == "" {
+		return stickySnapshot{}, false
+	}
+	r.mu.RLock()
+	entry, ok := r.entries[stickyRouteKey{scope: scope, model: modelName}]
+	r.mu.RUnlock()
+	if !ok || now.Sub(entry.at) > stickyEntryTTL {
+		return stickySnapshot{}, false
+	}
+	return stickySnapshot{ChannelID: entry.channelID, RememberedAt: entry.at}, true
 }
 
 // cleanup 清理过期记录，避免长期运行后 map 无界增长。
@@ -99,9 +136,9 @@ func (r *stickyRouter) cleanup(maxAge time.Duration) {
 	}
 	cutoff := time.Now().Add(-maxAge)
 	r.mu.Lock()
-	for modelName, entry := range r.entries {
+	for key, entry := range r.entries {
 		if entry.at.Before(cutoff) {
-			delete(r.entries, modelName)
+			delete(r.entries, key)
 		}
 	}
 	r.mu.Unlock()

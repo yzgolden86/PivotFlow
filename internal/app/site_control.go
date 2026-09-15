@@ -669,6 +669,14 @@ func containsCredentialType(values []string, target string) bool {
 }
 
 func (s *siteControlService) refreshAccount(ctx context.Context, task *model.SiteTask, accountID int64, modelRefresh bool) {
+	s.refreshAccountWithOptions(ctx, task, accountID, modelRefresh, true)
+}
+
+func (s *siteControlService) refreshAccountScheduled(ctx context.Context, task *model.SiteTask, accountID int64, modelRefresh bool) {
+	s.refreshAccountWithOptions(ctx, task, accountID, modelRefresh, false)
+}
+
+func (s *siteControlService) refreshAccountWithOptions(ctx context.Context, task *model.SiteTask, accountID int64, modelRefresh, manual bool) {
 	account, err := s.store.GetSiteAccount(ctx, accountID)
 	if err != nil {
 		s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", "not_found")
@@ -773,7 +781,7 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 			// "Sync route" is an explicit reconciliation operation. Projected
 			// channels follow the upstream key name, URL, credential and models;
 			// manual channels are protected by ownership checks in the store.
-			if _, err := s.projectAccountWithModelsForProtocols(ctx, account, site, keyCreds, projectionKey, name, item.Protocols, models, true, pricingGroup); err != nil {
+			if _, err := s.projectAccountWithModelsForProtocols(ctx, account, site, keyCreds, projectionKey, name, item.Protocols, models, manual, pricingGroup); err != nil {
 				syncErrors = append(syncErrors, fmt.Sprintf("%s: %s", routingKeyLabel(item, projectionKey), siteTaskError(err)))
 			}
 		}
@@ -821,13 +829,8 @@ func (s *siteControlService) refreshAccount(ctx context.Context, task *model.Sit
 		return
 	}
 	account.LastRefreshStatus, account.Status, account.LastError, account.ConsecutiveFailures = "success", model.SiteAccountStatusHealthy, "", 0
-	if snapshot.Balance != nil {
-		account.Balance = snapshot.Balance
-		if strings.TrimSpace(snapshot.Currency) != "" {
-			account.BalanceCurrency = snapshot.Currency
-		}
-		account.BalanceUpdatedAt = now
-	}
+	applyBalanceSnapshot(account, snapshot, now)
+	s.recordBalanceSnapshot(ctx, account, site, now)
 	_, _ = s.store.UpdateSiteAccount(ctx, account.ID, account)
 	s.evaluateLowBalance(account, site)
 	s.updateTask(ctx, task, model.SiteTaskStatusSuccess, fmt.Sprintf("site_account:%d", accountID), "")
@@ -1191,7 +1194,7 @@ func (s *siteControlService) projectAccountWithModelsForProtocols(ctx context.Co
 	protocols = projectedRoutingProtocols(site, protocols)
 	baseURL := routingBaseURL(site.BaseURL)
 	sourceHash := model.SiteProjectionSourceHash(baseURL, protocols, filtered, creds.APIKey, account.Enabled)
-	result, err := s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: baseURL, Protocols: protocols, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, PricingGroup: pricingGroup, Enabled: account.Enabled, Force: force})
+	result, err := s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: baseURL, Protocols: protocols, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, PricingGroup: pricingGroup, Enabled: account.Enabled, Force: force, OverrideManual: force})
 	if err != nil {
 		return nil, err
 	}
@@ -1248,6 +1251,46 @@ func siteTaskError(err error) string {
 	return code + ": " + detail
 }
 
+// applyBalanceSnapshot updates balance freshness only when a successful upstream
+// refresh actually returned a balance. Callers must check the refresh error first.
+// Keep this separate from LastRefreshAt: a best-effort check-in balance probe must
+// not postpone the scheduled account/model sync or change the check-in outcome.
+func applyBalanceSnapshot(account *model.SiteAccount, snapshot provider.AccountSnapshot, updatedAt int64) {
+	if account == nil || snapshot.Balance == nil {
+		return
+	}
+	balance := *snapshot.Balance
+	account.Balance = &balance
+	if currency := strings.TrimSpace(snapshot.Currency); currency != "" {
+		account.BalanceCurrency = currency
+	}
+	account.BalanceUpdatedAt = updatedAt
+}
+
+// recordBalanceSnapshot persists the latest known balance for the account's
+// local calendar day. It is deliberately best-effort: failing to write history
+// must not turn a successful upstream balance refresh into a failed task.
+func (s *siteControlService) recordBalanceSnapshot(ctx context.Context, account *model.SiteAccount, site *model.Site, updatedAt int64) {
+	if s == nil || s.store == nil || account == nil || account.Balance == nil || updatedAt <= 0 {
+		return
+	}
+	currency := strings.ToUpper(strings.TrimSpace(account.BalanceCurrency))
+	if currency == "" {
+		currency = "CNY"
+	}
+	day := time.UnixMilli(updatedAt).In(loadSiteLocation(account.Timezone, site.Timezone)).Format("2006-01-02")
+	err := s.store.UpsertSiteAccountBalanceSnapshot(ctx, &model.SiteAccountBalanceSnapshot{
+		SiteAccountID: account.ID,
+		LocalDay:      day,
+		Currency:      currency,
+		Balance:       *account.Balance,
+		UpdatedAt:     updatedAt,
+	})
+	if err != nil {
+		log.Printf("[SITE] persist balance snapshot for account %d on %s: %v", account.ID, day, err)
+	}
+}
+
 func (s *siteControlService) checkin(ctx context.Context, task *model.SiteTask, accountID int64) {
 	s.checkinWithTrigger(ctx, task, accountID, "manual", "manual:"+task.ID)
 }
@@ -1294,10 +1337,8 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 	if preRefreshErr == nil && preSnapshot.Balance != nil {
 		value := *preSnapshot.Balance
 		balanceBefore = &value
-		account.Balance = &value
-		if strings.TrimSpace(preSnapshot.Currency) != "" {
-			account.BalanceCurrency = strings.TrimSpace(preSnapshot.Currency)
-		}
+		applyBalanceSnapshot(account, preSnapshot, time.Now().UnixMilli())
+		s.recordBalanceSnapshot(ctx, account, site, account.BalanceUpdatedAt)
 	}
 	attempt := &model.CheckinAttempt{RunID: run.ID, SiteAccountID: account.ID, ProviderID: adapter.ID(), LocalDay: day, TriggerScope: triggerScope, Status: "running", AttemptNo: 1, StartedAt: time.Now().UnixMilli(), BalanceBefore: balanceBefore, BalanceCurrency: account.BalanceCurrency}
 	attempt, _ = s.store.CreateCheckinAttempt(ctx, attempt)
@@ -1314,6 +1355,17 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 				err = ctx.Err()
 				try = 3
 			case <-time.After(time.Duration(try) * time.Second):
+			}
+		}
+	}
+	if provider.ErrorCode(err) == provider.CodeBrowserRequired {
+		if statusProvider, ok := adapter.(provider.CheckinStatusProvider); ok {
+			statusCtx, cancelStatus := context.WithTimeout(ctx, 15*time.Second)
+			checkedToday, statusErr := statusProvider.CheckedInToday(statusCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
+			cancelStatus()
+			if statusErr == nil && checkedToday {
+				result = provider.CheckinResult{Status: provider.CheckinAlreadyChecked, Message: "上游记录今日已签到"}
+				err = nil
 			}
 		}
 	}
@@ -1344,13 +1396,10 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 					attempt.RewardText = fmt.Sprintf("+%.2f %s", delta, fallbackString(strings.TrimSpace(snapshot.Currency), account.BalanceCurrency))
 				}
 			}
-			if strings.TrimSpace(snapshot.Currency) != "" {
-				account.BalanceCurrency = strings.TrimSpace(snapshot.Currency)
-			}
+			applyBalanceSnapshot(account, snapshot, time.Now().UnixMilli())
+			s.recordBalanceSnapshot(ctx, account, site, account.BalanceUpdatedAt)
 			attempt.BalanceCurrency = account.BalanceCurrency
-			account.Balance = &after
-			account.BalanceUpdatedAt = attempt.FinishedAt
-			account.LastRefreshAt = attempt.FinishedAt
+			account.LastRefreshAt = account.BalanceUpdatedAt
 			account.LastRefreshStatus = "success"
 			account.Status = model.SiteAccountStatusHealthy
 			account.LastError = ""

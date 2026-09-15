@@ -120,6 +120,12 @@ func (h *HybridStore) MergeSiteAccountModels(ctx context.Context, id int64, v []
 func (h *HybridStore) ListSiteAccountModels(ctx context.Context, f model.SiteModelFilter) ([]model.SiteAccountModel, error) {
 	return h.mysql.ListSiteAccountModels(ctx, f)
 }
+func (h *HybridStore) UpsertSiteAccountBalanceSnapshot(ctx context.Context, v *model.SiteAccountBalanceSnapshot) error {
+	return h.mysql.UpsertSiteAccountBalanceSnapshot(ctx, v)
+}
+func (h *HybridStore) ListSiteAccountBalanceSnapshots(ctx context.Context, sinceDay, untilDay string) ([]*model.SiteAccountBalanceSnapshot, error) {
+	return h.mysql.ListSiteAccountBalanceSnapshots(ctx, sinceDay, untilDay)
+}
 func (h *HybridStore) UpsertSiteAnnouncements(ctx context.Context, v []model.SiteAnnouncement) error {
 	return h.mysql.UpsertSiteAnnouncements(ctx, v)
 }
@@ -200,6 +206,12 @@ func (h *HybridStore) GetSiteChannelBinding(ctx context.Context, id int64, key s
 }
 func (h *HybridStore) ListSiteChannelBindings(ctx context.Context) ([]*model.SiteChannelBinding, error) {
 	return h.mysql.ListSiteChannelBindings(ctx)
+}
+func (h *HybridStore) MarkSiteProjectionManual(ctx context.Context, channelID int64) error {
+	return h.mysql.MarkSiteProjectionManual(ctx, channelID)
+}
+func (h *HybridStore) SetSiteProjectionOwnership(ctx context.Context, channelID int64, ownership string) error {
+	return h.mysql.SetSiteProjectionOwnership(ctx, channelID, ownership)
 }
 func (h *HybridStore) UpsertSiteProjection(ctx context.Context, v model.SiteProjectionInput) (*model.SiteProjectionResult, error) {
 	return h.mysql.UpsertSiteProjection(ctx, v)

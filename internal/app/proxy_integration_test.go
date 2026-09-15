@@ -3903,7 +3903,7 @@ func TestProxy_AutomaticProtocolFallback_UsesNativeProtocolFirst(t *testing.T) {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
 	env.server.InvalidateChannelListCache()
-	candidates, err := env.server.selectCandidatesByModelAndClientProtocol(context.Background(), "gpt-4o", "openai")
+	candidates, err := env.server.selectCandidatesByModelAndClientProtocolAnonymous(context.Background(), "gpt-4o", "openai")
 	if err != nil {
 		t.Fatalf("selectCandidatesByModelAndClientProtocol failed: %v", err)
 	}

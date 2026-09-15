@@ -60,7 +60,7 @@ func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, tt.model, "")
+			candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, tt.model, "")
 
 			if err != nil {
 				t.Errorf("selectCandidates失败: %v", err)
@@ -104,7 +104,7 @@ func TestSelectRouteCandidates_ClientProtocolDoesNotFilterUpstreamProtocol(t *te
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
 
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gemini-2.5-pro", "openai")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "gemini-2.5-pro", "openai")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestSelectRouteCandidates_UsesOpenAITransformForCodexClient(t *testing.T) {
 	}
 
 	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "shared-model", "codex")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "shared-model", "codex")
 	if err != nil {
 		t.Fatalf("selectCandidatesByModelAndClientProtocol失败: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestSelectRouteCandidates_UsesCodexTransformForOpenAIClient(t *testing.T) {
 	}
 
 	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "shared-model", "openai")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "shared-model", "openai")
 	if err != nil {
 		t.Fatalf("selectCandidatesByModelAndClientProtocol失败: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 	}
 
 	// 查询可用渠道
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestSelectRouteCandidates_ModelCooldownDoesNotCoolWholeChannel(t *testing.T
 		t.Fatalf("set model cooldown: %v", err)
 	}
 
-	modelACandidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "model-a", "")
+	modelACandidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "model-a", "")
 	if err != nil {
 		t.Fatalf("select model-a candidates: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestSelectRouteCandidates_ModelCooldownDoesNotCoolWholeChannel(t *testing.T
 		t.Fatalf("model-a should exclude cooled primary channel, got %+v", modelACandidates)
 	}
 
-	modelBCandidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "model-b", "")
+	modelBCandidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "model-b", "")
 	if err != nil {
 		t.Fatalf("select model-b candidates: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestSelectRouteCandidates_AllCooled_FallbackChoosesEarliestChannelCooldown(
 		t.Fatalf("设置渠道冷却失败: %v", err)
 	}
 
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestSelectRouteCandidates_AllCooled_FallbackDisabledWhenThresholdZero(t *te
 		t.Fatalf("设置渠道冷却失败: %v", err)
 	}
 
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldow
 		}
 	}
 
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestSelectRouteCandidates_AllCooled_MixedCooldown_RespectsChannelCooldown(t
 		}
 	}
 
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestSelectRouteCandidates_DisabledChannels(t *testing.T) {
 	}
 
 	// 查询可用渠道
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestSelectRouteCandidates_PriorityGrouping(t *testing.T) {
 	}
 
 	// 查询渠道
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestSelectCandidates_ClientProtocolDoesNotFilterUpstreamType(t *testing.T) 
 		}
 	}
 
-	allCandidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gpt-4", "")
+	allCandidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "gpt-4", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -612,7 +612,7 @@ func TestSelectCandidates_ClientProtocolDoesNotFilterUpstreamType(t *testing.T) 
 		t.Fatalf("预期返回2个候选渠道，实际%d个", len(allCandidates))
 	}
 
-	filtered, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gpt-4", "codex")
+	filtered, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "gpt-4", "codex")
 	if err != nil {
 		t.Fatalf("selectCandidatesByModelAndClientProtocol失败: %v", err)
 	}
@@ -621,7 +621,7 @@ func TestSelectCandidates_ClientProtocolDoesNotFilterUpstreamType(t *testing.T) 
 	}
 
 	// 保证类型过滤支持大小写输入
-	filteredUpper, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gpt-4", "CODEX")
+	filteredUpper, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "gpt-4", "CODEX")
 	if err != nil {
 		t.Fatalf("selectCandidatesByModelAndClientProtocol(大写)失败: %v", err)
 	}
@@ -630,7 +630,7 @@ func TestSelectCandidates_ClientProtocolDoesNotFilterUpstreamType(t *testing.T) 
 	}
 
 	// 客户端协议即使与所有上游主协议不同，也不应缩小候选集合。
-	filteredNone, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gpt-4", "gemini")
+	filteredNone, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "gpt-4", "gemini")
 	if err != nil {
 		t.Fatalf("selectCandidatesByModelAndClientProtocol(无匹配)失败: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestSelectCandidatesByClientProtocol_GeminiClientCanUseAllUpstreamProtocols
 	}
 
 	// 查询Gemini类型渠道
-	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocolAnonymous(ctx, "gemini")
 	if err != nil {
 		t.Fatalf("selectCandidatesByClientProtocol失败: %v", err)
 	}
@@ -694,7 +694,7 @@ func TestSelectRouteCandidates_WildcardModel(t *testing.T) {
 	}
 
 	// 使用通配符"*"查询所有启用渠道
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "*", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "*", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -734,7 +734,7 @@ func TestSelectRouteCandidates_NoMatchingChannels(t *testing.T) {
 	}
 
 	// 查询不存在的模型
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "non-existent-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "non-existent-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -789,7 +789,7 @@ func TestSelectRouteCandidates_CacheKeepsCooledEnabledChannelAfterCooldownClears
 	}
 	server.invalidateChannelRelatedCache(target.ID)
 
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "claude-opus-4-7", "anthropic")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "claude-opus-4-7", "anthropic")
 	if err != nil {
 		t.Fatalf("selectCandidatesByModelAndClientProtocol: %v", err)
 	}
@@ -826,7 +826,7 @@ func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 	}
 
 	// 查询渠道
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -881,7 +881,7 @@ func TestBalanceSamePriorityChannels(t *testing.T) {
 	firstPositionCount := make(map[string]int)
 
 	for i := 0; i < iterations; i++ {
-		candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "qwen-3-32b", "codex")
+		candidates, err := server.selectCandidatesByModelAndClientProtocolAnonymous(ctx, "qwen-3-32b", "codex")
 		if err != nil {
 			t.Fatalf("selectCandidatesByModelAndClientProtocol失败: %v", err)
 		}
@@ -1052,7 +1052,7 @@ func TestSelectCandidatesByClientProtocol_ReturnsAllEnabledChannels(t *testing.T
 		}
 	}
 
-	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocolAnonymous(ctx, "gemini")
 	if err != nil {
 		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
@@ -1100,7 +1100,7 @@ func TestSelectCandidatesByClientProtocol_AllCooledFallback(t *testing.T) {
 	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 
 	// 所有协议的渠道都冷却时，兜底返回最早恢复的渠道。
-	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocolAnonymous(ctx, "gemini")
 	if err != nil {
 		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
@@ -1131,7 +1131,7 @@ func TestSelectCandidatesByClientProtocol_ProtocolNormalization(t *testing.T) {
 	}
 
 	// 大写输入应匹配小写存储
-	candidates, err := server.selectCandidatesByClientProtocol(ctx, "CODEX")
+	candidates, err := server.selectCandidatesByClientProtocolAnonymous(ctx, "CODEX")
 	if err != nil {
 		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
@@ -1161,7 +1161,7 @@ func TestSelectCandidatesByClientProtocol_EmptyProtocol(t *testing.T) {
 	}
 
 	// 空客户端协议不会过滤候选。
-	candidates, err := server.selectCandidatesByClientProtocol(ctx, "")
+	candidates, err := server.selectCandidatesByClientProtocolAnonymous(ctx, "")
 	if err != nil {
 		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
@@ -1187,7 +1187,7 @@ func TestSelectCandidatesByClientProtocol_WithoutNativeUpstreamStillRoutes(t *te
 	}
 
 	// 没有 Gemini 主协议渠道也不影响 Gemini 客户端使用模型兼容渠道。
-	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocolAnonymous(ctx, "gemini")
 	if err != nil {
 		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
@@ -1228,7 +1228,7 @@ func TestSelectCandidatesByClientProtocol_CooldownFiltering(t *testing.T) {
 	// ch1 保持活跃
 	_ = ch1
 
-	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocolAnonymous(ctx, "gemini")
 	if err != nil {
 		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
@@ -1265,7 +1265,7 @@ func TestSelectCandidatesByClientProtocol_DisabledChannelExcluded(t *testing.T) 
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
 
-	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocolAnonymous(ctx, "gemini")
 	if err != nil {
 		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}

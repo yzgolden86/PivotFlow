@@ -23,6 +23,19 @@ type KeySelector struct {
 	rrMutex    sync.RWMutex
 }
 
+func filterAPIKeysForModel(apiKeys []*model.APIKey, modelName string) []*model.APIKey {
+	if len(apiKeys) == 0 {
+		return nil
+	}
+	filtered := make([]*model.APIKey, 0, len(apiKeys))
+	for _, apiKey := range apiKeys {
+		if apiKey != nil && apiKey.AllowsModel(modelName) {
+			filtered = append(filtered, apiKey)
+		}
+	}
+	return filtered
+}
+
 // rrCounterScope 把轮询游标绑定到「渠道 + 候选 Key 集合」。
 // 同一渠道下不同模型可用的 Key 子集不同，共用一个游标会让彼此互相推进，
 // 结果是每个子集都只轮到自己范围内的头几个 Key。

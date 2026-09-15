@@ -25,17 +25,17 @@ import (
 // 行为说明：
 // - 冷却语义：渠道级冷却、当前模型冷却，或“所有Key均在冷却”的渠道会被过滤
 // - 健康度排序：仅对“已通过冷却过滤”的渠道进行排序/负载均衡
-func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol string) ([]*modelpkg.Config, error) {
-	return s.filterCooldownChannelsInternal(ctx, channels, requestModel, requestProtocol, true)
+func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol, stickyScope string) ([]*modelpkg.Config, error) {
+	return s.filterCooldownChannelsInternal(ctx, channels, requestModel, requestProtocol, stickyScope, true)
 }
 
 // filterCooldownChannelsStrict 与 filterCooldownChannels 类似，但不会触发“全冷却兜底”选择。
 // 用于需要在“候选为空”时继续做下一步回退（例如模型模糊匹配）的场景。
-func (s *Server) filterCooldownChannelsStrict(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol string) ([]*modelpkg.Config, error) {
-	return s.filterCooldownChannelsInternal(ctx, channels, requestModel, requestProtocol, false)
+func (s *Server) filterCooldownChannelsStrict(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol, stickyScope string) ([]*modelpkg.Config, error) {
+	return s.filterCooldownChannelsInternal(ctx, channels, requestModel, requestProtocol, stickyScope, false)
 }
 
-func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol string, allowAllCooledFallback bool) ([]*modelpkg.Config, error) {
+func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol, stickyScope string, allowAllCooledFallback bool) ([]*modelpkg.Config, error) {
 	if len(channels) == 0 {
 		return channels, nil
 	}
@@ -118,10 +118,10 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		ordered = s.balanceSamePriorityChannels(filtered, keyCooldowns, now, universe)
 	}
 
-	// 粘性策略：把上次成功的渠道提回首位（仅限同优先级层）。
+	// 粘性策略：把本调用范围上次成功的渠道提回首位（仅限同优先级层）。
 	// 放在排序之后，因为它只调整首选，不改变其余候选的回退顺序。
 	if requestModel != "" && requestModel != "*" && s.routeStrategy() == RouteStrategySticky {
-		ordered = applyStickyPreference(ordered, s.stickyRouter.preferred(requestModel, now))
+		ordered = applyStickyPreference(ordered, s.stickyRouter.preferred(stickyScope, requestModel, now))
 	}
 	return ordered, nil
 }

@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity, ArrowRight, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, Clock3, ExternalLink, FileClock, Gauge, Network,
   DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
-  KeyRound, ListPlus, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, SlidersHorizontal, TimerReset, Trash2, Type, Wrench, X,
+  KeyRound, ListPlus, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, Settings, SlidersHorizontal, TimerReset, Trash2, Type, Wrench, X,
 } from 'lucide-react'
 import { checkForUpdates, createSystemAccessToken, deleteSystemAccessToken, getModelAliasInventory, getSystemAccessTokens, getSystemSettings, resetSystemSetting, updateSystemAccessToken, updateSystemSettings } from '../api'
 import type { ModelAliasCandidate, ModelAliasInventory, ModelAliasSuggestion, SystemAccessToken, SystemSetting } from '../types'
-import { EmptyState, ErrorState, LoadingState, OperationNotice } from './shared'
+import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader } from './shared'
 import { WebhookSettingsPanel } from './SettingsPage'
 import { BackupSettingsPanel } from './BackupSettingsPanel'
 import { Modal } from './siteShared'
@@ -205,13 +205,14 @@ export default function SystemSettingsPageV2() {
   const ActiveGroupIcon = activeGroup.icon
 
   return <div className="workspace-page system-settings-page system-settings-page--v2">
-    <header className="page-header">
-      <h1>系统设置</h1>
-      {section === 'runtime' && group !== 'appearance' && <div className="header-controls">
+    <PageHeader
+      icon={Settings}
+      title="系统设置"
+      actions={section === 'runtime' && group !== 'appearance' ? <>
         <label className="settings-modified-filter"><input type="checkbox" checked={onlyModified} onChange={(event) => setOnlyModified(event.target.checked)} />仅看已修改{dirty.size > 0 && <span>{dirty.size}</span>}</label>
         <button className="icon-button icon-button--surface" type="button" onClick={() => void reloadSettings()} disabled={refreshing || saving} aria-label="刷新系统设置" title="从服务器重新读取"><RefreshCw size={18} className={refreshing ? 'spin' : undefined} /></button>
-      </div>}
-    </header>
+      </> : undefined}
+    />
 
     <div className="view-tabs system-settings-tabs" role="tablist" aria-label="系统设置分类">
       <button type="button" role="tab" aria-selected={section === 'runtime'} className={section === 'runtime' ? 'is-active' : ''} onClick={() => setSection('runtime')}><SlidersHorizontal size={17} />运行设置</button>
@@ -344,7 +345,7 @@ function SystemAccessTokensPanel() {
 
   if (loading) return <section className="system-access-panel"><LoadingState label="正在加载系统访问令牌" /></section>
   return <section className="system-access-panel" aria-label="系统访问令牌">
-    <header className="system-access-head"><div><strong>系统访问令牌</strong><p>用于外部 AI 诊断客户端访问 `/system-api/*`。它与模型调用 Key 完全独立，仅在创建完成时显示一次完整令牌。</p></div><button className="primary-button" type="button" onClick={() => setEditing('new')}><Plus size={16} />创建系统令牌</button></header>
+    <header className="system-access-head"><div className="heading-with-hint"><strong>系统访问令牌</strong><HelpTip label="系统访问令牌" text="用于外部 AI 诊断客户端访问 `/system-api/*`。它与模型调用 Key 完全独立，仅在创建完成时显示一次完整令牌。" /></div><button className="primary-button" type="button" onClick={() => setEditing('new')}><Plus size={16} />创建系统令牌</button></header>
     {notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={16} />{notice}</OperationNotice>}
     {error && <OperationNotice tone="error">{error}</OperationNotice>}
     {!tokens.length ? <div className="system-access-empty"><KeyRound size={22} /><strong>还没有系统访问令牌</strong><span>创建后可为诊断脚本分配独立权限，避免使用管理员会话。</span></div> : <div className="system-access-list">{tokens.map((token) => <article className="system-access-row" key={token.id}><span className={`token-icon${token.is_active ? '' : ' token-icon--off'}`}><KeyRound size={17} /></span><div className="system-access-identity"><strong>{token.description}</strong><code>{token.token_hint}</code><span>{token.scopes.map((scope) => systemAccessScopeLabels[scope] || scope).join(' · ')}</span></div><div><strong>{token.is_active ? '已启用' : '已停用'}</strong><span>最后使用：{formatSystemTokenDate(token.last_used_at)}</span></div><div><strong>{formatSystemTokenDate(token.created_at)}</strong><span>{token.expires_at ? `到期：${formatSystemTokenDate(token.expires_at)}` : '永不过期'}</span></div><div className="row-actions"><button className="icon-button icon-button--surface" type="button" onClick={() => void toggle(token)} aria-label={token.is_active ? '停用系统令牌' : '启用系统令牌'} title={token.is_active ? '停用' : '启用'}>{token.is_active ? <Power size={16} /> : <Play size={16} />}</button><button className="icon-button icon-button--surface" type="button" onClick={() => setEditing(token)} aria-label="编辑系统令牌" title="编辑"><Pencil size={16} /></button><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => void remove(token)} aria-label="删除系统令牌" title="删除"><Trash2 size={16} /></button></div></article>)}</div>}
@@ -430,7 +431,7 @@ function ModelAliasPanel({ value, change, refreshTick = 0 }: { value: string; ch
 
   return <section className="model-alias-panel" aria-label="模型统一映射">
     <header>
-      <div><strong>模型统一映射</strong><p>给多个上游名称设置一个稳定入口。请求统一名称时，系统会按渠道实际存在的模型名发送。</p></div>
+      <div className="heading-with-hint"><strong>模型统一映射</strong><HelpTip label="模型统一映射" text="给多个上游名称设置一个稳定入口。请求统一名称时，系统会按渠道实际存在的模型名发送。" /></div>
       <div className="model-alias-header-actions">
         <button className="icon-button icon-button--surface" type="button" onClick={() => reload()} disabled={loading} title="重新读取渠道模型清单" aria-label="刷新模型清单"><RefreshCw size={15} className={loading ? 'is-spinning' : undefined} /></button>
         <button className="secondary-button" type="button" onClick={add}><Plus size={15} />新增映射</button>
@@ -625,7 +626,7 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
 function UpdatePanel({ info, checking, check }: { info: { version: string; latest_version?: string; has_update?: boolean; release_url?: string; last_check?: string; message?: string; error?: string } | null; checking: boolean; check: () => void }) {
   const officialReleaseURL = info?.latest_version ? `https://github.com/yzgolden86/PivotFlow/releases/tag/${encodeURIComponent(info.latest_version)}` : info?.release_url
   return <div className="upstream-update-panel">
-    <div className="upstream-update-head"><div><strong>PivotFlow 上游版本</strong><p>仅检查官方发布信息，不会自动下载、替换或重启当前程序。</p></div><button className="secondary-button" type="button" onClick={check} disabled={checking}><RefreshCw className={checking ? 'spin' : ''} size={16} />{checking ? '检查中' : '立即检查'}</button></div>
+    <div className="upstream-update-head"><div className="heading-with-hint"><strong>PivotFlow 上游版本</strong><HelpTip label="上游版本检查" text="仅检查官方发布信息，不会自动下载、替换或重启当前程序。" /></div><button className="secondary-button" type="button" onClick={check} disabled={checking}><RefreshCw className={checking ? 'spin' : ''} size={16} />{checking ? '检查中' : '立即检查'}</button></div>
     <div className="upstream-update-grid"><div><small>当前运行</small><strong>{info?.version || '当前构建'}</strong></div><div><small>最新已知</small><strong>{info?.latest_version || '尚未检查'}</strong></div><div><small>状态</small><strong className={info?.has_update ? 'has-update' : ''}>{info?.has_update ? '发现新版本' : info?.error ? '检查失败' : '已是最新或尚未检查'}</strong></div></div>
     {info?.error && <div className="upstream-update-error">{info.error}</div>}
     <footer>{info?.last_check && <span>最近检查 {new Date(info.last_check).toLocaleString('zh-CN')}</span>}{officialReleaseURL && <a href={officialReleaseURL} target="_blank" rel="noreferrer">查看发布说明<ExternalLink size={14} /></a>}</footer>
@@ -717,7 +718,7 @@ function settingOptions(key: string): Array<[string, string]> | null {
 const optionTips: Record<string, Record<string, string>> = {
   route_strategy: {
     balanced: '先比优先级，只在优先级相同的渠道之间按权重（有效 Key 数）平滑轮询。每个请求换一个渠道，负载摊得最匀，单个渠道抖动的影响最小；代价是不复用上游的会话亲和性。',
-    sticky: '先比优先级，然后固定使用上次成功的渠道，直到它失败才切到下一个（失败时本次请求内会依次尝试其余候选，不会直接报错）。命中缓存和会话连续性更好；代价是流量会集中在少数渠道上。',
+    sticky: '先比优先级，然后按「访问令牌 + 模型」固定使用上次成功的渠道，直到它失败才切到下一个。命中缓存和会话连续性更好；代价是流量会集中在少数渠道，不能保证所有可用渠道都被轮流使用。想让渠道尽量均匀轮转请选择均衡轮询。',
   },
 }
 

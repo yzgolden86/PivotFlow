@@ -679,6 +679,18 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 	}
 }
 
+func TestFilterAPIKeysForModel(t *testing.T) {
+	keys := []*model.APIKey{
+		{KeyIndex: 0, APIKey: "all"},
+		{KeyIndex: 1, APIKey: "gpt", AllowedModels: []string{"gpt-4"}},
+		{KeyIndex: 2, APIKey: "empty", ModelScopeEmpty: true},
+	}
+	filtered := filterAPIKeysForModel(keys, "GPT-4")
+	if len(filtered) != 2 || filtered[0].APIKey != "all" || filtered[1].APIKey != "gpt" {
+		t.Fatalf("filtered keys = %+v, want all and gpt", filtered)
+	}
+}
+
 func assertSelectAvailableKeyFirstIndex(t *testing.T, channelName string, keyPrefix string, keyStrategy string, wantIndex int, _ string) {
 	t.Helper()
 

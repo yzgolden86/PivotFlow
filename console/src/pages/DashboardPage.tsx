@@ -6,6 +6,7 @@ import {
   CircleDollarSign,
   Cpu,
   Database,
+  Gauge,
   RefreshCw,
   Route,
   Server,
@@ -21,7 +22,7 @@ import type {
   DashboardUsage,
   MetricPoint,
 } from '../types'
-import { OperationNotice } from './shared'
+import { OperationNotice, PageHeader } from './shared'
 
 const rangeOptions: Array<{ value: DashboardRange; label: string }> = [
   { value: 'today', label: '今日' },
@@ -77,9 +78,11 @@ export default function DashboardPage() {
 
   return (
     <div className="dashboard-page">
-      <header className="page-header dashboard-header">
-        <h1>系统概览</h1>
-        <div className="header-controls">
+      <PageHeader
+        icon={Gauge}
+        title="系统概览"
+        className="dashboard-header"
+        actions={<>
           <div className="range-control" role="radiogroup" aria-label="统计时间范围">
             {rangeOptions.map((option) => (
               <button
@@ -104,8 +107,8 @@ export default function DashboardPage() {
           >
             <RefreshCw className={refreshing ? 'spin' : ''} size={17} />
           </button>
-        </div>
-      </header>
+        </>}
+      />
 
       {error && <OperationNotice tone="error">{error}</OperationNotice>}
 

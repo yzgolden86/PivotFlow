@@ -4,7 +4,9 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,14 +142,77 @@ func (s *Server) HandleStats(c *gin.Context) {
 	}
 
 	channelHealth := s.fillHealthTimeline(c.Request.Context(), stats, startTime, endTime, &lf, isToday)
+	balanceHistory := s.siteBalanceHistory(c.Request.Context(), startTime, endTime, params.Range)
 
 	RespondJSON(c, http.StatusOK, gin.H{
 		"stats":            stats,
 		"channel_health":   channelHealth,
+		"balance_history":  balanceHistory,
 		"duration_seconds": durationSeconds,
 		"rpm_stats":        rpmStats,
 		"is_today":         isToday,
 	})
+}
+
+func (s *Server) siteBalanceHistory(ctx context.Context, startTime, endTime time.Time, rangeName string) []model.SiteBalanceHistoryPoint {
+	historyStart := startTime
+	if rangeName == "today" || rangeName == "" {
+		// Include yesterday so “今日” can still show a day-over-day change.
+		historyStart = startTime.AddDate(0, 0, -1)
+	}
+	snapshots, err := s.store.ListSiteAccountBalanceSnapshots(
+		ctx,
+		historyStart.Format("2006-01-02"),
+		endTime.Format("2006-01-02"),
+	)
+	if err != nil {
+		log.Printf("[WARN] load site balance history: %v", err)
+		return nil
+	}
+
+	type aggregate struct {
+		point    model.SiteBalanceHistoryPoint
+		accounts map[int64]struct{}
+	}
+	grouped := make(map[string]*aggregate)
+	for _, snapshot := range snapshots {
+		if snapshot == nil {
+			continue
+		}
+		key := snapshot.LocalDay + "\x00" + snapshot.Currency
+		item, exists := grouped[key]
+		if !exists {
+			item = &aggregate{
+				point: model.SiteBalanceHistoryPoint{
+					Day:      snapshot.LocalDay,
+					Currency: snapshot.Currency,
+				},
+				accounts: make(map[int64]struct{}),
+			}
+			grouped[key] = item
+		}
+		item.point.Balance += snapshot.Balance
+		item.accounts[snapshot.SiteAccountID] = struct{}{}
+		if snapshot.UpdatedAt > item.point.UpdatedAt {
+			item.point.UpdatedAt = snapshot.UpdatedAt
+		}
+	}
+
+	result := make([]model.SiteBalanceHistoryPoint, 0, len(grouped))
+	for _, item := range grouped {
+		item.point.Accounts = len(item.accounts)
+		result = append(result, item.point)
+	}
+	slices.SortFunc(result, func(a, b model.SiteBalanceHistoryPoint) int {
+		if a.Day != b.Day {
+			if a.Day < b.Day {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.Currency, b.Currency)
+	})
+	return result
 }
 
 func projectTokenStats(stats []model.StatsEntry) []model.StatsEntry {

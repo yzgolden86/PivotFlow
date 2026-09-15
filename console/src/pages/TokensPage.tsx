@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, KeyRound, Pencil, Play, Plus, Power, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { createAuthToken, deleteAuthToken, getAuthTokens, getChannels, getSiteModels, revealAuthToken, updateAuthToken } from '../api'
 import type { AuthToken, Channel, DashboardRange } from '../types'
-import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, OperationNotice } from './shared'
+import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, OperationNotice, PageHeader } from './shared'
 import { Modal } from './siteShared'
 
 interface TokenFormValue {
@@ -116,13 +116,14 @@ export default function TokensPage() {
   }
 
   return <div className="workspace-page tokens-page">
-    <header className="page-header">
-      <h1>令牌管理</h1>
-      <div className="header-controls">
+    <PageHeader
+      icon={KeyRound}
+      title="令牌管理"
+      actions={<>
         <button className="primary-button" type="button" onClick={() => setEditing('new')}><Plus size={16} />创建令牌</button>
         <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新令牌"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
-      </div>
-    </header>
+      </>}
+    />
 
     <section className="compact-summary" aria-label="令牌摘要">
       <span><strong>{tokens.length}</strong>令牌总数</span><span><strong>{totals.active}</strong>已启用</span>

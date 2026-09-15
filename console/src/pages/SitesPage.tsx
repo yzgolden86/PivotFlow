@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Copy, ExternalLink, Globe2, Network, Pencil, Plus, Power, Radar, RefreshCw, Search, Trash2, UserPlus } from 'lucide-react'
 import { createSite, deleteSite, getSiteInventory, peekSiteInventory, probeSite, updateSite } from '../api'
 import type { Site, SiteAccount, SiteCascadeResult } from '../types'
-import { EmptyState, ErrorState, LoadingState, OperationNotice, Pagination, SecretInput } from './shared'
-import { Modal, StatusBadge, siteErrorMessage } from './siteShared'
+import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagination, SecretInput } from './shared'
+import { Modal, siteCheckinURL, StatusBadge, siteErrorMessage } from './siteShared'
 import { useLocation } from 'react-router-dom'
 import { credentialLabel, credentialOptions, normalizeCredentialType, platformSupportsCheckin, type CredentialType } from '../siteCredentials'
 
@@ -221,10 +221,11 @@ export default function SitesPage() {
   }
 
   return <div className="workspace-page">
-    <header className="page-header">
-	  <h1>站点管理</h1>
-      <div className="header-controls"><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新站点"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></div>
-    </header>
+    <PageHeader
+      icon={Globe2}
+      title="站点管理"
+      actions={<><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新站点"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></>}
+    />
     <section className="compact-summary"><span><strong>{sites.length}</strong>站点总数</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>已启用</span><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{healthy}</strong>健康账号</span></section>
     <div className="filter-bar"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部站点" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索站点、地址或平台" aria-label="搜索站点" /></label><select value={sort} onChange={(event) => { setSort(event.target.value); setPage(1) }} aria-label="站点排序"><option value="newest">新建优先</option><option value="name">名称 A-Z</option><option value="enabled">启用优先</option><option value="health">健康账号数</option></select><span className="filter-count"><Globe2 size={14} />{visible.length} 个站点</span></div>
     {selected.size > 0 && <div className="batch-toolbar" aria-label="站点批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('proxy_on')} disabled={batchBusy}><Network size={14} />开启系统代理</button><button type="button" onClick={() => void runBatch('proxy_off')} disabled={batchBusy}><Network size={14} />关闭系统代理</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
@@ -243,7 +244,7 @@ function SiteRow({ site, accounts, selected, busy, focused, rowRef, select, copy
     <div className="site-account-summary"><strong>{healthy}/{accounts.length}</strong><div className="site-account-links">{accounts.length ? accounts.slice(0, 2).map((account) => <a className="entity-chip" key={account.id} href={`#/accounts?focus_account_id=${account.id}${['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}>{account.label}</a>) : <span>暂无账号</span>}</div></div>
     <div className="site-probe"><StatusBadge status={site.last_probe_status} /><span title={site.last_error}>{site.last_error || '最近探测状态'}</span></div>
     <div className="row-actions">
-      {site.external_checkin_url && <a className="icon-button icon-button--surface" href={site.external_checkin_url} target="_blank" rel="noreferrer" aria-label={`打开 ${site.name} 签到页`} title="外部签到页"><ExternalLink size={16} /></a>}
+      {siteCheckinURL(site) && <a className="icon-button icon-button--surface" href={siteCheckinURL(site)} target="_blank" rel="noreferrer" aria-label={`打开 ${site.name} 签到页`} title="浏览器辅助签到页"><ExternalLink size={16} /></a>}
       <button className="icon-button icon-button--surface" type="button" onClick={() => execute('probe')} disabled={busy} aria-label={`探测 ${site.name}`} title="探测站点"><Radar className={busy ? 'spin' : ''} size={16} /></button>
       <button className={`icon-button icon-button--surface ${site.enabled ? 'is-on' : ''}`} type="button" onClick={() => execute('toggle')} disabled={busy} aria-label={site.enabled ? `停用 ${site.name}` : `启用 ${site.name}`}><Power size={16} /></button>
       <a className="icon-button icon-button--surface" href={`#/accounts?site_id=${site.id}&create=1`} aria-label={`为 ${site.name} 添加账号`} title="添加账号"><UserPlus size={16} /></a>
@@ -271,7 +272,8 @@ function SiteFormView({ form, setForm, saving, submit, editing }: { form: SiteFo
 	<div className="form-help">建议使用账号密码或系统访问令牌：系统会读取余额、签到、公告，并自动发现模型调用 Key。只填模型 API Key 时仅支持模型与路由。</div>
     <label className="checkbox-field"><input type="checkbox" checked={form.use_system_proxy} onChange={(event) => field('use_system_proxy', event.target.checked)} /><span>使用系统代理</span></label>
     <label><span>代理地址（可选）</span><input value={form.proxy_url} onChange={(event) => field('proxy_url', event.target.value)} placeholder="http://127.0.0.1:7890" /></label>
-    <label><span>外部签到地址（可选）</span><input type="url" value={form.external_checkin_url} onChange={(event) => field('external_checkin_url', event.target.value)} placeholder="需要浏览器时打开此地址" /></label>
+    <label><span>浏览器辅助签到地址（可选）</span><input type="url" value={form.external_checkin_url} onChange={(event) => field('external_checkin_url', event.target.value)} placeholder="需要人工点击签到时打开的页面" /></label>
+    <div className="form-help">该地址只用于人工打开上游页面，不参与服务端自动签到。New API 系和 Veloera 不填时会默认打开个人页；上游页面签到后，回 PivotFlow 重试可识别“今日已签到”。</div>
 	{!editing && <section className="embedded-form-section">
       <label className="checkbox-field"><input type="checkbox" checked={form.addAccount} onChange={(event) => field('addAccount', event.target.checked)} /><span>同时添加首个账号</span></label>
       {form.addAccount && <>

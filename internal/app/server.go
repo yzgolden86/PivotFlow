@@ -1104,6 +1104,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/channels/:id", s.HandleChannelByID)
 		admin.PUT("/channels/:id", s.HandleChannelByID)
 		admin.DELETE("/channels/:id", s.HandleChannelByID)
+		admin.POST("/channels/:id/site-sync-restore", s.HandleRestoreChannelAutoSync)
 		admin.GET("/channels/:id/editor", s.HandleChannelEditor)
 		admin.GET("/channels/:id/route-diagnostics", s.HandleChannelRouteDiagnostics)
 		admin.GET("/channels/:id/keys", s.HandleChannelKeys)

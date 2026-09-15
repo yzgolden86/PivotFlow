@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Copy, FileUp, FlaskConical, Layers3, Pencil, Plus, Power, RefreshCw, Search, Settings2, Sparkles, Trash2 } from 'lucide-react'
-import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, getChannelEditor, getChannels, getSiteChannelBindings, getSiteInventory, importOAuthCredentials, peekChannels, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
-import type { Channel, ChannelBodyRuleAction, ChannelEditorSnapshot, ChannelHeaderRuleAction, ChannelModel, ChannelMutation, ChannelRequestRules, ChannelURL, Site, SiteAccount, SiteChannelBinding } from '../types'
-import { EmptyState, ErrorState, LoadingState, OperationNotice, Pagination } from './shared'
+import { Copy, FileUp, FlaskConical, Layers3, Pencil, Plus, Power, RefreshCw, Route, Search, Settings2, Sparkles, Trash2 } from 'lucide-react'
+import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, fetchOAuthUsage, getAuthTokens, getChannelEditor, getChannelRouteDiagnostics, getChannels, getSiteChannelBindings, getSiteInventory, importOAuthCredentials, peekChannels, restoreChannelSiteSync, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
+import type { AuthToken, Channel, ChannelBodyRuleAction, ChannelEditorSnapshot, ChannelHeaderRuleAction, ChannelModel, ChannelMutation, ChannelRequestRules, ChannelRouteDiagnostic, ChannelURL, OAuthUsageSummary, RouteDiagnosticResponse, Site, SiteAccount, SiteChannelBinding } from '../types'
+import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
 import { Modal, siteErrorMessage, StatusBadge } from './siteShared'
 import ChannelKeysModal from './ChannelKeysModal'
+
+const routeDiagnosticProtocols = [
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'codex', label: 'Codex' },
+  { value: 'gemini', label: 'Gemini' },
+]
 
 export default function ChannelsPage() {
   const location = useLocation()
@@ -29,8 +36,9 @@ export default function ChannelsPage() {
   const [busyId, setBusyId] = useState<number | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [batchBusy, setBatchBusy] = useState(false)
-  const [editing, setEditing] = useState<number | 'new' | null>(null)
-  const [keyHealthChannel, setKeyHealthChannel] = useState<number | null>(null)
+	const [editing, setEditing] = useState<number | 'new' | null>(null)
+	const [keyHealthChannel, setKeyHealthChannel] = useState<number | null>(null)
+	const [routeDiagnosticChannel, setRouteDiagnosticChannel] = useState<Channel | null>(null)
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
   const [syncOpen, setSyncOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -166,6 +174,17 @@ export default function ChannelsPage() {
     finally { setBusyId(null) }
   }
 
+  const restoreSiteSync = async (channel: Channel) => {
+    if (!window.confirm(`恢复"${channel.name}"的自动同步？下一次同步会按上游模型覆盖当前手动修改。`)) return
+    setBusyId(channel.id); setError(''); setNotice('')
+    try {
+      await restoreChannelSiteSync(channel.id)
+      setNotice(`已恢复"${channel.name}"的自动同步`)
+      await load(undefined, { silent: true, force: true })
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '恢复自动同步失败') }
+    finally { setBusyId(null) }
+  }
+
   const importCredentials = async (files: FileList | null) => {
     if (!files?.length) return
     setError(''); setNotice('')
@@ -179,15 +198,16 @@ export default function ChannelsPage() {
 
   return (
     <div className="workspace-page">
-      <header className="page-header">
-        <h1>渠道分发</h1>
-        <div className="header-controls">
+      <PageHeader
+        icon={Route}
+        title="渠道分发"
+        actions={<>
           <input ref={importInput} className="visually-hidden" type="file" accept="application/json,.json" multiple onChange={(event) => void importCredentials(event.target.files)} />
 		  <div className="source-menu"><button className="secondary-button" type="button" aria-haspopup="menu" aria-expanded={sourceMenuOpen} onClick={() => setSourceMenuOpen((open) => !open)}><Layers3 size={16} />其他来源</button>{sourceMenuOpen && <div className="source-menu-popover" role="menu"><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); importInput.current?.click() }}><FileUp size={15} />导入 OAuth</button><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); setEditing('new') }}><Plus size={15} />手工渠道</button></div>}</div>
 		  <button className="primary-button" type="button" onClick={() => setSyncOpen(true)}><RefreshCw size={16} />同步站点渠道</button>
           <button className="icon-button icon-button--surface" type="button" disabled={refreshing} title="刷新渠道" onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新渠道"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
-        </div>
-      </header>
+        </>}
+      />
 
       {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
 
@@ -214,13 +234,14 @@ export default function ChannelsPage() {
       {error && channels.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
       {loading ? <LoadingState label="正在加载渠道" /> : error && channels.length === 0 ? <ErrorState message={error} retry={() => void load()} /> : channels.length === 0 ? <EmptyState label="没有符合条件的渠道" /> : (
         <div className="channel-list">
-          {channels.map((channel) => <ChannelRow channel={channel} selected={selected.has(channel.id)} busy={busyId === channel.id || (batchBusy && selected.has(channel.id))} select={() => toggleSelected(channel.id)} toggle={() => void toggleChannel(channel)} copy={() => void copyChannel(channel)} edit={() => setEditing(channel.id)} remove={() => void removeChannel(channel)} manageKeys={() => setKeyHealthChannel(channel.id)} key={channel.id} />)}
+          {channels.map((channel) => <ChannelRow channel={channel} selected={selected.has(channel.id)} busy={busyId === channel.id || (batchBusy && selected.has(channel.id))} select={() => toggleSelected(channel.id)} toggle={() => void toggleChannel(channel)} copy={() => void copyChannel(channel)} edit={() => setEditing(channel.id)} remove={() => void removeChannel(channel)} manageKeys={() => setKeyHealthChannel(channel.id)} diagnose={() => setRouteDiagnosticChannel(channel)} restoreSync={() => void restoreSiteSync(channel)} key={channel.id} />)}
         </div>
       )}
       <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} pageSizes={[50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
       {editing && <ChannelEditor channelId={editing === 'new' ? undefined : editing} close={() => setEditing(null)} saved={() => { setEditing(null); void load(undefined, { silent: true, force: true }) }} />}
-      {syncOpen && <SiteChannelSyncModal close={() => setSyncOpen(false)} synced={() => void load(undefined, { silent: true, force: true })} />}
-      {keyHealthChannel !== null && <ChannelKeysModal channelId={keyHealthChannel} close={() => setKeyHealthChannel(null)} changed={() => void load(undefined, { silent: true, force: true })} />}
+	      {syncOpen && <SiteChannelSyncModal close={() => setSyncOpen(false)} synced={() => void load(undefined, { silent: true, force: true })} />}
+	      {keyHealthChannel !== null && <ChannelKeysModal channelId={keyHealthChannel} close={() => setKeyHealthChannel(null)} changed={() => void load(undefined, { silent: true, force: true })} />}
+	      {routeDiagnosticChannel && <ChannelRouteDiagnosticsModal key={routeDiagnosticChannel.id} channel={routeDiagnosticChannel} close={() => setRouteDiagnosticChannel(null)} />}
     </div>
   )
 }
@@ -352,7 +373,125 @@ function SiteChannelSyncModal({ close, synced }: { close: () => void; synced: ()
   )
 }
 
-function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remove, manageKeys }: { channel: Channel; selected: boolean; busy: boolean; select: () => void; toggle: () => void; copy: () => void; edit: () => void; remove: () => void; manageKeys: () => void }) {
+function ChannelRouteDiagnosticsModal({ channel, close }: { channel: Channel; close: () => void }) {
+  const models = useMemo(() => channel.models.filter((item) => !item.disabled).map((item) => item.model.trim()).filter(Boolean), [channel])
+  const [model, setModel] = useState(models[0] || '')
+  const [protocol, setProtocol] = useState('openai')
+  const [tokenIdValue, setTokenIdValue] = useState('')
+  const [tokens, setTokens] = useState<AuthToken[]>([])
+  const [snapshot, setSnapshot] = useState<RouteDiagnosticResponse | null>(null)
+  const [loading, setLoading] = useState(Boolean(models.length))
+  const [error, setError] = useState('')
+  const tokenId = Number(tokenIdValue) || 0
+
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    if (!model) {
+      setSnapshot(null)
+      setLoading(false)
+      setError('')
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      const result = await getChannelRouteDiagnostics(channel.id, model, protocol, tokenId, signal)
+      setSnapshot(result)
+    } catch (reason) {
+      if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '路由诊断加载失败')
+    } finally {
+      if (!signal?.aborted) setLoading(false)
+    }
+  }, [channel.id, model, protocol, tokenId])
+
+  useEffect(() => {
+    if (!model) return
+    const controller = new AbortController()
+    void refresh(controller.signal)
+    return () => controller.abort()
+  }, [model, protocol, refresh, tokenIdValue])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    getAuthTokens('today', controller.signal).then((result) => {
+      if (!controller.signal.aborted) setTokens(result.tokens || [])
+    }).catch((reason) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? `访问令牌加载失败：${reason.message}` : '访问令牌加载失败')
+    })
+    return () => controller.abort()
+  }, [])
+
+  const strategyLabel = snapshot?.route_strategy === 'sticky' ? '粘性轮询' : '均衡轮询'
+  const target = snapshot?.target
+  return (
+    <Modal title={`${channel.name} · 路由诊断`} close={close} wide>
+      <div className="route-diagnostic-panel">
+        <div className="route-diagnostic-controls">
+          <label><span>诊断模型</span><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
+          <label><span>客户端协议</span><select value={protocol} onChange={(event) => setProtocol(event.target.value)}>{routeDiagnosticProtocols.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
+          <label title="选择访问令牌后，诊断会套用该令牌的渠道限制、统计它的今日实际占比，并在粘性轮询下显示当前命中渠道"><span>访问令牌</span><select value={tokenIdValue} onChange={(event) => setTokenIdValue(event.target.value)}><option value="">全局视角</option>{tokens.map((token) => <option value={token.id} key={token.id}>{authTokenLabel(token)}</option>)}</select></label>
+          <button className="secondary-button" type="button" onClick={() => void refresh()} disabled={loading || !model}><RefreshCw className={loading ? 'spin' : ''} size={15} />{loading ? '诊断中' : '重新诊断'}</button>
+        </div>
+        {snapshot?.route_strategy === 'sticky' && snapshot.sticky ? (
+          <div className="route-diagnostic-sticky">
+            <div><small>当前粘性命中</small><strong title={snapshot.sticky.channel_name}>{snapshot.sticky.channel_name || `#${snapshot.sticky.channel_id}`}</strong><span>记录于 {formatDiagnosticTime(snapshot.sticky.remembered_at)} · 有效至 {formatDiagnosticTime(snapshot.sticky.expires_at)}</span></div>
+            <p>{snapshot.sticky.in_candidate_pool ? '该渠道在当前候选池中。粘性只会把同优先级层内的它提前，不会让低优先级渠道越过更高优先级渠道。' : '该渠道当前不在候选池中，实际请求会按候选池重新选择；这条历史记录不会强行接管本次路由。'}</p>
+          </div>
+        ) : snapshot?.route_strategy === 'sticky' && !tokenId ? <div className="route-diagnostic-note">当前是粘性轮询：同一「访问令牌 + 模型」会优先沿用上次成功渠道。请选择访问令牌查看当前命中；未选择时只能展示全局候选和日志占比。</div> : null}
+        {loading ? <LoadingState label="正在计算候选池" /> : error ? <ErrorState message={error} retry={() => void refresh()} /> : !model ? <EmptyState label="该渠道没有启用模型" /> : snapshot ? (
+          <>
+            <div className="route-diagnostic-summary">
+              <article><small>当前策略</small><strong>{strategyLabel}</strong><span>{snapshot.route_strategy === 'sticky' ? '按令牌和模型保持亲和' : '同优先级按权重轮转'}</span></article>
+              <article><small>候选渠道</small><strong>{snapshot.candidates.length}</strong><span>{snapshot.pool_mode === 'exact' ? '精确模型匹配' : snapshot.pool_mode === 'fuzzy' ? '模糊模型匹配' : snapshot.pool_mode === 'cooldown_fallback' ? '冷却兜底' : '暂无候选'}</span></article>
+              <article><small>今日实际请求</small><strong>{snapshot.actual_total_requests}</strong><span>{tokenId ? `令牌 #${tokenId} · ${snapshot.actual_window}` : `全部令牌 · ${snapshot.actual_window}`}</span></article>
+              <article className={target?.candidate ? 'is-success' : 'is-warning'}><small>诊断结果</small><strong>{target?.candidate ? '已进入候选池' : '不在候选池'}</strong><span>{target?.candidate_position ? `第 ${target.candidate_position} 优先级层` : '未排序'}</span></article>
+            </div>
+            {snapshot.summary.length > 0 && <div className="route-diagnostic-callout"><strong>结论</strong><p>{snapshot.summary.join(' ')}</p></div>}
+            {target && <RouteDiagnosticChannelCard diagnostic={target} actualTotal={snapshot.actual_total_requests} highlight />}
+            <section className="route-diagnostic-candidates">
+              <header><strong>候选池 · 优先级层</strong><span>列表只表示当前会进入的候选池与优先级层；层内顺序不代表下一次请求一定命中。理论份额由优先级层和可用 Key 计算，今日实际占比来自请求日志。</span></header>
+              {snapshot.candidates.length ? <div className="route-diagnostic-list">{snapshot.candidates.map((item) => <RouteDiagnosticChannelCard diagnostic={item} actualTotal={snapshot.actual_total_requests} key={item.channel_id} />)}</div> : <EmptyState label="当前模型没有可用候选渠道" />}
+            </section>
+          </>
+        ) : <EmptyState label="暂无路由诊断数据" />}
+      </div>
+    </Modal>
+  )
+}
+
+function RouteDiagnosticChannelCard({ diagnostic, actualTotal, highlight = false }: { diagnostic: ChannelRouteDiagnostic; actualTotal: number; highlight?: boolean }) {
+  return (
+    <article className={`route-diagnostic-channel${highlight ? ' is-highlight' : ''}`}>
+      <header>
+        <div><strong title={diagnostic.channel_name}>{diagnostic.channel_name}</strong><small>#{diagnostic.channel_id}</small></div>
+        <div className="route-diagnostic-shares">
+          <span>{diagnostic.candidate ? `${(diagnostic.estimated_traffic_share * 100).toFixed(1)}% 理论份额` : '未进入候选池'}</span>
+          <span className={actualTotal > 0 ? '' : 'is-muted'}>{actualTotal > 0 ? `${(diagnostic.actual_share * 100).toFixed(1)}% 今日实际` : '今日暂无请求'}</span>
+        </div>
+      </header>
+      <dl>
+        <div><dt>优先级层</dt><dd>{diagnostic.candidate && diagnostic.candidate_position ? `第 ${diagnostic.candidate_position} 层` : '—'}</dd></div>
+        <div title="分子：未冷却且允许当前模型的 Key；分母：允许当前模型的启用 Key"><dt>可用 Key</dt><dd>{diagnostic.active_key_count}/{diagnostic.model_eligible_key_count}</dd></div>
+        <div><dt>今日实际</dt><dd>{diagnostic.actual_requests}{actualTotal > 0 ? ` · ${(diagnostic.actual_share * 100).toFixed(1)}%` : ''}</dd></div>
+        <div><dt>RPM</dt><dd>{diagnostic.rpm_limit ? `${diagnostic.current_rpm}/${diagnostic.rpm_limit}` : '不限'}</dd></div>
+        <div><dt>并发</dt><dd>{diagnostic.max_concurrency ? `${diagnostic.active_concurrency}/${diagnostic.max_concurrency}` : '不限'}</dd></div>
+      </dl>
+      <ul>
+        {diagnostic.reasons.length ? diagnostic.reasons.map((reason) => <li key={`${diagnostic.channel_id}-${reason.code}`} className={reason.blocking ? 'is-blocking' : ''}>{reason.message}</li>) : <li>暂无额外说明</li>}
+      </ul>
+    </article>
+  )
+}
+
+function authTokenLabel(token: AuthToken) {
+  return `${token.description || token.token_hint || '未命名令牌'} · #${token.id}`
+}
+
+function formatDiagnosticTime(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remove, manageKeys, diagnose, restoreSync }: { channel: Channel; selected: boolean; busy: boolean; select: () => void; toggle: () => void; copy: () => void; edit: () => void; remove: () => void; manageKeys: () => void; diagnose: () => void; restoreSync: () => void }) {
   const cooling = isCooling(channel)
   const activeModels = channel.models.filter((model) => !model.disabled)
   const protocols = Array.from(new Set(channel.urls.flatMap((url) => url.protocols?.length ? url.protocols : ['auto'])))
@@ -361,14 +500,16 @@ function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remov
       <div className="channel-identity">
         <input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${channel.name}`} />
         <span className={`status-dot ${channel.enabled ? cooling ? 'status-dot--warning' : 'status-dot--success' : 'status-dot--muted'}`} />
-        <div><div className="channel-name"><strong title={channel.name}>{channel.name}</strong><small>#{channel.id}</small></div>{channel.auth_type === 'api_key' ? <button type="button" className={`channel-key-health-link${channel.key_health_issue_count ? ' has-issues' : ''}`} onClick={manageKeys} aria-label={`管理 ${channel.name} 的 Key`} title="查看每个 Key 的状态、复检或清理">{channel.key_count} Keys · 健康管理{Boolean(channel.key_health_issue_count) && <em>{channel.key_health_issue_count} 需关注</em>}</button> : <span>{channel.auth_type}</span>}</div>
+        <div><div className="channel-name"><strong title={channel.name}>{channel.name}</strong><small>#{channel.id}</small>{channel.site_sync_ownership === 'manual' && <span className="site-sync-badge">手动接管</span>}</div>{channel.auth_type === 'api_key' ? <button type="button" className={`channel-key-health-link${channel.key_health_issue_count ? ' has-issues' : ''}`} onClick={manageKeys} aria-label={`管理 ${channel.name} 的 Key`} title="查看每个 Key 的状态、复检或清理">{channel.key_count} Keys · 健康管理{Boolean(channel.key_health_issue_count) && <em>{channel.key_health_issue_count} 需关注</em>}</button> : <span>{channel.auth_type}</span>}</div>
       </div>
       <div className="channel-endpoints">{channel.urls[0]?.url ? <a className="site-base-link" href={channel.urls[0].url} target="_blank" rel="noreferrer" title={`在新标签页打开 ${channel.urls[0].url}`}><strong>{channel.urls[0].url}</strong></a> : <strong>未配置 URL</strong>}<span title={channel.urls.map((item) => item.url).join('\n')}>{channel.urls.length} URL · {protocols.join(' / ')}</span></div>
-      <div className="channel-routing"><span title="基础优先级越大越优先；相同优先级按有效 Key 数量平滑轮询">优先级 <strong>{channel.priority}</strong></span>{channel.effective_priority !== undefined && <span title="健康度排序使用的有效优先级；失败率或首字延迟可能使它低于基础优先级">有效 <strong>{channel.effective_priority.toFixed(1)}</strong></span>}<span>倍率 <strong>{channel.cost_multiplier || 1}x</strong></span>{channel.success_rate !== undefined && <span title="统计窗口内的上游成功率">成功率 <strong>{Math.round(channel.success_rate * 100)}%</strong></span>}<small>{protocolMode(channel.protocol_transform_mode)}</small>{channel.available_time_start && channel.available_time_end && <small title="窗口外不会参与路由或定时巡检">时段 {channel.available_time_start}–{channel.available_time_end}</small>}</div>
+      <div className="channel-routing"><span title="基础优先级越大越优先；相同优先级按有效 Key 数量平滑轮询">优先级 <strong>{channel.priority}</strong></span>{channel.effective_priority !== undefined && <span title="健康度排序使用的有效优先级；失败率或首字延迟可能使它低于基础优先级">有效 <strong>{channel.effective_priority.toFixed(1)}</strong></span>}<span title={channel.auth_type === 'api_key' ? `实际费用按最终选中的 Key 倍率计算；渠道默认倍率为 ${channel.cost_multiplier ?? 1}x` : '实际费用按渠道倍率计算'}>倍率 <strong>{channel.auth_type === 'api_key' ? '按 Key' : `${channel.cost_multiplier ?? 1}x`}</strong></span>{channel.success_rate !== undefined && <span title="统计窗口内的上游成功率">成功率 <strong>{Math.round(channel.success_rate * 100)}%</strong></span>}<small>{protocolMode(channel.protocol_transform_mode)}</small>{channel.available_time_start && channel.available_time_end && <small title="窗口外不会参与路由或定时巡检">时段 {channel.available_time_start}–{channel.available_time_end}</small>}</div>
       <div className="channel-models"><strong>{activeModels.length} 模型</strong><span title={activeModels.map((item) => item.model).join(', ')}>{activeModels.slice(0, 2).map((item) => item.model).join(' · ') || '未配置'}</span></div>
       <div className="channel-limits"><span>RPM {channel.rpm_limit || '不限'}</span><span>并发 {channel.max_concurrency || '不限'}</span>{channel.auth_type === 'api_key' && <span title="有效 Key 会排除禁用或处于冷却中的 Key">Key {channel.effective_key_count ?? channel.key_count}/{channel.key_count}</span>}{cooling && <small className="text-warning" title={cooldownSummary(channel)}>存在冷却</small>}</div>
       <div className="row-actions">
         <a className="icon-button icon-button--surface" href={`#/models?channel=${channel.id}&model=${encodeURIComponent(activeModels[0]?.model || '')}&view=probe`} aria-label={`测试 ${channel.name}`} title="模型测试"><FlaskConical size={16} /></a>
+        <button className="icon-button icon-button--surface" type="button" onClick={diagnose} aria-label={`诊断 ${channel.name} 的路由`} title="路由诊断：查看候选池、策略和排除原因"><Route size={16} /></button>
+        {channel.site_sync_ownership === 'manual' && <button className="icon-button icon-button--surface" type="button" onClick={restoreSync} disabled={busy} aria-label={`恢复 ${channel.name} 自动同步`} title="恢复自动同步"><RefreshCw size={16} /></button>}
         <button className={`icon-button icon-button--surface ${channel.enabled ? 'is-on' : ''}`} type="button" onClick={toggle} disabled={busy} aria-label={channel.enabled ? `停用 ${channel.name}` : `启用 ${channel.name}`} title={channel.enabled ? '停用渠道' : '启用渠道'}><Power className={busy ? 'spin' : ''} size={16} /></button>
         <button className="icon-button icon-button--surface" type="button" onClick={copy} disabled={busy} aria-label={`复制 ${channel.name}`} title="复制渠道"><Copy size={16} /></button>
         <button className="icon-button icon-button--surface" type="button" onClick={edit} aria-label={`编辑 ${channel.name}`} title="编辑"><Pencil size={16} /></button>
@@ -380,9 +521,29 @@ function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remov
 
 interface EditorForm {
   name: string; authType: string; urls: string; models: ChannelModel[]; keys: string; keyStrategy: string
-  priority: number; rpmLimit: number; maxConcurrency: number; costMultiplier: number; dailyCostLimit: number
+  priority: number; rpmLimit: number; maxConcurrency: number; costMultiplier: number | ''; dailyCostLimit: number
   protocolMode: string; proxyURL: string; enabled: boolean; websockets: boolean; retryOtherKeys: boolean
   availableTimeStart: string; availableTimeEnd: string; requestRules: RequestRulesForm; modelDiscoveryProtocol: string
+}
+
+interface KeyDraft {
+  api_key: string
+  note: string
+  allowed_models: string[]
+  model_scope_empty: boolean
+  cost_multiplier: number | ''
+}
+
+function blankKeyDraft(defaultMultiplier: number | ''): KeyDraft {
+  return {
+    api_key: '', note: '', allowed_models: [], model_scope_empty: false,
+    cost_multiplier: typeof defaultMultiplier === 'number' && Number.isFinite(defaultMultiplier) && defaultMultiplier >= 0 ? defaultMultiplier : 1,
+  }
+}
+
+function requiredMultiplier(value: number | '', label: string): number {
+  if (value === '' || !Number.isFinite(value) || value < 0) throw new Error(`${label}必须填写大于等于 0 的数字`)
+  return value
 }
 
 interface HeaderRuleForm {
@@ -415,12 +576,96 @@ const blankEditor: EditorForm = {
   modelDiscoveryProtocol: 'auto',
 }
 
+function OAuthUsagePanel({ usage, loading, error, refresh }: { usage: OAuthUsageSummary | null; loading: boolean; error: string; refresh: () => void }) {
+  return <section className="oauth-usage-panel">
+    <header><div><strong>OAuth 额度</strong><span>{usage ? `${oauthProviderLabel(usage.provider)}${usage.plan_type ? ` · ${usage.plan_type}` : ''}` : '读取当前账号的上游额度窗口'}</span></div><button className="text-button" type="button" onClick={refresh} disabled={loading}>{loading ? <RefreshCw className="spin" size={14} /> : <RefreshCw size={14} />}{loading ? '读取中' : '刷新额度'}</button></header>
+    {loading && !usage ? <div className="oauth-usage-empty">正在向上游读取额度...</div> : error ? <div className="oauth-usage-error"><span>{error}</span><button className="text-button" type="button" onClick={refresh}>重试</button></div> : usage?.windows.length ? <div className="oauth-usage-list">{usage.windows.map((window, index) => {
+      const used = Math.min(100, Math.max(0, window.used_percent))
+      const remaining = Math.min(100, Math.max(0, window.remaining_percent))
+      const level = used >= 90 ? 'critical' : used >= 70 ? 'warning' : 'normal'
+      return <div className={`oauth-usage-row oauth-usage-row--${level}`} key={`${window.limit_name}-${window.kind}-${index}`}><div className="oauth-usage-row-head"><strong>{window.limit_name || '额度窗口'}{window.kind ? ` · ${window.kind}` : ''}</strong><span><b>{Math.round(remaining)}%</b> 剩余</span></div><div className="oauth-usage-track" role="progressbar" aria-label={`${window.limit_name || '额度窗口'}已使用额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(used)}><i style={{ width: `${used}%` }} /></div><small><b>{Math.round(used)}% 已使用</b>{window.limit_window_seconds ? ` · 窗口 ${formatQuotaWindow(window.limit_window_seconds)}` : ' · 窗口时长未知'}{window.reset_at ? ` · 重置于 ${new Date(window.reset_at * 1000).toLocaleString()}` : ' · 重置时间未知'}</small></div>
+    })}</div> : <div className="oauth-usage-empty">上游暂未返回可展示的额度窗口。</div>}
+    {loading && usage && <div className="oauth-usage-refreshing"><RefreshCw className="spin" size={13} />正在刷新，当前数据仍可继续参考</div>}
+  </section>
+}
+
+function oauthProviderLabel(provider: string): string {
+  if (provider === 'codex' || provider === 'codex_oauth') return 'Codex OAuth'
+  if (provider === 'antigravity' || provider === 'antigravity_oauth') return 'Antigravity OAuth'
+  return provider || 'OAuth'
+}
+
+function formatQuotaWindow(seconds: number): string {
+  if (seconds >= 24 * 60 * 60) return `${Math.round(seconds / (24 * 60 * 60))} 天`
+  if (seconds >= 60 * 60) return `${Math.round(seconds / (60 * 60))} 小时`
+  return `${Math.max(1, Math.round(seconds / 60))} 分钟`
+}
+
+type KeyScopeMode = 'all' | 'restricted' | 'paused'
+
+function KeyRowsEditor({ rows, models, defaultMultiplier, onChange }: { rows: KeyDraft[]; models: ChannelModel[]; defaultMultiplier: number | ''; onChange: (rows: KeyDraft[]) => void }) {
+  const availableModels = models.filter((item) => item.model.trim() && !item.disabled)
+  const availableModelNames = new Set(availableModels.map((item) => item.model.trim().toLowerCase()))
+  const update = (index: number, patch: Partial<KeyDraft>) => onChange(rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row))
+  const remove = (index: number) => onChange(rows.filter((_, rowIndex) => rowIndex !== index))
+  const add = () => onChange([...rows, blankKeyDraft(defaultMultiplier)])
+  const setScopeMode = (index: number, row: KeyDraft, mode: KeyScopeMode) => {
+    if (mode === 'all') { update(index, { allowed_models: [], model_scope_empty: false }); return }
+    if (mode === 'paused') { update(index, { model_scope_empty: true }); return }
+    const retained = row.allowed_models.filter((model) => availableModelNames.has(model.trim().toLowerCase()))
+    update(index, { model_scope_empty: false, allowed_models: retained.length ? retained : availableModels[0] ? [availableModels[0].model] : [] })
+  }
+  const toggleScopeModel = (index: number, row: KeyDraft, model: string) => {
+    const normalized = model.trim().toLowerCase()
+    const selected = row.allowed_models.some((item) => item.trim().toLowerCase() === normalized)
+    if (selected && row.allowed_models.length === 1) return
+    update(index, { allowed_models: selected ? row.allowed_models.filter((item) => item.trim().toLowerCase() !== normalized) : [...row.allowed_models, model] })
+  }
+
+  return <section className="key-editor-section">
+    <header className="key-editor-header"><div><strong>渠道 API Keys</strong><span>{rows.length ? `${rows.length} 把 Key · 可单独限制模型和成本` : '还没有添加 Key'}</span></div><button className="text-button" type="button" onClick={add}><Plus size={14} />添加 Key</button></header>
+    <div className="key-editor-help">模型范围留空表示允许该渠道的全部模型；每把 Key 独立计费，新 Key 默认继承渠道默认倍率，0 表示免费。</div>
+    {rows.length ? <div className="key-editor-list">{rows.map((row, index) => {
+      const restricted = row.allowed_models.length > 0
+      const paused = row.model_scope_empty
+      const scopeMode: KeyScopeMode = paused ? 'paused' : restricted ? 'restricted' : 'all'
+      const unavailableModels = row.allowed_models.filter((model) => model !== '*' && !availableModelNames.has(model.trim().toLowerCase()))
+      return <article className="key-editor-row" key={index}>
+        <div className="key-editor-row-head"><span className="key-editor-index">KEY {String(index + 1).padStart(2, '0')}</span><button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除第 ${index + 1} 个 Key`} title="删除 Key"><Trash2 size={15} /></button></div>
+        <div className="key-editor-fields">
+          <label>API Key<input required value={row.api_key} onChange={(event) => update(index, { api_key: event.target.value })} placeholder="sk-..." autoComplete="off" /></label>
+          <label>备注<input value={row.note} onChange={(event) => update(index, { note: event.target.value })} placeholder="例如：主账号 / 备用" /></label>
+          <label>Key 成本倍率<input required type="number" min="0" step="0.01" value={row.cost_multiplier} onChange={(event) => update(index, { cost_multiplier: event.target.value === '' ? '' : Number(event.target.value) })} aria-describedby={`key-multiplier-help-${index}`} /><small id={`key-multiplier-help-${index}`}>{row.cost_multiplier === 0 ? '免费，不计入有效费用' : '覆盖渠道默认倍率'}</small></label>
+        </div>
+        <div className="key-editor-scope">
+          <div className="key-scope-mode" role="radiogroup" aria-label={`第 ${index + 1} 个 Key 的路由范围`}>
+            <label><input type="radio" name={`key-scope-${index}`} checked={scopeMode === 'all'} onChange={() => setScopeMode(index, row, 'all')} /><span>全部模型</span></label>
+            <label title={availableModels.length ? '只让这把 Key 服务选中的渠道模型' : '请先在下方勾选渠道模型'}><input type="radio" name={`key-scope-${index}`} checked={scopeMode === 'restricted'} disabled={!availableModels.length} onChange={() => setScopeMode(index, row, 'restricted')} /><span>指定模型</span></label>
+            <label><input type="radio" name={`key-scope-${index}`} checked={scopeMode === 'paused'} onChange={() => setScopeMode(index, row, 'paused')} /><span>暂停路由</span></label>
+          </div>
+          {scopeMode === 'all' && <span className="key-scope-summary">可服务渠道内全部模型</span>}
+          {scopeMode === 'paused' && <span className="key-scope-summary key-scope-summary--paused">不会参与任何请求{restricted ? ` · 恢复后仍限定 ${row.allowed_models.length} 个模型` : ''}</span>}
+          {scopeMode === 'restricted' && <div className="key-model-scope" role="group" aria-label={`第 ${index + 1} 个 Key 的模型范围`}>{availableModels.map((item) => {
+            const checked = row.allowed_models.some((model) => model.trim().toLowerCase() === item.model.trim().toLowerCase())
+            return <label className={checked ? 'is-selected' : undefined} key={item.model}><input type="checkbox" checked={checked} disabled={checked && row.allowed_models.length === 1} onChange={() => toggleScopeModel(index, row, item.model)} /><span>{item.model}</span></label>
+          })}</div>}
+          {unavailableModels.length > 0 && <p className="key-scope-warning" role="alert">范围中有 {unavailableModels.length} 个模型未在下方选中：{unavailableModels.join('、')}。请重新勾选渠道模型，或将此 Key 改为“全部模型”。</p>}
+        </div>
+      </article>
+    })}</div> : <button className="key-editor-empty" type="button" onClick={add}><Plus size={16} /><span><strong>添加第一把 Key</strong><small>每把 Key 都可以单独设置模型范围和倍率</small></span></button>}
+  </section>
+}
+
 function ChannelEditor({ channelId, close, saved }: { channelId?: number; close: () => void; saved: () => void }) {
   const [snapshot, setSnapshot] = useState<ChannelEditorSnapshot | null>(null)
   const [form, setForm] = useState<EditorForm>(blankEditor)
+  const [keyRows, setKeyRows] = useState<KeyDraft[]>([])
   const [loading, setLoading] = useState(Boolean(channelId))
   const [saving, setSaving] = useState(false)
   const [discovering, setDiscovering] = useState(false)
+  const [oauthUsage, setOAuthUsage] = useState<OAuthUsageSummary | null>(null)
+  const [oauthUsageLoading, setOAuthUsageLoading] = useState(false)
+  const [oauthUsageError, setOAuthUsageError] = useState('')
   const [selectedModelIndexes, setSelectedModelIndexes] = useState<Set<number>>(new Set())
   const [error, setError] = useState('')
 
@@ -429,6 +674,13 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
     const controller = new AbortController()
     void getChannelEditor(channelId, controller.signal).then((data) => {
       setSnapshot(data)
+      setKeyRows(data.keys.map((item) => ({
+        api_key: item.api_key,
+        note: item.note || '',
+        allowed_models: item.allowed_models || [],
+        model_scope_empty: Boolean(item.model_scope_empty),
+        cost_multiplier: item.cost_multiplier ?? 1,
+      })))
       setSelectedModelIndexes(new Set(data.channel.models.map((_, index) => index)))
       setForm({
         name: data.channel.name,
@@ -452,9 +704,30 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
         requestRules: requestRulesToForm(data.channel.custom_request_rules),
         modelDiscoveryProtocol: 'auto',
       })
+      setOAuthUsage(null)
+      setOAuthUsageError('')
+      if (data.channel.auth_type !== 'api_key') {
+        setOAuthUsageLoading(true)
+        void fetchOAuthUsage(data.channel.id, controller.signal).then((usage) => {
+          if (!controller.signal.aborted) setOAuthUsage(usage)
+        }).catch((reason) => {
+          if (!controller.signal.aborted) setOAuthUsageError(reason instanceof Error ? reason.message : '额度读取失败')
+        }).finally(() => {
+          if (!controller.signal.aborted) setOAuthUsageLoading(false)
+        })
+      } else {
+        setOAuthUsageLoading(false)
+      }
     }).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '渠道详情加载失败') }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [channelId])
+
+  const refreshOAuthUsage = async () => {
+    if (!channelId || form.authType === 'api_key') return
+    setOAuthUsageLoading(true); setOAuthUsageError('')
+    try { setOAuthUsage(await fetchOAuthUsage(channelId)) } catch (reason) { setOAuthUsageError(reason instanceof Error ? reason.message : '额度读取失败') }
+    finally { setOAuthUsageLoading(false) }
+  }
 
   useEffect(() => {
     setSelectedModelIndexes((current) => new Set([...current].filter((index) => index >= 0 && index < form.models.length)))
@@ -467,15 +740,23 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
       const selectedModelNames = new Set(models.map((item) => item.model.toLowerCase()))
       const scheduledCheckModel = snapshot?.channel.scheduled_check_model?.trim() || ''
       const customRequestRules = requestRulesToPayload(form.requestRules)
+      const apiKeys = form.authType === 'api_key' ? keyRows.filter((item) => item.api_key.trim()).map((item, index) => ({
+        api_key: item.api_key.trim(), note: item.note.trim(), allowed_models: item.allowed_models,
+        model_scope_empty: item.model_scope_empty, cost_multiplier: requiredMultiplier(item.cost_multiplier, `第 ${index + 1} 把 Key 的成本倍率`),
+      })) : []
+      for (const [index, key] of apiKeys.entries()) {
+        const unavailableModels = key.allowed_models.filter((model) => model !== '*' && !selectedModelNames.has(model.trim().toLowerCase()))
+        if (unavailableModels.length) throw new Error(`第 ${index + 1} 把 Key 的模型范围包含未选中的渠道模型：${unavailableModels.join('、')}`)
+      }
       const payload: ChannelMutation = {
         name: form.name.trim(), auth_type: form.authType,
-        urls: parseURLs(form.urls), models, api_keys: form.authType === 'api_key' ? parseKeys(form.keys) : [],
+        urls: parseURLs(form.urls), models, api_keys: apiKeys,
         ...(form.authType === 'api_key' ? { key_strategy: form.keyStrategy } : {}),
         priority: Number(form.priority) || 0, rpm_limit: Number(form.rpmLimit) || 0,
         max_concurrency: Number(form.maxConcurrency) || 0, enabled: form.enabled, websockets: form.websockets,
         protocol_transform_mode: form.protocolMode, scheduled_check_enabled: snapshot?.channel.scheduled_check_enabled || false,
         scheduled_check_model: selectedModelNames.has(scheduledCheckModel.toLowerCase()) ? scheduledCheckModel : '', daily_cost_limit: Number(form.dailyCostLimit) || 0,
-        cost_multiplier: Number(form.costMultiplier), proxy_url: form.proxyURL.trim(), retry_other_keys_on_failure: form.retryOtherKeys,
+        cost_multiplier: requiredMultiplier(form.costMultiplier, '渠道默认成本倍率'), proxy_url: form.proxyURL.trim(), retry_other_keys_on_failure: form.retryOtherKeys,
         available_time_start: form.availableTimeStart, available_time_end: form.availableTimeEnd,
         custom_request_rules: customRequestRules, cooldown_detection_rules: snapshot?.channel.cooldown_detection_rules,
       }
@@ -491,7 +772,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
 
   const discoverModels = async () => {
     const urls = parseURLs(form.urls)
-    const keys = parseKeys(form.keys).map((item) => item.api_key)
+    const keys = keyRows.map((item) => item.api_key.trim()).filter(Boolean)
     if (!urls.length || !keys.length) { setError('请先填写上游 URL 和 API Key'); return }
     setDiscovering(true); setError('')
     try {
@@ -513,7 +794,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
         <label>协议转换<select value={form.protocolMode} onChange={(event) => setForm({ ...form, protocolMode: event.target.value })}><option value="auto">自动协商</option><option value="local">本地转换</option><option value="upstream">上游原生</option></select></label>
         <label>Key 分配<select value={form.keyStrategy} onChange={(event) => setForm({ ...form, keyStrategy: event.target.value })} disabled={form.authType !== 'api_key'}><option value="sequential">顺序</option><option value="round_robin">轮询</option></select></label>
         <label>优先级<input type="number" value={form.priority} onChange={(event) => setForm({ ...form, priority: Number(event.target.value) })} /></label>
-        <label>成本倍率<input type="number" min="0" step="0.01" value={form.costMultiplier} onChange={(event) => setForm({ ...form, costMultiplier: Number(event.target.value) })} /></label>
+        <label>渠道默认倍率<input required type="number" min="0" step="0.01" value={form.costMultiplier} onChange={(event) => setForm({ ...form, costMultiplier: event.target.value === '' ? '' : Number(event.target.value) })} /><small>{form.authType === 'api_key' ? '新 Key 的初始值，实际费用按 Key 计算' : form.costMultiplier === 0 ? '免费，不计入有效费用' : '用于该 OAuth 渠道的有效费用'}</small></label>
         <label>RPM 限制<input type="number" min="0" value={form.rpmLimit} onChange={(event) => setForm({ ...form, rpmLimit: Number(event.target.value) })} /></label>
         <label>最大并发<input type="number" min="0" value={form.maxConcurrency} onChange={(event) => setForm({ ...form, maxConcurrency: Number(event.target.value) })} /></label>
         <label>每日费用限额<input type="number" min="0" step="0.01" value={form.dailyCostLimit} onChange={(event) => setForm({ ...form, dailyCostLimit: Number(event.target.value) })} /></label>
@@ -521,9 +802,10 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
         <label>可用结束<input type="time" value={form.availableTimeEnd} onChange={(event) => setForm({ ...form, availableTimeEnd: event.target.value })} /></label>
         <label>渠道代理<input value={form.proxyURL} onChange={(event) => setForm({ ...form, proxyURL: event.target.value })} placeholder="留空使用环境代理" /></label>
       </div>
+      {channelId && form.authType !== 'api_key' && <OAuthUsagePanel usage={oauthUsage} loading={oauthUsageLoading} error={oauthUsageError} refresh={() => void refreshOAuthUsage()} />}
       <div className="form-help">可用时段按服务器本地时间判断；留空表示全天，开始晚于结束时按跨午夜窗口处理。窗口外渠道不会参与路由或定时巡检。</div>
       <label className="textarea-field">上游 URL<textarea required rows={3} value={form.urls} onChange={(event) => setForm({ ...form, urls: event.target.value })} placeholder="每行一个；可写 URL | anthropic, openai" /></label>
-      {form.authType === 'api_key' ? <label className="textarea-field">API Keys<textarea required rows={4} value={form.keys} onChange={(event) => setForm({ ...form, keys: event.target.value })} placeholder="每行一个；可写 key | 备注" /></label> : <div className="form-help">OAuth 渠道不在这里手填密钥，请使用顶部"导入凭证"导入 Codex 或 Antigravity 凭证文件。</div>}
+      {form.authType === 'api_key' ? <KeyRowsEditor rows={keyRows} models={form.models.filter((_, index) => selectedModelIndexes.has(index))} defaultMultiplier={form.costMultiplier} onChange={setKeyRows} /> : <div className="form-help">OAuth 渠道不在这里手填密钥，请使用顶部"导入凭证"导入 Codex 或 Antigravity 凭证文件。</div>}
       {form.authType === 'api_key' && <div className="model-discovery-action">
         <div>
           <strong>自动获取模型</strong>
@@ -531,7 +813,7 @@ function ChannelEditor({ channelId, close, saved }: { channelId?: number; close:
         </div>
         <div className="model-discovery-controls">
           <label>发现协议<select value={form.modelDiscoveryProtocol} onChange={(event) => setForm({ ...form, modelDiscoveryProtocol: event.target.value })}><option value="auto">自动尝试</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="codex">Codex</option><option value="gemini">Gemini</option></select></label>
-          <button className="secondary-button" type="button" onClick={() => void discoverModels()} disabled={discovering || !form.urls.trim() || !form.keys.trim()}>{discovering ? <RefreshCw className="spin" size={15} /> : <Sparkles size={15} />}{discovering ? '获取中' : '获取模型'}</button>
+          <button className="secondary-button" type="button" onClick={() => void discoverModels()} disabled={discovering || !form.urls.trim() || !keyRows.some((row) => row.api_key.trim())}>{discovering ? <RefreshCw className="spin" size={15} /> : <Sparkles size={15} />}{discovering ? '获取中' : '获取模型'}</button>
         </div>
       </div>}
       <EditableModelList models={form.models} selected={selectedModelIndexes} onSelectionChange={setSelectedModelIndexes} onChange={(models) => setForm((current) => ({ ...current, models }))} />
@@ -698,7 +980,7 @@ function snapshotToMutation(snapshot: ChannelEditorSnapshot, name: string): Chan
   return {
     name,
     auth_type: channel.auth_type,
-    api_keys: snapshot.keys.map((item) => ({ api_key: item.api_key, note: item.note })),
+    api_keys: snapshot.keys.map((item) => ({ api_key: item.api_key, note: item.note, allowed_models: item.allowed_models, model_scope_empty: item.model_scope_empty, cost_multiplier: item.cost_multiplier })),
     key_strategy: channel.key_strategy || snapshot.keys[0]?.key_strategy || 'sequential',
     urls: channel.urls,
     priority: channel.priority || 0,

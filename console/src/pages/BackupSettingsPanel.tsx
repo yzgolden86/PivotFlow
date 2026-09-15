@@ -7,6 +7,7 @@ import {
   exportBackup, getBackupWebDAV, importBackup, restoreBackupFromWebDAV,
   updateBackupWebDAV, uploadBackupToWebDAV,
 } from '../api'
+import HelpTip from '../components/HelpTip'
 import type { BackupDocument, BackupImportResult, BackupType, BackupWebDAVConfig } from '../types'
 import { ErrorState, LoadingState, OperationNotice, formatTime } from './shared'
 import { siteErrorMessage } from './siteShared'
@@ -160,14 +161,14 @@ export function BackupSettingsPanel() {
     <div className="backup-security-note"><ShieldAlert size={18} /><div><strong>备份包含敏感凭证</strong><p>完整备份和连接备份包含账号凭证、上游密钥与下游令牌。请仅保存到可信设备或受保护的 WebDAV 空间。</p></div></div>
 
     <section className="backup-block">
-      <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--green"><DatabaseBackup size={20} /></span><div><h2>导出配置</h2><p>按用途选择备份范围，不会导出请求日志、公告缓存和运行统计</p></div></header>
+      <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--green"><DatabaseBackup size={20} /></span><div><div className="heading-with-hint"><h2>导出配置</h2><HelpTip label="导出配置" text="不会导出请求日志、公告缓存和运行统计" /></div></div></header>
       <div className="backup-type-grid">
-        {backupTypes.map((item) => <article className={`backup-type-card backup-type-card--${item.tone}`} key={item.value}><span><FileJson size={19} /></span><div><strong>{item.label}</strong><p>{item.detail}</p></div><button className="secondary-button" type="button" onClick={() => download(item.value)} disabled={Boolean(busy)}>{busy === `download-${item.value}` ? <RefreshCw className="spin" size={15} /> : <Download size={15} />}导出</button></article>)}
+        {backupTypes.map((item) => <article className={`backup-type-card backup-type-card--${item.tone}`} key={item.value}><span><FileJson size={19} /></span><div className="heading-with-hint"><strong>{item.label}</strong><HelpTip label={item.label} text={item.detail} /></div><button className="secondary-button" type="button" onClick={() => download(item.value)} disabled={Boolean(busy)}>{busy === `download-${item.value}` ? <RefreshCw className="spin" size={15} /> : <Download size={15} />}导出</button></article>)}
       </div>
     </section>
 
     <section className="backup-block">
-      <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--blue"><Upload size={20} /></span><div><h2>从文件导入</h2><p>先检查文件类型与范围，确认后再写入当前实例</p></div></header>
+      <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--blue"><Upload size={20} /></span><div><h2>从文件导入</h2></div></header>
       <div className={`backup-dropzone${pendingFile ? ' has-file' : ''}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void inspectFile(event.dataTransfer.files[0]) }}>
         <input ref={inputRef} type="file" accept="application/json,.json" onChange={(event) => void inspectFile(event.target.files?.[0])} />
         <FileJson size={28} />
@@ -178,7 +179,7 @@ export function BackupSettingsPanel() {
     </section>
 
     <form className="backup-block webdav-form" onSubmit={saveWebDAV}>
-      <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--amber"><CloudUpload size={20} /></span><div><h2>WebDAV 备份</h2><p>用于 NAS、坚果云等支持 WebDAV 的存储空间</p></div><BackupSwitch checked={form.enabled} change={(enabled) => setForm((current) => ({ ...current, enabled }))} label="启用 WebDAV" /></header>
+      <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--amber"><CloudUpload size={20} /></span><div><h2>WebDAV 备份</h2></div><BackupSwitch checked={form.enabled} change={(enabled) => setForm((current) => ({ ...current, enabled }))} label="启用 WebDAV" /></header>
       <div className="webdav-fields">
         <label className="webdav-url"><span>WebDAV 地址</span><input type="url" value={form.file_url} onChange={(event) => setForm((current) => ({ ...current, file_url: event.target.value }))} placeholder="https://dav.example.com/PivotFlow" /><small>填写目录地址会自动保存为 pivotflow-backup.json；也支持指定 JSON 文件地址。</small></label>
         <label><span>用户名</span><input value={form.username} onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))} autoComplete="username" /></label>

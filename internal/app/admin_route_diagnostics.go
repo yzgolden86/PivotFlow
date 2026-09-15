@@ -36,6 +36,7 @@ type ChannelRouteDiagnostic struct {
 	HealthSampleCount     int64                   `json:"health_sample_count"`
 	ExactModelMatch       bool                    `json:"exact_model_match"`
 	FuzzyModelMatch       bool                    `json:"fuzzy_model_match"`
+	ModelEligibleKeyCount int                     `json:"model_eligible_key_count"`
 	ActiveKeyCount        int                     `json:"active_key_count"`
 	EnabledKeyCount       int                     `json:"enabled_key_count"`
 	RPMLimit              int                     `json:"rpm_limit"`
@@ -47,18 +48,34 @@ type ChannelRouteDiagnostic struct {
 	HigherPriorityCount   int                     `json:"higher_priority_count"`
 	SamePriorityCount     int                     `json:"same_priority_count"`
 	EstimatedTrafficShare float64                 `json:"estimated_traffic_share"`
+	ActualRequests        int64                   `json:"actual_requests"`
+	ActualShare           float64                 `json:"actual_share"`
 	Reasons               []RouteDiagnosticReason `json:"reasons"`
 }
 
+// RouteDiagnosticSticky is a read-only snapshot of the current sticky-route
+// preference. It reports what the router remembers, not a prediction.
+type RouteDiagnosticSticky struct {
+	ChannelID       int64     `json:"channel_id"`
+	ChannelName     string    `json:"channel_name"`
+	RememberedAt    time.Time `json:"remembered_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	InCandidatePool bool      `json:"in_candidate_pool"`
+}
+
 type RouteDiagnosticResponse struct {
-	Model              string                   `json:"model"`
-	ClientProtocol     string                   `json:"client_protocol"`
-	TokenID            int64                    `json:"token_id,omitempty"`
-	PoolMode           string                   `json:"pool_mode"`
-	HealthScoreEnabled bool                     `json:"health_score_enabled"`
-	Target             ChannelRouteDiagnostic   `json:"target"`
-	Candidates         []ChannelRouteDiagnostic `json:"candidates"`
-	Summary            []string                 `json:"summary"`
+	Model               string                   `json:"model"`
+	ClientProtocol      string                   `json:"client_protocol"`
+	TokenID             int64                    `json:"token_id,omitempty"`
+	RouteStrategy       string                   `json:"route_strategy"`
+	PoolMode            string                   `json:"pool_mode"`
+	HealthScoreEnabled  bool                     `json:"health_score_enabled"`
+	Target              ChannelRouteDiagnostic   `json:"target"`
+	Candidates          []ChannelRouteDiagnostic `json:"candidates"`
+	Sticky              *RouteDiagnosticSticky   `json:"sticky,omitempty"`
+	ActualWindow        string                   `json:"actual_window"`
+	ActualTotalRequests int64                    `json:"actual_total_requests"`
+	Summary             []string                 `json:"summary"`
 }
 
 type routeDiagnosticState struct {
@@ -139,10 +156,12 @@ func (s *Server) buildChannelRouteDiagnostics(
 		costs = s.costCache.GetAll()
 	}
 
+	var token *model.AuthToken
 	var tokenRestriction model.ChannelRestriction
 	var tokenHasRestriction bool
 	if tokenID > 0 {
-		token, tokenErr := s.store.GetAuthToken(ctx, tokenID)
+		var tokenErr error
+		token, tokenErr = s.store.GetAuthToken(ctx, tokenID)
 		if tokenErr != nil {
 			return RouteDiagnosticResponse{}, tokenErr
 		}
@@ -218,19 +237,38 @@ func (s *Server) buildChannelRouteDiagnostics(
 		state.diagnostic.Reasons = s.routeDiagnosticReasons(state, poolMode, len(exactAvailable) > 0)
 	}
 
+	actualWindow := "今日（本机时区 00:00 起）"
+	actualCounts, actualTotal, err := s.routeDiagnosticActualCounts(ctx, now, modelName, tokenID)
+	if err != nil {
+		return RouteDiagnosticResponse{}, err
+	}
+	for _, state := range states {
+		count := actualCounts[state.cfg.ID]
+		state.diagnostic.ActualRequests = count
+		if actualTotal > 0 {
+			state.diagnostic.ActualShare = float64(count) / float64(actualTotal)
+		}
+	}
+
 	candidates := make([]ChannelRouteDiagnostic, 0, len(pool))
 	for _, state := range pool {
 		candidates = append(candidates, state.diagnostic)
 	}
 
 	response := RouteDiagnosticResponse{
-		Model:              modelName,
-		ClientProtocol:     clientProtocol,
-		TokenID:            tokenID,
-		PoolMode:           poolMode,
-		HealthScoreEnabled: healthEnabled,
-		Target:             target.diagnostic,
-		Candidates:         candidates,
+		Model:               modelName,
+		ClientProtocol:      clientProtocol,
+		TokenID:             tokenID,
+		RouteStrategy:       normalizeRouteStrategy(s.routeStrategyMode),
+		PoolMode:            poolMode,
+		HealthScoreEnabled:  healthEnabled,
+		Target:              target.diagnostic,
+		Candidates:          candidates,
+		ActualWindow:        actualWindow,
+		ActualTotalRequests: actualTotal,
+	}
+	if response.RouteStrategy == RouteStrategySticky && token != nil {
+		response.Sticky = s.routeDiagnosticSticky(token, modelName, now, cfgs, pool)
 	}
 	if !response.Target.Candidate {
 		response.Target.CandidatePosition = 0
@@ -240,6 +278,62 @@ func (s *Server) buildChannelRouteDiagnostics(
 	}
 	response.Summary = routeDiagnosticSummary(response)
 	return response, nil
+}
+
+// routeDiagnosticActualCounts reads persisted proxy logs. Unlike the
+// theoretical share, these numbers are historical facts from request logs.
+func (s *Server) routeDiagnosticActualCounts(ctx context.Context, now time.Time, modelName string, tokenID int64) (map[int64]int64, int64, error) {
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	filter := &model.LogFilter{
+		Model:     modelName,
+		LogSource: model.LogSourceProxy,
+	}
+	if tokenID > 0 {
+		filter.AuthTokenID = &tokenID
+	}
+	stats, err := s.store.GetStatsLite(ctx, dayStart, now, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	counts := make(map[int64]int64, len(stats))
+	var total int64
+	for _, stat := range stats {
+		if stat.ChannelID == nil {
+			continue
+		}
+		channelID := int64(*stat.ChannelID)
+		counts[channelID] += int64(stat.Total)
+		total += int64(stat.Total)
+	}
+	return counts, total, nil
+}
+
+func (s *Server) routeDiagnosticSticky(token *model.AuthToken, modelName string, now time.Time, cfgs []*model.Config, pool []*routeDiagnosticState) *RouteDiagnosticSticky {
+	if token == nil || s.stickyRouter == nil {
+		return nil
+	}
+	entry, ok := s.stickyRouter.snapshot(stickyScopeKey(token.Token), modelName, now)
+	if !ok {
+		return nil
+	}
+	result := &RouteDiagnosticSticky{
+		ChannelID:    entry.ChannelID,
+		RememberedAt: entry.RememberedAt,
+		ExpiresAt:    entry.RememberedAt.Add(stickyEntryTTL),
+	}
+	for _, state := range pool {
+		if state != nil && state.cfg.ID == entry.ChannelID {
+			result.InCandidatePool = true
+			break
+		}
+	}
+	for _, cfg := range cfgs {
+		if cfg != nil && cfg.ID == entry.ChannelID {
+			result.ChannelName = cfg.Name
+			break
+		}
+	}
+	return result
 }
 
 func (s *Server) newRouteDiagnosticState(
@@ -292,12 +386,17 @@ func (s *Server) newRouteDiagnosticState(
 			continue
 		}
 		state.diagnostic.EnabledKeyCount++
+		if !key.AllowsModel(modelName) {
+			continue
+		}
+		state.diagnostic.ModelEligibleKeyCount++
 		if until := cooldowns.keys[cfg.ID][key.KeyIndex]; !until.After(now) {
 			state.diagnostic.ActiveKeyCount++
 		}
 	}
 	if cfg.UsesOAuth() {
 		state.diagnostic.EnabledKeyCount = 1
+		state.diagnostic.ModelEligibleKeyCount = 1
 		state.diagnostic.ActiveKeyCount = 1
 	}
 	return state
@@ -458,8 +557,10 @@ func (s *Server) routeDiagnosticReasons(state *routeDiagnosticState, poolMode st
 	}
 	if !state.cfg.UsesOAuth() && state.diagnostic.EnabledKeyCount == 0 {
 		add("no_enabled_key", "渠道没有启用的上游 Key。", true)
+	} else if !state.cfg.UsesOAuth() && state.diagnostic.ModelEligibleKeyCount == 0 {
+		add("key_model_scope", "启用的上游 Key 都不允许当前请求模型。", true)
 	} else if !state.cfg.UsesOAuth() && state.diagnostic.ActiveKeyCount == 0 {
-		add("all_keys_cooling", "所有启用 Key 当前都在冷却。", true)
+		add("all_keys_cooling", "所有允许当前模型的 Key 当前都在冷却。", true)
 	}
 	if state.tokenRejected {
 		add("token_channel_restriction", "所选下游令牌不允许使用此渠道。", true)
@@ -474,7 +575,7 @@ func (s *Server) routeDiagnosticReasons(state *routeDiagnosticState, poolMode st
 		if state.diagnostic.HigherPriorityCount > 0 {
 			add("higher_priority_candidates", fmt.Sprintf("前面还有 %d 个更高%s渠道；它们成功后不会继续尝试本渠道。", state.diagnostic.HigherPriorityCount, map[bool]string{true: "有效优先级", false: "优先级"}[s.healthCache != nil && s.healthCache.Config().Enabled]), false)
 		} else if state.diagnostic.SamePriorityCount > 1 {
-			add("smooth_weighted_round_robin", fmt.Sprintf("已进入最高优先级组；同组 %d 个渠道按有效 Key 数平滑轮询，当前理论份额约 %.1f%%。", state.diagnostic.SamePriorityCount, state.diagnostic.EstimatedTrafficShare*100), false)
+			add("smooth_weighted_round_robin", fmt.Sprintf("已进入最高优先级组；同组 %d 个渠道按允许当前模型的可用 Key 数平滑轮询，当前理论份额约 %.1f%%。", state.diagnostic.SamePriorityCount, state.diagnostic.EstimatedTrafficShare*100), false)
 		} else {
 			add("first_candidate", "当前是此模型的首选候选渠道。", false)
 		}
@@ -508,7 +609,7 @@ func routeDiagnosticSummary(result RouteDiagnosticResponse) []string {
 	}
 	if target.SamePriorityCount > 1 {
 		return []string{
-			fmt.Sprintf("当前位于最高优先级轮询组，理论流量份额约 %.1f%%。", target.EstimatedTrafficShare*100),
+			fmt.Sprintf("当前位于最高优先级轮询组，理论流量份额约 %.1f%%；该份额按允许当前模型的可用 Key 数计算。", target.EstimatedTrafficShare*100),
 			"实际单次请求在首个渠道成功后就会结束，不会把同一请求发送给所有同级渠道。",
 		}
 	}

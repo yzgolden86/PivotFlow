@@ -1792,6 +1792,114 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 	}
 }
 
+func TestHandleCreateChannel_InheritsChannelMultiplierForUnspecifiedKeys(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	free := 0.0
+	createPayload := ChannelRequest{
+		Name:           "key-multiplier-inherit",
+		URLs:           model.ChannelURLs{{URL: "https://api.example.com"}},
+		CostMultiplier: 0.42,
+		APIKeys: []ChannelAPIKeyRequest{
+			{APIKey: "sk-inherited"},
+			{APIKey: "sk-free", CostMultiplier: &free},
+		},
+		Models:  []model.ModelEntry{{Model: "model-1"}},
+		Enabled: true,
+	}
+
+	ctx, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", createPayload))
+	server.handleCreateChannel(ctx)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create channel status=%d body=%s", w.Code, w.Body.String())
+	}
+	created := mustParseAPIResponse[*model.Config](t, w.Body.Bytes()).Data
+	keys, err := store.GetAPIKeys(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("get created keys: %v", err)
+	}
+	if len(keys) != 2 || keys[0].CostMultiplier != 0.42 || keys[1].CostMultiplier != 0 {
+		t.Fatalf("created key multipliers=%v, want [0.42 0]", []float64{keys[0].CostMultiplier, keys[1].CostMultiplier})
+	}
+}
+
+func TestHandleCreateChannel_InheritsFreeChannelMultiplier(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	createPayload := ChannelRequest{
+		Name:           "free-channel-key-inherit",
+		URLs:           model.ChannelURLs{{URL: "https://api.example.com"}},
+		CostMultiplier: 0,
+		APIKeys:        []ChannelAPIKeyRequest{{APIKey: "sk-inherited-free"}},
+		Models:         []model.ModelEntry{{Model: "model-1"}},
+		Enabled:        true,
+	}
+
+	reqCtx, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", createPayload))
+	server.handleCreateChannel(reqCtx)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create free channel status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	created := mustParseAPIResponse[*model.Config](t, w.Body.Bytes()).Data
+	keys, err := store.GetAPIKeys(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("get created free channel keys: %v", err)
+	}
+	if len(keys) != 1 || keys[0].CostMultiplier != 0 {
+		t.Fatalf("created free channel key multipliers=%v, want [0]", []float64{keys[0].CostMultiplier})
+	}
+}
+
+func TestHandleUpdateChannel_NewKeyInheritsFreeChannelMultiplier(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:           "free-channel-update",
+		URLs:           model.ChannelURLs{{URL: "https://api.example.com"}},
+		CostMultiplier: 0,
+		ModelEntries:   []model.ModelEntry{{Model: "model-1"}},
+		Enabled:        true,
+	})
+	if err != nil {
+		t.Fatalf("create free update channel: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-old",
+		KeyStrategy: model.KeyStrategyRoundRobin, CostMultiplier: 0.75, CostMultiplierSet: true,
+	}}); err != nil {
+		t.Fatalf("create original key: %v", err)
+	}
+
+	payload := ChannelRequest{
+		Name:           created.Name,
+		URLs:           created.URLs,
+		CostMultiplier: 0,
+		APIKeys: []ChannelAPIKeyRequest{
+			{APIKey: "sk-old"},
+			{APIKey: "sk-new-free"},
+		},
+		Models:  created.ModelEntries,
+		Enabled: true,
+	}
+	reqCtx, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+strconv.FormatInt(created.ID, 10), payload))
+	server.handleUpdateChannel(reqCtx, created.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update free channel status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	keys, err := store.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get updated keys: %v", err)
+	}
+	if len(keys) != 2 || keys[0].CostMultiplier != 0.75 || keys[1].CostMultiplier != 0 {
+		t.Fatalf("updated key multipliers=%v, want [0.75 0]", []float64{keys[0].CostMultiplier, keys[1].CostMultiplier})
+	}
+}
 func TestHandleUpdateChannel_PrunesURLSelectorState(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

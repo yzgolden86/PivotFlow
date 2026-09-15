@@ -867,4 +867,38 @@ func TestGetStats_PreservesZeroCostMultiplierForFreeChannels(t *testing.T) {
 	if *stats[0].EffectiveCost != 0 {
 		t.Fatalf("expected effective_cost=0, got %v", *stats[0].EffectiveCost)
 	}
+	if stats[0].ActualCostMultiplierMin == nil || stats[0].ActualCostMultiplierMax == nil ||
+		*stats[0].ActualCostMultiplierMin != 0 || *stats[0].ActualCostMultiplierMax != 0 {
+		t.Fatalf("actual multiplier range=(%v,%v), want (0,0)", stats[0].ActualCostMultiplierMin, stats[0].ActualCostMultiplierMax)
+	}
+}
+
+func TestGetStats_ReportsActualCostMultiplierRange(t *testing.T) {
+	store := newTestStore(t, "metrics_multiplier_range.db")
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name: "mixed-key-costs", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
+		CostMultiplier: 1, ModelEntries: []model.ModelEntry{{Model: "gpt-5.4"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	now := time.Now()
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-5.4", StatusCode: 200, Cost: 1, CostMultiplier: 0.8, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-5.4", StatusCode: 200, Cost: 1, CostMultiplier: 1.2, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-5.4", StatusCode: 499, Cost: 1, CostMultiplier: 9, LogSource: model.LogSourceProxy},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+	stats, err := store.GetStats(ctx, now.Add(-time.Minute), now.Add(time.Minute), nil, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+	if len(stats) != 1 || stats[0].ActualCostMultiplierMin == nil || stats[0].ActualCostMultiplierMax == nil {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+	if *stats[0].ActualCostMultiplierMin != 0.8 || *stats[0].ActualCostMultiplierMax != 1.2 {
+		t.Fatalf("actual multiplier range=(%v,%v), want (0.8,1.2)", *stats[0].ActualCostMultiplierMin, *stats[0].ActualCostMultiplierMax)
+	}
 }

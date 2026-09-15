@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, Clock3, KeyRound, Play, Power, RefreshCw, ShieldCheck, Square, Trash2 } from 'lucide-react'
 import { deleteChannelKey, getChannelKeyHealth, setChannelKeyEnabled, testChannel } from '../api'
+import HelpTip from '../components/HelpTip'
 import type { ChannelKeyHealthItem, ChannelKeyHealthSnapshot } from '../types'
 import { EmptyState, ErrorState, LoadingState } from './shared'
 import { Modal, siteErrorMessage } from './siteShared'
@@ -124,7 +125,7 @@ export default function ChannelKeysModal({ channelId, close, changed }: { channe
 
   return <Modal title={`Key 健康管理${snapshot ? ` · ${snapshot.channel_name}` : ''}`} close={close} wide>
     <div className="key-health-panel" ref={bodyRef}>
-      <div className="key-health-intro"><span className="key-health-emblem"><ShieldCheck size={23} aria-hidden="true" /></span><div><strong>找到需要处理的 Key</strong><p>正常调用会自动更新状态；未使用的 Key 可手动复检。检测结果与停用、冷却分别显示。</p></div><button type="button" className="icon-button icon-button--surface" aria-label="刷新 Key 状态" title="只读取状态，不发起模型调用" disabled={busy} onClick={() => void reload()}><RefreshCw size={16} /></button></div>
+      <div className="key-health-intro"><span className="key-health-emblem"><ShieldCheck size={23} aria-hidden="true" /></span><div className="heading-with-hint"><strong>找到需要处理的 Key</strong><HelpTip label="Key 健康状态" text="正常调用会自动更新状态；未使用的 Key 可手动复检。检测结果与停用、冷却分别显示。" /></div><button type="button" className="icon-button icon-button--surface" aria-label="刷新 Key 状态" title="只读取状态，不发起模型调用" disabled={busy} onClick={() => void reload()}><RefreshCw size={16} /></button></div>
       {error && <div className="key-health-message key-health-message--error" role="alert"><AlertCircle size={16} /><span>{error}</span></div>}
       {notice && <div className="key-health-message" role="status"><CheckCircle2 size={16} /><span>{notice}</span></div>}
       {loading ? <LoadingState label="正在读取 Key 状态" /> : !snapshot ? <ErrorState message="Key 状态暂时不可用" retry={() => void reload()} /> : <>
@@ -137,8 +138,10 @@ export default function ChannelKeysModal({ channelId, close, changed }: { channe
         {visible.length === 0 ? <EmptyState label={keys.length ? '此筛选下没有 Key' : '此渠道尚未配置 Key，请在渠道编辑中添加'} /> : <div className="key-health-list">{visible.map((key) => {
           const status = keyHealthLabel(key)
           const cooling = key.cooldown_until * 1000 > Date.now()
+          const scopeLabel = key.model_scope_empty ? '不参与路由' : key.allowed_models?.length ? `限定 ${key.allowed_models.length} 个模型` : '全部模型'
+          const multiplier = key.cost_multiplier ?? 1
           return <article className={`key-health-card${key.disabled ? ' is-disabled' : ''}`} key={key.id} aria-label={`Key #${key.key_index + 1}`}>
-            <div className="key-health-card-main"><span className="key-health-key-icon"><KeyRound size={17} aria-hidden="true" /></span><div className="key-health-identity"><strong>Key #{key.key_index + 1}<code>{key.masked_key}</code></strong><span title={key.note}>{key.note || '未添加备注'}</span></div><div className="key-health-badges"><span className={`status-badge status-badge--${status.tone}`}>{status.label}</span>{key.disabled && <span className="status-badge status-badge--muted">已停用</span>}{cooling && <span className="status-badge status-badge--warning" title={`冷却至 ${new Date(key.cooldown_until * 1000).toLocaleString()}`}>冷却中</span>}</div></div>
+            <div className="key-health-card-main"><span className="key-health-key-icon"><KeyRound size={17} aria-hidden="true" /></span><div className="key-health-identity"><strong>Key #{key.key_index + 1}<code>{key.masked_key}</code></strong><span title={key.note}>{key.note || '未添加备注'}</span></div><div className="key-health-badges"><span className={`status-badge status-badge--${status.tone}`}>{status.label}</span><span className="status-badge status-badge--muted">{scopeLabel}</span><span className="status-badge status-badge--muted">倍率 ×{multiplier}</span>{key.disabled && <span className="status-badge status-badge--muted">已停用</span>}{cooling && <span className="status-badge status-badge--warning" title={`冷却至 ${new Date(key.cooldown_until * 1000).toLocaleString()}`}>冷却中</span>}</div></div>
             <p className="key-health-reason">{key.health.reason || '尚无检测记录，不代表可用或失效。可点击复检，或等待实际请求。'}</p>
             <footer><span className="key-health-time">{key.health.checked_at ? <>最近检测 <time dateTime={new Date(key.health.checked_at).toISOString()}>{new Date(key.health.checked_at).toLocaleString()}</time>{key.health.status_code > 0 && <small>状态码 {key.health.status_code}</small>}</> : '最近检测 —'}</span><div className="key-health-actions"><button className="secondary-button" type="button" disabled={busy || !model} aria-label={`复检 Key #${key.key_index + 1}`} onClick={() => void runChecks([key])}><RefreshCw size={13} className={checking === key.id ? 'spin' : ''} />复检</button><button className="secondary-button" type="button" disabled={busy} aria-label={`${key.disabled ? '启用' : '停用'} Key #${key.key_index + 1}`} onClick={() => void manage(key, false)}><Power size={13} />{key.disabled ? '启用' : '停用'}</button><button className="icon-button icon-button--surface danger-button" type="button" disabled={busy} title="删除此 Key" aria-label={`删除 Key #${key.key_index + 1}`} onClick={() => void manage(key, true)}><Trash2 size={15} /></button></div></footer>
           </article>

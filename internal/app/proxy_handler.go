@@ -213,21 +213,26 @@ func extractModelFromMultipart(body []byte, boundary string) string {
 func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, originalModel string, clientProtocol string) ([]*model.Config, error) {
 	requestMethod := c.Request.Method
 	requestFamily := protocol.DetectRequestFamily(c.Request.URL.Path)
+	tokenHash := ""
+	if value, ok := c.Get("token_hash"); ok {
+		tokenHash, _ = value.(string)
+	}
+	stickyScope := stickyScopeKey(tokenHash)
 
 	// 智能路由选择：根据请求类型选择不同的路由策略
 	if requestMethod == http.MethodGet && clientProtocol == util.ProtocolGemini {
 		// Gemini 模型列表请求仍可路由到任意启用渠道。
-		return s.selectCandidatesByClientProtocol(ctx, util.ProtocolGemini)
+		return s.selectCandidatesByClientProtocol(ctx, util.ProtocolGemini, stickyScope)
 	}
 
 	if clientProtocol == "" {
 		return nil, errUnknownClientProtocol
 	}
 	if requestFamily == protocol.RequestFamilyAlphaSearch {
-		return s.selectAlphaSearchCandidates(ctx, originalModel)
+		return s.selectAlphaSearchCandidates(ctx, originalModel, stickyScope)
 	}
 
-	return s.selectCandidatesByModelAndClientProtocol(ctx, originalModel, clientProtocol)
+	return s.selectCandidatesByModelAndClientProtocol(ctx, originalModel, clientProtocol, stickyScope)
 }
 
 // ============================================================================
@@ -569,6 +574,7 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 	stopAfterFailure func(current, next *model.Config, result *proxyResult) bool,
 ) (lastResult *proxyResult, succeeded bool) {
 	sawAlphaSearchUnsupported := false
+	stickyScope := stickyScopeKey(reqCtx.tokenHash)
 	for index, cfg := range cands {
 		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
 
@@ -578,7 +584,7 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 		// 渠道此刻不可用，继续把它当作首选只会让每个请求都先撞一次墙。
 		if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
 			log.Printf("[ROUTE] 渠道 %s (ID=%d) 未尝试：所有 Key 当前不可用（冷却或已被本请求尝试）", cfg.Name, cfg.ID)
-			s.stickyRouter.forget(reqCtx.originalModel)
+			s.stickyRouter.forget(stickyScope, reqCtx.originalModel)
 			// 统一走 applyCooldownDecision：断开取消链+按决策执行缓存失效
 			s.applyCooldownDecision(ctx, cfg, httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, 503, nil, nil))
 			continue
@@ -587,19 +593,19 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 		// [WARN] 所有Key验证失败，尝试下一个渠道
 		if err != nil && errors.Is(err, ErrAllKeysExhausted) {
 			log.Printf("[WARN] 渠道 %s (ID=%d) 所有Key验证失败，跳过该渠道", cfg.Name, cfg.ID)
-			s.stickyRouter.forget(reqCtx.originalModel)
+			s.stickyRouter.forget(stickyScope, reqCtx.originalModel)
 			continue
 		}
 
 		if err != nil && errors.Is(err, ErrChannelRPMExceeded) {
 			log.Printf("[INFO] 渠道 %s (ID=%d) 已达到RPM限制，跳过该渠道", cfg.Name, cfg.ID)
-			s.stickyRouter.forget(reqCtx.originalModel)
+			s.stickyRouter.forget(stickyScope, reqCtx.originalModel)
 			continue
 		}
 
 		if err != nil && errors.Is(err, ErrChannelConcurrencyExceeded) {
 			log.Printf("[INFO] 渠道 %s (ID=%d) 已达到并发限制，跳过该渠道", cfg.Name, cfg.ID)
-			s.stickyRouter.forget(reqCtx.originalModel)
+			s.stickyRouter.forget(stickyScope, reqCtx.originalModel)
 			continue
 		}
 
@@ -610,13 +616,13 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 			if result.succeeded {
 				// 粘性策略据此在下个请求继续使用该渠道。
 				// 无条件记录：策略关闭时 selector 不会读取，开关切换后立即生效。
-				s.stickyRouter.remember(reqCtx.originalModel, cfg.ID)
+				s.stickyRouter.remember(stickyScope, reqCtx.originalModel, cfg.ID)
 				return result, true
 			}
 
 			lastResult = result
 			// 该渠道本次失败，清除粘性，下个请求回到正常轮询。
-			s.stickyRouter.forget(reqCtx.originalModel)
+			s.stickyRouter.forget(stickyScope, reqCtx.originalModel)
 			if index+1 < len(cands) {
 				log.Printf("[ROUTE] 渠道 %s (ID=%d) 返回 %d，下一步=%v，继续检查后续候选", cfg.Name, cfg.ID, result.status, result.nextAction)
 			}

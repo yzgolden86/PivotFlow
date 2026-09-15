@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -44,6 +45,42 @@ func TestConfigAvailableTimeValidation(t *testing.T) {
 		if err := cfg.NormalizeAvailableTime(); err == nil {
 			t.Errorf("NormalizeAvailableTime(%q, %q) expected error", cfg.AvailableTimeStart, cfg.AvailableTimeEnd)
 		}
+	}
+}
+
+func TestAPIKeyAllowsModel(t *testing.T) {
+	allModels := &APIKey{}
+	if !allModels.AllowsModel("gpt-4") {
+		t.Fatal("empty scope should allow every model")
+	}
+	wildcard := &APIKey{AllowedModels: []string{"*"}}
+	if !wildcard.AllowsModel("claude-3") {
+		t.Fatal("wildcard scope should allow every model")
+	}
+	scoped := &APIKey{AllowedModels: []string{"gpt-4"}}
+	if !scoped.AllowsModel("GPT-4") || scoped.AllowsModel("claude-3") {
+		t.Fatal("scoped key model matching is incorrect")
+	}
+	empty := &APIKey{ModelScopeEmpty: true}
+	if empty.AllowsModel("gpt-4") {
+		t.Fatal("empty model scope should reject every model")
+	}
+}
+
+func TestAPIKeyUnmarshalTracksExplicitZeroMultiplier(t *testing.T) {
+	var key APIKey
+	if err := json.Unmarshal([]byte(`{"api_key":"sk-test","cost_multiplier":0}`), &key); err != nil {
+		t.Fatalf("unmarshal api key: %v", err)
+	}
+	if !key.CostMultiplierSet || key.CostMultiplier != 0 {
+		t.Fatalf("explicit zero multiplier = %+v, want set=true and zero", key)
+	}
+	var legacy APIKey
+	if err := json.Unmarshal([]byte(`{"api_key":"sk-legacy"}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy api key: %v", err)
+	}
+	if legacy.CostMultiplierSet {
+		t.Fatal("legacy payload should not mark multiplier as explicitly set")
 	}
 }
 

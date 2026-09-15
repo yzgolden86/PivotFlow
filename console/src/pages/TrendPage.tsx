@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, CircleDollarSign, Clock3, RefreshCw, TrendingUp, Zap } from 'lucide-react'
 import { getDashboard } from '../api'
 import type { DashboardRange, DashboardSnapshot, MetricPoint } from '../types'
-import { ErrorState, formatMoney, formatNumber, LoadingState, OperationNotice } from './shared'
+import { ErrorState, formatMoney, formatNumber, LoadingState, OperationNotice, PageHeader } from './shared'
 
 type TrendMetric = 'requests' | 'tokens' | 'cost'
 
@@ -43,15 +43,16 @@ export default function TrendPage() {
   const totalTokens = snapshot.totals.input_tokens + snapshot.totals.output_tokens
   const averageDuration = averageTrendInterval(snapshot.trend)
   return <div className="workspace-page trend-page">
-    <header className="page-header">
-      <h1>消费趋势</h1>
-      <div className="header-controls">
+    <PageHeader
+      icon={TrendingUp}
+      title="消费趋势"
+      actions={<>
         <div className="range-control" role="radiogroup" aria-label="趋势时间范围">
           {([['today', '今日'], ['this_week', '本周'], ['this_month', '本月']] as const).map(([value, label]) => <button className={range === value ? 'is-active' : ''} type="button" role="radio" aria-checked={range === value} onClick={() => setRange(value)} key={value}>{label}</button>)}
         </div>
         <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新趋势"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
-      </div>
-    </header>
+      </>}
+    />
     {error && <OperationNotice tone="error">{error}</OperationNotice>}
 
     <section className="stat-kpis">

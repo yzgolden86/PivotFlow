@@ -9,13 +9,16 @@ import (
 )
 
 type channelKeyHealthItem struct {
-	ID            int64              `json:"id"`
-	KeyIndex      int                `json:"key_index"`
-	MaskedKey     string             `json:"masked_key"`
-	Note          string             `json:"note"`
-	Disabled      bool               `json:"disabled"`
-	CooldownUntil int64              `json:"cooldown_until"`
-	Health        model.APIKeyHealth `json:"health"`
+	ID              int64              `json:"id"`
+	KeyIndex        int                `json:"key_index"`
+	MaskedKey       string             `json:"masked_key"`
+	Note            string             `json:"note"`
+	Disabled        bool               `json:"disabled"`
+	CooldownUntil   int64              `json:"cooldown_until"`
+	Health          model.APIKeyHealth `json:"health"`
+	AllowedModels   []string           `json:"allowed_models,omitempty"`
+	ModelScopeEmpty bool               `json:"model_scope_empty,omitempty"`
+	CostMultiplier  float64            `json:"cost_multiplier"`
 }
 
 // HandleChannelKeyHealth returns fresh observations without disclosing credentials.
@@ -43,6 +46,7 @@ func (s *Server) HandleChannelKeyHealth(c *gin.Context) {
 		items = append(items, channelKeyHealthItem{
 			ID: key.ID, KeyIndex: key.KeyIndex, MaskedKey: util.MaskAPIKey(key.APIKey), Note: key.Note,
 			Disabled: key.Disabled, CooldownUntil: key.CooldownUntil, Health: key.Health,
+			AllowedModels: key.AllowedModels, ModelScopeEmpty: key.ModelScopeEmpty, CostMultiplier: key.CostMultiplier,
 		})
 	}
 	c.Header("Cache-Control", "no-store")

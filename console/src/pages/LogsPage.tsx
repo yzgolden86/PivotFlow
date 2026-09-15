@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Bug, Check, Copy, History, RefreshCw, RotateCcw, Search, Waves } from 'lucide-react'
+import { Bug, Check, Copy, History, RefreshCw, RotateCcw, ScrollText, Search, Waves } from 'lucide-react'
 import { getActiveRequestDebug, getActiveRequests, getLogs, getLogsBootstrap, getSystemSettings } from '../api'
-import type { ActiveRequest, DashboardRange, LogEntry, LogsBootstrap } from '../types'
-import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, Pagination } from './shared'
+import type { ActiveRequest, AuthToken, DashboardRange, LogEntry, LogsBootstrap } from '../types'
+import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
 import { Modal } from './siteShared'
 import { modelRedirectTitle } from './modelRedirect'
 
 const PAGE_SIZE = 20
-const EMPTY_BOOTSTRAP: LogsBootstrap = { channel_test_content: '', models: [], channels: [], status_codes: [] }
+const EMPTY_BOOTSTRAP: LogsBootstrap = { channel_test_content: '', auth_tokens: [], models: [], channels: [], status_codes: [] }
 const AUTO_REFRESH_SETTING = 'auto_refresh_interval_seconds'
 
 function readAutoRefreshSeconds(settings: { key: string; value: string }[]): number {
@@ -27,6 +27,7 @@ export default function LogsPage() {
   const [page, setPage] = useState(1)
   const [range, setRange] = useState<DashboardRange>(initialRange)
   const [channel, setChannel] = useState('')
+  const [token, setToken] = useState('')
   const [model, setModel] = useState('')
   const [status, setStatus] = useState('')
   const [source, setSource] = useState('proxy')
@@ -51,7 +52,7 @@ export default function LogsPage() {
       setError('')
     }
     try {
-      const filters = { range, channel_name: channel, model, status_code: status, log_source: source, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }
+      const filters = { range, channel_name: channel, auth_token_id: token, model, status_code: status, log_source: source, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }
       const [result, bootstrap] = await Promise.all([getLogs(filters, signal), getLogsBootstrap(range, signal)])
       if (signal?.aborted || sequence !== loadSequence.current) return
       setLogs(result.data)
@@ -71,7 +72,7 @@ export default function LogsPage() {
         setLoading(false)
       }
     }
-  }, [channel, model, page, range, source, status])
+  }, [channel, token, model, page, range, source, status])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -100,25 +101,27 @@ export default function LogsPage() {
 
   return (
     <div className="workspace-page">
-      <header className="page-header">
-        <h1>请求日志</h1>
-        <div className="header-controls"><div className="page-tabs page-tabs--header" role="tablist"><a className={view === 'history' ? 'is-active' : ''} href="#/logs" role="tab" aria-selected={view === 'history'}><History size={14} />历史请求</a><a className={view === 'active' ? 'is-active' : ''} href="#/logs?view=active" role="tab" aria-selected={view === 'active'}><Waves size={14} />进行中</a></div>{view === 'history' && <button className="icon-button icon-button--surface" type="button" disabled={manualRefreshing} onClick={async () => { setManualRefreshing(true); try { await load() } finally { setManualRefreshing(false) } }} aria-label="刷新日志" title={autoRefreshSeconds > 0 ? `已启用自动刷新：每 ${autoRefreshSeconds} 秒` : '刷新日志'}><RefreshCw className={autoRefreshing || manualRefreshing ? 'spin' : undefined} size={17} /></button>}</div>
-      </header>
+      <PageHeader
+        icon={ScrollText}
+        title="请求日志"
+        actions={<><div className="page-tabs page-tabs--header" role="tablist"><a className={view === 'history' ? 'is-active' : ''} href="#/logs" role="tab" aria-selected={view === 'history'}><History size={14} />历史请求</a><a className={view === 'active' ? 'is-active' : ''} href="#/logs?view=active" role="tab" aria-selected={view === 'active'}><Waves size={14} />进行中</a></div>{view === 'history' && <button className="icon-button icon-button--surface" type="button" disabled={manualRefreshing} onClick={async () => { setManualRefreshing(true); try { await load() } finally { setManualRefreshing(false) } }} aria-label="刷新日志" title={autoRefreshSeconds > 0 ? `已启用自动刷新：每 ${autoRefreshSeconds} 秒` : '刷新日志'}><RefreshCw className={autoRefreshing || manualRefreshing ? 'spin' : undefined} size={17} /></button>}</>}
+      />
 
       {view === 'active' ? <ActiveRequestsView autoRefreshSeconds={autoRefreshSeconds} /> : <>
       <div className="filter-bar filter-bar--wide">
         <select value={range} onChange={(event) => { setPage(1); setRange(event.target.value as DashboardRange) }} aria-label="日志时间范围"><option value="today">今日</option><option value="this_week">本周</option><option value="this_month">本月</option></select>
         <select value={channel} onChange={(event) => { setPage(1); setChannel(event.target.value) }} aria-label="日志渠道"><option value="">全部渠道</option>{options.channels.map((item) => <option value={item.name} key={item.id}>{item.name}</option>)}</select>
+        <select value={token} onChange={(event) => { setPage(1); setToken(event.target.value) }} aria-label="日志访问令牌"><option value="">全部令牌</option>{options.auth_tokens.map((item) => <option value={item.id} key={item.id}>{authTokenOptionLabel(item)}</option>)}</select>
         <select value={model} onChange={(event) => { setPage(1); setModel(event.target.value) }} aria-label="日志模型"><option value="">全部模型</option>{options.models.map((item) => <option value={item} key={item}>{item}</option>)}</select>
         <select value={status} onChange={(event) => { setPage(1); setStatus(event.target.value) }} aria-label="响应状态"><option value="">全部状态</option>{options.status_codes.map((item) => <option value={item} key={item}>{item}</option>)}</select>
         <select value={source} onChange={(event) => { setPage(1); setSource(event.target.value) }} aria-label="日志来源"><option value="proxy">网关请求</option><option value="manual_test">手动测试</option><option value="manual_chat">手动对话</option><option value="scheduled_check">定时巡检</option><option value="all">全部来源</option></select>
         <span className="filter-count"><Search size={14} />{total} 条记录</span>
-        {(channel || model || status || source !== 'proxy' || range !== 'today') && <button className="icon-button icon-button--surface" type="button" title="清除筛选" aria-label="清除日志筛选" onClick={() => { setChannel(''); setModel(''); setStatus(''); setSource('proxy'); setRange('today'); setPage(1) }}><RotateCcw size={16} /></button>}
+        {(channel || token || model || status || source !== 'proxy' || range !== 'today') && <button className="icon-button icon-button--surface" type="button" title="清除筛选" aria-label="清除日志筛选" onClick={() => { setChannel(''); setToken(''); setModel(''); setStatus(''); setSource('proxy'); setRange('today'); setPage(1) }}><RotateCcw size={16} /></button>}
       </div>
 
       {loading ? <LoadingState label="正在加载请求日志" /> : error ? <ErrorState message={error} retry={() => void load()} /> : logs.length === 0 ? <EmptyState label="当前筛选条件下暂无请求日志" /> : (
         <div className="records-panel log-records" role="table" aria-label="请求日志列表">
-          <div className="record-head log-grid" role="row"><span>时间 / 来源</span><span>渠道</span><span>状态</span><span>模型与协议</span><span>时延</span><span>Token</span><span>费用</span></div>
+          <div className="record-head log-grid" role="row"><span>时间 / 来源</span><span>渠道</span><span>状态</span><span>模型与协议</span><span>时延</span><span>访问令牌</span><span>Token 用量</span><span>费用</span></div>
           {logs.map((entry) => <LogRow entry={entry} key={entry.id} />)}
         </div>
       )}
@@ -178,6 +181,7 @@ function LogRow({ entry }: { entry: LogEntry }) {
   const effectiveCost = entry.cost * (entry.cost_multiplier >= 0 ? entry.cost_multiplier : 1)
   const hasChannel = entry.channel_id > 0
   const channelName = entry.channel_name || (hasChannel ? `渠道 #${entry.channel_id}` : '路由汇总')
+  const usedTokenLabel = logAuthTokenLabel(entry)
   const copyStatus = async () => {
     const value = entry.message ? `${statusText}\n${entry.message}` : statusText
     const fallbackCopy = () => {
@@ -208,12 +212,24 @@ function LogRow({ entry }: { entry: LogEntry }) {
       <div><strong>{formatTime(entry.time)}</strong><span>{sourceLabel(entry.log_source)}</span></div>
       <div className="log-channel-cell"><strong title={entry.channel_name || undefined}>{channelName}</strong><span>{hasChannel ? `#${entry.channel_id}` : '未命中可用渠道'}</span></div>
       <div className="log-status"><div className="log-status-line"><span className={`status-badge status-badge--${success ? 'success' : 'danger'}`}>{statusText}</span>{entry.message && <button className="log-copy-button" type="button" onClick={() => void copyStatus()} aria-label="复制状态错误" title="复制状态和错误详情">{copied ? <Check size={13} /> : <Copy size={13} />}</button>}</div>{entry.message && <span className="record-message" title={entry.message}>{entry.message}</span>}</div>
-      <div><strong title={modelRedirectTitle(entry.model, entry.actual_model)} className={entry.actual_model ? 'log-model-name' : undefined}>{entry.model}{entry.actual_model && <span className="log-model-arrow" aria-label={`实际上游模型 ${entry.actual_model}`}> → {entry.actual_model}</span>}</strong><span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
+      <div className="log-model-cell"><strong title={modelRedirectTitle(entry.model, entry.actual_model)} className={entry.actual_model ? 'log-model-name' : undefined}>{entry.model}{entry.actual_model && <span className="log-model-arrow" aria-label={`实际上游模型 ${entry.actual_model}`}> → {entry.actual_model}</span>}</strong><span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
       <div><strong>{entry.duration ? `${entry.duration.toFixed(2)}s` : '—'}</strong><span>首字 {entry.first_byte_time ? `${entry.first_byte_time.toFixed(2)}s` : '—'}</span></div>
-      <div><strong>{formatNumber(entry.input_tokens)} / {formatNumber(entry.output_tokens)}</strong><span>输入 / 输出</span></div>
+      <div><strong title={usedTokenLabel.title}>{usedTokenLabel.label}</strong><span>{entry.auth_token_id ? `#${entry.auth_token_id}` : '系统任务 / 手动测试'}</span></div>
+      <div><strong>{formatNumber(entry.input_tokens)} / {formatNumber(entry.output_tokens)}</strong><span>输入 / 输出 token</span></div>
       <div><strong title={costStatusLabel(entry.cost_status, entry.is_streaming, entry.cost_source)}>{formatMoney(effectiveCost)}</strong><span className={`${entry.cost_status ? `cost-status cost-status--${entry.cost_status}` : ''}${entry.cost_source === 'site_pricing' ? ' cost-status--site' : ''}`.trim() || undefined}>{costStatusLabel(entry.cost_status, entry.is_streaming, entry.cost_source)}</span></div>
     </article>
   )
+}
+
+function authTokenOptionLabel(token: AuthToken): string {
+  const name = token.description?.trim() || token.token_hint?.trim() || `令牌 #${token.id}`
+  return `${name} · #${token.id}`
+}
+
+function logAuthTokenLabel(entry: LogEntry): { label: string; title: string } {
+  if (!entry.auth_token_id) return { label: '系统 / 无令牌', title: '手动测试或系统任务未使用下游访问令牌' }
+  const name = entry.auth_token_description?.trim() || `令牌 #${entry.auth_token_id}`
+  return { label: name, title: `访问令牌 #${entry.auth_token_id}` }
 }
 
 // 费用来源比统计口径更重要：上游计算接近真实扣费，

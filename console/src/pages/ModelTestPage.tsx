@@ -12,13 +12,19 @@ import {
   XCircle,
 } from 'lucide-react'
 import { getChannels, getSiteInventory, getSiteModels, testChannel, testSiteAccountModel } from '../api'
+import HelpTip from '../components/HelpTip'
 import type { Channel, ChannelTestResult, Site, SiteAccount, SiteAccountModel } from '../types'
-import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice } from './shared'
+import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, PageHeader } from './shared'
 import { useLocation } from 'react-router-dom'
 
 type ModelsView = 'catalog' | 'probe'
 type ProbeTarget = 'site_account' | 'channel'
 type ProbeResult = ChannelTestResult & { source_label: string; requested_model: string }
+type CatalogModel = {
+  model: string
+  fact?: SiteAccountModel
+  channels: Channel[]
+}
 
 const protocols = [
   { value: 'anthropic', label: 'Anthropic' },
@@ -163,12 +169,20 @@ export default function ModelTestPage() {
     setResults({})
   }
 
-  const openProbe = (fact: SiteAccountModel) => {
+  const openProbe = (item: CatalogModel) => {
     setView('probe')
-    setTarget('site_account')
-    setAccountId(fact.site_account_id)
-    setModel(fact.model)
-    setProtocol(protocolForRoute(fact.route_type))
+    if (item.fact) {
+      setTarget('site_account')
+      setAccountId(item.fact.site_account_id)
+      setModel(item.model)
+      setProtocol(protocolForRoute(item.fact.route_type))
+    } else {
+      const channel = item.channels[0]
+      setTarget('channel')
+      setChannelId(channel?.id || 0)
+      setModel(item.model)
+      setProtocol('openai')
+    }
     setResults({})
   }
 
@@ -204,10 +218,11 @@ export default function ModelTestPage() {
 
   return (
     <div className="workspace-page model-test-page">
-      <header className="page-header">
-        <h1>模型测试</h1>
-		<div className="header-controls"><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { force: true, keepSelection: true }) } finally { setRefreshing(false) } }} aria-label="刷新模型数据" title="刷新模型数据"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></div>
-      </header>
+      <PageHeader
+        icon={FlaskConical}
+        title="模型测试"
+        actions={<button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { force: true, keepSelection: true }) } finally { setRefreshing(false) } }} aria-label="刷新模型数据" title="刷新模型数据"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>}
+      />
 
       <div className="view-tabs" role="tablist" aria-label="模型视图">
         <button type="button" role="tab" aria-selected={view === 'catalog'} className={view === 'catalog' ? 'is-active' : ''} onClick={() => setView('catalog')}><Boxes size={15} />模型清单</button>
@@ -219,7 +234,7 @@ export default function ModelTestPage() {
       ) : (
         <div className="test-layout">
           <section className="test-composer">
-            <div className="section-heading"><div><h2>测试请求</h2><p>站点直测不创建渠道，也不改变冷却状态</p></div><span className="composer-channel-state"><i className={ready ? 'is-ready' : ''} />{ready ? '测试目标已就绪' : '没有可测试模型'}</span></div>
+            <div className="section-heading"><div><div className="heading-with-hint"><h2>测试请求</h2><HelpTip label="测试请求" text="站点直测不创建渠道，也不改变冷却状态" /></div></div><span className="composer-channel-state"><i className={ready ? 'is-ready' : ''} />{ready ? '测试目标已就绪' : '没有可测试模型'}</span></div>
             <div className="probe-target-control" role="group" aria-label="测试目标">
               <button type="button" className={target === 'site_account' ? 'is-active' : ''} onClick={() => changeTarget('site_account')}><Server size={15} />站点账号直测</button>
               <button type="button" className={target === 'channel' ? 'is-active' : ''} onClick={() => changeTarget('channel')}><GitCompareArrows size={15} />路由渠道</button>
@@ -240,7 +255,7 @@ export default function ModelTestPage() {
             <button className="primary-button test-submit" type="button" disabled={!ready || !model || testing} onClick={() => void run()}>{testing ? <RefreshCw className="spin" size={17} /> : <Play size={17} />}{testing ? '正在测试' : '开始测试'}</button>
           </section>
           <section className="test-result-panel">
-            <div className="section-heading"><div><h2>结果对照</h2><p>同一展示契约保留最近一次站点与渠道结果</p></div><GitCompareArrows size={18} /></div>
+            <div className="section-heading"><div><h2>结果对照</h2></div><GitCompareArrows size={18} /></div>
             {!results.site_account && !results.channel ? <div className="test-result-empty"><Clock3 size={28} /><strong>等待测试</strong><span>分别运行站点直测和渠道测试后即可对照</span></div> : <div className="probe-results">{results.site_account && <TestResult result={results.site_account} />}{results.channel && <TestResult result={results.channel} />}</div>}
           </section>
         </div>
@@ -249,42 +264,66 @@ export default function ModelTestPage() {
   )
 }
 
-function ModelCatalog({ models, sites, accounts, channels, siteMap, accountMap, probe }: {
+function ModelCatalog({ models: siteModels, sites, accounts, channels, siteMap, accountMap, probe }: {
   models: SiteAccountModel[]
   sites: Site[]
   accounts: SiteAccount[]
   channels: Channel[]
   siteMap: Map<number, Site>
   accountMap: Map<number, SiteAccount>
-  probe: (model: SiteAccountModel) => void
+  probe: (model: CatalogModel) => void
 }) {
   const [search, setSearch] = useState('')
   const [siteId, setSiteId] = useState(0)
   // The catalog is a current snapshot by default. Historical stale facts stay
   // available through the explicit “过期” filter when a refresh was partial.
   const [status, setStatus] = useState<'all' | 'available' | 'stale' | 'disabled'>('available')
-  const visible = useMemo(() => models.filter((fact) => {
-    const account = accountMap.get(fact.site_account_id)
-    if (!account || (siteId && account.site_id !== siteId)) return false
-    if (status === 'available' && (fact.disabled || fact.stale)) return false
-    if (status === 'stale' && (fact.disabled || !fact.stale)) return false
-    if (status === 'disabled' && !fact.disabled) return false
-    const site = siteMap.get(account.site_id)
+  const catalogModels = useMemo(() => {
+    const byModel = new Map<string, CatalogModel>()
+    for (const fact of siteModels) {
+      byModel.set(fact.model, { model: fact.model, fact, channels: [] })
+    }
+    for (const channel of channels) {
+      if (!channel.enabled) continue
+      for (const entry of channel.models) {
+        if (entry.disabled) continue
+        const current = byModel.get(entry.model) || { model: entry.model, channels: [] }
+        current.channels.push(channel)
+        byModel.set(entry.model, current)
+      }
+    }
+    return Array.from(byModel.values()).sort((a, b) => a.model.localeCompare(b.model))
+  }, [channels, siteModels])
+  const visible = useMemo(() => catalogModels.filter((item) => {
+    const account = item.fact ? accountMap.get(item.fact.site_account_id) : undefined
+    const channelMatchesSite = siteId === 0 || item.channels.some((channel) => {
+      const channelAccount = channel.site_account_id ? accountMap.get(channel.site_account_id) : undefined
+      return channelAccount?.site_id === siteId
+    })
+    if (!channelMatchesSite) return false
+    if (account && siteId && account.site_id !== siteId) return false
+    if (!account && !item.channels.length) return false
+    if (status === 'available' && item.fact && !item.channels.length && (item.fact.disabled || item.fact.stale)) return false
+    if (status === 'stale' && (!item.fact?.stale || item.fact.disabled)) return false
+    if (status === 'disabled' && !item.fact?.disabled) return false
+    const site = account ? siteMap.get(account.site_id) : undefined
     const query = search.trim().toLowerCase()
-    return !query || [fact.model, fact.route_type, site?.name || '', account.label].some((value) => value.toLowerCase().includes(query))
-  }), [accountMap, models, search, siteId, siteMap, status])
-  const currentModels = models.filter((item) => !item.disabled && !item.stale)
-  const unique = new Set(currentModels.map((item) => item.model)).size
-  const projected = new Set(currentModels.filter((fact) => channels.some((channel) => channel.models.some((item) => !item.disabled && item.model === fact.model))).map((item) => item.model)).size
+    return !query || [item.model, item.fact?.route_type || '', site?.name || '', account?.label || '', ...item.channels.map((channel) => channel.name)].some((value) => value.toLowerCase().includes(query))
+  }), [accountMap, catalogModels, search, siteId, siteMap, status])
+  const currentModels = siteModels.filter((item) => !item.disabled && !item.stale)
+  const unique = new Set(catalogModels.map((item) => item.model)).size
+  const projected = new Set(catalogModels.filter((item) => item.channels.length > 0).map((item) => item.model)).size
+  const channelOnly = catalogModels.filter((item) => !item.fact && item.channels.length > 0).length
 
   return <>
-    <section className="compact-summary" aria-label="模型清单摘要"><span><strong>{unique}</strong>站点模型</span><span><strong>{models.length}</strong>账号模型事实</span><span><strong>{projected}</strong>已进入渠道</span><span><strong>{models.filter((item) => item.stale).length}</strong>待刷新</span></section>
-    <div className="filter-bar model-catalog-filter"><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索模型、站点或账号" aria-label="搜索站点模型" /></label><select value={siteId} onChange={(event) => setSiteId(Number(event.target.value))} aria-label="模型站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><div className="model-status-filter" role="group" aria-label="模型状态筛选">{([['all', '全部'], ['available', '可用'], ['stale', '过期'], ['disabled', '停用']] as const).map(([value, label]) => <button type="button" className={status === value ? 'is-active' : ''} onClick={() => setStatus(value)} key={value}>{label}</button>)}</div><span className="filter-count">{visible.length} 条结果</span></div>
-    {!visible.length ? <EmptyState label={models.length ? '没有符合条件的模型' : '尚未刷新任何站点模型'} /> : <div className="records-panel model-records"><div className="record-head model-grid"><span>模型</span><span>站点 / 账号</span><span>路由协议</span><span>来源</span><span>最近发现</span><span>状态 / 操作</span></div>{visible.map((fact) => {
-      const account = accountMap.get(fact.site_account_id)
+    <section className="compact-summary" aria-label="模型清单摘要"><span><strong>{unique}</strong>可测模型</span><span><strong>{siteModels.length}</strong>账号模型事实</span><span><strong>{projected}</strong>已进入渠道</span><span><strong>{channelOnly}</strong>渠道专属</span></section>
+    <div className="filter-bar model-catalog-filter"><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索模型、站点、账号或渠道" aria-label="搜索模型清单" /></label><select value={siteId} onChange={(event) => setSiteId(Number(event.target.value))} aria-label="模型站点"><option value={0}>全部来源</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><div className="model-status-filter" role="group" aria-label="模型状态筛选">{([['all', '全部'], ['available', '可用'], ['stale', '过期'], ['disabled', '停用']] as const).map(([value, label]) => <button type="button" className={status === value ? 'is-active' : ''} onClick={() => setStatus(value)} key={value}>{label}</button>)}</div><span className="filter-count">{visible.length} 条结果</span></div>
+    {!visible.length ? <EmptyState label={catalogModels.length ? '没有符合条件的模型' : '暂无站点模型或启用渠道模型'} /> : <div className="records-panel model-records"><div className="record-head model-grid"><span>模型</span><span>站点 / 账号</span><span>路由协议</span><span>来源</span><span>最近发现</span><span>状态 / 操作</span></div>{visible.map((item) => {
+      const fact = item.fact
+      const account = fact ? accountMap.get(fact.site_account_id) : undefined
       const site = siteMap.get(account?.site_id || 0)
-      const channelCount = channels.filter((channel) => channel.models.some((item) => !item.disabled && item.model === fact.model)).length
-      return <article className="record-row model-grid" key={`${fact.site_account_id}:${fact.model}`}><div><strong title={fact.model}>{fact.model}</strong><span>{channelCount ? `${channelCount} 个渠道可路由` : '尚未投影到渠道'}</span></div><div>{account?.site_id ? <a className="entity-link model-entity-link model-entity-link--site" href={`#/sites?focus_site_id=${account.site_id}`}><strong>{site?.name || `站点 #${account.site_id}`}</strong></a> : <strong>{site?.name || '未知站点'}</strong>}{fact.site_account_id ? <a className="entity-link model-entity-link model-entity-link--account" href={`#/accounts?focus_account_id=${fact.site_account_id}`}><span>{account?.label || `账号 #${fact.site_account_id}`}</span></a> : <span>未知账号</span>}</div><div><strong>{routeLabel(fact.route_type)}</strong><span>{fact.route_type}</span></div><div><strong>{sourceLabel(fact.source)}</strong><span>{fact.source}</span></div><div><strong>{fact.last_seen_at ? formatTime(fact.last_seen_at) : '—'}</strong><span>{fact.stale ? '需要重新刷新' : '当前快照'}</span></div><div className="model-row-action"><span className={`status-badge status-badge--${fact.disabled ? 'muted' : fact.stale ? 'warning' : 'success'}`}>{fact.disabled ? '停用' : fact.stale ? '过期' : '可用'}</span><button className="icon-button icon-button--surface" type="button" disabled={fact.disabled} onClick={() => probe(fact)} aria-label={`直测 ${fact.model}`} title="站点账号直测"><Play size={15} /></button></div></article>
+      const channelLabel = item.channels.length > 2 ? `${item.channels[0].name}、${item.channels[1].name} 等 ${item.channels.length} 个渠道` : item.channels.map((channel) => channel.name).join('、') || '尚未投影到渠道'
+      return <article className="record-row model-grid" key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`}><div><strong title={item.model}>{item.model}</strong><span>{item.channels.length ? `${item.channels.length} 个渠道可路由` : '尚未投影到渠道'}</span></div><div>{fact ? <>{account?.site_id ? <a className="entity-link model-entity-link model-entity-link--site" href={`#/sites?focus_site_id=${account.site_id}`}><strong>{site?.name || `站点 #${account.site_id}`}</strong></a> : <strong>{site?.name || '未知站点'}</strong>}{fact.site_account_id ? <a className="entity-link model-entity-link model-entity-link--account" href={`#/accounts?focus_account_id=${fact.site_account_id}`}><span>{account?.label || `账号 #${fact.site_account_id}`}</span></a> : <span>未知账号</span>}</> : <strong title={channelLabel}>{channelLabel}</strong>}</div><div><strong>{fact ? routeLabel(fact.route_type) : '自动识别'}</strong><span>{fact ? fact.route_type : '按渠道协议转换'}</span></div><div><strong>{fact ? sourceLabel(fact.source) : '渠道配置'}</strong><span>{fact ? fact.source : 'channel_models'}</span></div><div><strong>{fact?.last_seen_at ? formatTime(fact.last_seen_at) : '—'}</strong><span>{fact ? (fact.stale ? '需要重新刷新' : '当前快照') : '渠道当前配置'}</span></div><div className="model-row-action"><span className={`status-badge status-badge--${fact?.disabled ? 'muted' : fact?.stale && !item.channels.length ? 'warning' : 'success'}`}>{fact?.disabled && !item.channels.length ? '停用' : fact?.stale && !item.channels.length ? '过期' : '可用'}</span><button className="icon-button icon-button--surface" type="button" disabled={Boolean(fact?.disabled) && item.channels.length === 0} onClick={() => probe(item)} aria-label={fact ? `直测 ${item.model}` : `渠道测试 ${item.model}`} title={fact ? '站点账号直测' : '渠道路由测试'}><Play size={15} /></button></div></article>
     })}</div>}
   </>
 }

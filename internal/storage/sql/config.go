@@ -332,6 +332,15 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 	updatedAtUnix := timeToUnix(time.Now())
 
 	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if siteProjectionOwnedFieldsChanged(existing, upd) {
+			if _, err := s.execTx(ctx, tx, `
+				UPDATE site_channel_bindings
+				SET ownership='manual', status='active', last_sync_status='manual', last_sync_error='manually managed channel; automatic synchronization is skipped', updated_at=?
+				WHERE channel_id=? AND ownership='projected'
+			`, updatedAtUnix, id); err != nil {
+				return err
+			}
+		}
 		// 更新渠道记录
 		_, err := s.execTx(ctx, tx, `
 			UPDATE channels
@@ -361,6 +370,58 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 	}
 
 	return config, nil
+}
+
+func siteProjectionOwnedFieldsChanged(existing, updated *model.Config) bool {
+	if existing == nil || updated == nil {
+		return false
+	}
+	if existing.Name != updated.Name || existing.GetProtocolTransformMode() != updated.GetProtocolTransformMode() {
+		return true
+	}
+	if len(existing.URLs) != len(updated.URLs) {
+		return true
+	}
+	for index := range existing.URLs {
+		if existing.URLs[index].URL != updated.URLs[index].URL ||
+			existing.URLs[index].Exact != updated.URLs[index].Exact ||
+			!protocolListsEqual(existing.URLs[index].Protocols, updated.URLs[index].Protocols) {
+			return true
+		}
+	}
+	if len(existing.ModelEntries) != len(updated.ModelEntries) {
+		return true
+	}
+	for index := range existing.ModelEntries {
+		if !modelEntriesEquivalent(existing.ModelEntries[index], updated.ModelEntries[index]) {
+			return true
+		}
+	}
+	return false
+}
+
+func modelEntriesEquivalent(left, right model.ModelEntry) bool {
+	leftRedirect := left.RedirectModel
+	if leftRedirect == "" {
+		leftRedirect = left.Model
+	}
+	rightRedirect := right.RedirectModel
+	if rightRedirect == "" {
+		rightRedirect = right.Model
+	}
+	return left.Model == right.Model && leftRedirect == rightRedirect && left.Disabled == right.Disabled
+}
+
+func protocolListsEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 // UpdateOAuthCredential atomically replaces only the private credential payload.

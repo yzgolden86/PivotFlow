@@ -19,12 +19,16 @@ func normalizeOptionalProtocol(value string) string {
 }
 
 // selectCandidatesByClientProtocol 返回所有启用渠道；clientProtocol 仅用于计算客户端协议对应的模型冷却键。
-func (s *Server) selectCandidatesByClientProtocol(ctx context.Context, clientProtocol string) ([]*modelpkg.Config, error) {
+func (s *Server) selectCandidatesByClientProtocol(ctx context.Context, clientProtocol, stickyScope string) ([]*modelpkg.Config, error) {
 	channels, err := s.getEnabledChannelsSnapshotByModel(ctx, "*")
 	if err != nil {
 		return nil, err
 	}
-	return s.filterCooldownChannels(ctx, channels, "*", clientProtocol)
+	return s.filterCooldownChannels(ctx, channels, "*", clientProtocol, stickyScope)
+}
+
+func (s *Server) selectCandidatesByClientProtocolAnonymous(ctx context.Context, clientProtocol string) ([]*modelpkg.Config, error) {
+	return s.selectCandidatesByClientProtocol(ctx, clientProtocol, stickyScopeKey(""))
 }
 
 // alphaSearchUpstreamURLs removes exact URLs for other Codex endpoints and
@@ -54,7 +58,7 @@ func (s *Server) alphaSearchUpstreamURLs(cfg *modelpkg.Config) []string {
 	return compatible
 }
 
-func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName string) ([]*modelpkg.Config, error) {
+func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName, stickyScope string) ([]*modelpkg.Config, error) {
 	routeModel := modelName
 	if routeModel == "" {
 		routeModel = "*"
@@ -91,11 +95,11 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 		compatible = append(compatible, cfg)
 	}
 
-	return s.filterCooldownChannels(ctx, compatible, routeModel, string(protocol.Codex))
+	return s.filterCooldownChannels(ctx, compatible, routeModel, string(protocol.Codex), stickyScope)
 }
 
 // selectCandidatesByModelAndClientProtocol 按模型选择候选渠道；clientProtocol 仅表示客户端协议，不过滤上游主协议。
-func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, model string, clientProtocol string) ([]*modelpkg.Config, error) {
+func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, model, clientProtocol, stickyScope string) ([]*modelpkg.Config, error) {
 	normalizedType := normalizeOptionalProtocol(clientProtocol)
 
 	channels, err := s.getEnabledChannelsSnapshotByUnifiedModel(ctx, model)
@@ -104,7 +108,7 @@ func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, m
 	}
 
 	// 先做冷却/成本过滤，但不触发“全冷却兜底”，以便后续还能继续做模糊匹配回退。
-	filtered, err := s.filterCooldownChannelsStrict(ctx, channels, model, normalizedType)
+	filtered, err := s.filterCooldownChannelsStrict(ctx, channels, model, normalizedType, stickyScope)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +144,7 @@ func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, m
 	}
 
 	// 再次过滤，但仍不触发“全冷却兜底”：先把可用的候选尽可能找出来。
-	filtered, err = s.filterCooldownChannelsStrict(ctx, allCandidates, model, normalizedType)
+	filtered, err = s.filterCooldownChannelsStrict(ctx, allCandidates, model, normalizedType, stickyScope)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +153,11 @@ func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, m
 	}
 
 	// 最终兜底：如果候选存在但全部在冷却中，让全冷却兜底逻辑选择“最早恢复”的渠道。
-	return s.filterCooldownChannels(ctx, allCandidates, model, normalizedType)
+	return s.filterCooldownChannels(ctx, allCandidates, model, normalizedType, stickyScope)
+}
+
+func (s *Server) selectCandidatesByModelAndClientProtocolAnonymous(ctx context.Context, model, clientProtocol string) ([]*modelpkg.Config, error) {
+	return s.selectCandidatesByModelAndClientProtocol(ctx, model, clientProtocol, stickyScopeKey(""))
 }
 
 func (s *Server) getEnabledChannelsSnapshotByUnifiedModel(ctx context.Context, modelName string) ([]*modelpkg.Config, error) {

@@ -53,6 +53,9 @@ func DefineAPIKeysTable() *TableBuilder {
 		Column("health_reason VARCHAR(512) NOT NULL DEFAULT ''").
 		Column("health_status_code INT NOT NULL DEFAULT 0").
 		Column("health_checked_at BIGINT NOT NULL DEFAULT 0").
+		Column("allowed_models TEXT NOT NULL DEFAULT ''").
+		Column("model_scope_empty TINYINT NOT NULL DEFAULT 0").
+		Column("cost_multiplier DOUBLE NOT NULL DEFAULT 1").
 		Column("created_at BIGINT NOT NULL").
 		Column("updated_at BIGINT NOT NULL").
 		Column("UNIQUE KEY uk_channel_key (channel_id, key_index)").
@@ -248,6 +251,21 @@ func DefineSiteAccountModelsTable() *TableBuilder {
 		Column("PRIMARY KEY (site_account_id, model)").
 		Column("FOREIGN KEY (site_account_id) REFERENCES site_accounts(id) ON DELETE CASCADE").
 		Index("idx_site_account_models_model", "model")
+}
+
+// DefineSiteAccountBalanceSnapshotsTable defines the latest known balance for
+// each account and local calendar day.
+func DefineSiteAccountBalanceSnapshotsTable() *TableBuilder {
+	return NewTable("site_account_balance_snapshots").
+		Column("site_account_id INT NOT NULL").
+		Column("local_day VARCHAR(10) NOT NULL").
+		Column("currency VARCHAR(16) NOT NULL").
+		Column("balance DOUBLE NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Column("PRIMARY KEY (site_account_id, local_day, currency)").
+		Column("FOREIGN KEY (site_account_id) REFERENCES site_accounts(id) ON DELETE CASCADE").
+		Index("idx_site_balance_snapshots_day", "local_day")
 }
 
 // DefineSiteAnnouncementsTable defines sanitized and deduplicated announcements.

@@ -19,6 +19,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func findAPIKeyByValue(keys []*model.APIKey, value string) (*model.APIKey, bool) {
+	for _, key := range keys {
+		if key != nil && key.APIKey == value {
+			return key, true
+		}
+	}
+	return nil, false
+}
+
 // ==================== 渠道CRUD管理 ====================
 // 从admin.go拆分渠道CRUD,遵循SRP原则
 
@@ -136,13 +145,19 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		}
 	}
 
-	var projectedChannelIDs map[int64]struct{}
-	if source := strings.ToLower(strings.TrimSpace(c.Query("source"))); source == "site_sync" || source == "manual" {
-		projectedChannelIDs, err = s.projectedChannelIDs(ctx)
-		if err != nil {
-			RespondError(c, http.StatusInternalServerError, err)
-			return
+	bindings, err := s.store.ListSiteChannelBindings(ctx)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	projectedChannelIDs := make(map[int64]struct{}, len(bindings))
+	siteBindings := make(map[int64]*model.SiteChannelBinding, len(bindings))
+	for _, binding := range bindings {
+		if binding == nil || binding.ChannelID <= 0 {
+			continue
 		}
+		projectedChannelIDs[binding.ChannelID] = struct{}{}
+		siteBindings[binding.ChannelID] = binding
 	}
 
 	now := time.Now()
@@ -188,6 +203,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		keyCooldownsMap:     cooldowns.keys,
 		modelCooldownsMap:   cooldowns.models,
 		apiKeysMap:          allAPIKeys,
+		siteBindings:        siteBindings,
 	}
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
@@ -424,6 +440,7 @@ type channelEnrichmentContext struct {
 	keyCooldownsMap     map[int64]map[int]time.Time
 	modelCooldownsMap   map[int64]map[string]time.Time
 	apiKeysMap          map[int64][]*model.APIKey
+	siteBindings        map[int64]*model.SiteChannelBinding
 }
 
 // enrichChannel 把单个 cfg 拼装为 ChannelWithCooldown：
@@ -432,6 +449,10 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 	metadata := channelOAuthMetadataFromCredential(cfg)
 	oc := ChannelWithCooldown{
 		Config:                       cfg,
+		Source:                       channelSource(cfg, ectx.siteBindings[cfg.ID]),
+		SiteSyncOwnership:            bindingOwnership(ectx.siteBindings[cfg.ID]),
+		SiteAccountID:                siteAccountID(ectx.siteBindings[cfg.ID]),
+		ProjectionKey:                projectionKey(ectx.siteBindings[cfg.ID]),
 		CodexPlanType:                metadata.planType,
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
 		AntigravityPaidTier:          metadata.antigravityPaidTier,
@@ -485,6 +506,37 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 	oc.EffectiveKeyCount = effectiveKeyCount
 	oc.ModelCooldowns = activeModelCooldownInfos(ectx.modelCooldownsMap[cfg.ID], ectx.now)
 	return oc
+}
+
+func channelSource(cfg *model.Config, binding *model.SiteChannelBinding) string {
+	if binding != nil {
+		return "site_sync"
+	}
+	if cfg != nil && cfg.GetAuthType() != model.AuthTypeAPIKey {
+		return "auth"
+	}
+	return "manual"
+}
+
+func bindingOwnership(binding *model.SiteChannelBinding) string {
+	if binding == nil {
+		return ""
+	}
+	return binding.Ownership
+}
+
+func siteAccountID(binding *model.SiteChannelBinding) int64 {
+	if binding == nil {
+		return 0
+	}
+	return binding.SiteAccountID
+}
+
+func projectionKey(binding *model.SiteChannelBinding) string {
+	if binding == nil {
+		return ""
+	}
+	return binding.ProjectionKey
 }
 
 type channelOAuthMetadata struct {
@@ -617,7 +669,8 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	}
 
 	// 创建渠道（不包含API Key）
-	created, err := s.store.CreateConfig(c.Request.Context(), req.ToConfig())
+	channelConfig := req.ToConfig()
+	created, err := s.store.CreateConfig(c.Request.Context(), channelConfig)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -632,14 +685,24 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	apiKeyEntries := req.normalizeAPIKeys()
 	keysToCreate := make([]*model.APIKey, 0, len(apiKeyEntries))
 	for i, entry := range apiKeyEntries {
+		// 未单独填写时继承渠道倍率；显式 0 仍表示免费 Key。
+		costMultiplier := channelConfig.CostMultiplier
+		if entry.CostMultiplier != nil {
+			costMultiplier = *entry.CostMultiplier
+		}
 		keysToCreate = append(keysToCreate, &model.APIKey{
-			ChannelID:   created.ID,
-			KeyIndex:    i,
-			APIKey:      entry.APIKey,
-			Note:        entry.Note,
-			KeyStrategy: keyStrategy,
-			CreatedAt:   model.JSONTime{Time: now},
-			UpdatedAt:   model.JSONTime{Time: now},
+			ChannelID:       created.ID,
+			KeyIndex:        i,
+			APIKey:          entry.APIKey,
+			Note:            entry.Note,
+			KeyStrategy:     keyStrategy,
+			AllowedModels:   entry.AllowedModels,
+			ModelScopeEmpty: entry.ModelScopeEmpty != nil && *entry.ModelScopeEmpty,
+			CostMultiplier:  costMultiplier,
+			// The value above is already resolved, including an inherited free (0x) rate.
+			CostMultiplierSet: true,
+			CreatedAt:         model.JSONTime{Time: now},
+			UpdatedAt:         model.JSONTime{Time: now},
 		})
 	}
 	if len(keysToCreate) > 0 {
@@ -673,6 +736,28 @@ func (s *Server) HandleChannelByID(c *gin.Context) {
 	default:
 		RespondErrorMsg(c, 405, "method not allowed")
 	}
+}
+
+func (s *Server) HandleRestoreChannelAutoSync(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	if _, err := s.store.GetConfig(c.Request.Context(), id); err != nil {
+		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
+		return
+	}
+	if err := s.store.SetSiteProjectionOwnership(c.Request.Context(), id, "projected"); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			RespondErrorMsg(c, http.StatusNotFound, "site sync binding not found")
+			return
+		}
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	s.InvalidateChannelListCache()
+	RespondJSON(c, http.StatusOK, gin.H{"id": id, "site_sync_ownership": "projected"})
 }
 
 // 获取单个渠道（包含key_strategy信息）
@@ -713,14 +798,35 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 	}
 
 	metadata := channelOAuthMetadataFromCredential(cfg)
+	binding, err := s.siteBindingForChannel(ctx, id)
+	if err != nil {
+		return ChannelWithCooldown{}, nil, err
+	}
 	return ChannelWithCooldown{
 		Config:                       cfg,
+		Source:                       channelSource(cfg, binding),
+		SiteSyncOwnership:            bindingOwnership(binding),
+		SiteAccountID:                siteAccountID(binding),
+		ProjectionKey:                projectionKey(binding),
 		CodexPlanType:                metadata.planType,
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
 		AntigravityPaidTier:          metadata.antigravityPaidTier,
 		KeyStrategy:                  channelKeyStrategy(apiKeys),
 		ModelCooldowns:               activeModelCooldownInfos(allModelCooldowns[id], time.Now()),
 	}, apiKeys, nil
+}
+
+func (s *Server) siteBindingForChannel(ctx context.Context, channelID int64) (*model.SiteChannelBinding, error) {
+	bindings, err := s.store.ListSiteChannelBindings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, binding := range bindings {
+		if binding != nil && binding.ChannelID == channelID {
+			return binding, nil
+		}
+	}
+	return nil, nil
 }
 
 // handleGetChannelKeys 获取渠道的所有 API Keys
@@ -912,6 +1018,10 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 		return
 	}
 
+	if err := s.store.MarkSiteProjectionManual(c.Request.Context(), id); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
 	if err := s.store.SetAPIKeyDisabled(c.Request.Context(), id, keyIndex, disable); err != nil {
 		RespondErrorMsg(c, http.StatusInternalServerError, "persist key disabled state failed")
 		return
@@ -1032,14 +1142,35 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	notesByIndex := make(map[int]string)
+	metadataByIndex := make(map[int]model.APIKey)
 	if !keyChanged {
 		for i, oldKey := range oldKeys {
-			if oldKey.Note != newKeys[i].Note {
-				notesByIndex[oldKey.KeyIndex] = newKeys[i].Note
+			newKey := newKeys[i]
+			if oldKey.Note != newKey.Note {
+				notesByIndex[oldKey.KeyIndex] = newKey.Note
+			}
+			metadataProvided := newKey.AllowedModels != nil || newKey.ModelScopeEmpty != nil || newKey.CostMultiplier != nil
+			if metadataProvided {
+				metadata := *oldKey
+				if newKey.AllowedModels != nil {
+					metadata.AllowedModels = newKey.AllowedModels
+				}
+				if newKey.ModelScopeEmpty != nil {
+					metadata.ModelScopeEmpty = *newKey.ModelScopeEmpty
+				}
+				if newKey.CostMultiplier != nil {
+					metadata.CostMultiplier = *newKey.CostMultiplier
+				}
+				if !apiKeyModelsEqual(oldKey.AllowedModels, metadata.AllowedModels) ||
+					oldKey.ModelScopeEmpty != metadata.ModelScopeEmpty ||
+					oldKey.CostMultiplier != metadata.CostMultiplier {
+					metadataByIndex[oldKey.KeyIndex] = metadata
+				}
 			}
 		}
 	}
 	noteChanged := len(notesByIndex) > 0
+	metadataChanged := len(metadataByIndex) > 0
 
 	// [INFO] 修复 (2025-10-11): 检测策略变化
 	strategyChanged := false
@@ -1050,6 +1181,13 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			oldStrategy = model.KeyStrategySequential
 		}
 		strategyChanged = oldStrategy != keyStrategy
+	}
+
+	if keyChanged || strategyChanged || noteChanged || metadataChanged {
+		if err := s.store.MarkSiteProjectionManual(c.Request.Context(), id); err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
 	}
 
 	upd, err := s.store.UpdateConfig(c.Request.Context(), id, req.ToConfig())
@@ -1078,16 +1216,42 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		now := time.Now()
 		apiKeys := make([]*model.APIKey, 0, len(newKeys))
 		for i, key := range newKeys {
+			// 新增 Key 未填写倍率时继承当前渠道默认倍率；保留已存在
+			// Key 的倍率，避免编辑渠道时意外覆盖管理员的单 Key 设置。
+			costMultiplier := req.CostMultiplier
+			// The value is resolved below from the explicit key, existing key, or channel default.
+			costMultiplierSet := true
+			allowedModels := key.AllowedModels
+			modelScopeEmpty := key.ModelScopeEmpty != nil && *key.ModelScopeEmpty
+			if key.CostMultiplier != nil {
+				costMultiplier = *key.CostMultiplier
+			}
+			if oldKey, ok := findAPIKeyByValue(oldKeys, key.APIKey); ok {
+				if key.AllowedModels == nil {
+					allowedModels = oldKey.AllowedModels
+				}
+				if key.ModelScopeEmpty == nil {
+					modelScopeEmpty = oldKey.ModelScopeEmpty
+				}
+				if key.CostMultiplier == nil {
+					costMultiplier = oldKey.CostMultiplier
+					costMultiplierSet = true
+				}
+			}
 			apiKeys = append(apiKeys, &model.APIKey{
-				ChannelID:   id,
-				KeyIndex:    i,
-				APIKey:      key.APIKey,
-				Note:        key.Note,
-				KeyStrategy: keyStrategy,
-				Disabled:    disabledByAPIKey[key.APIKey],
-				Health:      healthByAPIKey[key.APIKey],
-				CreatedAt:   model.JSONTime{Time: now},
-				UpdatedAt:   model.JSONTime{Time: now},
+				ChannelID:         id,
+				KeyIndex:          i,
+				APIKey:            key.APIKey,
+				Note:              key.Note,
+				KeyStrategy:       keyStrategy,
+				AllowedModels:     allowedModels,
+				ModelScopeEmpty:   modelScopeEmpty,
+				CostMultiplier:    costMultiplier,
+				CostMultiplierSet: costMultiplierSet,
+				Disabled:          disabledByAPIKey[key.APIKey],
+				Health:            healthByAPIKey[key.APIKey],
+				CreatedAt:         model.JSONTime{Time: now},
+				UpdatedAt:         model.JSONTime{Time: now},
 			})
 		}
 		if err := s.store.CreateAPIKeysBatch(c.Request.Context(), apiKeys); err != nil {
@@ -1103,6 +1267,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		if noteChanged {
 			if err := s.store.UpdateAPIKeyNotes(c.Request.Context(), id, notesByIndex); err != nil {
 				log.Printf("[WARN] 批量更新API Key备注失败 (channel=%d): %v", id, err)
+			}
+		}
+		if metadataChanged {
+			if err := s.store.UpdateAPIKeyMetadata(c.Request.Context(), id, metadataByIndex); err != nil {
+				log.Printf("[WARN] 批量更新 API Key 模型范围/成本倍率失败 (channel=%d): %v", id, err)
 			}
 		}
 	}
@@ -1234,6 +1403,10 @@ func (s *Server) HandleDeleteAPIKey(c *gin.Context) {
 		return
 	}
 
+	if err := s.store.MarkSiteProjectionManual(ctx, channelID); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
 	// 删除目标Key
 	if err := s.store.DeleteAPIKey(ctx, channelID, keyIndex); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)

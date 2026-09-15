@@ -7,7 +7,7 @@ import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 import { getAnnouncements, getSites, markAllAnnouncementsRead, markAnnouncementRead, refreshAnnouncements, waitForSiteTask } from '../api'
 import type { Site, SiteAnnouncement } from '../types'
-import { EmptyState, ErrorState, formatTime, LoadingState, OperationNotice, Pagination } from './shared'
+import { EmptyState, ErrorState, formatTime, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
 import { Modal, siteErrorMessage } from './siteShared'
 
 const PAGE_SIZE = 30
@@ -42,7 +42,11 @@ export default function AnnouncementsPage() {
   const open = async (item: SiteAnnouncement) => { setSelected(item); if (!item.read_at) { try { await markAnnouncementRead(item.id); setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, read_at: Date.now() } : entry)); setUnreadCount((value) => Math.max(0, value - 1)) } catch { /* 阅读不因回写失败而中断 */ } } }
 
   return <div className="workspace-page">
-    <header className="page-header"><h1>公告中心</h1><div className="header-controls"><button className="secondary-button" type="button" onClick={() => void readAll()} disabled={!unreadCount}><CheckCheck size={15} />全部已读</button><button className="primary-button" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />}{refreshing ? '刷新中' : '刷新公告'}</button></div></header>
+    <PageHeader
+      icon={Bell}
+      title="公告中心"
+      actions={<><button className="secondary-button" type="button" onClick={() => void readAll()} disabled={!unreadCount}><CheckCheck size={15} />全部已读</button><button className="primary-button" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />}{refreshing ? '刷新中' : '刷新公告'}</button></>}
+    />
     <section className="compact-summary"><span><strong>{total}</strong>当前公告</span><span><strong>{unreadCount}</strong>未读</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>启用站点</span><span><strong>{items.filter((item) => item.level === 'important' || item.level === 'warning').length}</strong>重要提醒</span></section>
     <div className="filter-bar"><select value={siteFilter} onChange={(event) => { setPage(1); setSiteFilter(Number(event.target.value)) }} aria-label="公告站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><label className="checkbox-field filter-checkbox"><input type="checkbox" checked={unread} onChange={(event) => { setPage(1); setUnread(event.target.checked) }} /><span>只看未读</span></label><span className="filter-count"><Bell size={14} />{total} 条公告</span></div>
     {notice && <OperationNotice tone={noticeTone} onDismiss={() => setNotice('')}>{notice}</OperationNotice>}{error && items.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}

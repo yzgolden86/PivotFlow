@@ -2,11 +2,13 @@ import type {
   APIResponse,
   Channel,
   ChannelEditorSnapshot,
+  OAuthUsageSummary,
   ChannelKeyHealthSnapshot,
   ChannelFilters,
   ChannelMutation,
   ChannelModelsPreview,
   ChannelTestResult,
+  RouteDiagnosticResponse,
   DashboardRange,
   DashboardSnapshot,
   LogEntry,
@@ -257,8 +259,18 @@ export function getChannelEditor(channelId: number, signal?: AbortSignal): Promi
   return apiRequest<ChannelEditorSnapshot>(`/admin/channels/${channelId}/editor`, signal)
 }
 
+export function fetchOAuthUsage(channelId: number, signal?: AbortSignal): Promise<OAuthUsageSummary> {
+  return apiMutation<OAuthUsageSummary>(`/admin/channels/${channelId}/oauth-usage`, undefined, 'POST', signal)
+}
+
 export function getChannelKeyHealth(channelId: number, signal?: AbortSignal): Promise<ChannelKeyHealthSnapshot> {
-  return apiRequest<ChannelKeyHealthSnapshot>(`/admin/channels/${channelId}/key-health`, signal)
+	return apiRequest<ChannelKeyHealthSnapshot>(`/admin/channels/${channelId}/key-health`, signal)
+}
+
+export function getChannelRouteDiagnostics(channelId: number, model: string, clientProtocol = 'openai', tokenId = 0, signal?: AbortSignal): Promise<RouteDiagnosticResponse> {
+	const params = new URLSearchParams({ model, client_protocol: clientProtocol })
+	if (tokenId > 0) params.set('token_id', String(tokenId))
+	return apiRequest<RouteDiagnosticResponse>(`/admin/channels/${channelId}/route-diagnostics?${params}`, signal)
 }
 
 export async function setChannelKeyEnabled(channelId: number, keyIndex: number, keyId: number, enabled: boolean): Promise<void> {
@@ -281,6 +293,11 @@ export async function updateChannel(channelId: number, payload: ChannelMutation)
   const result = await apiMutation<Channel>(`/admin/channels/${channelId}`, payload, 'PUT')
   invalidateChannels()
   return result
+}
+
+export async function restoreChannelSiteSync(channelId: number): Promise<void> {
+  await apiMutation(`/admin/channels/${channelId}/site-sync-restore`, undefined, 'POST')
+  invalidateChannels()
 }
 
 export async function deleteChannel(channelId: number): Promise<{ id: number }> {
@@ -310,6 +327,7 @@ export async function getLogs(filters: LogFilters, signal?: AbortSignal): Promis
     offset: String(filters.offset),
   })
   if (filters.channel_name) params.set('channel_name', filters.channel_name)
+  if (filters.auth_token_id) params.set('auth_token_id', String(filters.auth_token_id))
   if (filters.model) params.set('model', filters.model)
   if (filters.status_code) params.set('status_code', filters.status_code)
   if (filters.log_source) params.set('log_source', filters.log_source)
