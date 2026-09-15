@@ -46,6 +46,7 @@ export default function CheckinsPage() {
     <PageHeader
       icon={CalendarCheck2}
       title="签到中心"
+      tone="blue"
       actions={<><button className="primary-button" type="button" disabled={Boolean(bulk) || !targets.length} onClick={() => void runBulk()}>{bulk ? <RefreshCw className="spin" size={16} /> : <Play size={16} />}{bulk ? `${bulk.done}/${bulk.total}` : '全部签到'}</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新签到数据"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></>}
     />
     <section className="compact-summary"><span><strong>{targets.length}</strong>可签到账号</span><span><strong>{successCount}</strong>成功记录</span><span><strong>{alreadyCount}</strong>已签到记录</span><span><strong>{attentionCount}</strong>需要处理</span></section>

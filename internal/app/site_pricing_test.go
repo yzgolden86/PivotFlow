@@ -2,6 +2,8 @@ package app
 
 import (
 	"math"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +24,31 @@ func tokenPricing(group string, models ...provider.ModelPrice) channelPricing {
 			GroupRatio: map[string]float64{"default": 1, "vip": 0.5, "svip": 0.25},
 		},
 		group: group,
+	}
+}
+
+func TestHandleSitePricingReturnsUpstreamRatiosAndPrices(t *testing.T) {
+	server := &Server{sitePricing: newSitePricingCache()}
+	server.sitePricing.store(7, provider.SitePricing{
+		Models: []provider.ModelPrice{{
+			Model: "gpt-5.6-sol", QuotaType: 0, ModelRatio: 1.25, CompletionRatio: 4,
+			CacheRatio: .1, CacheCreationRatio: 1.25, Groups: []string{"default"},
+		}},
+		GroupRatio: map[string]float64{"default": 1, "vip": .8},
+	}, false, time.Now())
+
+	request := newJSONRequest(t, http.MethodGet, "/admin/site-pricing?site_id=7", nil)
+	c, recorder := newTestContext(t, request)
+	server.handleSitePricing(c)
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK ||
+		!strings.Contains(body, `"model_ratio":1.25`) ||
+		!strings.Contains(body, `"completion_ratio":4`) ||
+		!strings.Contains(body, `"input_price":2.5`) ||
+		!strings.Contains(body, `"output_price":10`) ||
+		!strings.Contains(body, `"vip":0.8`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, body)
 	}
 }
 

@@ -361,6 +361,7 @@ export interface LogFilters {
   channel_name?: string
   auth_token_id?: string | number
   model?: string
+  search?: string
   status_code?: string
   log_source?: string
   limit: number
@@ -563,6 +564,28 @@ export interface SiteAccountModel {
   updated_at: number
 }
 
+export interface SiteModelPrice {
+  model: string
+  quota_type: number
+  per_call_price: number
+  model_ratio: number
+  completion_ratio: number
+  cache_ratio: number
+  cache_creation_ratio: number
+  groups: string[]
+  input_price: number
+  output_price: number
+  cache_read_price: number
+  cache_write_price: number
+}
+
+export interface SitePricingSnapshot {
+  site_id: number
+  available: boolean
+  models: SiteModelPrice[]
+  group_ratio: Record<string, number>
+}
+
 export interface SiteTask {
   id: string
   kind: string
@@ -622,6 +645,7 @@ export interface SiteChannelBinding {
   site_account_id: number
   projection_key: string
   channel_id?: number
+  pricing_group?: string
   ownership: string
   status: string
   last_sync_status: string

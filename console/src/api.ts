@@ -25,6 +25,7 @@ import type {
   SiteAnnouncement,
   SiteInventory,
   SiteAccountModel,
+  SitePricingSnapshot,
   SiteProjectionResult,
   SiteTask,
 	WebhookConfig,
@@ -329,6 +330,7 @@ export async function getLogs(filters: LogFilters, signal?: AbortSignal): Promis
   if (filters.channel_name) params.set('channel_name', filters.channel_name)
   if (filters.auth_token_id) params.set('auth_token_id', String(filters.auth_token_id))
   if (filters.model) params.set('model', filters.model)
+  if (filters.search) params.set('search', filters.search)
   if (filters.status_code) params.set('status_code', filters.status_code)
   if (filters.log_source) params.set('log_source', filters.log_source)
   const payload = await requestEnvelope<LogEntry[]>(`/admin/logs?${params}`, { signal })
@@ -513,6 +515,12 @@ export function testSiteAccountModel(
   payload: { model: string; content: string; stream: boolean; client_protocol: string },
 ): Promise<ChannelTestResult> {
   return apiMutation<ChannelTestResult>(`/admin/site-accounts/${accountId}/model-probe`, payload)
+}
+
+export function getSitePricing(filters: { site_id: number; refresh?: boolean }, signal?: AbortSignal): Promise<SitePricingSnapshot> {
+  const params = new URLSearchParams({ site_id: String(filters.site_id) })
+  if (filters.refresh) params.set('refresh', 'true')
+  return apiRequest<SitePricingSnapshot>(`/admin/site-pricing?${params}`, signal)
 }
 
 export async function waitForSiteTask(taskId: string, signal?: AbortSignal, timeoutMs = 120_000): Promise<SiteTask> {

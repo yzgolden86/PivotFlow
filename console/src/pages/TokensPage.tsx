@@ -119,6 +119,7 @@ export default function TokensPage() {
     <PageHeader
       icon={KeyRound}
       title="令牌管理"
+      tone="amber"
       actions={<>
         <button className="primary-button" type="button" onClick={() => setEditing('new')}><Plus size={16} />创建令牌</button>
         <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新令牌"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>

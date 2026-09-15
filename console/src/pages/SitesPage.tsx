@@ -224,6 +224,7 @@ export default function SitesPage() {
     <PageHeader
       icon={Globe2}
       title="站点管理"
+      tone="blue"
       actions={<><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新站点"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></>}
     />
     <section className="compact-summary"><span><strong>{sites.length}</strong>站点总数</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>已启用</span><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{healthy}</strong>健康账号</span></section>

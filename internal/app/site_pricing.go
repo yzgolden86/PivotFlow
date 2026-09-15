@@ -3,9 +3,13 @@ package app
 import (
 	"context"
 	"log"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/yzgolden86/PivotFlow/internal/site/provider"
 )
@@ -334,6 +338,84 @@ func (s *Server) fetchSitePricing(ctx context.Context, siteID int64) (provider.S
 		return pricing, nil
 	}
 	return provider.SitePricing{}, lastErr
+}
+
+type sitePricingModelPayload struct {
+	Model              string   `json:"model"`
+	QuotaType          int      `json:"quota_type"`
+	PerCallPrice       float64  `json:"per_call_price"`
+	ModelRatio         float64  `json:"model_ratio"`
+	CompletionRatio    float64  `json:"completion_ratio"`
+	CacheRatio         float64  `json:"cache_ratio"`
+	CacheCreationRatio float64  `json:"cache_creation_ratio"`
+	Groups             []string `json:"groups"`
+	InputPrice         float64  `json:"input_price"`
+	OutputPrice        float64  `json:"output_price"`
+	CacheReadPrice     float64  `json:"cache_read_price"`
+	CacheWritePrice    float64  `json:"cache_write_price"`
+}
+
+type sitePricingPayload struct {
+	SiteID     int64                     `json:"site_id"`
+	Available  bool                      `json:"available"`
+	Models     []sitePricingModelPayload `json:"models"`
+	GroupRatio map[string]float64        `json:"group_ratio"`
+}
+
+func buildSitePricingPayload(siteID int64, pricing provider.SitePricing) sitePricingPayload {
+	models := make([]sitePricingModelPayload, 0, len(pricing.Models))
+	for _, price := range pricing.Models {
+		input, output, cacheRead, cacheWrite := price.USDPerMillion(1)
+		groups := append([]string(nil), price.Groups...)
+		if groups == nil {
+			groups = []string{}
+		}
+		models = append(models, sitePricingModelPayload{
+			Model: price.Model, QuotaType: price.QuotaType, PerCallPrice: price.PerCallPrice,
+			ModelRatio: price.ModelRatio, CompletionRatio: price.CompletionRatio,
+			CacheRatio: price.CacheRatio, CacheCreationRatio: price.CacheCreationRatio,
+			Groups: groups, InputPrice: input, OutputPrice: output,
+			CacheReadPrice: cacheRead, CacheWritePrice: cacheWrite,
+		})
+	}
+	groupRatio := make(map[string]float64, len(pricing.GroupRatio))
+	for group, ratio := range pricing.GroupRatio {
+		groupRatio[group] = ratio
+	}
+	return sitePricingPayload{
+		SiteID: siteID, Available: len(models) > 0, Models: models, GroupRatio: groupRatio,
+	}
+}
+
+// handleSitePricing exposes the site's own billing table to the console. The
+// table is optional upstream capability; unavailable sites return an empty,
+// successful payload instead of turning the model page into an error state.
+func (s *Server) handleSitePricing(c *gin.Context) {
+	if s == nil || s.sitePricing == nil {
+		RespondJSON(c, http.StatusOK, sitePricingPayload{Models: []sitePricingModelPayload{}, GroupRatio: map[string]float64{}})
+		return
+	}
+	siteID, err := strconv.ParseInt(c.Query("site_id"), 10, 64)
+	if err != nil || siteID <= 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid_request")
+		return
+	}
+
+	now := time.Now()
+	pricing, cached := s.sitePricing.lookup(siteID, now)
+	if !cached || c.Query("refresh") == "true" {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
+		fetched, fetchErr := s.fetchSitePricing(ctx, siteID)
+		cancel()
+		if fetchErr != nil {
+			s.sitePricing.store(siteID, provider.SitePricing{}, true, now)
+			pricing = provider.SitePricing{}
+		} else {
+			pricing = fetched
+			s.sitePricing.store(siteID, pricing, false, now)
+		}
+	}
+	RespondJSON(c, http.StatusOK, buildSitePricingPayload(siteID, pricing))
 }
 
 // Cost source labels recorded on each log row, so the console can say whether a

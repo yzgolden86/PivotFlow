@@ -386,7 +386,7 @@ def main():
                 ("tokens", "tokens", ".token-row"),
                 ("logs", "logs", ".log-grid"),
                 ("stats", "stats", ".stats-grid"),
-                ("models", "models", ".model-grid"),
+                ("models", "models", ".model-card"),
             ]
             for name, route, selector in pages:
                 context, page, errors = open_page(browser, f"http://127.0.0.1:{server.server_port}", route)
@@ -407,10 +407,17 @@ def main():
                     elif name == "logs":
                         assert_grid_alignment(page, ".record-head.log-grid", ".record-row.log-grid")
                         assert_last_column_alignment(page, ".record-head.log-grid", ".record-row.log-grid")
+                        assert_no_overflow(page, ".record-row.log-grid > div:first-child strong, .log-status .status-badge, .log-model-name")
+                        with page.expect_request(lambda request: "/admin/logs" in request.url and "search=glm" in request.url) as request_info:
+                            page.locator(".log-search input").fill("glm")
+                        assert "search=glm" in request_info.value.url
+                        expect(page.locator(".log-search input")).to_have_value("glm")
                     elif name == "stats":
                         assert_grid_alignment(page, ".record-head.stats-grid", ".record-row.stats-grid")
                         assert_last_column_alignment(page, ".record-head.stats-grid", ".record-row.stats-grid")
                     elif name == "models":
+                        expect(page.locator(".model-card").first).to_be_visible()
+                        page.locator(".model-layout-toggle button").nth(1).click()
                         assert_grid_alignment(page, ".record-head.model-grid", ".record-row.model-grid")
                         assert_last_column_alignment(page, ".record-head.model-grid", ".record-row.model-grid")
                     elif name == "tokens":

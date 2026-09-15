@@ -317,6 +317,15 @@ func TestBuildLogFilter(t *testing.T) {
 			},
 		},
 		{
+			name:  "unified search",
+			query: "search=rate%20limit",
+			check: func(t *testing.T, lf model.LogFilter) {
+				if lf.Search != "rate limit" {
+					t.Errorf("Search=%q, want %q", lf.Search, "rate limit")
+				}
+			},
+		},
+		{
 			name:  "status_code",
 			query: "status_code=200",
 			check: func(t *testing.T, lf model.LogFilter) {

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, CircleDollarSign, Clock3, RefreshCw, TrendingUp, Zap } from 'lucide-react'
+import { Activity, BarChart3, CircleDollarSign, Clock3, LineChart, RefreshCw, TrendingUp, Zap } from 'lucide-react'
 import { getDashboard } from '../api'
 import type { DashboardRange, DashboardSnapshot, MetricPoint } from '../types'
 import { ErrorState, formatMoney, formatNumber, LoadingState, OperationNotice, PageHeader } from './shared'
 
 type TrendMetric = 'requests' | 'tokens' | 'cost'
+type TrendChartMode = 'curve' | 'bars'
 
 export default function TrendPage() {
   const [range, setRange] = useState<DashboardRange>('today')
+  const [chartMode, setChartMode] = useState<TrendChartMode>('curve')
   const loadSequence = useRef(0)
-  const [metric, setMetric] = useState<TrendMetric>('requests')
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -46,6 +47,7 @@ export default function TrendPage() {
     <PageHeader
       icon={TrendingUp}
       title="消费趋势"
+      tone="coral"
       actions={<>
         <div className="range-control" role="radiogroup" aria-label="趋势时间范围">
           {([['today', '今日'], ['this_week', '本周'], ['this_month', '本月']] as const).map(([value, label]) => <button className={range === value ? 'is-active' : ''} type="button" role="radio" aria-checked={range === value} onClick={() => setRange(value)} key={value}>{label}</button>)}
@@ -64,12 +66,13 @@ export default function TrendPage() {
 
     <section className="trend-workbench">
       <header>
-        <div><TrendingUp size={18} /><h2>{metricLabel(metric)}</h2></div>
-        <div className="trend-metric-tabs" role="tablist" aria-label="趋势指标">
-          {(['requests', 'tokens', 'cost'] as TrendMetric[]).map((value) => <button className={metric === value ? 'is-active' : ''} type="button" role="tab" aria-selected={metric === value} onClick={() => setMetric(value)} key={value}>{metricLabel(value)}</button>)}
+        <div><TrendingUp size={18} /><h2>用量总览</h2></div>
+        <div className="trend-chart-toggle" role="group" aria-label="趋势图形式">
+          <button type="button" className={chartMode === 'curve' ? 'is-active' : ''} onClick={() => setChartMode('curve')} aria-pressed={chartMode === 'curve'} title="曲线视图"><LineChart size={15} /><span>曲线图</span></button>
+          <button type="button" className={chartMode === 'bars' ? 'is-active' : ''} onClick={() => setChartMode('bars')} aria-pressed={chartMode === 'bars'} title="柱状视图"><BarChart3 size={15} /><span>柱状图</span></button>
         </div>
       </header>
-      <TrendChart points={snapshot.trend} metric={metric} />
+      <CombinedTrendChart points={snapshot.trend} mode={chartMode} />
     </section>
 
     <section className="trend-breakdown">
@@ -79,50 +82,149 @@ export default function TrendPage() {
   </div>
 }
 
-function TrendChart({ points, metric }: { points: MetricPoint[]; metric: TrendMetric }) {
+function CombinedTrendChart({ points, mode }: { points: MetricPoint[]; mode: TrendChartMode }) {
   const [hovered, setHovered] = useState<number | null>(null)
-  const values = useMemo(() => points.map((point) => pointValue(point, metric)), [metric, points])
-  const max = Math.max(...values, 1)
-  const line = values.map((value, index) => {
-    const x = values.length <= 1 ? 40 : 40 + (index / (values.length - 1)) * 920
-    const y = 245 - (value / max) * 205
-    return `${x},${y}`
-  }).join(' ')
+  const series = useMemo(() => points.map((point) => ({
+    point,
+    requests: (point.success || 0) + (point.error || 0),
+    tokens: (point.input_tokens || 0) + (point.output_tokens || 0),
+    cost: point.effective_cost || 0,
+  })), [points])
+  const maxima = useMemo(() => ({
+    requests: Math.max(...series.map((entry) => entry.requests), 1),
+    tokens: Math.max(...series.map((entry) => entry.tokens), 1),
+    cost: Math.max(...series.map((entry) => entry.cost), 1),
+  }), [series])
+  // 曲线视图先做一次轻度平滑：真实数据常带锯齿，直接连线会显得生硬。
+  // 悬浮提示仍展示原始数值，柱状视图也不受影响。
+  const smoothed = useMemo(() => ({
+    requests: smoothSeries(series.map((entry) => entry.requests)),
+    tokens: smoothSeries(series.map((entry) => entry.tokens)),
+    cost: smoothSeries(series.map((entry) => entry.cost)),
+  }), [series])
+  const curvePaths = useMemo(() => ({
+    requests: smoothCurvePath(smoothed.requests, maxima.requests),
+    tokens: smoothCurvePath(smoothed.tokens, maxima.tokens),
+    cost: smoothCurvePath(smoothed.cost, maxima.cost),
+  }), [maxima, smoothed])
   if (!points.length) return <div className="content-state content-state--empty">当前范围暂无趋势数据</div>
-  const hoveredIndex = hovered ?? 0
-  const hoveredPoint = hovered == null ? null : points[hoveredIndex]
-  const hoveredValue = hoveredPoint == null ? 0 : values[hoveredIndex] || 0
-  const hoveredX = values.length <= 1 ? 8 : Math.min(92, Math.max(8, 4 + (hoveredIndex / (values.length - 1)) * 92))
-  const hoveredY = 245 - (hoveredValue / max) * 205
-  return <div className="trend-workbench-chart">
-    <svg viewBox="0 0 1000 280" role="img" aria-label={`${metricLabel(metric)}趋势图`} preserveAspectRatio="none">
-      {[40, 91, 142, 193, 245].map((y) => <line x1="40" x2="960" y1={y} y2={y} className="trend-grid-line" key={y} />)}
-      <polyline points={line} className="trend-main-line" />
-      {values.map((value, index) => {
-        const x = values.length <= 1 ? 40 : 40 + (index / (values.length - 1)) * 920
-        const y = 245 - (value / max) * 205
-        return <circle cx={x} cy={y} r={hovered === index ? 6 : 3.5} className="trend-main-point" key={`${points[index].ts}-${index}`} onMouseEnter={() => setHovered(index)} onMouseLeave={() => setHovered(null)} onFocus={() => setHovered(index)} onBlur={() => setHovered(null)} tabIndex={0} role="button" aria-label={`${formatPointTime(points[index].ts)} ${metricLabel(metric)} ${formatMetric(value, metric)}`}><title>{`${formatPointTime(points[index].ts)} · ${metricLabel(metric)} ${formatMetric(value, metric)}${metric === 'requests' ? ' 次' : ''}`}</title></circle>
-      })}
-    </svg>
-    {hoveredPoint && <div className="trend-point-tooltip" style={{ left: `${hoveredX}%`, top: `${(hoveredY / 280) * 100}%` }}>
-      <strong>{formatPointTime(hoveredPoint.ts)}</strong><span>{metricLabel(metric)} <b>{formatMetric(hoveredValue, metric)}{metric === 'requests' ? ' 次' : ''}</b></span>
-    </div>}
-    <div className="trend-axis"><span>{formatPointTime(points[0].ts)}</span><strong>峰值 {formatMetric(max, metric)}</strong><span>{formatPointTime(points[points.length - 1].ts)}</span></div>
+  const hoveredEntry = hovered == null ? null : series[hovered]
+  const tooltipLeft = Math.min(88, Math.max(12, ((hovered ?? 0) + .5) / series.length * 100))
+  return <div className="combined-trend-chart">
+    <div className="combined-trend-legend" aria-label="趋势指标图例">
+      <span><i className="combined-trend-dot combined-trend-dot--requests" />请求量 <b>峰值 {formatMetric(maxima.requests, 'requests')}</b></span>
+      <span><i className="combined-trend-dot combined-trend-dot--tokens" />Token <b>峰值 {formatMetric(maxima.tokens, 'tokens')}</b></span>
+      <span><i className="combined-trend-dot combined-trend-dot--cost" />费用 <b>峰值 {formatMetric(maxima.cost, 'cost')}</b></span>
+    </div>
+    <div className={`combined-trend-plot${mode === 'curve' ? ' combined-trend-plot--curve' : ''}`} role="img" aria-label="请求量、Token 与费用组合趋势图">
+      <div className="combined-trend-grid" aria-hidden="true">
+        {[100, 75, 50, 25, 0].map((level) => <span key={level} style={{ bottom: `${level}%` }} />)}
+      </div>
+      {mode === 'curve' ? <>
+        <svg className="combined-trend-svg" viewBox="0 0 1000 320" preserveAspectRatio="none" aria-hidden="true">
+          <path className="combined-trend-curve combined-trend-curve--requests" d={curvePaths.requests} />
+          <path className="combined-trend-curve combined-trend-curve--tokens" d={curvePaths.tokens} />
+          <path className="combined-trend-curve combined-trend-curve--cost" d={curvePaths.cost} />
+          {hovered != null && ([
+            ['requests', smoothed.requests[hovered], maxima.requests],
+            ['tokens', smoothed.tokens[hovered], maxima.tokens],
+            ['cost', smoothed.cost[hovered], maxima.cost],
+          ] as const).map(([metric, value, max]) => <circle
+            key={metric}
+            className={`combined-trend-point combined-trend-point--${metric}`}
+            cx={curveX(hovered, series.length)}
+            cy={curveY(value, max)}
+            r={5}
+          />)}
+        </svg>
+        <div className="combined-trend-hover-columns">
+          {series.map((entry, index) => <div
+            className={`combined-trend-hover-column${hovered === index ? ' is-active' : ''}`}
+            key={`${entry.point.ts}-${index}`}
+            tabIndex={0}
+            aria-label={`${formatPointTime(entry.point.ts)}，请求量 ${formatMetric(entry.requests, 'requests')} 次，Token ${formatMetric(entry.tokens, 'tokens')}，费用 ${formatMetric(entry.cost, 'cost')}`}
+            onMouseEnter={() => setHovered(index)}
+            onMouseLeave={() => setHovered(null)}
+            onFocus={() => setHovered(index)}
+            onBlur={() => setHovered(null)}
+          />)}
+        </div>
+      </> : <div className="combined-trend-buckets">
+        {series.map((entry, index) => <div
+          className={`combined-trend-bucket${hovered === index ? ' is-active' : ''}`}
+          key={`${entry.point.ts}-${index}`}
+          tabIndex={0}
+          aria-label={`${formatPointTime(entry.point.ts)}，请求量 ${formatMetric(entry.requests, 'requests')} 次，Token ${formatMetric(entry.tokens, 'tokens')}，费用 ${formatMetric(entry.cost, 'cost')}`}
+          onMouseEnter={() => setHovered(index)}
+          onMouseLeave={() => setHovered(null)}
+          onFocus={() => setHovered(index)}
+          onBlur={() => setHovered(null)}
+        >
+          <span className="combined-trend-bar combined-trend-bar--requests" style={{ height: `${barHeight(entry.requests, maxima.requests)}%` }} />
+          <span className="combined-trend-bar combined-trend-bar--tokens" style={{ height: `${barHeight(entry.tokens, maxima.tokens)}%` }} />
+          <span className="combined-trend-bar combined-trend-bar--cost" style={{ height: `${barHeight(entry.cost, maxima.cost)}%` }} />
+        </div>)}
+      </div>}
+      {hoveredEntry && <div className="combined-trend-tooltip" style={{ left: `${tooltipLeft}%` }}>
+        <strong>{formatPointTime(hoveredEntry.point.ts)}</strong>
+        <span><i className="combined-trend-dot combined-trend-dot--requests" />请求量<b>{formatMetric(hoveredEntry.requests, 'requests')} 次</b></span>
+        <span><i className="combined-trend-dot combined-trend-dot--tokens" />Token<b>{formatMetric(hoveredEntry.tokens, 'tokens')}</b></span>
+        <span><i className="combined-trend-dot combined-trend-dot--cost" />费用<b>{formatMetric(hoveredEntry.cost, 'cost')}</b></span>
+      </div>}
+    </div>
+    <div className="combined-trend-axis"><span>{formatPointTime(points[0].ts)}</span><span>{formatPointTime(points[points.length - 1].ts)}</span></div>
   </div>
 }
 
 function Breakdown({ items }: { items: Array<{ key: string; label: string; requests: number; effective_cost: number; share: number }> }) {
   if (!items.length) return <div className="mini-empty">暂无消耗</div>
-  return <div className="trend-breakdown-list">{items.map((item) => <div key={item.key}><span><strong>{item.label}</strong><small>{formatNumber(item.requests)} 请求 · {formatMoney(item.effective_cost)}</small></span><i><b style={{ width: `${Math.max(2, item.share * 100)}%` }} /></i><em>{(item.share * 100).toFixed(1)}%</em></div>)}</div>
+  return <div className="trend-breakdown-list">{items.map((item, index) => <div key={item.key}>
+    <span className="trend-rank">{index + 1}</span>
+    <div><strong title={item.label}>{item.label}</strong><small>{formatNumber(item.requests)} 请求 · {formatMoney(item.effective_cost)}</small><i><b style={{ width: `${Math.max(3, item.share * 100)}%` }} /></i></div>
+    <em>{(item.share * 100).toFixed(1)}%</em>
+  </div>)}</div>
 }
 
-function pointValue(point: MetricPoint, metric: TrendMetric): number {
-  if (metric === 'tokens') return (point.input_tokens || 0) + (point.output_tokens || 0)
-  if (metric === 'cost') return point.effective_cost || 0
-  return point.success + point.error
-}
 function metricLabel(metric: TrendMetric): string { return metric === 'tokens' ? 'Token' : metric === 'cost' ? '费用' : '请求量' }
 function formatMetric(value: number, metric: TrendMetric): string { return metric === 'cost' ? formatMoney(value) : formatNumber(value) }
+function barHeight(value: number, max: number): number { return value <= 0 ? 1 : Math.max(4, value / max * 100) }
+function curveX(index: number, count: number): number { return count <= 1 ? 500 : 30 + (index / (count - 1)) * 940 }
+function curveY(value: number, max: number): number { return 284 - Math.min(1, Math.max(0, value / max)) * 238 }
+function smoothCurvePath(values: number[], max: number): string {
+  if (!values.length) return ''
+  const points = values.map((value, index) => ({ x: curveX(index, values.length), y: curveY(value, max) }))
+  if (points.length === 1) return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)} L ${(points[0].x + 1).toFixed(2)} ${points[0].y.toFixed(2)}`
+  // 标准 Catmull-Rom 转三次贝塞尔：控制点取相邻两点连线的 1/6，
+  // 曲线在每个节点上圆滑转向，不会出现折角；平滑后的数据本身
+  // 起伏有限，因此只在绘图区边界做夹取，保留完整弧度。
+  const tension = 1 / 6
+  return points.slice(1).reduce((path, point, index) => {
+    const previous = points[index]
+    const before = points[index - 1] ?? previous
+    const after = points[index + 2] ?? point
+    const controlX1 = previous.x + (point.x - before.x) * tension
+    const controlY1 = clampPlotY(previous.y + (point.y - before.y) * tension)
+    const controlX2 = point.x - (after.x - previous.x) * tension
+    const controlY2 = clampPlotY(point.y - (after.y - previous.y) * tension)
+    return `${path} C ${controlX1.toFixed(2)} ${controlY1.toFixed(2)}, ${controlX2.toFixed(2)} ${controlY2.toFixed(2)}, ${point.x.toFixed(2)} ${point.y.toFixed(2)}`
+  }, `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`)
+}
+function clampPlotY(value: number): number { return Math.min(306, Math.max(8, value)) }
+// 五点二项平滑：保留走势的同时抹平单点锯齿，端点按自身值补齐避免塌陷。
+function smoothSeries(values: number[]): number[] {
+  if (values.length < 4) return values.slice()
+  const kernel = [1, 2, 3, 2, 1]
+  return values.map((value, index) => {
+    let sum = 0
+    let weight = 0
+    for (let offset = 0; offset < kernel.length; offset += 1) {
+      const source = index + offset - 2
+      sum += (source >= 0 && source < values.length ? values[source] : value) * kernel[offset]
+      weight += kernel[offset]
+    }
+    return sum / weight
+  })
+}
 function formatPointTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(date) }
 function averageTrendInterval(points: MetricPoint[]): number {
   if (points.length < 2) return 0

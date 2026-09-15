@@ -208,6 +208,7 @@ export default function SystemSettingsPageV2() {
     <PageHeader
       icon={Settings}
       title="系统设置"
+      tone="graphite"
       actions={section === 'runtime' && group !== 'appearance' ? <>
         <label className="settings-modified-filter"><input type="checkbox" checked={onlyModified} onChange={(event) => setOnlyModified(event.target.checked)} />仅看已修改{dirty.size > 0 && <span>{dirty.size}</span>}</label>
         <button className="icon-button icon-button--surface" type="button" onClick={() => void reloadSettings()} disabled={refreshing || saving} aria-label="刷新系统设置" title="从服务器重新读取"><RefreshCw size={18} className={refreshing ? 'spin' : undefined} /></button>

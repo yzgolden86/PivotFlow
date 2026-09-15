@@ -481,6 +481,7 @@ export default function AccountsPage() {
     <PageHeader
       icon={Users}
       title="账号管理"
+      tone="blue"
       actions={<>
         <button className="primary-button" type="button" onClick={() => void openCreate(siteFilter)} disabled={!sites.length || openingCreate}><Plus size={16} />添加账号</button>
         <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新账号"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>

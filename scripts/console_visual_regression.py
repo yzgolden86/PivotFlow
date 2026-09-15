@@ -93,7 +93,7 @@ class ConsoleFixtures:
         elif path == "/admin/logs":
             payload = fixtures.envelope(LOGS, len(LOGS))
         elif path == "/admin/logs/bootstrap":
-            payload = fixtures.envelope({"channel_test_content": "test", "models": ["glm-5.3", "claude-sonnet-4-6"], "channels": [{"id": 101, "name": "星河节点"}], "status_codes": [200, 429]})
+            payload = fixtures.envelope({"channel_test_content": "test", "auth_tokens": [], "models": ["glm-5.3", "claude-sonnet-4-6"], "channels": [{"id": 101, "name": "星河节点"}], "status_codes": [200, 429]})
         else:
             fixtures.mock_admin(route)
             return
@@ -315,7 +315,7 @@ def run(base, out, capture_only):
                 page = context.new_page()
                 page.on("pageerror", lambda error: report["errors"].append(str(error)))
                 for name, path in PAGES.items():
-                    page.goto(f"{base}/web/console/#{path}", wait_until="networkidle")
+                    page.goto(f"{base}/web/console#{path if path.startswith('/') else f'/{path}'}", wait_until="networkidle")
                     expect(page.locator("main h1")).to_have_text(PAGE_TITLES[name])
                     record = capture(page, out, f"{name}-{width}-{'dark' if dark else 'light'}")
                     report["pages"].append(record)

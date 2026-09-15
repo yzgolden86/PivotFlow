@@ -53,6 +53,13 @@ func TestWhereBuilder_ApplyLogFilter(t *testing.T) {
 			expectArgsLen: 2,
 		},
 		{
+			name: "unified search expands to four keyword fields",
+			filter: &model.LogFilter{
+				Search: "rate limit",
+			},
+			expectArgsLen: 5,
+		},
+		{
 			name: "status_code filter",
 			filter: &model.LogFilter{
 				StatusCode: &statusCode,

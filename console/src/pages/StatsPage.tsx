@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, BarChart3, CircleDollarSign, Gauge, RefreshCw, WalletCards, Zap } from 'lucide-react'
 import { getStats, getStatsFilterOptions } from '../api'
-import HelpTip from '../components/HelpTip'
 import type { DashboardRange, SiteBalanceHistoryPoint, StatsEntry, StatsFilterOptions, StatsSnapshot } from '../types'
 import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, PageHeader, successTone } from './shared'
 
@@ -41,8 +40,9 @@ export default function StatsPage() {
   return (
     <div className="workspace-page">
       <PageHeader
-        icon={BarChart3}
-        title="用量统计"
+      icon={BarChart3}
+      title="用量统计"
+      tone="coral"
         actions={<button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新统计"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>}
       />
 
@@ -59,9 +59,11 @@ export default function StatsPage() {
         <MiniKPI icon={CircleDollarSign} label="有效费用" value={formatMoney(totals.cost)} meta={`${formatNumber(totals.tokens)} tokens`} />
       </section>}
 
-      {snapshot?.balance_history?.length ? <BalanceHistoryPanel points={snapshot.balance_history} /> : snapshot ? <section className="balance-history-empty" aria-label="余额趋势等待数据">
+      {!loading && !error && entries.length > 0 ? <StatsDistribution entries={entries} /> : null}
+
+      {snapshot?.balance_history?.length ? <BalanceHistoryPanel points={snapshot.balance_history} /> : snapshot ? <section className="balance-history-empty" aria-label="余额变化等待数据">
         <span><WalletCards size={18} /></span>
-        <div><strong>余额趋势等待数据</strong><span>成功刷新账号余额后会生成每日快照；从第二天开始可对比变化。</span></div>
+        <div><strong>余额变化等待数据</strong><span>成功刷新账号余额后，从第二天开始可对比每日变化。</span></div>
       </section> : null}
 
       {loading ? <LoadingState label="正在计算用量统计" /> : error ? <ErrorState message={error} retry={() => void load()} /> : entries.length === 0 ? <EmptyState label="当前范围暂无统计数据" /> : (
@@ -78,6 +80,50 @@ function MiniKPI({ icon: Icon, label, value, meta }: { icon: typeof Zap; label: 
   return <article><span><Icon size={17} /></span><div><small>{label}</small><strong>{value}</strong><em>{meta}</em></div></article>
 }
 
+function StatsDistribution({ entries }: { entries: StatsEntry[] }) {
+  const costTotal = entries.reduce((sum, entry) => sum + (entry.effective_cost ?? entry.total_cost ?? 0), 0)
+  const mode = costTotal > 0 ? 'cost' : 'requests'
+  const channelItems = buildDistribution(entries, (entry) => entry.channel_name, mode)
+  const modelItems = buildDistribution(entries, (entry) => entry.model, mode)
+  return <section className="stats-distribution" aria-label="用量分布">
+    <article>
+      <header><BarChart3 size={17} /><h2>渠道用量</h2></header>
+      <DistributionList items={channelItems} mode={mode} />
+    </article>
+    <article>
+      <header><Activity size={17} /><h2>模型用量</h2></header>
+      <DistributionList items={modelItems} mode={mode} />
+    </article>
+  </section>
+}
+
+function buildDistribution(entries: StatsEntry[], key: (entry: StatsEntry) => string, mode: 'cost' | 'requests') {
+  const totals = new Map<string, number>()
+  for (const entry of entries) {
+    const value = mode === 'cost' ? (entry.effective_cost ?? entry.total_cost ?? 0) : entry.total
+    totals.set(key(entry), (totals.get(key(entry)) || 0) + value)
+  }
+  const sorted = Array.from(totals.entries()).sort((a, b) => b[1] - a[1])
+  const visible = sorted.slice(0, 6)
+  const otherTotal = sorted.slice(6).reduce((sum, [, value]) => sum + value, 0)
+  if (otherTotal > 0) visible.push(['其他', otherTotal])
+  const total = sorted.reduce((sum, [, value]) => sum + value, 0) || 1
+  return visible.map(([label, value]) => ({ label, value, share: value / total, isOther: label === '其他' }))
+}
+
+function DistributionList({ items, mode }: { items: Array<{ label: string; value: number; share: number; isOther: boolean }>; mode: 'cost' | 'requests' }) {
+  return <div className="stats-distribution-list">
+    {items.map((item, index) => <div key={item.label}>
+      <span className="stats-distribution-rank">{index + 1}</span>
+      <div>
+        <strong title={item.label}>{item.label}</strong>
+        <i><b style={{ width: `${Math.max(3, item.share * 100)}%` }} /></i>
+      </div>
+      <span>{mode === 'cost' ? formatMoney(item.value) : formatNumber(item.value)}</span>
+    </div>)}
+  </div>
+}
+
 function BalanceHistoryPanel({ points }: { points: SiteBalanceHistoryPoint[] }) {
   const groups = new Map<string, SiteBalanceHistoryPoint[]>()
   for (const point of points) {
@@ -86,35 +132,60 @@ function BalanceHistoryPanel({ points }: { points: SiteBalanceHistoryPoint[] }) 
     groups.set(point.currency, current)
   }
 
-  return <section className="balance-history-panel" aria-label="余额历史">
-    {Array.from(groups.entries()).map(([currency, currencyPoints]) => {
-      const latest = currencyPoints[currencyPoints.length - 1]
-      const baseline = currencyPoints[0]
-      const delta = latest.balance - baseline.balance
-      return <article key={currency}>
-        <header>
-          <div className="heading-with-hint">
-            <h2>余额趋势 · {currency}</h2>
-            <HelpTip label="余额趋势" text="按账号本地日期汇总，同日多次刷新保留最新值" />
-          </div>
-          <span>{currencyPoints.length} 天</span>
-        </header>
-        <div className="balance-history-summary">
-          <span><small>最新余额</small><strong>{formatCurrency(latest.balance, currency)}</strong></span>
-          <span><small>区间变化</small><em className={delta > 0 ? 'balance-history-delta gain' : delta < 0 ? 'balance-history-delta loss' : 'balance-history-delta'}>{formatSignedCurrency(delta, currency)}</em></span>
-          <span><small>覆盖账号</small><strong>{formatNumber(latest.accounts)}</strong></span>
-        </div>
-        <div className="balance-history-list" role="table" aria-label={`${currency} 每日余额`}>
-          <div role="row"><span role="columnheader">日期</span><span role="columnheader">余额汇总</span><span role="columnheader">账号</span></div>
-          {[...currencyPoints].reverse().map((point) => <div role="row" key={`${point.day}:${point.currency}`}>
-            <span role="cell">{formatDay(point.day)}</span>
-            <span role="cell">{formatCurrency(point.balance, point.currency)}</span>
-            <span role="cell">{formatNumber(point.accounts)}</span>
-          </div>)}
-        </div>
-      </article>
-    })}
+  return <section className="balance-change-panel" aria-label="余额变化">
+    <header>
+      <div><WalletCards size={17} /><h2>余额变化</h2></div>
+      <span>最近 14 天</span>
+    </header>
+    {Array.from(groups.entries()).map(([currency, currencyPoints]) => (
+      <BalanceChangeRow currency={currency} points={currencyPoints} key={currency} />
+    ))}
   </section>
+}
+
+function BalanceChangeRow({ currency, points }: { currency: string; points: SiteBalanceHistoryPoint[] }) {
+  const [hovered, setHovered] = useState<number | null>(null)
+  const latest = points[points.length - 1]
+  const baseline = points[0]
+  const delta = latest.balance - baseline.balance
+  const deltas = points.slice(1).map((point, index) => ({
+    day: point.day,
+    balance: point.balance,
+    value: point.balance - points[index].balance,
+  }))
+  const recentDeltas = deltas.slice(-14)
+  const maxChange = Math.max(...recentDeltas.map((item) => Math.abs(item.value)), 1)
+  const hoveredItem = hovered == null ? null : recentDeltas[hovered]
+  const tooltipLeft = Math.min(90, Math.max(10, ((hovered ?? 0) + .5) / Math.max(recentDeltas.length, 1) * 100))
+  return <article className="balance-change-row">
+    <div className="balance-change-identity">
+      <strong>{currency}</strong>
+      <span>{formatCurrency(latest.balance, currency)}</span>
+    </div>
+    <div className="balance-change-bars" role="img" aria-label={`${currency} 每日余额变化`}>
+      {recentDeltas.length ? recentDeltas.map((item, index) => <span
+        className={`balance-change-cell${hovered === index ? ' is-active' : ''}`}
+        key={`${currency}:${item.day}`}
+        tabIndex={0}
+        aria-label={`${formatDay(item.day)} 变化 ${formatSignedCurrency(item.value, currency)}，余额 ${formatCurrency(item.balance, currency)}`}
+        onMouseEnter={() => setHovered(index)}
+        onMouseLeave={() => setHovered(null)}
+        onFocus={() => setHovered(index)}
+        onBlur={() => setHovered(null)}
+      >
+        <i className={`balance-change-bar ${item.value > 0 ? 'gain' : item.value < 0 ? 'loss' : 'flat'}`} style={{ height: `${item.value === 0 ? 2 : Math.max(7, Math.abs(item.value) / maxChange * 50)}%` }} />
+      </span>) : <span className="balance-change-wait">等待次日数据</span>}
+      {hoveredItem && <div className="balance-change-tooltip" style={{ left: `${tooltipLeft}%` }}>
+        <strong>{formatDay(hoveredItem.day)}</strong>
+        <span>变化 <b className={hoveredItem.value > 0 ? 'gain' : hoveredItem.value < 0 ? 'loss' : undefined}>{formatSignedCurrency(hoveredItem.value, currency)}</b></span>
+        <span>余额 <b>{formatCurrency(hoveredItem.balance, currency)}</b></span>
+      </div>}
+    </div>
+    <div className="balance-change-meta">
+      <strong className={delta > 0 ? 'gain' : delta < 0 ? 'loss' : undefined}>{formatSignedCurrency(delta, currency)}</strong>
+      <span>{points.length} 天 · {formatNumber(latest.accounts)} 账号</span>
+    </div>
+  </article>
 }
 
 function formatCurrency(value: number, currency: string): string {

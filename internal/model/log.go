@@ -114,6 +114,7 @@ type LogFilter struct {
 	ChannelNameLike  string
 	Model            string
 	ModelLike        string
+	Search           string
 	StatusCode       *int
 	StatusCodeMin    *int
 	UpstreamProtocol string // 实际上游协议过滤

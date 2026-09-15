@@ -1156,6 +1156,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/announcements/read-all", s.siteControl.handleAnnouncementsReadAll)
 		admin.GET("/site-models", s.siteControl.handleSiteModels)
 		admin.GET("/site-channel-bindings", s.siteControl.handleSiteChannelBindings)
+		admin.GET("/site-pricing", s.handleSitePricing)
 		admin.GET("/site-tasks/:id", s.siteControl.handleSiteTask)
 		admin.POST("/site-tasks/:id/cancel", s.siteControl.handleSiteTaskCancel)
 		admin.GET("/webhook", s.siteControl.handleWebhook)

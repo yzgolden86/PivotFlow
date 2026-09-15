@@ -2,14 +2,15 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight, Eye, EyeOff, RefreshCw, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
-export function PageHeader({ icon: Icon, title, actions, className = '' }: {
+export function PageHeader({ icon: Icon, title, actions, className = '', tone = 'green' }: {
   icon: LucideIcon
   title: ReactNode
   actions?: ReactNode
   className?: string
+  tone?: 'green' | 'blue' | 'amber' | 'coral' | 'graphite'
 }) {
   return (
-    <header className={`page-header page-header--elevated${className ? ` ${className}` : ''}`}>
+    <header className={`page-header page-header--elevated page-header--tone-${tone}${className ? ` ${className}` : ''}`}>
       <div className="page-header-copy">
         <span className="page-header-icon" aria-hidden="true"><Icon size={20} /></span>
         <div className="page-header-title">

@@ -296,6 +296,7 @@ func BindAndValidate(c *gin.Context, obj RequestValidator) error {
 // - channel_name_like: 模糊匹配渠道名称
 // - model: 精确匹配模型名称
 // - model_like: 模糊匹配模型名称
+// - search: 跨模型、实际上游模型、错误信息和上游 URL 的模糊搜索
 func BuildLogFilter(c *gin.Context) model.LogFilter {
 	var lf model.LogFilter
 
@@ -324,6 +325,11 @@ func BuildLogFilter(c *gin.Context) model.LogFilter {
 	// 模型名称模糊匹配
 	if ml := strings.TrimSpace(c.Query("model_like")); ml != "" {
 		lf.ModelLike = ml
+	}
+
+	// 日志页顶部的统一搜索框：跨关键字段模糊匹配。
+	if search := strings.TrimSpace(c.Query("search")); search != "" {
+		lf.Search = search
 	}
 
 	// 状态码精确匹配

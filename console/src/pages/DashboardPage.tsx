@@ -79,9 +79,10 @@ export default function DashboardPage() {
   return (
     <div className="dashboard-page">
       <PageHeader
-        icon={Gauge}
-        title="系统概览"
-        className="dashboard-header"
+      icon={Gauge}
+      title="系统概览"
+      tone="green"
+      className="dashboard-header"
         actions={<>
           <div className="range-control" role="radiogroup" aria-label="统计时间范围">
             {rangeOptions.map((option) => (

@@ -507,3 +507,54 @@ func TestLog_ListRangeWithCount_PreservesZeroCostMultiplier(t *testing.T) {
 		t.Fatal("upstream_websocket=false, want true")
 	}
 }
+
+func TestLog_ListRangeWithCount_UnifiedSearch(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "logs_unified_search.db")
+	ctx := context.Background()
+	now := time.Now()
+	entries := []*model.LogEntry{
+		{Time: newJSONTime(now.Add(-4 * time.Second)), Model: "gpt-5.4", LogSource: model.LogSourceProxy, StatusCode: 200, Message: "success"},
+		{Time: newJSONTime(now.Add(-3 * time.Second)), Model: "claude-sonnet-4-6", ActualModel: "relay/claude-sonnet-4-6", LogSource: model.LogSourceProxy, StatusCode: 200, Message: "success"},
+		{Time: newJSONTime(now.Add(-2 * time.Second)), Model: "gemini-3-pro", LogSource: model.LogSourceProxy, StatusCode: 429, Message: "upstream rate limit"},
+		{Time: newJSONTime(now.Add(-1 * time.Second)), Model: "glm-5.3", LogSource: model.LogSourceProxy, StatusCode: 200, Message: "success", BaseURL: "https://search.example/v1"},
+	}
+	for _, entry := range entries {
+		if err := store.AddLog(ctx, entry); err != nil {
+			t.Fatalf("add log: %v", err)
+		}
+	}
+
+	cases := []struct {
+		needle string
+		model  string
+	}{
+		{needle: "claude", model: "claude-sonnet-4-6"},
+		{needle: "relay/claude", model: "claude-sonnet-4-6"},
+		{needle: "rate limit", model: "gemini-3-pro"},
+		{needle: "search.example", model: "glm-5.3"},
+		{needle: "not-present", model: ""},
+	}
+	startTime := now.Add(-time.Minute)
+	endTime := now.Add(time.Minute)
+	for _, tc := range cases {
+		filter := &model.LogFilter{Search: tc.needle, LogSource: model.LogSourceAll}
+		logs, total, err := store.ListLogsRangeWithCount(ctx, startTime, endTime, 10, 0, filter)
+		if err != nil {
+			t.Fatalf("search %q: %v", tc.needle, err)
+		}
+		if total != len(logs) {
+			t.Fatalf("search %q: total=%d len=%d", tc.needle, total, len(logs))
+		}
+		if tc.model == "" {
+			if total != 0 {
+				t.Fatalf("search %q: expected no results, got %d", tc.needle, total)
+			}
+			continue
+		}
+		if total != 1 || len(logs) != 1 || logs[0].Model != tc.model {
+			t.Fatalf("search %q: got total=%d logs=%+v", tc.needle, total, logs)
+		}
+	}
+}
