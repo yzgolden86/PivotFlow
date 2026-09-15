@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, BarChart3, CircleDollarSign, Gauge, RefreshCw, Zap } from 'lucide-react'
+import { Activity, BarChart3, CircleDollarSign, Gauge, RefreshCw, WalletCards, Zap } from 'lucide-react'
 import { getStats, getStatsFilterOptions } from '../api'
 import HelpTip from '../components/HelpTip'
 import type { DashboardRange, SiteBalanceHistoryPoint, StatsEntry, StatsFilterOptions, StatsSnapshot } from '../types'
@@ -59,7 +59,10 @@ export default function StatsPage() {
         <MiniKPI icon={CircleDollarSign} label="有效费用" value={formatMoney(totals.cost)} meta={`${formatNumber(totals.tokens)} tokens`} />
       </section>}
 
-      {snapshot?.balance_history?.length ? <BalanceHistoryPanel points={snapshot.balance_history} /> : null}
+      {snapshot?.balance_history?.length ? <BalanceHistoryPanel points={snapshot.balance_history} /> : snapshot ? <section className="balance-history-empty" aria-label="余额趋势等待数据">
+        <span><WalletCards size={18} /></span>
+        <div><strong>余额趋势等待数据</strong><span>成功刷新账号余额后会生成每日快照；从第二天开始可对比变化。</span></div>
+      </section> : null}
 
       {loading ? <LoadingState label="正在计算用量统计" /> : error ? <ErrorState message={error} retry={() => void load()} /> : entries.length === 0 ? <EmptyState label="当前范围暂无统计数据" /> : (
         <div className="records-panel stats-records">

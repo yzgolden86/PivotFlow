@@ -6,6 +6,7 @@ import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagi
 import { useLocation } from 'react-router-dom'
 import { Modal, siteErrorMessage, StatusBadge } from './siteShared'
 import ChannelKeysModal from './ChannelKeysModal'
+import HelpTip from '../components/HelpTip'
 
 const routeDiagnosticProtocols = [
   { value: 'openai', label: 'OpenAI' },
@@ -433,22 +434,22 @@ function ChannelRouteDiagnosticsModal({ channel, close }: { channel: Channel; cl
         </div>
         {snapshot?.route_strategy === 'sticky' && snapshot.sticky ? (
           <div className="route-diagnostic-sticky">
-            <div><small>当前粘性命中</small><strong title={snapshot.sticky.channel_name}>{snapshot.sticky.channel_name || `#${snapshot.sticky.channel_id}`}</strong><span>记录于 {formatDiagnosticTime(snapshot.sticky.remembered_at)} · 有效至 {formatDiagnosticTime(snapshot.sticky.expires_at)}</span></div>
-            <p>{snapshot.sticky.in_candidate_pool ? '该渠道在当前候选池中。粘性只会把同优先级层内的它提前，不会让低优先级渠道越过更高优先级渠道。' : '该渠道当前不在候选池中，实际请求会按候选池重新选择；这条历史记录不会强行接管本次路由。'}</p>
+            <div><small>粘性命中</small><strong title={snapshot.sticky.channel_name}>{snapshot.sticky.channel_name || `#${snapshot.sticky.channel_id}`}</strong><span>有效至 {formatDiagnosticTime(snapshot.sticky.expires_at)}</span></div>
+            <HelpTip label="粘性命中" text={snapshot.sticky.in_candidate_pool ? '粘性只会在同优先级层内把该渠道提前。' : '该历史命中不在当前候选池中，本次请求会按候选池重新选择。'} />
           </div>
-        ) : snapshot?.route_strategy === 'sticky' && !tokenId ? <div className="route-diagnostic-note">当前是粘性轮询：同一「访问令牌 + 模型」会优先沿用上次成功渠道。请选择访问令牌查看当前命中；未选择时只能展示全局候选和日志占比。</div> : null}
+        ) : snapshot?.route_strategy === 'sticky' && !tokenId ? <div className="route-diagnostic-note"><span>粘性轮询：选择访问令牌后查看当前命中</span><HelpTip label="粘性轮询" text="同一「访问令牌 + 模型」会优先沿用上次成功渠道；全局视角只展示候选和日志占比。" /></div> : null}
         {loading ? <LoadingState label="正在计算候选池" /> : error ? <ErrorState message={error} retry={() => void refresh()} /> : !model ? <EmptyState label="该渠道没有启用模型" /> : snapshot ? (
           <>
             <div className="route-diagnostic-summary">
-              <article><small>当前策略</small><strong>{strategyLabel}</strong><span>{snapshot.route_strategy === 'sticky' ? '按令牌和模型保持亲和' : '同优先级按权重轮转'}</span></article>
-              <article><small>候选渠道</small><strong>{snapshot.candidates.length}</strong><span>{snapshot.pool_mode === 'exact' ? '精确模型匹配' : snapshot.pool_mode === 'fuzzy' ? '模糊模型匹配' : snapshot.pool_mode === 'cooldown_fallback' ? '冷却兜底' : '暂无候选'}</span></article>
-              <article><small>今日实际请求</small><strong>{snapshot.actual_total_requests}</strong><span>{tokenId ? `令牌 #${tokenId} · ${snapshot.actual_window}` : `全部令牌 · ${snapshot.actual_window}`}</span></article>
-              <article className={target?.candidate ? 'is-success' : 'is-warning'}><small>诊断结果</small><strong>{target?.candidate ? '已进入候选池' : '不在候选池'}</strong><span>{target?.candidate_position ? `第 ${target.candidate_position} 优先级层` : '未排序'}</span></article>
+              <article><small>当前策略</small><strong>{strategyLabel}</strong></article>
+              <article><small>候选渠道</small><strong>{snapshot.candidates.length}</strong></article>
+              <article><small>今日实际请求</small><strong>{snapshot.actual_total_requests}</strong></article>
+              <article className={target?.candidate ? 'is-success' : 'is-warning'}><small>诊断结果</small><strong>{target?.candidate ? '已进入候选池' : '不在候选池'}</strong></article>
             </div>
-            {snapshot.summary.length > 0 && <div className="route-diagnostic-callout"><strong>结论</strong><p>{snapshot.summary.join(' ')}</p></div>}
+            {snapshot.summary.length > 0 && <div className="route-diagnostic-callout"><strong>结论</strong><span>{snapshot.summary[0]}</span><HelpTip label="完整诊断结论" text={snapshot.summary.join('\n')} /></div>}
             {target && <RouteDiagnosticChannelCard diagnostic={target} actualTotal={snapshot.actual_total_requests} highlight />}
             <section className="route-diagnostic-candidates">
-              <header><strong>候选池 · 优先级层</strong><span>列表只表示当前会进入的候选池与优先级层；层内顺序不代表下一次请求一定命中。理论份额由优先级层和可用 Key 计算，今日实际占比来自请求日志。</span></header>
+              <header><strong>候选池 · 优先级层</strong><HelpTip label="候选池说明" text="列表表示当前会进入的候选池与优先级层；层内顺序不代表下一次请求一定命中。理论份额由优先级层和可用 Key 计算，今日实际占比来自请求日志。" /></header>
               {snapshot.candidates.length ? <div className="route-diagnostic-list">{snapshot.candidates.map((item) => <RouteDiagnosticChannelCard diagnostic={item} actualTotal={snapshot.actual_total_requests} key={item.channel_id} />)}</div> : <EmptyState label="当前模型没有可用候选渠道" />}
             </section>
           </>
@@ -459,25 +460,30 @@ function ChannelRouteDiagnosticsModal({ channel, close }: { channel: Channel; cl
 }
 
 function RouteDiagnosticChannelCard({ diagnostic, actualTotal, highlight = false }: { diagnostic: ChannelRouteDiagnostic; actualTotal: number; highlight?: boolean }) {
+  const blockingCount = diagnostic.reasons.filter((reason) => reason.blocking).length
+  const reasonText = diagnostic.reasons.map((reason) => `${reason.blocking ? '阻断' : '说明'}：${reason.message}`).join('\n')
   return (
     <article className={`route-diagnostic-channel${highlight ? ' is-highlight' : ''}`}>
       <header>
         <div><strong title={diagnostic.channel_name}>{diagnostic.channel_name}</strong><small>#{diagnostic.channel_id}</small></div>
         <div className="route-diagnostic-shares">
-          <span>{diagnostic.candidate ? `${(diagnostic.estimated_traffic_share * 100).toFixed(1)}% 理论份额` : '未进入候选池'}</span>
-          <span className={actualTotal > 0 ? '' : 'is-muted'}>{actualTotal > 0 ? `${(diagnostic.actual_share * 100).toFixed(1)}% 今日实际` : '今日暂无请求'}</span>
+          <span title={`理论流量份额 ${(diagnostic.estimated_traffic_share * 100).toFixed(1)}%`}>{diagnostic.candidate ? `理论 ${(diagnostic.estimated_traffic_share * 100).toFixed(1)}%` : '未入池'}</span>
+          <span className={actualTotal > 0 ? '' : 'is-muted'} title={actualTotal > 0 ? `今日实际占比 ${(diagnostic.actual_share * 100).toFixed(1)}%` : '今日暂无请求'}>{actualTotal > 0 ? `实际 ${(diagnostic.actual_share * 100).toFixed(1)}%` : '今日暂无'}</span>
         </div>
       </header>
-      <dl>
-        <div><dt>优先级层</dt><dd>{diagnostic.candidate && diagnostic.candidate_position ? `第 ${diagnostic.candidate_position} 层` : '—'}</dd></div>
-        <div title="分子：未冷却且允许当前模型的 Key；分母：允许当前模型的启用 Key"><dt>可用 Key</dt><dd>{diagnostic.active_key_count}/{diagnostic.model_eligible_key_count}</dd></div>
-        <div><dt>今日实际</dt><dd>{diagnostic.actual_requests}{actualTotal > 0 ? ` · ${(diagnostic.actual_share * 100).toFixed(1)}%` : ''}</dd></div>
-        <div><dt>RPM</dt><dd>{diagnostic.rpm_limit ? `${diagnostic.current_rpm}/${diagnostic.rpm_limit}` : '不限'}</dd></div>
-        <div><dt>并发</dt><dd>{diagnostic.max_concurrency ? `${diagnostic.active_concurrency}/${diagnostic.max_concurrency}` : '不限'}</dd></div>
-      </dl>
-      <ul>
-        {diagnostic.reasons.length ? diagnostic.reasons.map((reason) => <li key={`${diagnostic.channel_id}-${reason.code}`} className={reason.blocking ? 'is-blocking' : ''}>{reason.message}</li>) : <li>暂无额外说明</li>}
-      </ul>
+      <div className="route-diagnostic-metrics">
+        <span title="优先级层">{diagnostic.candidate && diagnostic.candidate_position ? `第 ${diagnostic.candidate_position} 层` : '未排序'}</span>
+        <span title="可用 Key / 允许当前模型的启用 Key">Key {diagnostic.active_key_count}/{diagnostic.model_eligible_key_count}</span>
+        <span title="今日实际请求数与占比">今日 {diagnostic.actual_requests}{actualTotal > 0 ? ` · ${(diagnostic.actual_share * 100).toFixed(1)}%` : ''}</span>
+        <span title="当前 RPM / 限制">RPM {diagnostic.rpm_limit ? `${diagnostic.current_rpm}/${diagnostic.rpm_limit}` : '不限'}</span>
+        <span title="当前并发 / 限制">并发 {diagnostic.max_concurrency ? `${diagnostic.active_concurrency}/${diagnostic.max_concurrency}` : '不限'}</span>
+      </div>
+      {diagnostic.reasons.length > 0 && (
+        <div className={`route-diagnostic-reasons${blockingCount ? ' is-blocking' : ''}`}>
+          <span>{blockingCount ? `${blockingCount} 项阻断` : `${diagnostic.reasons.length} 项说明`}</span>
+          <HelpTip label="排除原因" text={reasonText} />
+        </div>
+      )}
     </article>
   )
 }
@@ -489,6 +495,14 @@ function authTokenLabel(token: AuthToken) {
 function formatDiagnosticTime(value: string) {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function formatChannelSuccessRate(value: number) {
+  // The admin API contract stores this as a 0-1 ratio. Some imported/synthetic
+  // channel payloads already carry a percentage, so normalize both at the view boundary.
+  const ratio = value > 1 ? value / 100 : value
+  const percent = Math.min(100, Math.max(0, ratio)) * 100
+  return `${percent.toFixed(1).replace(/\.0$/, '')}%`
 }
 
 function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remove, manageKeys, diagnose, restoreSync }: { channel: Channel; selected: boolean; busy: boolean; select: () => void; toggle: () => void; copy: () => void; edit: () => void; remove: () => void; manageKeys: () => void; diagnose: () => void; restoreSync: () => void }) {
@@ -503,7 +517,14 @@ function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remov
         <div><div className="channel-name"><strong title={channel.name}>{channel.name}</strong><small>#{channel.id}</small>{channel.site_sync_ownership === 'manual' && <span className="site-sync-badge">手动接管</span>}</div>{channel.auth_type === 'api_key' ? <button type="button" className={`channel-key-health-link${channel.key_health_issue_count ? ' has-issues' : ''}`} onClick={manageKeys} aria-label={`管理 ${channel.name} 的 Key`} title="查看每个 Key 的状态、复检或清理">{channel.key_count} Keys · 健康管理{Boolean(channel.key_health_issue_count) && <em>{channel.key_health_issue_count} 需关注</em>}</button> : <span>{channel.auth_type}</span>}</div>
       </div>
       <div className="channel-endpoints">{channel.urls[0]?.url ? <a className="site-base-link" href={channel.urls[0].url} target="_blank" rel="noreferrer" title={`在新标签页打开 ${channel.urls[0].url}`}><strong>{channel.urls[0].url}</strong></a> : <strong>未配置 URL</strong>}<span title={channel.urls.map((item) => item.url).join('\n')}>{channel.urls.length} URL · {protocols.join(' / ')}</span></div>
-      <div className="channel-routing"><span title="基础优先级越大越优先；相同优先级按有效 Key 数量平滑轮询">优先级 <strong>{channel.priority}</strong></span>{channel.effective_priority !== undefined && <span title="健康度排序使用的有效优先级；失败率或首字延迟可能使它低于基础优先级">有效 <strong>{channel.effective_priority.toFixed(1)}</strong></span>}<span title={channel.auth_type === 'api_key' ? `实际费用按最终选中的 Key 倍率计算；渠道默认倍率为 ${channel.cost_multiplier ?? 1}x` : '实际费用按渠道倍率计算'}>倍率 <strong>{channel.auth_type === 'api_key' ? '按 Key' : `${channel.cost_multiplier ?? 1}x`}</strong></span>{channel.success_rate !== undefined && <span title="统计窗口内的上游成功率">成功率 <strong>{Math.round(channel.success_rate * 100)}%</strong></span>}<small>{protocolMode(channel.protocol_transform_mode)}</small>{channel.available_time_start && channel.available_time_end && <small title="窗口外不会参与路由或定时巡检">时段 {channel.available_time_start}–{channel.available_time_end}</small>}</div>
+      <div className="channel-routing">
+        <span title="基础优先级越大越优先；相同优先级按有效 Key 数量平滑轮询">优先级 <strong>{channel.priority}</strong></span>
+        {channel.effective_priority !== undefined && <span title="健康度排序使用的有效优先级；失败率或首字延迟可能使它低于基础优先级">有效 <strong>{channel.effective_priority.toFixed(1)}</strong></span>}
+        <span title={channel.auth_type === 'api_key' ? `实际费用按最终选中的 Key 倍率计算；渠道默认倍率为 ${channel.cost_multiplier ?? 1}x` : '实际费用按渠道倍率计算'}>倍率 <strong>{channel.auth_type === 'api_key' ? '按 Key' : `${channel.cost_multiplier ?? 1}x`}</strong></span>
+        {channel.success_rate !== undefined && <span title="统计窗口内的上游成功率">成功率 <strong>{formatChannelSuccessRate(channel.success_rate)}</strong></span>}
+        <small>{protocolMode(channel.protocol_transform_mode)}</small>
+        {channel.available_time_start && channel.available_time_end && <small title="窗口外不会参与路由或定时巡检">时段 {channel.available_time_start}–{channel.available_time_end}</small>}
+      </div>
       <div className="channel-models"><strong>{activeModels.length} 模型</strong><span title={activeModels.map((item) => item.model).join(', ')}>{activeModels.slice(0, 2).map((item) => item.model).join(' · ') || '未配置'}</span></div>
       <div className="channel-limits"><span>RPM {channel.rpm_limit || '不限'}</span><span>并发 {channel.max_concurrency || '不限'}</span>{channel.auth_type === 'api_key' && <span title="有效 Key 会排除禁用或处于冷却中的 Key">Key {channel.effective_key_count ?? channel.key_count}/{channel.key_count}</span>}{cooling && <small className="text-warning" title={cooldownSummary(channel)}>存在冷却</small>}</div>
       <div className="row-actions">
