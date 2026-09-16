@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -262,7 +263,37 @@ def main():
             context, page, errors = open_page(browser, base, "stats")
             try:
                 expect(page.get_by_role("heading", name="用量统计", exact=True)).to_be_visible()
-                expect(page.locator(".stats-distribution-list > div").first).to_be_visible()
+                # 渠道用量 / 模型用量默认饼图，条形列表是切换视图。
+                expect(page.locator(".stats-distribution-pie").first).to_be_visible()
+                assert page.locator(".stats-distribution-pie").count() == 2
+                assert page.locator(".stats-distribution-list").count() == 0
+                assert page.locator(".stats-distribution-slice").count() >= 6
+                # 切片必须是圆弧路径：整圆加 dash 切段会在接缝处被浏览器裁出白色缺口。
+                assert page.locator("path.stats-distribution-slice").count() == page.locator(".stats-distribution-slice").count()
+                assert page.locator(".stats-distribution-slice[stroke-dasharray]").count() == 0
+                legend_item = page.locator(".stats-distribution-legend li").first
+                expect(legend_item).to_be_visible()
+                legend_label = legend_item.locator("span").first.inner_text()
+                assert legend_label.strip(), legend_label
+                legend_item.hover()
+                # 悬停图例要让环形图对应分段高亮，并在圆心显示该分段的数值与占比。
+                expect(page.locator(".stats-distribution-center strong").first).to_have_text(legend_label)
+                assert "is-active" in (page.locator(".stats-distribution-slice").first.get_attribute("class") or "")
+                assert "is-active" in (legend_item.get_attribute("class") or "")
+                # 切片本身也要能悬停：环形图的有效命中区是描边环身，圆心在空心处，
+                # 所以按元素包围盒悬停会落空，这里按圆环几何取第一段切片上的点。
+                page.mouse.move(0, 0)
+                expect(page.locator(".stats-distribution-center strong").first).to_have_text("合计")
+                donut = page.locator(".stats-distribution-donut").first.bounding_box()
+                angle = math.radians(20)
+                radius = donut["width"] * 0.33
+                page.mouse.move(
+                    donut["x"] + donut["width"] / 2 + radius * math.sin(angle),
+                    donut["y"] + donut["height"] / 2 - radius * math.cos(angle),
+                )
+                expect(page.locator(".stats-distribution-center strong").first).to_have_text(legend_label)
+                assert "is-active" in (page.locator(".stats-distribution-slice").first.get_attribute("class") or "")
+                assert_no_overflow(page, ".stats-distribution-legend span, .stats-distribution-legend b, .stats-distribution-legend em, .stats-distribution-center strong")
                 expect(page.locator(".balance-change-panel").first).to_be_visible()
                 expect(page.locator(".balance-change-bar").first).to_be_visible()
                 assert page.locator(".balance-change-bar").count() >= 3
@@ -292,10 +323,22 @@ def main():
                 assert highlight["guideWidth"] <= 20, highlight
                 assert highlight["guideOpacity"] == "1", highlight
                 expect(page.locator(".stats-records .record-row").first).to_be_visible()
-                assert_no_overflow(page, ".stats-distribution-list strong, .stats-distribution-list > div > span:last-child")
                 assert not errors, errors
                 page.screenshot(path=str(args.out / "stats.png"), full_page=True, animations="disabled")
                 captures.append(str((args.out / "stats.png").resolve()))
+                # 切到条形列表：两个面板各自独立切换，切完还能切回饼图。
+                page.locator('.stats-distribution-toggle button[title="条形列表"]').first.click()
+                expect(page.locator(".stats-distribution-list > div").first).to_be_visible()
+                assert page.locator(".stats-distribution-list").count() == 1
+                assert page.locator(".stats-distribution-pie").count() == 1
+                assert_no_overflow(page, ".stats-distribution-list strong, .stats-distribution-list > div > span:last-child")
+                page.locator('.stats-distribution-toggle button[title="条形列表"]').nth(1).click()
+                assert page.locator(".stats-distribution-list").count() == 2
+                page.screenshot(path=str(args.out / "stats-distribution-list.png"), full_page=True, animations="disabled")
+                captures.append(str((args.out / "stats-distribution-list.png").resolve()))
+                page.locator('.stats-distribution-toggle button[title="占比饼图"]').first.click()
+                expect(page.locator(".stats-distribution-pie").first).to_be_visible()
+                assert page.locator(".stats-distribution-list").count() == 1
             finally:
                 context.close()
 

@@ -210,8 +210,17 @@ function smoothCurvePath(values: number[], max: number): string {
   }, `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`)
 }
 function clampPlotY(value: number): number { return Math.min(306, Math.max(8, value)) }
+// 曲线视图要做「丝滑」观感：采样点本身带锯齿，直接连线会显得生硬。
+// 这里叠三遍五点二项核（等效一次高斯），只作用在绘图与悬停圆点上；
+// 悬浮提示、图例峰值、柱状视图仍然用原始数值，不改变事实。
+const CURVE_SMOOTH_PASSES = 3
+function smoothSeries(values: number[], passes = CURVE_SMOOTH_PASSES): number[] {
+  let result = values.slice()
+  for (let pass = 0; pass < passes; pass += 1) result = smoothOnce(result)
+  return result
+}
 // 五点二项平滑：保留走势的同时抹平单点锯齿，端点按自身值补齐避免塌陷。
-function smoothSeries(values: number[]): number[] {
+function smoothOnce(values: number[]): number[] {
   if (values.length < 4) return values.slice()
   const kernel = [1, 2, 3, 2, 1]
   return values.map((value, index) => {

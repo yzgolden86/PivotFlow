@@ -55,8 +55,16 @@ const BROWSER_CHECKIN_PATHS: Record<string, string> = {
   veloera: '/app/me',
 }
 
-export function siteCheckinURL(site?: Pick<Site, 'base_url' | 'external_checkin_url' | 'platform'>): string {
-  const configured = site?.external_checkin_url?.trim()
+// 站点管理页只认用户显式填写的签到地址：早先这里对 New API 系和 Veloera 兜底拼出
+// 个人页，结果每个站点都长出一枚「打开签到页」按钮，把手工配置的入口淹没了。
+// 签到中心仍需要这个兜底（那里本来就是「签到受阻时跳去上游手动完成」的场景），
+// 所以两个用途拆成两个函数，不再共用一份带兜底的实现。
+export function siteConfiguredCheckinURL(site?: Pick<Site, 'external_checkin_url'>): string {
+  return site?.external_checkin_url?.trim() || ''
+}
+
+export function siteBrowserCheckinURL(site?: Pick<Site, 'base_url' | 'external_checkin_url' | 'platform'>): string {
+  const configured = siteConfiguredCheckinURL(site)
   if (configured) return configured
   const path = BROWSER_CHECKIN_PATHS[site?.platform || '']
   if (!site?.base_url || !path) return ''

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, BarChart3, CircleDollarSign, Gauge, RefreshCw, WalletCards, Zap } from 'lucide-react'
+import { Activity, BarChart3, CircleDollarSign, Gauge, List, PieChart, RefreshCw, WalletCards, Zap } from 'lucide-react'
 import { getStats, getStatsFilterOptions } from '../api'
 import type { DashboardRange, SiteBalanceHistoryPoint, StatsEntry, StatsFilterOptions, StatsSnapshot } from '../types'
+import { donutSlicePath, donutSlices } from './donutGeometry'
 import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, PageHeader, successTone } from './shared'
 
 export default function StatsPage() {
@@ -80,24 +81,104 @@ function MiniKPI({ icon: Icon, label, value, meta }: { icon: typeof Zap; label: 
   return <article><span><Icon size={17} /></span><div><small>{label}</small><strong>{value}</strong><em>{meta}</em></div></article>
 }
 
+type DistributionMode = 'cost' | 'requests'
+type DistributionItem = { label: string; value: number; share: number; isOther: boolean }
+
+// 环形图配色：只取主题里的强调色与两处混色，8 套主题明暗切换都能自动跟随；
+// 最后一档固定给「其他」，用中性色表示不参与对比的尾部长尾。
+const PIE_COLORS = [
+  'var(--green)',
+  'var(--blue)',
+  'var(--amber)',
+  'var(--coral)',
+  'color-mix(in srgb, var(--green) 46%, var(--blue))',
+  'color-mix(in srgb, var(--coral) 52%, var(--amber))',
+  'var(--text-muted)',
+]
+
 function StatsDistribution({ entries }: { entries: StatsEntry[] }) {
   const costTotal = entries.reduce((sum, entry) => sum + (entry.effective_cost ?? entry.total_cost ?? 0), 0)
-  const mode = costTotal > 0 ? 'cost' : 'requests'
+  const mode: DistributionMode = costTotal > 0 ? 'cost' : 'requests'
   const channelItems = buildDistribution(entries, (entry) => entry.channel_name, mode)
   const modelItems = buildDistribution(entries, (entry) => entry.model, mode)
   return <section className="stats-distribution" aria-label="用量分布">
-    <article>
-      <header><BarChart3 size={17} /><h2>渠道用量</h2></header>
-      <DistributionList items={channelItems} mode={mode} />
-    </article>
-    <article>
-      <header><Activity size={17} /><h2>模型用量</h2></header>
-      <DistributionList items={modelItems} mode={mode} />
-    </article>
+    <DistributionPanel icon={BarChart3} title="渠道用量" items={channelItems} mode={mode} />
+    <DistributionPanel icon={Activity} title="模型用量" items={modelItems} mode={mode} />
   </section>
 }
 
-function buildDistribution(entries: StatsEntry[], key: (entry: StatsEntry) => string, mode: 'cost' | 'requests') {
+function DistributionPanel({ icon: Icon, title, items, mode }: { icon: typeof BarChart3; title: string; items: DistributionItem[]; mode: DistributionMode }) {
+  // 默认饼图：先回答「谁占大头」；条形列表保留给需要精确排序对比的场景。
+  const [view, setView] = useState<'pie' | 'list'>('pie')
+  return <article>
+    <header>
+      <Icon size={17} />
+      <h2>{title}</h2>
+      <div className="stats-distribution-toggle" role="group" aria-label={`${title}展示方式`}>
+        <button type="button" className={view === 'pie' ? 'is-active' : ''} onClick={() => setView('pie')} aria-pressed={view === 'pie'} title="占比饼图"><PieChart size={14} /></button>
+        <button type="button" className={view === 'list' ? 'is-active' : ''} onClick={() => setView('list')} aria-pressed={view === 'list'} title="条形列表"><List size={14} /></button>
+      </div>
+    </header>
+    {view === 'pie' ? <DistributionPie items={items} mode={mode} /> : <DistributionList items={items} mode={mode} />}
+  </article>
+}
+
+function DistributionPie({ items, mode }: { items: DistributionItem[]; mode: DistributionMode }) {
+  const [hovered, setHovered] = useState<number | null>(null)
+  const total = items.reduce((sum, item) => sum + item.value, 0)
+  const radius = 33
+  const slices = donutSlices(items, (item) => item.share).map((slice, index) => ({
+    ...slice.item,
+    index,
+    start: slice.start,
+    share: slice.share,
+    color: PIE_COLORS[index % PIE_COLORS.length],
+  }))
+  const active = hovered == null ? null : slices[hovered]
+  return <div className="stats-distribution-pie">
+    <div className="stats-distribution-donut">
+      <svg viewBox="0 0 100 100" role="img" aria-label="占比环形图">
+        {slices.map((slice) => <path
+          className={`stats-distribution-slice${hovered === slice.index ? ' is-active' : ''}`}
+          key={slice.label}
+          d={donutSlicePath(slice.start, slice.share, radius)}
+          stroke={slice.color}
+          onMouseEnter={() => setHovered(slice.index)}
+          onMouseLeave={() => setHovered(null)}
+        />)}
+      </svg>
+      <div className="stats-distribution-center">
+        {active ? <>
+          <strong title={active.label}>{active.label}</strong>
+          <b>{formatDistributionValue(active.value, mode)}</b>
+          <em>{(active.share * 100).toFixed(1)}%</em>
+        </> : <>
+          <strong>合计</strong>
+          <b>{formatDistributionValue(total, mode)}</b>
+          <em>{items.length} 项</em>
+        </>}
+      </div>
+    </div>
+    <ul className="stats-distribution-legend">
+      {slices.map((slice) => <li
+        className={hovered === slice.index ? 'is-active' : ''}
+        key={slice.label}
+        onMouseEnter={() => setHovered(slice.index)}
+        onMouseLeave={() => setHovered(null)}
+      >
+        <i style={{ background: slice.color }} aria-hidden="true" />
+        <div><span title={slice.label}>{slice.label}</span><b>{formatDistributionValue(slice.value, mode)}</b></div>
+        <em>{(slice.share * 100).toFixed(1)}%</em>
+      </li>)}
+    </ul>
+  </div>
+}
+
+function formatDistributionValue(value: number, mode: DistributionMode): string {
+  return mode === 'cost' ? formatMoney(value) : formatNumber(value)
+}
+
+function buildDistribution(entries: StatsEntry[], key: (entry: StatsEntry) => string, mode: DistributionMode): DistributionItem[] {
   const totals = new Map<string, number>()
   for (const entry of entries) {
     const value = mode === 'cost' ? (entry.effective_cost ?? entry.total_cost ?? 0) : entry.total
@@ -111,7 +192,7 @@ function buildDistribution(entries: StatsEntry[], key: (entry: StatsEntry) => st
   return visible.map(([label, value]) => ({ label, value, share: value / total, isOther: label === '其他' }))
 }
 
-function DistributionList({ items, mode }: { items: Array<{ label: string; value: number; share: number; isOther: boolean }>; mode: 'cost' | 'requests' }) {
+function DistributionList({ items, mode }: { items: DistributionItem[]; mode: DistributionMode }) {
   return <div className="stats-distribution-list">
     {items.map((item, index) => <div key={item.label}>
       <span className="stats-distribution-rank">{index + 1}</span>
@@ -119,7 +200,7 @@ function DistributionList({ items, mode }: { items: Array<{ label: string; value
         <strong title={item.label}>{item.label}</strong>
         <i><b style={{ width: `${Math.max(3, item.share * 100)}%` }} /></i>
       </div>
-      <span>{mode === 'cost' ? formatMoney(item.value) : formatNumber(item.value)}</span>
+      <span>{formatDistributionValue(item.value, mode)}</span>
     </div>)}
   </div>
 }

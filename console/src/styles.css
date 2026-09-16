@@ -1970,7 +1970,9 @@ a:focus-visible {
 .record-row strong { overflow: hidden; color: var(--text); font-size: 11px; line-height: 18px; font-style: normal; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .record-row span { overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .record-message { max-width: 100%; color: var(--coral-text) !important; user-select: text; }
-.log-grid { grid-template-columns: 112px minmax(175px, .95fr) minmax(205px, .85fr) minmax(200px, 1fr) 64px minmax(125px, .65fr) 106px 100px; gap: 10px; }
+/* 时间/来源要放得下完整到秒的时间，渠道要放得下站点/账号两层名称，状态要放下
+   长错误摘要，因此这三列拿走主要宽度，模型与协议列整体右移；模型名仍保持单行省略。 */
+.log-grid { grid-template-columns: 124px minmax(195px, 1.05fr) minmax(210px, .95fr) minmax(205px, 1fr) 64px minmax(118px, .6fr) 102px 96px; gap: 10px; }
 /* 模型与协议是排障主信息：状态列只保留状态和复制入口，
    释放出来的宽度优先给模型名，超长时才省略。 */
 .log-grid > .log-model-cell { min-width: 0; }
@@ -2068,6 +2070,30 @@ a:focus-visible {
 .stats-distribution-list i { display: block; height: 7px; overflow: hidden; background: var(--surface-strong); border-radius: 4px; }
 .stats-distribution-list b { display: block; width: 0; height: 100%; background: linear-gradient(90deg, color-mix(in srgb, var(--green) 72%, var(--blue)), var(--green)); border-radius: inherit; transition: width .24s ease; }
 .stats-distribution-list > div > span:last-child { color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+/* 视图切换（饼图 / 条形）沿用趋势页的胶囊按钮语言，保持两页交互一致。 */
+.stats-distribution-toggle { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; padding: 2px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 7px; }
+.stats-distribution-toggle button { display: inline-flex; width: 27px; height: 25px; align-items: center; justify-content: center; color: var(--text-muted); background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
+.stats-distribution-toggle button:hover { color: var(--text); }
+.stats-distribution-toggle button.is-active { color: var(--green-text); background: var(--surface); box-shadow: 0 1px 2px rgba(16, 25, 20, .1); }
+.stats-distribution-pie { display: grid; grid-template-columns: 152px minmax(0, 1fr); align-items: center; gap: 14px; }
+.stats-distribution-donut { position: relative; width: 152px; height: 152px; }
+.stats-distribution-donut svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.stats-distribution-slice { fill: none; stroke-width: 17; cursor: pointer; transition: stroke-width .16s ease, opacity .16s ease; }
+.stats-distribution-slice.is-active { stroke-width: 21; }
+.stats-distribution-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 0 36px; text-align: center; pointer-events: none; }
+.stats-distribution-center strong { max-width: 100%; overflow: hidden; color: var(--text-secondary); font-size: 11px; font-weight: 600; line-height: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.stats-distribution-center b { color: var(--text); font-family: var(--font-numeric); font-size: 15px; line-height: 20px; }
+.stats-distribution-center em { color: var(--text-muted); font-size: 11px; font-style: normal; line-height: 14px; }
+/* 图例单列优先：196px 的窄列会把 claude-sonnet-4-6 这类模型名挤到省略号。
+   下限抬到 268px，常规面板宽度下就是一列一行，宽屏才会自动分两列。 */
+.stats-distribution-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 5px 10px; margin: 0; padding: 0; list-style: none; }
+.stats-distribution-legend li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; padding: 6px 9px; background: var(--surface-muted); border: 1px solid transparent; border-radius: 7px; }
+.stats-distribution-legend li.is-active { background: var(--surface); border-color: color-mix(in srgb, var(--green) 34%, var(--border)); }
+.stats-distribution-legend i { width: 8px; height: 8px; border-radius: 3px; }
+.stats-distribution-legend li > div { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; }
+.stats-distribution-legend span { overflow: hidden; color: var(--text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.stats-distribution-legend b { color: var(--text); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stats-distribution-legend em { color: var(--text-muted); font-size: 11px; font-style: normal; font-variant-numeric: tabular-nums; text-align: right; }
 
 .balance-change-panel {
   overflow: hidden;
@@ -2294,7 +2320,7 @@ a:focus-visible {
   border-radius: 7px;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vendor-color) 15%, transparent);
 }
-.model-vendor-tab-mark strong { font-family: Bahnschrift, sans-serif; font-size: 11px; line-height: 11px; }
+.model-vendor-tab-mark svg { width: 16px; height: 16px; }
 .model-vendor-tab-mark--all { color: var(--green-text); background: var(--green-soft); }
 .model-vendor-tabs button b {
   min-width: 21px;
@@ -2308,14 +2334,18 @@ a:focus-visible {
 }
 .model-vendor-tabs button.is-active b { color: var(--vendor-color); background: color-mix(in srgb, var(--surface) 72%, transparent); }
 
+/* 模型卡片：宽屏一行四个（用户要一次看四个供应商的模型），窄屏按 320px 自动折行。 */
 .model-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin-bottom: 14px; }
+/* 四列只在真正放得下模型名的宽度生效：卡片收窄到 290px 以下时，
+   14px 的模型标题就压不住省略号了，窄一档用 auto-fill 的三列更合适。 */
+@media (min-width: 1500px) { .model-card-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 .model-card { --vendor-color: var(--green); --vendor-soft: var(--green-soft); position: relative; overflow: hidden; display: flex; min-height: 218px; flex-direction: column; padding: 14px 15px 13px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 7px 20px rgba(31, 51, 43, .045); transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
 .model-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: linear-gradient(180deg, var(--vendor-color), color-mix(in srgb, var(--vendor-color) 35%, transparent)); }
 .model-card:hover { border-color: color-mix(in srgb, var(--vendor-color) 38%, var(--border)); box-shadow: 0 12px 30px rgba(31, 51, 43, .08); transform: translateY(-1px); }
-.model-card > header { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; align-items: center; gap: 12px; }
-.model-vendor { display: grid; width: 58px; height: 50px; place-items: center; color: var(--vendor-color); background: var(--vendor-soft); border-radius: 8px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vendor-color) 16%, transparent); }
-.model-vendor strong { font-family: Bahnschrift, sans-serif; font-size: 17px; line-height: 17px; }
-.model-vendor small { margin-top: 2px; color: var(--vendor-color); font-size: 11px; line-height: 12px; }
+.model-card > header { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+/* 卡片左上角只放供应商图标：名称由模型标题表达，格子收窄后模型名才有空间显示完整。 */
+.model-vendor { display: grid; width: 40px; height: 40px; place-items: center; color: var(--vendor-color); background: var(--vendor-soft); border-radius: 9px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vendor-color) 16%, transparent); }
+.model-vendor svg { width: 22px; height: 22px; }
 .model-card > header > div { display: grid; min-width: 0; gap: 3px; }
 .model-card > header strong { overflow: hidden; color: var(--text); font-size: 14px; line-height: 19px; text-overflow: ellipsis; white-space: nowrap; }
 .model-card > header code { overflow: hidden; color: var(--text-muted); font: 11px/15px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
@@ -2927,8 +2957,12 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .credential-verification dd { overflow: hidden; margin: 0; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .credential-update-actions { justify-content: space-between !important; }
 
-.checkin-grid { grid-template-columns: minmax(210px, 1.1fr) 120px 130px minmax(240px, 1.3fr) 150px 180px; }
-.checkin-account-grid { grid-template-columns: minmax(210px, 1.1fr) 130px minmax(210px, 1fr) 130px 210px; }
+/* 账号表格列间距比通用表格宽：账号状态列里的「更新凭证」链接和最近签到的状态徽章
+   原本贴在一起，两列读起来像一列。列距单独放大，不再靠整体 gap 兼顾。 */
+.checkin-grid { grid-template-columns: minmax(210px, 1.1fr) 120px 130px minmax(240px, 1.3fr) 150px 190px; }
+.checkin-account-grid { grid-template-columns: minmax(205px, 1.05fr) minmax(140px, .7fr) minmax(215px, 1fr) 130px 220px; column-gap: 20px; }
+.checkin-unsupported { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; color: var(--text-muted); background: var(--surface-muted); border: 1px dashed var(--border-strong); border-radius: 7px; font-size: 11px; line-height: 16px; white-space: nowrap; }
+.checkin-unsupported svg { flex: 0 0 auto; }
 .checkin-account-grid .account-error-message { overflow: visible; white-space: normal; text-overflow: clip; }
 .record-head.checkin-grid > span:last-child,
 .record-head.checkin-account-grid > span:last-child,
@@ -3660,6 +3694,13 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
   .model-card-grid { grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); }
 }
 
+/* 窄屏把环形图挪到图例上方：152px 的圆环并排时会把图例压到低于最小列宽，
+   整页出现横向滚动。上下排列后图例拿满整行。 */
+@media (max-width: 620px) {
+  .stats-distribution-pie { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 12px; }
+  .stats-distribution-legend { width: 100%; grid-template-columns: minmax(0, 1fr); }
+}
+
 @media (max-width: 760px) {
   .model-card-grid { grid-template-columns: 1fr; }
   .balance-change-row { grid-template-columns: 82px minmax(0, 1fr); gap: 10px; }
@@ -3854,7 +3895,7 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 
   .channel-row { grid-template-columns: minmax(190px, 1fr) minmax(210px, 1.2fr) 130px minmax(150px, 1fr) 272px; }
   .channel-limits { display: none; }
-  .log-grid { grid-template-columns: 112px minmax(175px, .95fr) minmax(205px, .85fr) minmax(200px, 1fr) 64px minmax(125px, .65fr) 106px 100px; gap: 10px; }
+  .log-grid { grid-template-columns: 124px minmax(195px, 1.05fr) minmax(210px, .95fr) minmax(205px, 1fr) 64px minmax(118px, .6fr) 102px 96px; gap: 10px; }
   .stats-grid { grid-template-columns: minmax(220px, 1.2fr) 190px minmax(105px, .55fr) minmax(120px, .6fr) 78px 105px; }
   .stats-grid > :nth-child(6) { display: none; }
   .site-row { grid-template-columns: minmax(190px, 1fr) minmax(230px, 1.25fr) 105px 145px 272px; }
@@ -4933,9 +4974,9 @@ body { font-size: 14px; line-height: 1.5; }
     grid-template-columns: minmax(240px, 1.1fr) minmax(120px, .65fr) minmax(130px, .7fr) minmax(140px, .75fr) minmax(140px, .75fr) 340px;
   }
   .account-grid > :nth-child(5) { display: flex; }
-  .checkin-account-records > .checkin-account-grid { min-width: 990px; }
+  .checkin-account-records > .checkin-account-grid { min-width: 1010px; }
   .records-panel > .checkin-grid { min-width: 1100px; }
-  .records-panel > .log-grid { min-width: 1180px; }
+  .records-panel > .log-grid { min-width: 1190px; }
   .records-panel > .stats-grid { min-width: 1080px; }
   .stats-grid > :nth-child(6),
   .checkin-grid > :nth-child(5) { display: flex; }

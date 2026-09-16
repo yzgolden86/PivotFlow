@@ -3,7 +3,7 @@ import { Copy, ExternalLink, Globe2, Network, Pencil, Plus, Power, Radar, Refres
 import { createSite, deleteSite, getSiteInventory, peekSiteInventory, probeSite, updateSite } from '../api'
 import type { Site, SiteAccount, SiteCascadeResult } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagination, SecretInput } from './shared'
-import { Modal, siteCheckinURL, StatusBadge, siteErrorMessage } from './siteShared'
+import { Modal, siteConfiguredCheckinURL, StatusBadge, siteErrorMessage } from './siteShared'
 import { useLocation } from 'react-router-dom'
 import { credentialLabel, credentialOptions, normalizeCredentialType, platformSupportsCheckin, type CredentialType } from '../siteCredentials'
 
@@ -239,13 +239,16 @@ export default function SitesPage() {
 
 function SiteRow({ site, accounts, selected, busy, focused, rowRef, select, copy, edit, execute }: { site: Site; accounts: SiteAccount[]; selected: boolean; busy: boolean; focused: boolean; rowRef: (node: HTMLElement | null) => void; select: () => void; copy: () => void; edit: () => void; execute: (action: 'probe' | 'toggle' | 'delete') => void }) {
   const healthy = accounts.filter((account) => account.status === 'healthy').length
+  // 只有显式配置了签到地址才显示入口：给每个 New API 系站点兜底生成个人页链接，
+  // 会把手动配置的那几个真正需要人工签到的站点淹掉。
+  const checkinURL = siteConfiguredCheckinURL(site)
   return <article ref={rowRef} data-site-id={site.id} className={`site-row${selected ? ' row-selected' : ''}${focused ? ' row-focus-highlight' : ''}`}>
     <div className="site-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${site.name}`} /><span className={`status-dot ${site.enabled ? 'status-dot--success' : 'status-dot--muted'}`} /><div><a className="entity-link" href={`#/sites?focus_site_id=${site.id}`}><strong>{site.name}</strong></a><span>#{site.id} · {site.timezone || 'Asia/Shanghai'}</span></div></div>
     <div className="site-address"><a className="site-base-link" href={site.base_url} target="_blank" rel="noreferrer" title={`在新标签页打开 ${site.base_url}`}><strong>{site.base_url}</strong></a><span>{site.platform || 'unknown'} · {site.proxy_url ? '自定义代理' : site.use_system_proxy ? '系统代理' : '直连'}</span></div>
     <div className="site-account-summary"><strong>{healthy}/{accounts.length}</strong><div className="site-account-links">{accounts.length ? accounts.slice(0, 2).map((account) => <a className="entity-chip" key={account.id} href={`#/accounts?focus_account_id=${account.id}${['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}>{account.label}</a>) : <span>暂无账号</span>}</div></div>
     <div className="site-probe"><StatusBadge status={site.last_probe_status} /><span title={site.last_error}>{site.last_error || '最近探测状态'}</span></div>
     <div className="row-actions">
-      {siteCheckinURL(site) && <a className="icon-button icon-button--surface" href={siteCheckinURL(site)} target="_blank" rel="noreferrer" aria-label={`打开 ${site.name} 签到页`} title="浏览器辅助签到页"><ExternalLink size={16} /></a>}
+      {checkinURL && <a className="icon-button icon-button--surface" href={checkinURL} target="_blank" rel="noreferrer" aria-label={`打开 ${site.name} 签到页`} title="浏览器辅助签到页"><ExternalLink size={16} /></a>}
       <button className="icon-button icon-button--surface" type="button" onClick={() => execute('probe')} disabled={busy} aria-label={`探测 ${site.name}`} title="探测站点"><Radar className={busy ? 'spin' : ''} size={16} /></button>
       <button className={`icon-button icon-button--surface ${site.enabled ? 'is-on' : ''}`} type="button" onClick={() => execute('toggle')} disabled={busy} aria-label={site.enabled ? `停用 ${site.name}` : `启用 ${site.name}`}><Power size={16} /></button>
       <a className="icon-button icon-button--surface" href={`#/accounts?site_id=${site.id}&create=1`} aria-label={`为 ${site.name} 添加账号`} title="添加账号"><UserPlus size={16} /></a>
@@ -274,7 +277,7 @@ function SiteFormView({ form, setForm, saving, submit, editing }: { form: SiteFo
     <label className="checkbox-field"><input type="checkbox" checked={form.use_system_proxy} onChange={(event) => field('use_system_proxy', event.target.checked)} /><span>使用系统代理</span></label>
     <label><span>代理地址（可选）</span><input value={form.proxy_url} onChange={(event) => field('proxy_url', event.target.value)} placeholder="http://127.0.0.1:7890" /></label>
     <label><span>浏览器辅助签到地址（可选）</span><input type="url" value={form.external_checkin_url} onChange={(event) => field('external_checkin_url', event.target.value)} placeholder="需要人工点击签到时打开的页面" /></label>
-    <div className="form-help">该地址只用于人工打开上游页面，不参与服务端自动签到。New API 系和 Veloera 不填时会默认打开个人页；上游页面签到后，回 PivotFlow 重试可识别“今日已签到”。</div>
+    <div className="form-help">只给需要人工点击签到的站点填写；不填就不会在站点列表里出现签到入口。签到中心在自动签到被拦截时也会用这里的地址（New API 系与 Veloera 会回落到个人页），上游签到后回来重试即可识别“今日已签到”。</div>
 	{!editing && <section className="embedded-form-section">
       <label className="checkbox-field"><input type="checkbox" checked={form.addAccount} onChange={(event) => field('addAccount', event.target.checked)} /><span>同时添加首个账号</span></label>
       {form.addAccount && <>

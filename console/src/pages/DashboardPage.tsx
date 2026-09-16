@@ -22,6 +22,7 @@ import type {
   DashboardUsage,
   MetricPoint,
 } from '../types'
+import { donutSlicePath, donutSlices } from './donutGeometry'
 import { OperationNotice, PageHeader } from './shared'
 
 const rangeOptions: Array<{ value: DashboardRange; label: string }> = [
@@ -339,18 +340,17 @@ function UsageList({ items, emptyLabel }: { items: DashboardUsage[]; emptyLabel:
 function DistributionPanel({ items, emptyLabel }: { items: DashboardUsage[]; emptyLabel: string }) {
   if (!items.length) return <EmptyData label={emptyLabel} />
   const colors = ['var(--green)', 'var(--blue)', 'var(--amber)', 'var(--coral)', '#6f7d77', '#9aa59f', '#c2cbc6']
-  let offset = 0
-  const segments = items.map((item, index) => {
-    const share = Math.max(0, Math.min(1, item.share || 0))
-    const start = offset
-    offset += share * 100
-    return { item, color: colors[index] || 'var(--graphite)', start, share: share * 100 }
-  })
+  const segments = donutSlices(items, (item) => Math.min(1, item.share || 0)).map((segment, index) => ({
+    item: segment.item,
+    color: colors[index] || 'var(--graphite)',
+    start: segment.start,
+    share: segment.share,
+  }))
   return <div className="distribution-layout">
     <div className="donut-chart" role="img" aria-label="模型消耗占比">
       <svg className="donut-chart-svg" viewBox="0 0 100 100" aria-hidden="true">
         <circle className="donut-chart-track" cx="50" cy="50" r="38" pathLength="100" />
-        {segments.map(({ item, color, start, share }) => <circle className="donut-chart-segment" cx="50" cy="50" r="38" pathLength="100" stroke={color} strokeDasharray={`${share} ${100 - share}`} strokeDashoffset={-start} key={item.key}><title>{`${item.label} · ${formatPercent(item.share)} · ${formatMoney(item.effective_cost)}`}</title></circle>)}
+        {segments.map(({ item, color, start, share }) => <path className="donut-chart-segment" d={donutSlicePath(start, share, 38)} stroke={color} key={item.key}><title>{`${item.label} · ${formatPercent(item.share)} · ${formatMoney(item.effective_cost)}`}</title></path>)}
       </svg>
       <div><strong>{formatMoney(items.reduce((sum, item) => sum + item.effective_cost, 0))}</strong><span>模型消耗</span></div>
     </div>

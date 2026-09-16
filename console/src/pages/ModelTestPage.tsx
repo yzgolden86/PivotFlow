@@ -21,6 +21,7 @@ import HelpTip from '../components/HelpTip'
 import type { Channel, ChannelTestResult, Site, SiteAccount, SiteAccountModel, SiteChannelBinding, SiteModelPrice, SitePricingSnapshot } from '../types'
 import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, PageHeader } from './shared'
 import { useLocation } from 'react-router-dom'
+import { VendorMark } from './vendorMarks'
 
 type ModelsView = 'catalog' | 'probe'
 type ProbeTarget = 'site_account' | 'channel'
@@ -390,7 +391,7 @@ function ModelCatalog({ models: siteModels, sites, accounts, channels, channelBi
         <span>全部</span><b>{baseVisible.length}</b>
       </button>
       {vendorOptions.map(({ vendor, count }) => <button type="button" role="tab" aria-selected={vendorKey === vendor.key} className={`model-vendor-tab${vendorKey === vendor.key ? ' is-active' : ''}`} onClick={() => setVendorKey(vendor.key)} key={vendor.key}>
-        <span className={`model-vendor-tab-mark model-vendor--${vendor.key}`} aria-hidden="true"><strong>{vendor.mark}</strong></span>
+        <span className={`model-vendor-tab-mark model-vendor--${vendor.key}`} aria-hidden="true"><VendorMark vendor={vendor.key} size={16} /></span>
         <span>{vendor.name}</span><b>{count}</b>
       </button>)}
     </div>
@@ -425,7 +426,7 @@ function ModelCard({ item, siteMap, accountMap, channelBindings, sitePricing, pr
   const pricing = modelPricingSummary(item, sitePricing, channelBindings, accountMap)
   return <article className={`model-card model-card--${tone} model-vendor--${vendor.key}`} key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`}>
     <header>
-      <span className="model-vendor" aria-hidden="true"><strong>{vendor.mark}</strong><small>{vendor.name}</small></span>
+      <span className="model-vendor" aria-hidden="true" title={vendor.name}><VendorMark vendor={vendor.key} size={26} /></span>
       <div><strong title={item.model}>{displayModelName(item.model, vendor)}</strong><code title={item.model}>{item.model}</code></div>
       <button type="button" disabled={disabled} onClick={() => probe(item)} aria-label={fact ? `直测 ${item.model}` : `渠道测试 ${item.model}`} title={fact ? '站点账号直测' : '渠道路由测试'}><Play size={14} /><span>测试</span></button>
     </header>
