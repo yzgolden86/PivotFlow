@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yzgolden86/PivotFlow/internal/version"
 )
 
 const maxResponseBytes int64 = 2 << 20
@@ -76,7 +78,7 @@ func (f ClientFactory) New(proxyURL string) (*http.Client, error) {
 		transport.Proxy = http.ProxyURL(parsed)
 		hops.remember(parsed.Hostname())
 	}
-	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
+	client := &http.Client{Transport: &userAgentTransport{base: transport}, Timeout: 30 * time.Second}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 4 {
 			return errors.New("too many provider redirects")
@@ -90,6 +92,26 @@ func (f ClientFactory) New(proxyURL string) (*http.Client, error) {
 		return nil
 	}
 	return client, nil
+}
+
+// userAgentTransport gives every provider request the User-Agent the rest of
+// PivotFlow already sends (version checks, channel health tests).
+//
+// Sending none is not neutral: Cloudflare answers a UA-less request with its
+// 403 block page, whose JSON body the caller then reads as a rejected
+// credential - a live cun.ai request without a UA returns exactly that, while
+// the same request with any UA returns the real 401 and its message. An
+// explicitly set header always wins, so a caller that wants to look like
+// something else keeps control.
+type userAgentTransport struct{ base http.RoundTripper }
+
+func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("User-Agent") == "" {
+		clone := req.Clone(req.Context())
+		clone.Header.Set("User-Agent", version.OutboundUserAgent())
+		req = clone
+	}
+	return t.base.RoundTrip(req)
 }
 
 func ValidateBaseURL(raw string, allowPrivate bool) error {

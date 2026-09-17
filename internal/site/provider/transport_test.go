@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yzgolden86/PivotFlow/internal/version"
 )
 
 // proxyStub is a minimal forward proxy: it answers every request itself instead
@@ -149,5 +151,61 @@ func TestProxyHopTrackerWrapRecordsSelectedProxy(t *testing.T) {
 	}
 	if empty.isProxyHop("127.0.0.1") {
 		t.Fatal("nothing should be recorded when no proxy is selected")
+	}
+}
+
+// Provider requests go out as PivotFlow instead of the bare Go default: a live
+// cun.ai request without any User-Agent at all is answered with Cloudflare's
+// 403 block page, which the caller then reports as a rejected credential, and
+// "Go-http-client/1.1" is the automation marker the rest of the codebase
+// already avoids. An explicit header must survive untouched.
+func TestProviderClientSendsUserAgent(t *testing.T) {
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("User-Agent"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer server.Close()
+
+	client, err := ClientFactory{AllowPrivate: true}.New(DirectProxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	do := func(request *http.Request) {
+		t.Helper()
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		if err := response.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	do(request)
+	do(request)
+	custom, err := http.NewRequest(http.MethodGet, server.URL+"/api/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom.Header.Set("User-Agent", "SiteProbe/9.9")
+	do(custom)
+
+	if len(seen) != 3 {
+		t.Fatalf("saw %d requests, want 3", len(seen))
+	}
+	if seen[0] != version.OutboundUserAgent() || seen[1] != version.OutboundUserAgent() {
+		t.Fatalf("default User-Agent=%q/%q, want %q", seen[0], seen[1], version.OutboundUserAgent())
+	}
+	if seen[2] != "SiteProbe/9.9" {
+		t.Fatalf("explicit User-Agent was overwritten: %q", seen[2])
+	}
+	if request.Header.Get("User-Agent") != "" {
+		t.Fatalf("the caller's request object was mutated: %q", request.Header.Get("User-Agent"))
 	}
 }
