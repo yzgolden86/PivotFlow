@@ -142,7 +142,7 @@ def main():
         expect(page.get_by_role("heading", name="从文件导入", exact=True)).to_be_visible()
         expect(page.get_by_role("heading", name="WebDAV 备份", exact=True)).to_be_visible()
         expect(page.locator(".backup-type-card strong", has_text="完整备份")).to_be_visible()
-        expect(page.get_by_placeholder("https://dav.example.com/PivotFlow/backup.json")).to_be_visible()
+        expect(page.get_by_placeholder("https://dav.example.com/PivotFlow")).to_be_visible()
         backup_overflow = page.evaluate(
             "document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"
         )
@@ -157,8 +157,8 @@ def main():
 
         page.get_by_role("navigation", name="主导航").get_by_role("link", name="站点管理", exact=True).click()
         page.wait_for_url("**/#/sites")
-        expect(page.locator(".pagination select")).to_have_value("20")
-        expect(page.locator(".pagination select option")).to_have_count(3)
+        expect(page.locator(".pagination select")).to_have_value("50")
+        expect(page.locator(".pagination select option")).to_have_count(2)
         page.get_by_role("button", name="添加站点", exact=True).click()
         site_dialog = page.get_by_role("dialog", name="添加站点")
         expect(site_dialog).to_be_visible()
@@ -173,12 +173,12 @@ def main():
 
         page.get_by_role("navigation", name="主导航").get_by_role("link", name="账号管理", exact=True).click()
         page.wait_for_url("**/#/accounts")
-        expect(page.locator(".pagination select")).to_have_value("20")
-        expect(page.locator(".pagination select option")).to_have_text(["20", "50", "100"])
+        expect(page.locator(".pagination select")).to_have_value("50")
+        expect(page.locator(".pagination select option")).to_have_text(["50", "100"])
 
         page.get_by_role("navigation", name="主导航").get_by_role("link", name="渠道分发", exact=True).click()
-        expect(page.locator(".pagination select")).to_have_value("20")
-        expect(page.locator(".pagination select option")).to_have_text(["20", "50", "100"])
+        expect(page.locator(".pagination select")).to_have_value("50")
+        expect(page.locator(".pagination select option")).to_have_text(["50", "100"])
         page.get_by_role("button", name="其他来源", exact=True).click()
         page.get_by_role("menuitem", name="手工渠道", exact=True).click()
         expect(page.get_by_role("dialog", name="添加渠道")).to_be_visible()
