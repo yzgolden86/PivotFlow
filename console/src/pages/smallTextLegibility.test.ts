@@ -17,6 +17,44 @@ const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8')
 // 去注释，避免注释里的花括号和分号干扰深度统计。
 const clean = css.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '))
 
+// :root 里的令牌表。两处都要用：下面的字阶解析（--fs-*）与文末的对比度解析。
+const rootBlocks = new Map<string, Map<string, string>>()
+for (const [, selector, body] of clean.matchAll(/(:root[^{]*)\{([^}]*)\}/g)) {
+  const key = selector.trim()
+  const tokens = rootBlocks.get(key) ?? new Map<string, string>()
+  for (const [, name, value] of body.matchAll(/(--[\w-]+):\s*([^;]+);/g)) tokens.set(name, value.trim())
+  rootBlocks.set(key, tokens)
+}
+
+// 字阶令牌表。字号只允许两种写法：字面量 px，或这里的 --fs-* 令牌。
+// 一旦写成 var(--fs-xs)，上面那条 [\d.]+px 正则就匹配不到，选择器会直接不入表，
+// 这个守卫便静默失效——所以必须把 var(--fs-*) 解析回 px 再比大小。
+const fontScale = new Map<string, number>()
+for (const [name, value] of rootBlocks.get(':root') ?? []) {
+  const literal = /^([\d.]+)px$/.exec(value)
+  if (name.startsWith('--fs-') && literal) fontScale.set(name, Number(literal[1]))
+}
+
+// 把一条规则体里的 font-size 解析成绝对 px。
+//   - 字面量 px：直接返回；
+//   - var(--fs-*)：查字阶表，查不到就抛错——令牌名打错会让守卫静默少测，必须当场炸；
+//   - 相对单位与关键字（em / % / inherit …）：返回 null。它们没有绝对大小可比，
+//     由父元素那条规则负责达标（如 .announcement-markdown code 的 .9em）。
+function resolveFontSize(body: string, selector: string): number | null {
+  const declared = /(?:^|[;\s])font-size\s*:\s*([^;}]+)/.exec(body)
+  if (!declared) return null
+  const value = declared[1].replace(/!important/gi, '').trim()
+  const literal = /^([\d.]+)px$/.exec(value)
+  if (literal) return Number(literal[1])
+  const token = /^var\((--[\w-]+)\)$/.exec(value)
+  if (token) {
+    const resolved = fontScale.get(token[1])
+    assert.ok(resolved !== undefined, `${selector} 用了未定义的字号令牌 ${token[1]}：--fs-* 必须写在 :root 里且为 Npx 字面量`)
+    return resolved
+  }
+  return null
+}
+
 // 按层叠顺序扫描：后出现的同名选择器覆盖先出现的。栈记录每层是不是 at-rule，
 // 媒体查询里的声明同样参与覆盖（媒体查询不加权重，但位置靠后仍然生效）。
 function effectiveFontSizes(source: string): Map<string, number> {
@@ -31,9 +69,9 @@ function effectiveFontSizes(source: string): Map<string, number> {
       if (!isAtRule) {
         const close = source.indexOf('}', cursor)
         const body = source.slice(cursor + 1, close === -1 ? source.length : close)
-        const declared = /(?:^|[;\s])font-size\s*:\s*([\d.]+)px/.exec(body)
-        if (declared) {
-          for (const part of prelude.split(',')) sizes.set(part.trim(), Number(declared[1]))
+        const declared = resolveFontSize(body, prelude)
+        if (declared !== null) {
+          for (const part of prelude.split(',')) sizes.set(part.trim(), declared)
         }
       }
       stack.push(isAtRule)
@@ -56,14 +94,6 @@ test('小字不得小于 11px（缩略主题预览除外）', () => {
 })
 
 // ---- 对比度 ----
-
-const rootBlocks = new Map<string, Map<string, string>>()
-for (const [, selector, body] of clean.matchAll(/(:root[^{]*)\{([^}]*)\}/g)) {
-  const key = selector.trim()
-  const tokens = rootBlocks.get(key) ?? new Map<string, string>()
-  for (const [, name, value] of body.matchAll(/(--[\w-]+):\s*([^;]+);/g)) tokens.set(name, value.trim())
-  rootBlocks.set(key, tokens)
-}
 
 const presets = ['default', 'anthropic', 'ocean', 'coral', 'violet', 'slate', 'forest', 'plum']
 
