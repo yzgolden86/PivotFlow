@@ -190,6 +190,8 @@ https://raw.githubusercontent.com/Veloera/Veloera/main/<path>
 
   这不否定「统一 UA」本身：项目其他出站链路（版本检查、渠道健康检测）早已统一用 `version.OutboundUserAgent()`，站点链路用 Go 默认 UA 确实不一致，统一是合理且无害的。但**它的动机证据在本次网络路径下不成立**，接手者不要把它当成「必须保留，否则会被 CDN 拦」的硬约束。差异可能来自出口 IP 信誉或 Cloudflare 的动态策略。
 
+  顺带澄清一个容易误读的点：**Go 默认 UA 的后缀是「协议版本」，不是 Go 版本。** 同一个 Go 二进制，走 HTTP/2 时发 `Go-http-client/2.0`，强制 HTTP/1.1 时发 `Go-http-client/1.1`（已实测）。所以 commit message 里写的 `1.1` 并不算写错，取决于请求协商到的协议版本——不要据此认为它有误。
+
 ---
 
 ## 4. 下一步（未完成的工作）
