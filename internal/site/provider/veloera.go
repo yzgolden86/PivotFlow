@@ -30,7 +30,14 @@ func (p *Veloera) Detect(ctx context.Context, baseURL string) (DetectionResult, 
 	name, _ := stringValue(payload.Data, "system_name")
 	version, _ := stringValue(payload.Data, "version")
 	matched := payload.Success && strings.Contains(strings.ToLower(name+" "+version), "veloera")
-	return DetectionResult{Matched: matched, ProviderID: p.ID(), SystemName: name, Capabilities: p.Capabilities()}, nil
+	method := checkinMethodFromStatus(payload)
+	return DetectionResult{Matched: matched, ProviderID: p.ID(), SystemName: name, Capabilities: p.Capabilities(), CheckinMethod: &method}, nil
+}
+
+// DiscoverCheckin delegates to the shared New API family implementation: the
+// check-in capability is published on the same /api/status endpoint.
+func (p *Veloera) DiscoverCheckin(ctx context.Context, req AccountRequest) (CheckinMethod, error) {
+	return p.family.DiscoverCheckin(ctx, req)
 }
 
 func (p *Veloera) RefreshAccount(ctx context.Context, req RefreshAccountRequest) (AccountSnapshot, error) {
@@ -100,10 +107,10 @@ func (p *Veloera) Checkin(ctx context.Context, req AccountRequest) (CheckinResul
 		return CheckinResult{Status: CheckinAlreadyChecked, Message: message}, nil
 	}
 	if payload.Success {
-		reward, _ := stringValue(payload.Data, "reward")
-		return CheckinResult{Status: CheckinSuccess, RewardText: reward, Message: message}, nil
+		return CheckinResult{Status: CheckinSuccess, RewardText: checkinRewardText(payload.Data), Message: message}, nil
 	}
-	return CheckinResult{Status: CheckinFailed, Message: message}, responseError(payload, http.StatusOK)
+	failure := responseError(payload, http.StatusOK)
+	return CheckinResult{Status: checkinStatusFromCode(ErrorCode(failure)), Message: message}, failure
 }
 
 func (p *Veloera) ListAnnouncements(ctx context.Context, req AccountRequest) ([]Announcement, error) {

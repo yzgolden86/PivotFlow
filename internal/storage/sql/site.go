@@ -34,7 +34,7 @@ func (s *SQLStore) insertID(ctx context.Context, tx *sql.Tx, table string, colum
 func scanSite(scanner interface{ Scan(...any) error }) (*model.Site, error) {
 	var site model.Site
 	var enabled, useSystemProxy int
-	if err := scanner.Scan(&site.ID, &site.Name, &site.Platform, &site.BaseURL, &enabled, &site.Timezone, &useSystemProxy, &site.ProxyURL, &site.ExternalCheckinURL, &site.TagsJSON, &site.LastProbeStatus, &site.LastError, &site.CreatedAt, &site.UpdatedAt, &site.DeletedAt); err != nil {
+	if err := scanner.Scan(&site.ID, &site.Name, &site.Platform, &site.BaseURL, &enabled, &site.Timezone, &useSystemProxy, &site.ProxyURL, &site.ExternalCheckinURL, &site.TagsJSON, &site.LastProbeStatus, &site.LastError, &site.CheckinMethod, &site.CheckinMethodCheckedAt, &site.CreatedAt, &site.UpdatedAt, &site.DeletedAt); err != nil {
 		return nil, err
 	}
 	site.Enabled = enabled != 0
@@ -42,7 +42,7 @@ func scanSite(scanner interface{ Scan(...any) error }) (*model.Site, error) {
 	return &site, nil
 }
 
-const siteColumns = `id, name, platform, base_url, enabled, timezone, use_system_proxy, proxy_url, external_checkin_url, tags_json, last_probe_status, last_error, created_at, updated_at, deleted_at`
+const siteColumns = `id, name, platform, base_url, enabled, timezone, use_system_proxy, proxy_url, external_checkin_url, tags_json, last_probe_status, last_error, checkin_method, checkin_method_checked_at, created_at, updated_at, deleted_at`
 
 func (s *SQLStore) ListSites(ctx context.Context, filter model.SiteListFilter) ([]*model.Site, error) {
 	query := "SELECT " + siteColumns + " FROM sites"
@@ -114,7 +114,7 @@ func (s *SQLStore) CreateSite(ctx context.Context, site *model.Site) (*model.Sit
 			}
 		}
 		var err error
-		id, err = s.insertID(ctx, tx, "sites", "name,platform,base_url,enabled,timezone,use_system_proxy,proxy_url,external_checkin_url,tags_json,last_probe_status,last_error,created_at,updated_at,deleted_at", []any{site.Name, site.Platform, site.BaseURL, site.Enabled, site.Timezone, site.UseSystemProxy, site.ProxyURL, site.ExternalCheckinURL, site.TagsJSON, site.LastProbeStatus, site.LastError, now, now, 0})
+		id, err = s.insertID(ctx, tx, "sites", "name,platform,base_url,enabled,timezone,use_system_proxy,proxy_url,external_checkin_url,tags_json,last_probe_status,last_error,checkin_method,checkin_method_checked_at,created_at,updated_at,deleted_at", []any{site.Name, site.Platform, site.BaseURL, site.Enabled, site.Timezone, site.UseSystemProxy, site.ProxyURL, site.ExternalCheckinURL, site.TagsJSON, site.LastProbeStatus, site.LastError, site.CheckinMethod, site.CheckinMethodCheckedAt, now, now, 0})
 		return err
 	})
 	if err != nil {
@@ -128,11 +128,19 @@ func (s *SQLStore) UpdateSite(ctx context.Context, id int64, site *model.Site) (
 		return nil, errors.New("site cannot be nil")
 	}
 	now := siteNow()
-	_, err := s.ExecContext(ctx, `UPDATE sites SET name=?, platform=?, base_url=?, enabled=?, timezone=?, use_system_proxy=?, proxy_url=?, external_checkin_url=?, tags_json=?, last_probe_status=?, last_error=?, updated_at=? WHERE id=? AND deleted_at=0`, site.Name, site.Platform, site.BaseURL, site.Enabled, site.Timezone, site.UseSystemProxy, site.ProxyURL, site.ExternalCheckinURL, site.TagsJSON, site.LastProbeStatus, site.LastError, now, id)
+	_, err := s.ExecContext(ctx, `UPDATE sites SET name=?, platform=?, base_url=?, enabled=?, timezone=?, use_system_proxy=?, proxy_url=?, external_checkin_url=?, tags_json=?, last_probe_status=?, last_error=?, checkin_method=?, checkin_method_checked_at=?, updated_at=? WHERE id=? AND deleted_at=0`, site.Name, site.Platform, site.BaseURL, site.Enabled, site.Timezone, site.UseSystemProxy, site.ProxyURL, site.ExternalCheckinURL, site.TagsJSON, site.LastProbeStatus, site.LastError, site.CheckinMethod, site.CheckinMethodCheckedAt, now, id)
 	if err != nil {
 		return nil, err
 	}
 	return s.GetSite(ctx, id)
+}
+
+// UpdateSiteCheckinMethod records what a site published about its check-in
+// capability. It deliberately touches only those two columns: discovery happens
+// in the background, and a full-row UPDATE would clobber a concurrent console edit.
+func (s *SQLStore) UpdateSiteCheckinMethod(ctx context.Context, siteID int64, method string, checkedAt int64) error {
+	_, err := s.ExecContext(ctx, "UPDATE sites SET checkin_method=?, checkin_method_checked_at=?, updated_at=? WHERE id=? AND deleted_at=0", method, checkedAt, siteNow(), siteID)
+	return err
 }
 
 func (s *SQLStore) DeleteSite(ctx context.Context, id int64) error {
@@ -783,10 +791,19 @@ func (s *SQLStore) UpdateCheckinAttempt(ctx context.Context, a *model.CheckinAtt
 	_, err := s.ExecContext(ctx, "UPDATE checkin_attempts SET status=?,reward_text=?,balance_before=?,balance_after=?,balance_delta=?,balance_currency=?,message=?,error_code=?,retry_after_at=?,started_at=?,finished_at=?,attempt_no=? WHERE id=?", a.Status, a.RewardText, a.BalanceBefore, a.BalanceAfter, a.BalanceDelta, a.BalanceCurrency, a.Message, a.ErrorCode, a.RetryAfterAt, a.StartedAt, a.FinishedAt, a.AttemptNo, a.ID)
 	return err
 }
-func (s *SQLStore) HasDailyCheckinAttempt(ctx context.Context, accountID int64, localDay string) (bool, error) {
-	var n int
-	err := s.QueryRowContext(ctx, "SELECT COUNT(1) FROM checkin_attempts WHERE site_account_id=? AND local_day=? AND trigger_scope='daily'", accountID, localDay).Scan(&n)
-	return n > 0, err
+
+// GetDailyCheckinAttempt returns the single scheduled check-in row for one
+// account and local day. A nil row with a nil error means the day has no
+// scheduled attempt yet, which is a normal state rather than a failure.
+func (s *SQLStore) GetDailyCheckinAttempt(ctx context.Context, accountID int64, localDay string) (*model.CheckinAttempt, error) {
+	attempt, err := scanCheckinAttempt(s.QueryRowContext(ctx, "SELECT id,run_id,site_account_id,provider_id,local_day,trigger_scope,status,reward_text,balance_before,balance_after,balance_delta,balance_currency,message,error_code,retry_after_at,started_at,finished_at,attempt_no FROM checkin_attempts WHERE site_account_id=? AND local_day=? AND trigger_scope='daily'", accountID, localDay))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return attempt, nil
 }
 
 func (s *SQLStore) CreateSiteTask(ctx context.Context, t *model.SiteTask) error {
@@ -817,6 +834,127 @@ func (s *SQLStore) CancelSiteTask(ctx context.Context, id string, now int64) (bo
 	affected, err := result.RowsAffected()
 	return affected == 1, err
 }
+
+// sqlPlaceholders returns "?,?,?" for n bound values.
+func sqlPlaceholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// collectKeys drains a single-column result set into a slice of bound values.
+func collectKeys(rows *sql.Rows) ([]any, error) {
+	keys := make([]any, 0, 16)
+	for rows.Next() {
+		var key any
+		if err := rows.Scan(&key); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// pruneIDs selects at most limit keys matching selectSQL and deletes exactly
+// those rows, returning how many were removed. Chunking through an explicit key
+// list keeps every statement portable across the three supported dialects:
+// `DELETE ... LIMIT` is MySQL-only, and `IN (SELECT ... LIMIT ...)` is rejected
+// outright by MySQL. Each pass is bounded so a sweep never holds a long write
+// lock, and the caller repeats until a pass comes back short.
+func (s *SQLStore) pruneIDs(ctx context.Context, selectSQL, table, keyColumn string, limit int, args ...any) (int64, error) {
+	queryArgs := make([]any, 0, len(args)+1)
+	queryArgs = append(queryArgs, args...)
+	queryArgs = append(queryArgs, limit)
+
+	rows, err := s.QueryContext(ctx, selectSQL, queryArgs...)
+	if err != nil {
+		return 0, err
+	}
+	keys, err := collectKeys(rows)
+	if err != nil {
+		return 0, err
+	}
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	//nolint:gosec // G201: table and keyColumn are internal constants; placeholders are "?" only.
+	query := fmt.Sprintf("DELETE FROM %s WHERE %s IN (%s)", table, keyColumn, sqlPlaceholders(len(keys)))
+	result, err := s.ExecContext(ctx, query, keys...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// DeleteFinishedSiteTasks removes up to limit tasks that already reached a
+// terminal status and finished before the cutoff. A terminal task never changes
+// again, so the row is history rather than state. Tasks still queued or running
+// are left alone: an interrupted process must not have its work silently
+// discarded.
+func (s *SQLStore) DeleteFinishedSiteTasks(ctx context.Context, finishedBefore int64, limit int) (int64, error) {
+	return s.pruneIDs(ctx,
+		"SELECT id FROM site_tasks WHERE status NOT IN ('queued','running') AND finished_at>0 AND finished_at<? ORDER BY finished_at LIMIT ?",
+		"site_tasks", "id", limit, finishedBefore)
+}
+
+// DeleteFinishedCheckinRuns removes up to limit finished check-in runs older
+// than the cutoff, along with the per-account attempts that belong to them.
+//
+// The child delete is explicit rather than left to the declared ON DELETE
+// CASCADE: the SQLite connection runs with foreign_keys off (the DSN asks for
+// them, the driver does not apply it — `PRAGMA foreign_keys` reads 0), so a
+// cascade would silently never fire and the attempts would outlive their run
+// forever, since nothing else removes them.
+func (s *SQLStore) DeleteFinishedCheckinRuns(ctx context.Context, finishedBefore int64, limit int) (int64, error) {
+	rows, err := s.QueryContext(ctx, "SELECT id FROM checkin_runs WHERE finished_at>0 AND finished_at<? ORDER BY finished_at LIMIT ?", finishedBefore, limit)
+	if err != nil {
+		return 0, err
+	}
+	keys, err := collectKeys(rows)
+	if err != nil {
+		return 0, err
+	}
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	var removed int64
+	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		placeholders := sqlPlaceholders(len(keys))
+		if _, err := s.execTx(ctx, tx, "DELETE FROM checkin_attempts WHERE run_id IN ("+placeholders+")", keys...); err != nil {
+			return err
+		}
+		result, err := s.execTx(ctx, tx, "DELETE FROM checkin_runs WHERE id IN ("+placeholders+")", keys...)
+		if err != nil {
+			return err
+		}
+		removed, err = result.RowsAffected()
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// DeleteExpiredSiteTaskLeases removes up to limit leases whose window already
+// closed. An expired lease excludes nobody — the acquire path overwrites it —
+// and owner_id carries no foreign key, so no other row references it. Without
+// this, leases that are never explicitly released (the daily announcement lease
+// outlives its run by design) would sit in the table forever.
+func (s *SQLStore) DeleteExpiredSiteTaskLeases(ctx context.Context, expiredBefore int64, limit int) (int64, error) {
+	return s.pruneIDs(ctx,
+		"SELECT task_key FROM site_task_leases WHERE lease_until<? ORDER BY lease_until LIMIT ?",
+		"site_task_leases", "task_key", limit, expiredBefore)
+}
+
 func (s *SQLStore) AcquireSiteTaskLease(ctx context.Context, key, owner string, now, until int64) (bool, error) {
 	return s.lease(ctx, key, owner, now, until, false)
 }

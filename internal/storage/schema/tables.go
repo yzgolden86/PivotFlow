@@ -193,6 +193,8 @@ func DefineSitesTable() *TableBuilder {
 		Column("tags_json TEXT NOT NULL").
 		Column("last_probe_status VARCHAR(32) NOT NULL DEFAULT 'unknown'").
 		Column("last_error TEXT NOT NULL").
+		Column("checkin_method VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("checkin_method_checked_at BIGINT NOT NULL DEFAULT 0").
 		Column("created_at BIGINT NOT NULL").
 		Column("updated_at BIGINT NOT NULL").
 		Column("deleted_at BIGINT NOT NULL DEFAULT 0").
@@ -310,7 +312,9 @@ func DefineCheckinRunsTable() *TableBuilder {
 		Column("finished_at BIGINT NOT NULL DEFAULT 0").
 		Column("last_error TEXT NOT NULL").
 		Index("idx_checkin_runs_day", "local_day").
-		Index("idx_checkin_runs_status", "status")
+		Index("idx_checkin_runs_status", "status").
+		// Retention sweeps by finished_at, which is otherwise unindexed.
+		Index("idx_checkin_runs_finished", "finished_at")
 }
 
 // DefineCheckinAttemptsTable defines account-level check-in results.
@@ -378,7 +382,9 @@ func DefineSiteTasksTable() *TableBuilder {
 		Column("finished_at BIGINT NOT NULL DEFAULT 0").
 		Column("cancelled_at BIGINT NOT NULL DEFAULT 0").
 		Index("idx_site_tasks_status", "status").
-		Index("idx_site_tasks_account", "site_account_id")
+		Index("idx_site_tasks_account", "site_account_id").
+		// Retention sweeps by finished_at, which is otherwise unindexed.
+		Index("idx_site_tasks_finished", "finished_at")
 }
 
 // DefineSiteTaskLeasesTable prevents task re-entry across triggers.

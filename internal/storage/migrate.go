@@ -139,6 +139,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureSitesUseSystemProxy(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate sites use_system_proxy: %w", err)
 			}
+			if err := ensureSitesCheckinMethodColumns(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate sites check-in method columns: %w", err)
+			}
 		}
 		if tb.Name() == "webhook_endpoints" {
 			if err := ensureWebhookNotificationColumns(ctx, db, dialect); err != nil {

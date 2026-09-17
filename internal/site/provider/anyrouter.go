@@ -39,7 +39,14 @@ func (p *AnyRouter) Detect(ctx context.Context, baseURL string) (DetectionResult
 	version, _ := stringValue(payload.Data, "version")
 	compact := strings.NewReplacer(" ", "", "-", "", "_", "").Replace(strings.ToLower(name + " " + version))
 	matched := strings.Contains(compact, "anyrouter") || strings.Contains(compact, "agentrouter")
-	return DetectionResult{Matched: matched, ProviderID: p.ID(), SystemName: name, Capabilities: p.Capabilities()}, nil
+	method := checkinMethodFromStatus(payload)
+	return DetectionResult{Matched: matched, ProviderID: p.ID(), SystemName: name, Capabilities: p.Capabilities(), CheckinMethod: &method}, nil
+}
+
+// DiscoverCheckin delegates to the shared New API family implementation: the
+// check-in capability is published on the same /api/status endpoint.
+func (p *AnyRouter) DiscoverCheckin(ctx context.Context, req AccountRequest) (CheckinMethod, error) {
+	return p.family.DiscoverCheckin(ctx, req)
 }
 
 func (p *AnyRouter) RefreshAccount(ctx context.Context, req RefreshAccountRequest) (AccountSnapshot, error) {
@@ -100,12 +107,12 @@ func anyRouterCheckinPayload(payload envelope) (CheckinResult, error) {
 		return CheckinResult{Status: CheckinAlreadyChecked, Message: message}, nil
 	}
 	if !payload.Success {
-		return CheckinResult{Status: CheckinFailed, Message: message}, responseError(payload, http.StatusOK)
+		failure := responseError(payload, http.StatusOK)
+		return CheckinResult{Status: checkinStatusFromCode(ErrorCode(failure)), Message: message}, failure
 	}
 	lower := strings.ToLower(message)
 	if strings.Contains(lower, "success") || strings.Contains(message, "签到成功") {
-		reward, _ := stringValue(payload.Data, "reward")
-		return CheckinResult{Status: CheckinSuccess, RewardText: reward, Message: message}, nil
+		return CheckinResult{Status: CheckinSuccess, RewardText: checkinRewardText(payload.Data), Message: message}, nil
 	}
 	if message == "" {
 		return CheckinResult{Status: CheckinSuccess}, nil
@@ -137,15 +144,28 @@ func (p *AnyRouter) ListAnnouncements(ctx context.Context, req AccountRequest) (
 	return p.family.ListAnnouncements(ctx, req)
 }
 
-func checkinErrorResult(err error) (CheckinResult, error) {
-	status := CheckinFailed
-	switch ErrorCode(err) {
+// checkinStatusFromCode maps a provider error code onto the status recorded for
+// a check-in attempt.
+//
+// New API answers every check-in failure - a rejected credential, a disabled
+// switch, an unmet Turnstile challenge - with HTTP 200 and success:false, so the
+// payload path has to reach the same verdict as the transport path. Filing a
+// browser challenge as a plain failure mislabels last_checkin_status, leaves
+// browser_required_count at zero, and raises a failure notification for
+// something no retry can fix.
+func checkinStatusFromCode(code string) string {
+	switch code {
 	case CodeBrowserRequired:
-		status = CheckinBrowserRequired
+		return CheckinBrowserRequired
 	case CodeUnsupported:
-		status = CheckinUnsupported
+		return CheckinUnsupported
+	default:
+		return CheckinFailed
 	}
-	return CheckinResult{Status: status}, err
+}
+
+func checkinErrorResult(err error) (CheckinResult, error) {
+	return CheckinResult{Status: checkinStatusFromCode(ErrorCode(err))}, err
 }
 
 func isAlreadyCheckedMessage(message string) bool {

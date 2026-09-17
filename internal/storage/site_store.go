@@ -13,6 +13,9 @@ type SiteStore interface {
 	GetSite(ctx context.Context, id int64) (*model.Site, error)
 	CreateSite(ctx context.Context, site *model.Site) (*model.Site, error)
 	UpdateSite(ctx context.Context, id int64, site *model.Site) (*model.Site, error)
+	// UpdateSiteCheckinMethod records the check-in capability discovered from the
+	// site's public status endpoint, without rewriting the rest of the row.
+	UpdateSiteCheckinMethod(ctx context.Context, siteID int64, method string, checkedAt int64) error
 	DeleteSite(ctx context.Context, id int64) error
 
 	// ListSiteAccounts lists one site's accounts. A zero siteID lists accounts
@@ -42,12 +45,29 @@ type SiteStore interface {
 	ListCheckinAttemptsBatch(ctx context.Context, accountIDs []int64, perAccountLimit int) ([]*model.CheckinAttempt, error)
 	CreateCheckinAttempt(ctx context.Context, attempt *model.CheckinAttempt) (*model.CheckinAttempt, error)
 	UpdateCheckinAttempt(ctx context.Context, attempt *model.CheckinAttempt) error
-	HasDailyCheckinAttempt(ctx context.Context, accountID int64, localDay string) (bool, error)
+	// GetDailyCheckinAttempt returns the scheduled (daily) check-in row for one
+	// account and local day, or nil when the day has no scheduled attempt yet.
+	// The table holds at most one such row per account and day, so callers that
+	// need to retry must update the row they get back rather than insert.
+	GetDailyCheckinAttempt(ctx context.Context, accountID int64, localDay string) (*model.CheckinAttempt, error)
 
 	CreateSiteTask(ctx context.Context, task *model.SiteTask) error
 	UpdateSiteTask(ctx context.Context, task *model.SiteTask) (bool, error)
 	GetSiteTask(ctx context.Context, id string) (*model.SiteTask, error)
 	CancelSiteTask(ctx context.Context, id string, now int64) (bool, error)
+
+	// DeleteFinishedSiteTasks removes up to limit terminal tasks that finished
+	// before the cutoff, and reports how many rows went away. Callers loop until
+	// a pass returns fewer than the limit.
+	DeleteFinishedSiteTasks(ctx context.Context, finishedBefore int64, limit int) (int64, error)
+	// DeleteFinishedCheckinRuns removes up to limit finished check-in runs older
+	// than the cutoff, together with the per-account attempts that belong to
+	// them. Callers loop until a pass returns fewer than the limit.
+	DeleteFinishedCheckinRuns(ctx context.Context, finishedBefore int64, limit int) (int64, error)
+	// DeleteExpiredSiteTaskLeases removes up to limit leases whose window has
+	// already closed. An expired lease excludes nobody, so the row is dead
+	// weight once nothing renews it.
+	DeleteExpiredSiteTaskLeases(ctx context.Context, expiredBefore int64, limit int) (int64, error)
 
 	AcquireSiteTaskLease(ctx context.Context, taskKey, ownerID string, now, leaseUntil int64) (bool, error)
 	RenewSiteTaskLease(ctx context.Context, taskKey, ownerID string, leaseUntil, now int64) (bool, error)

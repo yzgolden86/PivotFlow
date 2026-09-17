@@ -34,7 +34,44 @@ func (p *NewAPI) Detect(ctx context.Context, baseURL string) (DetectionResult, e
 	}
 	name, _ := stringValue(payload.Data, "system_name")
 	matched := payload.Success && name != ""
-	return DetectionResult{Matched: matched, ProviderID: p.ID(), SystemName: name, Capabilities: p.Capabilities()}, nil
+	// Detection already paid for /api/status, which is also where the check-in
+	// capability is published, so hand it back instead of making callers ask again.
+	method := checkinMethodFromStatus(payload)
+	return DetectionResult{Matched: matched, ProviderID: p.ID(), SystemName: name, Capabilities: p.Capabilities(), CheckinMethod: &method}, nil
+}
+
+// checkinMethodFromStatus reads the check-in capability out of an /api/status
+// payload. Both Detect and DiscoverCheckin parse the same document, so the
+// interpretation lives in one place.
+func checkinMethodFromStatus(payload envelope) CheckinMethod {
+	enabled, hasEnabled := boolValue(payload.Data, "checkin_enabled")
+	turnstile, _ := boolValue(payload.Data, "turnstile_check")
+	siteKey, _ := stringValue(payload.Data, "turnstile_site_key")
+	method := CheckinMethod{Status: CheckinMethodUnknown, TurnstileSiteKey: siteKey, Source: "api_status"}
+	switch {
+	case !hasEnabled:
+		// Older builds do not publish the flag. Attempting the check-in is the
+		// historical behaviour and stays correct; claiming "disabled" would not.
+	case !enabled:
+		method.Status = CheckinMethodDisabled
+	case turnstile:
+		method.Status = CheckinMethodTurnstile
+	default:
+		method.Status = CheckinMethodAvailable
+	}
+	return method
+}
+
+// DiscoverCheckin reads the public status endpoint to learn whether this site
+// offers server-side check-in and whether an interactive Turnstile challenge
+// stands in the way. The endpoint needs no credentials, so this can run before
+// an account is even configured.
+func (p *NewAPI) DiscoverCheckin(ctx context.Context, req AccountRequest) (CheckinMethod, error) {
+	var payload envelope
+	if err := p.doJSON(ctx, AccountRequest{BaseURL: req.BaseURL, ProxyURL: req.ProxyURL}, http.MethodGet, "/api/status", nil, &payload); err != nil {
+		return CheckinMethod{}, err
+	}
+	return checkinMethodFromStatus(payload), nil
 }
 
 func (p *NewAPI) Login(ctx context.Context, req LoginRequest) (Credentials, error) {
@@ -448,7 +485,8 @@ func (p *NewAPI) ListModels(ctx context.Context, req AccountRequest) ([]ModelSna
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := p.doJSON(ctx, req, http.MethodGet, "/v1/models", nil, &openAI); err == nil && len(openAI.Data) > 0 {
+	endpointErr := p.doJSON(ctx, req, http.MethodGet, "/v1/models", nil, &openAI)
+	if endpointErr == nil && len(openAI.Data) > 0 {
 		out := make([]ModelSnapshot, 0, len(openAI.Data))
 		for _, m := range openAI.Data {
 			if strings.TrimSpace(m.ID) != "" {
@@ -457,7 +495,15 @@ func (p *NewAPI) ListModels(ctx context.Context, req AccountRequest) ([]ModelSna
 		}
 		return out, nil
 	}
+	// Without a session credential there is no management endpoint to fall back
+	// on, so this call is the only source of truth. Preserve the endpoint's own
+	// error rather than flattening every outcome into "unsupported": a rejected
+	// or expired routing key reported as an unsupported site sends the operator
+	// looking at the wrong thing entirely.
 	if req.Credentials.AccessToken == "" && req.Credentials.Cookie == "" {
+		if endpointErr != nil {
+			return nil, endpointErr
+		}
 		return nil, &Error{Code: CodeUnsupported, Message: "model endpoint unavailable for this credential"}
 	}
 	return p.listManagementModels(ctx, req, "/api/user/models", "models_endpoint")
@@ -500,26 +546,17 @@ func (p *NewAPI) Checkin(ctx context.Context, req AccountRequest) (CheckinResult
 	var payload envelope
 	err := p.doJSON(ctx, req, http.MethodPost, "/api/user/checkin", map[string]any{}, &payload)
 	if err != nil {
-		code := ErrorCode(err)
-		status := CheckinFailed
-		if code == CodeBrowserRequired {
-			status = CheckinBrowserRequired
-		}
-		if code == CodeUnsupported {
-			status = CheckinUnsupported
-		}
-		return CheckinResult{Status: status}, err
+		return checkinErrorResult(err)
 	}
 	message := payload.Message
 	if payload.Success {
-		reward, _ := stringValue(payload.Data, "reward")
-		return CheckinResult{Status: CheckinSuccess, RewardText: reward, Message: message}, nil
+		return CheckinResult{Status: CheckinSuccess, RewardText: checkinRewardText(payload.Data), Message: message}, nil
 	}
-	lower := strings.ToLower(message)
-	if strings.Contains(lower, "already") || strings.Contains(message, "已签到") || strings.Contains(message, "重复签到") {
+	if isAlreadyCheckedMessage(message) {
 		return CheckinResult{Status: CheckinAlreadyChecked, Message: message}, nil
 	}
-	return CheckinResult{Status: CheckinFailed, Message: message}, responseError(payload, http.StatusOK)
+	failure := responseError(payload, http.StatusOK)
+	return CheckinResult{Status: checkinStatusFromCode(ErrorCode(failure)), Message: message}, failure
 }
 
 func (p *NewAPI) CheckedInToday(ctx context.Context, req AccountRequest) (bool, error) {
@@ -548,6 +585,27 @@ func envelopeCheckedInToday(payload envelope) bool {
 	}
 	checked, _ := stats["checked_in_today"].(bool)
 	return checked
+}
+
+// checkinRewardText reads the reward out of a successful check-in payload.
+//
+// Forks disagree on the field. AnyRouter and older New API builds publish
+// data.reward as an already formatted string; current New API publishes
+// data.quota_awarded as an integer count of quota units and no reward at all.
+// Reading only reward therefore produced an empty label on every up-to-date
+// site, which is not fatal — the caller prefers the balance delta when the
+// follow-up refresh succeeds — but it silently degraded the fallback. The quota
+// count is labelled rather than dressed up as currency: the quota-to-currency
+// rate is a site setting this response does not carry.
+func checkinRewardText(data any) string {
+	if reward, ok := stringValue(data, "reward"); ok {
+		return reward
+	}
+	quota, ok := numberValue(data, "quota_awarded")
+	if !ok || quota <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("+%d 额度", int64(quota))
 }
 
 func (p *NewAPI) ListAnnouncements(ctx context.Context, req AccountRequest) ([]Announcement, error) {
@@ -786,6 +844,31 @@ func stringValue(value any, key string) (string, bool) {
 		return strconv.FormatFloat(s, 'f', -1, 64), true
 	default:
 		return fmt.Sprint(s), true
+	}
+}
+
+// boolValue reads a JSON boolean flag. The decoder yields bool for real JSON
+// booleans, but a few forks serialize these switches as strings or numbers, so
+// accept those shapes too. The second result reports whether the key existed.
+func boolValue(value any, key string) (bool, bool) {
+	m, ok := value.(map[string]any)
+	if !ok {
+		return false, false
+	}
+	v, ok := m[key]
+	if !ok {
+		return false, false
+	}
+	switch b := v.(type) {
+	case bool:
+		return b, true
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(b))
+		return parsed, err == nil
+	case float64:
+		return b != 0, true
+	default:
+		return false, false
 	}
 }
 func modelNames(value any) []string {

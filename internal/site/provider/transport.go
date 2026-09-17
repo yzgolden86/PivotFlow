@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,15 +28,33 @@ func (f ClientFactory) New(proxyURL string) (*http.Client, error) {
 		resolver = net.DefaultResolver
 	}
 	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	hops := &proxyHopTracker{}
 	proxyFunc := http.ProxyFromEnvironment
 	if strings.EqualFold(strings.TrimSpace(proxyURL), DirectProxyURL) {
 		proxyFunc = nil
 		proxyURL = ""
 	}
+	if proxyFunc != nil {
+		// The selector runs per request and may pick a different proxy for
+		// different targets, so recording here is the only way the dialer learns
+		// about an env-configured proxy it never saw at construction time.
+		proxyFunc = hops.wrap(proxyFunc)
+	}
 	transport := &http.Transport{Proxy: proxyFunc, ForceAttemptHTTP2: true, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
 			return nil, err
+		}
+		// A proxy hop is dialled as configured rather than filtered. The
+		// private-address rule below exists to stop a site URL from reaching
+		// internal services, but when a proxy is configured the transport dials
+		// the proxy, not the site — so the rule rejected every localhost proxy
+		// (Clash / v2ray on 127.0.0.1, which is exactly what the per-site proxy
+		// field is for) with "provider host resolves only to private or unsafe
+		// addresses", while protecting nothing: the proxy is what reaches the
+		// target. The site URL itself is still checked by ValidateBaseURL.
+		if hops.isProxyHop(host) {
+			return dialer.DialContext(ctx, network, address)
 		}
 		ips, err := resolver.LookupNetIP(ctx, "ip", host)
 		if err != nil {
@@ -55,6 +74,7 @@ func (f ClientFactory) New(proxyURL string) (*http.Client, error) {
 			return nil, errors.New("invalid site proxy url")
 		}
 		transport.Proxy = http.ProxyURL(parsed)
+		hops.remember(parsed.Hostname())
 	}
 	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -98,4 +118,30 @@ func isPrivateAddress(ip netip.Addr) bool {
 		return true
 	}
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() || ip.String() == "169.254.169.254"
+}
+
+// proxyHopTracker remembers which host names the transport may dial as a proxy
+// hop, so DialContext can tell "connecting to the proxy" apart from "connecting
+// to the site" — they are the same callback but need opposite handling.
+type proxyHopTracker struct{ hosts sync.Map }
+
+func (t *proxyHopTracker) remember(hostname string) {
+	if hostname = strings.ToLower(strings.TrimSpace(hostname)); hostname != "" {
+		t.hosts.Store(hostname, struct{}{})
+	}
+}
+
+func (t *proxyHopTracker) isProxyHop(hostname string) bool {
+	_, ok := t.hosts.Load(strings.ToLower(hostname))
+	return ok
+}
+
+func (t *proxyHopTracker) wrap(selectProxy func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
+	return func(req *http.Request) (*url.URL, error) {
+		selected, err := selectProxy(req)
+		if selected != nil {
+			t.remember(selected.Hostname())
+		}
+		return selected, err
+	}
 }

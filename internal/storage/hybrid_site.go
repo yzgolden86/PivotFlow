@@ -22,6 +22,9 @@ func (h *HybridStore) CreateSite(ctx context.Context, v *model.Site) (*model.Sit
 func (h *HybridStore) UpdateSite(ctx context.Context, id int64, v *model.Site) (*model.Site, error) {
 	return h.mysql.UpdateSite(ctx, id, v)
 }
+func (h *HybridStore) UpdateSiteCheckinMethod(ctx context.Context, siteID int64, method string, checkedAt int64) error {
+	return h.mysql.UpdateSiteCheckinMethod(ctx, siteID, method, checkedAt)
+}
 func (h *HybridStore) DeleteSite(ctx context.Context, id int64) error {
 	accounts, err := h.mysql.ListSiteAccounts(ctx, id, true)
 	if err != nil {
@@ -159,8 +162,8 @@ func (h *HybridStore) CreateCheckinAttempt(ctx context.Context, v *model.Checkin
 func (h *HybridStore) UpdateCheckinAttempt(ctx context.Context, v *model.CheckinAttempt) error {
 	return h.mysql.UpdateCheckinAttempt(ctx, v)
 }
-func (h *HybridStore) HasDailyCheckinAttempt(ctx context.Context, id int64, day string) (bool, error) {
-	return h.mysql.HasDailyCheckinAttempt(ctx, id, day)
+func (h *HybridStore) GetDailyCheckinAttempt(ctx context.Context, id int64, day string) (*model.CheckinAttempt, error) {
+	return h.mysql.GetDailyCheckinAttempt(ctx, id, day)
 }
 func (h *HybridStore) CreateSiteTask(ctx context.Context, v *model.SiteTask) error {
 	return h.mysql.CreateSiteTask(ctx, v)
@@ -173,6 +176,15 @@ func (h *HybridStore) GetSiteTask(ctx context.Context, id string) (*model.SiteTa
 }
 func (h *HybridStore) CancelSiteTask(ctx context.Context, id string, now int64) (bool, error) {
 	return h.mysql.CancelSiteTask(ctx, id, now)
+}
+func (h *HybridStore) DeleteFinishedSiteTasks(ctx context.Context, before int64, limit int) (int64, error) {
+	return h.mysql.DeleteFinishedSiteTasks(ctx, before, limit)
+}
+func (h *HybridStore) DeleteFinishedCheckinRuns(ctx context.Context, before int64, limit int) (int64, error) {
+	return h.mysql.DeleteFinishedCheckinRuns(ctx, before, limit)
+}
+func (h *HybridStore) DeleteExpiredSiteTaskLeases(ctx context.Context, before int64, limit int) (int64, error) {
+	return h.mysql.DeleteExpiredSiteTaskLeases(ctx, before, limit)
 }
 func (h *HybridStore) AcquireSiteTaskLease(ctx context.Context, k, o string, n, u int64) (bool, error) {
 	return h.mysql.AcquireSiteTaskLease(ctx, k, o, n, u)

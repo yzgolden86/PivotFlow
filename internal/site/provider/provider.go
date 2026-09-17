@@ -151,6 +151,47 @@ type DetectionResult struct {
 	ProviderID   string               `json:"provider_id"`
 	SystemName   string               `json:"system_name,omitempty"`
 	Capabilities ProviderCapabilities `json:"capabilities"`
+	// CheckinMethod is what the site published about its check-in capability
+	// while it was being detected. Providers that read it from the same
+	// endpoint they already use for detection fill this in, so callers learn
+	// the capability without a second round trip. Nil means "not reported
+	// here", which is not the same as reporting CheckinMethodUnknown.
+	CheckinMethod *CheckinMethod `json:"checkin_method,omitempty"`
+}
+
+// Checkin method status values reported by DiscoverCheckin.
+const (
+	// CheckinMethodUnknown means the status endpoint did not publish the flag,
+	// so the check-in must still be attempted the historical way.
+	CheckinMethodUnknown = "unknown"
+	// CheckinMethodAvailable means server-side check-in can be attempted.
+	CheckinMethodAvailable = "available"
+	// CheckinMethodDisabled means the site has check-in switched off; posting
+	// the check-in endpoint would only waste a request.
+	CheckinMethodDisabled = "disabled"
+	// CheckinMethodTurnstile means an interactive Cloudflare Turnstile
+	// challenge is required. A headless request cannot satisfy it, so the
+	// server-side check-in is impossible until a human completes it.
+	CheckinMethodTurnstile = "turnstile"
+)
+
+// CheckinMethod describes how (or whether) a site can be checked in on the
+// server side. Most New API-family sites publish this on their public
+// /api/status endpoint, so the scheduler can discover it before spending a
+// request that the upstream is guaranteed to reject.
+type CheckinMethod struct {
+	// Status is one of the CheckinMethod* constants.
+	Status string `json:"status"`
+	// TurnstileSiteKey is the public site key, kept for diagnostics only.
+	TurnstileSiteKey string `json:"turnstile_site_key,omitempty"`
+	// Source records where the method was discovered, e.g. "api_status".
+	Source string `json:"source,omitempty"`
+}
+
+// CheckinMethodProvider is implemented by providers that can discover the
+// site's check-in method instead of guessing it from a failed check-in.
+type CheckinMethodProvider interface {
+	DiscoverCheckin(ctx context.Context, req AccountRequest) (CheckinMethod, error)
 }
 
 type AccountRequest struct {

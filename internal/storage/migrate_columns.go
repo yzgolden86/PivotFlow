@@ -714,6 +714,20 @@ func ensureSitesUseSystemProxy(ctx context.Context, db *sql.DB, dialect Dialect)
 		"INTEGER NOT NULL DEFAULT 1")
 }
 
+// ensureSitesCheckinMethodColumns records the check-in capability discovered
+// from a site's public status endpoint. Existing rows start out empty, which
+// reads as "never discovered" and makes the scheduler probe once and cache.
+func ensureSitesCheckinMethodColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if err := ensureColumn(ctx, db, dialect, "sites", "checkin_method",
+		"VARCHAR(32) NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return ensureColumn(ctx, db, dialect, "sites", "checkin_method_checked_at",
+		"BIGINT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
+}
+
 func ensureChannelsRetryOtherKeysOnFailure(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "channels", "retry_other_keys_on_failure",
 		"TINYINT NOT NULL DEFAULT 0",

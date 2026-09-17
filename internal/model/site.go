@@ -51,9 +51,16 @@ type Site struct {
 	TagsJSON           string `json:"tags_json"`
 	LastProbeStatus    string `json:"last_probe_status"`
 	LastError          string `json:"last_error,omitempty"`
-	CreatedAt          int64  `json:"created_at"`
-	UpdatedAt          int64  `json:"updated_at"`
-	DeletedAt          int64  `json:"deleted_at,omitempty"`
+	// CheckinMethod is what the site published about its check-in capability
+	// (see the provider.CheckinMethod* values) and CheckinMethodCheckedAt when
+	// that was observed. It is a site-level fact — the status endpoint is
+	// public — so it is discovered once and shared by every account, instead of
+	// being re-probed on each check-in. Empty means "never discovered".
+	CheckinMethod          string `json:"checkin_method,omitempty"`
+	CheckinMethodCheckedAt int64  `json:"checkin_method_checked_at,omitempty"`
+	CreatedAt              int64  `json:"created_at"`
+	UpdatedAt              int64  `json:"updated_at"`
+	DeletedAt              int64  `json:"deleted_at,omitempty"`
 }
 
 // SiteAccount contains account state. CredentialCiphertext is deliberately
@@ -178,7 +185,11 @@ type CheckinAttempt struct {
 	RetryAfterAt    int64    `json:"retry_after_at,omitempty"`
 	StartedAt       int64    `json:"started_at,omitempty"`
 	FinishedAt      int64    `json:"finished_at,omitempty"`
-	AttemptNo       int      `json:"attempt_no"`
+	// AttemptNo counts how many runs have written to this row. The table keeps
+	// a single row per account, local day, and trigger scope, so a scheduled
+	// check-in that is retried later in the day updates this row and bumps the
+	// counter instead of inserting a second one.
+	AttemptNo int `json:"attempt_no"`
 }
 
 // SiteChannelBinding links account facts to an existing PivotFlow channel.
