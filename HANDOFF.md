@@ -20,13 +20,14 @@
 | `380fbb4` | 站点请求统一带上 PivotFlow 的 User-Agent |
 | `55ec0b0` | 签到端点返回 404 时记入站点能力（`unavailable`），别再按重试节奏空发请求 |
 
-`55ec0b0` 之后是六个**不属于签到线**的收尾提交：`cf6648d`（HANDOFF 记录本次改动与范围决定）、`f56b1ff`（HANDOFF 记录冒烟脚本过时）、`286e99d`（修正 `console_ui_smoke.py` 的过时定位器与分页断言）、`effd6f6`（把冒烟脚本的体积预算改按路由衡量）、`8cff17f`（HANDOFF 记录新门禁的设计与维护点）、`fc4cd97`（公告详情拆成懒加载 chunk，每次会话少下 108 KB —— 由新门禁的告警翻出来的）。当前 HEAD 是 `fc4cd97`。后四项的细节都见 §2。
+`55ec0b0` 之后是九个**不属于签到线**的收尾提交：`cf6648d`（HANDOFF 记录本次改动与范围决定）、`f56b1ff`（HANDOFF 记录冒烟脚本过时）、`286e99d`（修正 `console_ui_smoke.py` 的过时定位器与分页断言）、`effd6f6`（把冒烟脚本的体积预算改按路由衡量）、`8cff17f`（HANDOFF 记录新门禁的设计与维护点）、`fc4cd97`（公告详情拆成懒加载 chunk，每次会话少下 108 KB —— 由新门禁的告警翻出来的）、`0fcb3e0`（HANDOFF 记录新门禁抓到的第一个真问题）、`e912b02`（补公告详情弹窗的真实渲染验证）、`2e600e1`（修「schema 可空列被扫进 `string`/`int64`」的读取路径缺陷，四处）。当前 HEAD 是 `2e600e1`。细节见 §2。
 
 - 验证状态（**对 HEAD `55ec0b0` 的独立复验，全绿**）：
   - `go build -tags sonic ./...` → 退出 0
   - `go test -tags sonic -count=1 ./internal/...` → 退出 0，33 个包全 `ok`
   - `golangci-lint run ./...`（v2.13.2）→ `0 issues.`
   - `gofmt -l internal/` → 无输出
+  - `2e600e1`（可空列修复）单独复跑过 Go 侧三项：`go test -tags sonic -count=1 ./internal/...` → 退出 0、33 个包全 `ok`；`golangci-lint run ./...` → `0 issues.`；`gofmt -l internal/` → 无输出。这一版**没动前端**，所以没重跑 `console-check`，`web/console` 产物也未重建。
   - 前端 `make console-check` → typecheck + 60 个用例 + 构建全通过，`web/console` 产物已重建（用例数在 `fc4cd97` 从 50 涨到 60）
   - 浏览器端（`console_ui_smoke.py`，起本地服务跑真实产物）→ **全绿，且 stderr 干净**：`console_errors` 为空、`failed_responses` 为空，11 条路由的标题/导航高亮断言全过，性能预算全过（`effd6f6` 重做指标、`fc4cd97` 消掉那条软告警，见 §2）
   - 公告详情弹窗（`console_announcement_detail_check.py`，造一条公告真实点开）→ **全过**：markdown（`h1` / 粗体 / GFM 表格 / 列表）、站内相对链接按 `base_url` 解析、`javascript:` 链接降级成 `span`、原始 HTML 由 `rehype-raw` 解析、详情 chunk **预取 0 次 / 打开 1 次**，`console_errors` 与 `failed_responses` 均空（见 §2）
@@ -223,7 +224,22 @@ PIVOTFLOW_DETAIL_CHECK_SEED=1 \
 
 `PIVOTFLOW_DETAIL_CHECK_SEED` 是**显式开关**，因为写库有风险；开了之后也**只 INSERT、不 DELETE**，用的是 id `999999` / 名字 `__detail_check__` 这种不会和真实数据撞上的取值。**别把线上库路径传给它。** 服务端要先起（脚本在服务端运行时写库即可，SQLite WAL 允许）。
 
-**顺带发现（未修，记录备查）**：`sites.proxy_url` 与 `external_checkin_url` 在 schema 里是 **nullable**（`VARCHAR(500)`，无 `NOT NULL`），但 Go 侧的扫描器**不接受 NULL** —— 一旦真为 NULL，`/admin/sites`、`/admin/site-inventory`、`/admin/dashboard` 三个接口**全部 500**（`converting NULL to string is unsupported`）。应用自己的 `CreateSite` 永远写空串，所以现实中不触发；但 schema 与读取端这个不一致是隐患（将来迁移新增可空列时尤其）。这个脚本的 seed 因此显式写空串。
+**已修（2026-09-17）：schema 可空列 vs 读路径不接受 NULL。** `sites.proxy_url` / `external_checkin_url` 在 schema 里是 **nullable**（`VARCHAR(500)`，无 `NOT NULL`），但读路径把它们扫进 `string` —— `database/sql` 拒绝把 NULL 赋给 `string`，库里一旦真为 NULL，`/admin/sites`、`/admin/site-inventory`、`/admin/dashboard` 三个接口**全部 500**（`converting NULL to string is unsupported`）。应用自己的 `CreateSite` 永远写空串，所以正常操作不触发；但老库、备份恢复、手工 SQL 都能造出 NULL 行。
+
+审计（枚举 schema 里全部 38 个可空列，逐个核对扫描目标）后确认这是**一类**问题，不是一处，共四处，全部用**读取端 `COALESCE` 归一**修掉：
+
+| 表 | 列 | 归一为 | 为什么等价 |
+| --- | --- | --- | --- |
+| `sites` | `proxy_url`、`external_checkin_url` | `''` | 空串本来就等于「未配置」 |
+| `site_accounts` | `timezone` | `''` | 空串=「跟随站点时区」（见 `loadSiteLocation` 回退链） |
+| `site_announcements` | `source_url` | `''` | 空串=「这条公告没有来源页」 |
+| `site_tasks` | `site_id`、`site_account_id` | `0` | 两字段 JSON tag 带 `omitempty`，0=「无归属」 |
+
+其余可空列**本来就是对的**，不用动：`channels.*` 规则 / `auth_tokens.token_ciphertext` 走 `COALESCE` 或 `sql.NullString`，`site_accounts.balance` / `checkin_attempts.balance_*` / `model_fingerprints.channel_id` / `fingerprint_test_results.channel_id` 走 `sql.Null*`，`debug_logs` 的 `*_body` 是 `[]byte`（扫 NULL 得 nil，**不报错**）而三个 `string` 列已经 COALESCE 过。
+
+- **为什么改读取端而不是改 schema**：`migrate.go` 开头写明「不得在启动迁移中删除废弃字段或表」，而 SQLite 改列可空性要重建表 —— 老库改不了。既然老库永远是 nullable，读取端就必须容忍 NULL；只把新库的 schema 收紧，反而会让下面那条回归测试（靠 `PRAGMA table_info` 找可空列）失去覆盖。**schema 是契约，代码服从它。**
+- **回归测试** `internal/storage/sql/site_nullable_columns_test.go`：先走公开写路径建行（保证 NOT NULL 列都有值），再用 `PRAGMA table_info` 把该表**所有**可空列刷成 NULL，最后走公开读路径断言读得出来且归一正确。刻意**不列举列名** —— 将来新增可空列会被自动带上。四处修复各自单独回退验证过，报错正是上面那句。
+- 上面这个 seed 脚本仍显式写空串：现在不是必须了，但留着无害，且能让脚本在任何库上都跑得动。
 
 **本机只是开发环境，PivotFlow 实际跑在 VPS 的 Docker 里。** 本机 `data/pivotflow.db`、`.tmp-ui/pivotflow.db` 都是陈旧开发残留（旧 schema、0 行），**不能当线上库查签到历史**。要线上证据：向 hao哥 要 VPS 的 `docker logs` / 站点令牌，或直接读**上游开源源码**推导契约（本次会话就是靠这条定案的，最省事）。
 
@@ -420,7 +436,8 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 | `internal/app/site_control.go` | 签到编排：`checkinWithTrigger`、`resolveCheckinMethod` / `rememberCheckinUnavailable`、Turnstile 消息、失败通知 |
 | `internal/app/site_scheduler.go` | 调度器：`checkinRetryDue`、两档重试节奏 |
 | `internal/app/site_retention.go` | 历史保留期清扫 |
-| `internal/storage/sql/site.go` | 站点查询真源 + 保留期删除原语 |
+| `internal/storage/sql/site.go` | 站点查询真源 + 保留期删除原语。`siteColumns` / `siteAccountColumns` 是列清单唯一真源，**列顺序与对应 `scanXxx` 逐字对应**；可空列在这里用 `COALESCE` 归一（见 §2） |
+| `internal/storage/sql/site_nullable_columns_test.go` | **可空列回归测试**：用 `PRAGMA table_info` 找出该表全部可空列并刷成 NULL，再走公开读路径 —— 新增可空列会被自动带上（见 §2） |
 | `internal/app/site_checkin_upstream_test.go` | **端到端接缝测试**：真实适配器 + httptest 模拟上游端点；含 404 记忆与 401 不误判两条 |
 | `internal/app/site_checkin_method_cache_test.go` | `cachedCheckinMethod` 的 TTL / 取值契约（含 `unavailable` 必须命中） |
 | `internal/site/provider/checkin_status_test.go` | 上游原文 fixture 的分类测试 |
