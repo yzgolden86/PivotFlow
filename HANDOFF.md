@@ -246,6 +246,8 @@ CGO_ENABLED=0 go build -tags sonic -trimpath -ldflags=... -o pivotflow .
 
 > **2026-09-17 视觉语言 v2 之后（已实测，见 §1.7）**：新增的自托管字体让 `static_transfer_bytes` 从 249,521 涨到 **278,258**（+28,737 B：字体 26,784 + CSS 约 1,953），`resource_count` 36 → 37，最重路由 transfer 仍是 23,133 但占比从 9.27% 降到 8.31%。余量 121.7 KB。字体是**每个会话的固定成本**，且 woff2 已压缩、吃不到 gzip 收益 —— 以后再往字体里加字形，涨多少就是多少。`#/` 路由的 transfer 没被顶破（字体算在初始路由上）。
 
+> **读这套数字要带 ±100 B 的容差。** 同一次提交、`diff -rq` 逐字节相同的产物，两次跑出来 `static_transfer_bytes` 是 278,258 和 278,328（差 70 B），最重路由 23,133 和 23,135（差 2 B）。原因：脚本取的是 `performance.getEntriesByType('resource')` 的 `transferSize`，**它含 HTTP 响应头**，而头部的分帧长度会有抖动。所以只有「接近阈值」时才需要复跑确认，别把几十字节的漂移当成回归。
+
 **这条门禁第一次跑起来就抓到了一个真问题。** `#/announcements` 当时占全站预取 31%（111,127 B / 解压后 340,975 B）：那个路由 chunk 里塞着整个 markdown 渲染栈（`react-markdown` + `remark`/`rehype` 全家桶，约 336 KB 解压后），而它只有「打开某条公告」的弹窗详情才用得到 —— 控制台预取全部路由 chunk，于是每次会话都白下这 108 KB，哪怕从不打开公告页。
 
 已在 `fc4cd97` 把详情弹窗拆成按需加载的独立 chunk（并在公告行悬停/聚焦时预热，把首次打开的等待抹掉）：
