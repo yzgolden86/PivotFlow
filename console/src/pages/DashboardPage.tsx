@@ -23,7 +23,7 @@ import type {
   MetricPoint,
 } from '../types'
 import { donutSlicePath, donutSlices } from './donutGeometry'
-import { OperationNotice, PageHeader } from './shared'
+import { formatMoney, formatNumber, formatPercent, moneyDigits, OperationNotice, PageHeader } from './shared'
 
 const rangeOptions: Array<{ value: DashboardRange; label: string }> = [
   { value: 'today', label: '今日' },
@@ -76,6 +76,11 @@ export default function DashboardPage() {
     ? (snapshot.totals.success / snapshot.totals.requests) * 100
     : 0
   const totalTokens = snapshot.totals.input_tokens + snapshot.totals.output_tokens
+  // 工具卡是 2×2 摆在一起读的，四张卡必须共用一套金额精度。
+  const tools = normalizedTools(snapshot.client_usage)
+  const toolDigits = moneyDigits(tools.map((tool) => tool.effective_cost))
+  // 消耗额度卡的「主数值 + 标准成本」也是同一组。
+  const costDigits = moneyDigits([snapshot.totals.effective_cost, snapshot.totals.cost])
 
   return (
     <div className="dashboard-page">
@@ -127,8 +132,8 @@ export default function DashboardPage() {
           icon={CircleDollarSign}
           tone="green"
           label="消耗额度"
-          value={formatMoney(snapshot.totals.effective_cost)}
-          meta={`标准成本 ${formatMoney(snapshot.totals.cost)}`}
+          value={formatMoney(snapshot.totals.effective_cost, costDigits)}
+          meta={`标准成本 ${formatMoney(snapshot.totals.cost, costDigits)}`}
           href="#/trend"
         />
         <MetricCard
@@ -204,8 +209,8 @@ export default function DashboardPage() {
             </div>
           </div>
           <div className="tool-grid">
-            {normalizedTools(snapshot.client_usage).map((tool) => (
-              <ToolCard key={tool.key} usage={tool} />
+            {tools.map((tool) => (
+              <ToolCard key={tool.key} usage={tool} digits={toolDigits} />
             ))}
           </div>
         </div>
@@ -326,6 +331,8 @@ function PanelHeader({
 
 function UsageList({ items, emptyLabel }: { items: DashboardUsage[]; emptyLabel: string }) {
   if (!items.length) return <EmptyData label={emptyLabel} />
+  // 整列共用一套精度：一列金额里混着 $7.80 和 $0.8906，读者得先分辨哪个更准。
+  const digits = moneyDigits(items.map((item) => item.effective_cost))
   return (
     <div className="usage-list">
       {items.map((item, index) => (
@@ -334,7 +341,7 @@ function UsageList({ items, emptyLabel }: { items: DashboardUsage[]; emptyLabel:
           <div className="usage-main">
             <div className="usage-label-row">
               <strong title={item.label}>{item.label}</strong>
-              <span>{formatMoney(item.effective_cost)}</span>
+              <span>{formatMoney(item.effective_cost, digits)}</span>
             </div>
             <div className="usage-progress" aria-hidden="true">
               <span style={{ width: `${Math.max(item.share * 100, item.requests ? 2 : 0)}%` }} />
@@ -354,6 +361,7 @@ function UsageList({ items, emptyLabel }: { items: DashboardUsage[]; emptyLabel:
 function DistributionPanel({ items, emptyLabel }: { items: DashboardUsage[]; emptyLabel: string }) {
   if (!items.length) return <EmptyData label={emptyLabel} />
   const colors = ['var(--green)', 'var(--blue)', 'var(--amber)', 'var(--coral)', '#6f7d77', '#9aa59f', '#c2cbc6']
+  const digits = moneyDigits(items.map((item) => item.effective_cost))
   const segments = donutSlices(items, (item) => Math.min(1, item.share || 0)).map((segment, index) => ({
     item: segment.item,
     color: colors[index] || 'var(--graphite)',
@@ -364,9 +372,9 @@ function DistributionPanel({ items, emptyLabel }: { items: DashboardUsage[]; emp
     <div className="donut-chart" role="img" aria-label="模型消耗占比">
       <svg className="donut-chart-svg" viewBox="0 0 100 100" aria-hidden="true">
         <circle className="donut-chart-track" cx="50" cy="50" r="38" pathLength="100" />
-        {segments.map(({ item, color, start, share }) => <path className="donut-chart-segment" d={donutSlicePath(start, share, 38)} stroke={color} key={item.key}><title>{`${item.label} · ${formatPercent(item.share)} · ${formatMoney(item.effective_cost)}`}</title></path>)}
+        {segments.map(({ item, color, start, share }) => <path className="donut-chart-segment" d={donutSlicePath(start, share, 38)} stroke={color} key={item.key}><title>{`${item.label} · ${formatPercent(item.share)} · ${formatMoney(item.effective_cost, digits)}`}</title></path>)}
       </svg>
-      <div><strong>{formatMoney(items.reduce((sum, item) => sum + item.effective_cost, 0))}</strong><span>模型消耗</span></div>
+      <div><strong>{formatMoney(items.reduce((sum, item) => sum + item.effective_cost, 0), digits)}</strong><span>模型消耗</span></div>
     </div>
     <div className="distribution-legend">{items.slice(0, 5).map((item, index) => <div key={item.key} title={`${item.label} · ${formatPercent(item.share)}`}><i style={{ background: colors[index] }} /><strong>{item.label}</strong><span>{formatPercent(item.share)}</span></div>)}</div>
   </div>
@@ -375,7 +383,8 @@ function DistributionPanel({ items, emptyLabel }: { items: DashboardUsage[]; emp
 function BarRanking({ items, emptyLabel }: { items: DashboardUsage[]; emptyLabel: string }) {
   if (!items.length) return <EmptyData label={emptyLabel} />
   const maximum = Math.max(...items.map((item) => item.effective_cost), 1)
-  return <div className="bar-ranking">{items.map((item) => <div className="bar-ranking-row" key={item.key}><div><strong title={item.label}>{item.label}</strong><span>{formatMoney(item.effective_cost)}</span></div><div className="bar-ranking-track"><i style={{ width: `${Math.max((item.effective_cost / maximum) * 100, item.requests ? 3 : 0)}%` }} /></div><small>{formatCompact(item.requests)} 请求</small></div>)}</div>
+  const digits = moneyDigits(items.map((item) => item.effective_cost))
+  return <div className="bar-ranking">{items.map((item) => <div className="bar-ranking-row" key={item.key}><div><strong title={item.label}>{item.label}</strong><span>{formatMoney(item.effective_cost, digits)}</span></div><div className="bar-ranking-track"><i style={{ width: `${Math.max((item.effective_cost / maximum) * 100, item.requests ? 3 : 0)}%` }} /></div><small>{formatCompact(item.requests)} 请求</small></div>)}</div>
 }
 
 function TrendBars({ points }: { points: MetricPoint[] }) {
@@ -385,13 +394,15 @@ function TrendBars({ points }: { points: MetricPoint[] }) {
     ? Number(point.effective_cost || 0)
     : Number(point.success || 0) + Number(point.error || 0))
   const maximum = Math.max(...values, 1)
+  // 轴标签和柱子提示框用同一套精度 —— 同一张图上不该出现两种刻度写法。
+  const digits = moneyDigits([maximum])
 
   if (!visible.length) return <EmptyData label="暂无趋势数据" />
   return (
     <div className="trend-chart" role="img" aria-label={hasCost ? '费用消耗走势' : '请求量走势'}>
       <div className="trend-axis">
-        <span>{hasCost ? formatMoney(maximum) : formatCompact(maximum)}</span>
-        <span>{hasCost ? formatMoney(maximum / 2) : formatCompact(maximum / 2)}</span>
+        <span>{hasCost ? formatMoney(maximum, digits) : formatCompact(maximum)}</span>
+        <span>{hasCost ? formatMoney(maximum / 2, digits) : formatCompact(maximum / 2)}</span>
         <span>0</span>
       </div>
       <div className="trend-bars">
@@ -404,7 +415,7 @@ function TrendBars({ points }: { points: MetricPoint[] }) {
               className={point.error > point.success && total > 0 ? 'trend-bar trend-bar--warning' : 'trend-bar'}
               key={`${point.ts}-${index}`}
               style={{ height: `${height}%` }}
-              title={`${formatPointTime(point.ts)} · ${hasCost ? `费用 ${formatMoney(value)}` : `请求量 ${formatNumber(value)} 次`}`}
+              title={`${formatPointTime(point.ts)} · ${hasCost ? `费用 ${formatMoney(value, digits)}` : `请求量 ${formatNumber(value)} 次`}`}
             />
           )
         })}
@@ -418,7 +429,7 @@ function TrendBars({ points }: { points: MetricPoint[] }) {
   )
 }
 
-function ToolCard({ usage }: { usage: DashboardUsage }) {
+function ToolCard({ usage, digits }: { usage: DashboardUsage; digits: number }) {
   const successRate = usage.requests ? (usage.success / usage.requests) * 100 : 0
   const tone = toolTone[usage.key] || 'amber'
   return (
@@ -428,7 +439,7 @@ function ToolCard({ usage }: { usage: DashboardUsage }) {
         <span className="tool-share">{formatPercent(usage.share)}</span>
       </div>
       <h3>{usage.label}</h3>
-      <div className="tool-cost">{formatMoney(usage.effective_cost)}</div>
+      <div className="tool-cost">{formatMoney(usage.effective_cost, digits)}</div>
       <div className="tool-meta">
         <span>{formatCompact(usage.requests)} 请求</span>
         <span>{usage.requests ? `${successRate.toFixed(0)}% 成功` : '暂无调用'}</span>
@@ -497,20 +508,6 @@ function DashboardError({ message, retry }: { message: string; retry: () => void
 
 function formatCompact(value: number): string {
   return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value || 0)
-}
-
-function formatNumber(value: number, digits = 0): string {
-  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value || 0)
-}
-
-function formatMoney(value: number): string {
-  const amount = value || 0
-  const digits = amount >= 100 ? 0 : amount >= 1 ? 2 : 4
-  return `$${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(amount)}`
-}
-
-function formatPercent(value: number): string {
-  return `${Math.max(0, value * 100).toFixed(value > 0 && value < 0.01 ? 1 : 0)}%`
 }
 
 function formatDateTime(value: number): string {

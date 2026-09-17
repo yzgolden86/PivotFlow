@@ -110,16 +110,9 @@ export function Pagination({ page, pageSize, total, onPage, pageSizes, onPageSiz
   )
 }
 
-export function formatNumber(value: number | undefined, digits = 0): string {
-  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: digits }).format(value || 0)
-}
-
-export function formatMoney(value: number | undefined): string {
-  const amount = value || 0
-  if (amount > 0 && amount < 0.0001) return '< $0.0001'
-  const digits = amount >= 1 ? 2 : 4
-  return `$${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(amount)}`
-}
+// 数字/金额/百分比的实现在 ../format.ts（纯逻辑，可被 node --test 直接测）。
+// 这里只做再导出，页面继续从 './shared' 拿，不用改 import 路径。
+export { formatMoney, formatNumber, formatPercent, moneyDigits } from '../format'
 
 export function formatTime(timestamp: number): string {
   const value = timestamp > 10_000_000_000 ? timestamp : timestamp * 1000
