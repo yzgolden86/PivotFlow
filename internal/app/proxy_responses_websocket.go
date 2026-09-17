@@ -492,14 +492,20 @@ func (s *Server) executeResponsesWebsocketTurn(
 			interruptedOutput := bridgeWriter.collectedOutput()
 			pendingToolCallIDs := responsesWebsocketPendingToolCallIDs(interruptedOutput)
 			if len(pendingToolCallIDs) > 0 {
+				// The retry error is built first on purpose: a return whose first
+				// value is a multi-line composite literal *and* whose second value
+				// is another one is laid out differently by gofmt 1.26 and 1.27,
+				// each rejecting the other's output. Keeping one literal per
+				// statement sidesteps that without changing behaviour.
+				retryErr := &responsesWebsocketClientRetryError{
+					code:    responsesWebsocketInterruptedCode,
+					message: responsesWebsocketInterruptedMessage,
+				}
 				return responsesWebsocketTurnResult{
-						completedOutput:    interruptedOutput,
-						pendingToolCallIDs: pendingToolCallIDs,
-						interrupted:        true,
-					}, &responsesWebsocketClientRetryError{
-						code:    responsesWebsocketInterruptedCode,
-						message: responsesWebsocketInterruptedMessage,
-					}
+					completedOutput:    interruptedOutput,
+					pendingToolCallIDs: pendingToolCallIDs,
+					interrupted:        true,
+				}, retryErr
 			}
 			return responsesWebsocketTurnResult{}, errors.New("upstream stream closed before response.completed")
 		}

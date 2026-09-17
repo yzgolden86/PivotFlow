@@ -435,7 +435,7 @@ func newSiteRefreshTestService(t *testing.T, adapter provider.SiteAdapter) (*sit
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &siteControlService{store: store, cipher: cipher, registry: provider.NewRegistry(adapter), baseCtx: context.Background()}, site, account
+	return &siteControlService{store: store, cipher: cipher, registry: provider.NewRegistry(adapter), baseCtx: context.Background(), tasks: make(map[string]context.CancelFunc)}, site, account
 }
 
 func runSiteRefreshTask(t *testing.T, service *siteControlService, accountID int64) *model.SiteTask {

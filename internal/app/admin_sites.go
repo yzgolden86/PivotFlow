@@ -29,7 +29,19 @@ func (s *siteControlService) runAsync(taskID string, fn func(context.Context)) b
 		s.taskMu.Unlock()
 		return false
 	}
-	ctx, cancel := context.WithCancel(s.baseCtx)
+	// A partially constructed service is tolerated here for the same reason wg
+	// is checked below: background work must degrade, not take the process down.
+	// context.WithCancel(nil) panics, and a panic in a scheduler goroutine is
+	// fatal, so a caller that forgot to wire a base context would kill the
+	// service rather than just lose one task.
+	parent := s.baseCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	if s.tasks == nil {
+		s.tasks = make(map[string]context.CancelFunc)
+	}
 	s.tasks[taskID] = cancel
 	if s.wg != nil {
 		s.wg.Add(1)
@@ -128,6 +140,13 @@ func (s *siteControlService) handleSiteProbe(c *gin.Context) {
 		site.Platform = result.ProviderID
 	} else {
 		site.LastProbeStatus = "unsupported"
+	}
+	// Detection reads the same public status document that publishes the
+	// check-in capability, so record it here rather than making the scheduler
+	// ask the site the same question again.
+	if result.CheckinMethod != nil {
+		site.CheckinMethod = result.CheckinMethod.Status
+		site.CheckinMethodCheckedAt = time.Now().UnixMilli()
 	}
 	if _, updateErr := s.store.UpdateSite(c.Request.Context(), id, site); updateErr != nil {
 		RespondError(c, http.StatusInternalServerError, updateErr)

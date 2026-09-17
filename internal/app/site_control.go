@@ -43,6 +43,13 @@ type siteControlService struct {
 	// the same site queues up instead of hitting CF-protected upstreams
 	// concurrently (map[int64]chan struct{}).
 	siteGates sync.Map
+
+	// History retention bookkeeping. historyPruneAt is the unix-ms timestamp of
+	// the last sweep; zero means "never run", which is why the first scheduler
+	// tick after startup sweeps. Guarded by historyPruneMu rather than taskMu so
+	// housekeeping never contends with the task registry.
+	historyPruneMu sync.Mutex
+	historyPruneAt int64
 }
 
 const credentialRefreshLead = 2 * time.Minute
@@ -136,13 +143,38 @@ func newSiteTaskID() string {
 	return "st_" + hex.EncodeToString(raw[:])
 }
 
-func (s *siteControlService) createTask(ctx context.Context, kind string, siteID, accountID int64, total int) (*model.SiteTask, error) {
+// newSiteTask builds a queued task without storing it. Callers that must take a
+// lease before the work can start use this, so work that never runs leaves no
+// row behind. The scheduled announcement refresh is the reason it exists: it is
+// gated by a 26-hour lease, so persisting before the lease check wrote a
+// "cancelled" row on every scheduler tick — hundreds per site per day whose
+// only content was "another task already did this".
+func newSiteTask(kind string, siteID, accountID int64, total int) *model.SiteTask {
 	progress, _ := json.Marshal(gin.H{"completed": 0, "total": total})
-	task := &model.SiteTask{ID: newSiteTaskID(), Kind: kind, Status: model.SiteTaskStatusQueued, SiteID: siteID, SiteAccountID: accountID, ProgressJSON: string(progress), CreatedAt: time.Now().UnixMilli()}
+	return &model.SiteTask{ID: newSiteTaskID(), Kind: kind, Status: model.SiteTaskStatusQueued, SiteID: siteID, SiteAccountID: accountID, ProgressJSON: string(progress), CreatedAt: time.Now().UnixMilli()}
+}
+
+func (s *siteControlService) createTask(ctx context.Context, kind string, siteID, accountID int64, total int) (*model.SiteTask, error) {
+	task := newSiteTask(kind, siteID, accountID, total)
 	if err := s.store.CreateSiteTask(ctx, task); err != nil {
 		return nil, err
 	}
 	return task, nil
+}
+
+// persistTask stores a task that newSiteTask built but did not write. It hands
+// back the lease it was given on failure: a caller that acquired a lease before
+// persisting would otherwise leave the key held by a task that does not exist,
+// which silently blocks that account/kind until the lease expires.
+func (s *siteControlService) persistTask(ctx context.Context, task *model.SiteTask, leaseKey string) bool {
+	if err := s.store.CreateSiteTask(ctx, task); err != nil {
+		if leaseKey != "" {
+			_ = s.store.ReleaseSiteTaskLease(context.Background(), leaseKey, task.ID)
+		}
+		log.Printf("[SITE] persist %s task for site %d: %v", task.Kind, task.SiteID, err)
+		return false
+	}
+	return true
 }
 
 func (s *siteControlService) updateTask(ctx context.Context, task *model.SiteTask, status, resultRef, message string) {
@@ -1008,6 +1040,12 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 				})
 				if err == nil {
 					names = modelSnapshotNames(items)
+				} else if keyErrors[index] == nil {
+					// Nothing else explained the empty result, so this is the only
+					// real cause. Dropping it reported a rejected credential as
+					// "the site does not support this", which sends the operator
+					// looking at the wrong thing entirely.
+					keyErrors[index] = err
 				}
 			}
 		}
@@ -1291,6 +1329,104 @@ func (s *siteControlService) recordBalanceSnapshot(ctx context.Context, account 
 	}
 }
 
+// siteCheckinMethodTTL bounds how long a discovered check-in capability is
+// trusted. The upstream status endpoint can flip — an operator switches check-in
+// on, or turns Turnstile on — so the remembered answer expires instead of sticking.
+const siteCheckinMethodTTL = 6 * time.Hour
+
+// cachedCheckinMethod returns the site's remembered capability while it is still
+// fresh. It is a pure read, so the decision stays testable without a store.
+func cachedCheckinMethod(site *model.Site, now time.Time) (provider.CheckinMethod, bool) {
+	if site == nil || site.CheckinMethod == "" || site.CheckinMethod == provider.CheckinMethodUnknown {
+		return provider.CheckinMethod{}, false
+	}
+	if site.CheckinMethodCheckedAt <= 0 || now.UnixMilli()-site.CheckinMethodCheckedAt >= siteCheckinMethodTTL.Milliseconds() {
+		return provider.CheckinMethod{}, false
+	}
+	return provider.CheckinMethod{Status: site.CheckinMethod, Source: "cache"}, true
+}
+
+// resolveCheckinMethod answers "how can this site be checked in?" from the cached
+// site fact when it is fresh, and otherwise probes the public status endpoint and
+// remembers the answer. The capability belongs to the site, not to an account, so
+// caching it here spares every account a probe on every attempt — a site with five
+// accounts used to re-ask the same public question five times a day, and up to
+// eighty times when the check-in kept failing.
+//
+// It stays deliberately best-effort: when the probe fails, or the site does not
+// publish the flag, callers fall back to attempting the check-in the historical
+// way. An "unknown" answer is reported as not-known so nobody acts on a guess.
+func (s *siteControlService) resolveCheckinMethod(ctx context.Context, site *model.Site, adapter provider.SiteAdapter) (provider.CheckinMethod, bool) {
+	if method, ok := cachedCheckinMethod(site, time.Now()); ok {
+		return method, true
+	}
+	prober, ok := adapter.(provider.CheckinMethodProvider)
+	if !ok {
+		return provider.CheckinMethod{}, false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	method, err := prober.DiscoverCheckin(probeCtx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site)})
+	if err != nil {
+		log.Printf("[SITE] discover check-in method for site %d: %v", site.ID, err)
+		return provider.CheckinMethod{}, false
+	}
+	if method.Status == "" || method.Status == provider.CheckinMethodUnknown {
+		// Nothing worth remembering: the site does not publish the flag.
+		return method, false
+	}
+	checkedAt := time.Now().UnixMilli()
+	if err := s.store.UpdateSiteCheckinMethod(ctx, site.ID, method.Status, checkedAt); err != nil {
+		log.Printf("[SITE] persist check-in method for site %d: %v", site.ID, err)
+	}
+	// Keep the caller's copy consistent so it does not probe again in this run.
+	site.CheckinMethod = method.Status
+	site.CheckinMethodCheckedAt = checkedAt
+	return method, true
+}
+
+// prepareCheckinAttempt persists the row this run reports through. The table
+// holds one row per account, local day, and trigger scope, so a scheduled
+// check-in that is retried later in the day has to reuse the row its earlier
+// attempt created — a second insert is rejected by the unique key. Reusing it
+// also keeps the account's history to one entry per day and lets attempt_no
+// count the retries, which is what the scheduler paces against.
+func (s *siteControlService) prepareCheckinAttempt(ctx context.Context, run *model.CheckinRun, account *model.SiteAccount, adapter provider.SiteAdapter, day, triggerScope string, balanceBefore *float64) (*model.CheckinAttempt, error) {
+	attempt := &model.CheckinAttempt{
+		RunID:           run.ID,
+		SiteAccountID:   account.ID,
+		ProviderID:      adapter.ID(),
+		LocalDay:        day,
+		TriggerScope:    triggerScope,
+		Status:          "running",
+		AttemptNo:       1,
+		StartedAt:       time.Now().UnixMilli(),
+		BalanceBefore:   balanceBefore,
+		BalanceCurrency: account.BalanceCurrency,
+	}
+	if triggerScope == "daily" {
+		existing, err := s.store.GetDailyCheckinAttempt(ctx, account.ID, day)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			attempt.ID = existing.ID
+			attempt.AttemptNo = existing.AttemptNo + 1
+			if attempt.BalanceBefore == nil {
+				attempt.BalanceBefore = existing.BalanceBefore
+			}
+			// Every other field stays at its zero value on purpose: the row is
+			// reset to "running" so a stale reward or error from the previous
+			// attempt cannot leak into the new result.
+			if err := s.store.UpdateCheckinAttempt(ctx, attempt); err != nil {
+				return nil, err
+			}
+			return attempt, nil
+		}
+	}
+	return s.store.CreateCheckinAttempt(ctx, attempt)
+}
+
 func (s *siteControlService) checkin(ctx context.Context, task *model.SiteTask, accountID int64) {
 	s.checkinWithTrigger(ctx, task, accountID, "manual", "manual:"+task.ID)
 }
@@ -1340,11 +1476,25 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 		applyBalanceSnapshot(account, preSnapshot, time.Now().UnixMilli())
 		s.recordBalanceSnapshot(ctx, account, site, account.BalanceUpdatedAt)
 	}
-	attempt := &model.CheckinAttempt{RunID: run.ID, SiteAccountID: account.ID, ProviderID: adapter.ID(), LocalDay: day, TriggerScope: triggerScope, Status: "running", AttemptNo: 1, StartedAt: time.Now().UnixMilli(), BalanceBefore: balanceBefore, BalanceCurrency: account.BalanceCurrency}
-	attempt, _ = s.store.CreateCheckinAttempt(ctx, attempt)
+	attempt, err := s.prepareCheckinAttempt(ctx, run, account, adapter, day, triggerScope, balanceBefore)
+	if err != nil {
+		s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", err.Error())
+		return
+	}
 	var result provider.CheckinResult
-	for try := 1; try <= 3; try++ {
-		attempt.AttemptNo = try
+	// Discover the site's check-in method before spending a request. A site that
+	// publishes check-in as disabled rejects every POST, so recording that as an
+	// explicit "unsupported" beats surfacing an opaque upstream error. A
+	// Turnstile site is still attempted on purpose: the upstream may answer
+	// "already checked" once a human finished the browser step, and the
+	// challenge only matters when the attempt actually fails.
+	method, methodKnown := s.resolveCheckinMethod(ctx, site, adapter)
+	skipCheckin := methodKnown && method.Status == provider.CheckinMethodDisabled
+	if skipCheckin {
+		result = provider.CheckinResult{Status: provider.CheckinUnsupported, Message: "站点已关闭签到"}
+		err = &provider.Error{Code: provider.CodeUnsupported, Message: "站点已关闭签到（checkin_enabled=false）"}
+	}
+	for try := 1; !skipCheckin && try <= 3; try++ {
 		result, err = adapter.Checkin(ctx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
 		if err == nil || provider.ErrorCode(err) == provider.CodeBrowserRequired || provider.ErrorCode(err) == provider.CodeUnsupported || provider.ErrorCode(err) == provider.CodeExpired || provider.ErrorCode(err) == provider.CodeUserIDRequired {
 			break
@@ -1368,6 +1518,12 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 				err = nil
 			}
 		}
+	}
+	if methodKnown && method.Status == provider.CheckinMethodTurnstile && provider.ErrorCode(err) == provider.CodeBrowserRequired {
+		// The public status endpoint already named the blocker: an interactive
+		// Turnstile challenge. Say so, instead of leaving the operator to guess
+		// whether the credential or the site is at fault.
+		result.Message = "站点启用了 Turnstile 人机验证，服务端无法自动完成；请在浏览器完成签到后由系统复核"
 	}
 	attempt.Status = result.Status
 	attempt.Message = result.Message
@@ -1410,6 +1566,15 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 		run.AlreadyCount = 1
 		account.LastCheckinStatus = provider.CheckinAlreadyChecked
 		account.LastCheckinAt = attempt.FinishedAt
+	case provider.CheckinBrowserRequired:
+		// A challenge that no server-side retry can clear. Give it its own
+		// outcome so last_checkin_status and browser_required_count read
+		// "waiting for a human" instead of "broken", and so the failure webhook
+		// stays quiet: the console already flags the account as needing
+		// attention, and a Turnstile site would otherwise page every day.
+		run.Status = model.SiteTaskStatusFailed
+		run.BrowserRequiredCount = 1
+		account.LastCheckinStatus = provider.CheckinBrowserRequired
 	default:
 		run.Status = model.SiteTaskStatusFailed
 		run.FailedCount = 1
