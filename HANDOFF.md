@@ -20,15 +20,15 @@
 | `380fbb4` | 站点请求统一带上 PivotFlow 的 User-Agent |
 | `55ec0b0` | 签到端点返回 404 时记入站点能力（`unavailable`），别再按重试节奏空发请求 |
 
-`55ec0b0` 之后是四个**不属于签到线**的收尾提交：`cf6648d`（HANDOFF 记录本次改动与范围决定）、`f56b1ff`（HANDOFF 记录冒烟脚本过时）、`286e99d`（修正 `console_ui_smoke.py` 的过时定位器与分页断言）、`effd6f6`（把冒烟脚本的体积预算改按路由衡量，见 §2）。当前 HEAD 是 `effd6f6`。
+`55ec0b0` 之后是六个**不属于签到线**的收尾提交：`cf6648d`（HANDOFF 记录本次改动与范围决定）、`f56b1ff`（HANDOFF 记录冒烟脚本过时）、`286e99d`（修正 `console_ui_smoke.py` 的过时定位器与分页断言）、`effd6f6`（把冒烟脚本的体积预算改按路由衡量）、`8cff17f`（HANDOFF 记录新门禁的设计与维护点）、`fc4cd97`（公告详情拆成懒加载 chunk，每次会话少下 108 KB —— 由新门禁的告警翻出来的）。当前 HEAD 是 `fc4cd97`。后四项的细节都见 §2。
 
 - 验证状态（**对 HEAD `55ec0b0` 的独立复验，全绿**）：
   - `go build -tags sonic ./...` → 退出 0
   - `go test -tags sonic -count=1 ./internal/...` → 退出 0，33 个包全 `ok`
   - `golangci-lint run ./...`（v2.13.2）→ `0 issues.`
   - `gofmt -l internal/` → 无输出
-  - 前端 `make console-check` → typecheck + 50 个用例 + 构建全通过，`web/console` 产物已重建
-  - 浏览器端（`console_ui_smoke.py`，起本地服务跑真实产物）→ **全绿**：`console_errors` 为空、`failed_responses` 为空，11 条路由的标题/导航高亮断言全过，性能预算也过（`effd6f6` 重做后），只有一条 `#/announcements` 占全站 31% 的软告警（不判失败，见 §2）
+  - 前端 `make console-check` → typecheck + 60 个用例 + 构建全通过，`web/console` 产物已重建（用例数在 `fc4cd97` 从 50 涨到 60）
+  - 浏览器端（`console_ui_smoke.py`，起本地服务跑真实产物）→ **全绿，且 stderr 干净**：`console_errors` 为空、`failed_responses` 为空，11 条路由的标题/导航高亮断言全过，性能预算全过（`effd6f6` 重做指标、`fc4cd97` 消掉那条软告警，见 §2）
 
   > 前端验证的坑：`vite` 的 `emptyOutDir` 要清空 `web/console/assets`（30+ 文件），
   > 会撞上沙箱的批量删除守卫（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，按**回合**累计、
@@ -164,11 +164,22 @@ CGO_ENABLED=0 go build -tags sonic -trimpath -ldflags=... -o pivotflow .
 | 指标 | 实测 | 阈值 |
 | --- | --- | --- |
 | `resource_count` | 36 | `MAX_CONSOLE_RESOURCES = 45` |
-| `static_transfer_bytes`（全站预取总量） | 357,696 | `MAX_TOTAL_TRANSFER_BYTES = 400_000` |
-| 最重路由 transfer（`#/announcements`） | 111,127 | `MAX_ROUTE_TRANSFER_BYTES = 150_000` |
-| 最重路由 decoded（`#/announcements`） | 340,975 | `MAX_ROUTE_DECODED_BYTES = 450_000` |
+| `static_transfer_bytes`（全站预取总量） | 249,521 | `MAX_TOTAL_TRANSFER_BYTES = 400_000` |
+| 最重路由 transfer（`#/channels`） | 23,133 | `MAX_ROUTE_TRANSFER_BYTES = 150_000` |
+| 最重路由 decoded（`#/channels`） | 69,861 | `MAX_ROUTE_DECODED_BYTES = 450_000` |
 
-当前会打一条软告警：`#/announcements` 占全站预取 31%（超过 `ROUTE_SHARE_WARN_RATIO = 0.25`）——公告页的依赖链比其余所有页面都重，值得留意，但不拦。
+**这条门禁第一次跑起来就抓到了一个真问题。** `#/announcements` 当时占全站预取 31%（111,127 B / 解压后 340,975 B）：那个路由 chunk 里塞着整个 markdown 渲染栈（`react-markdown` + `remark`/`rehype` 全家桶，约 336 KB 解压后），而它只有「打开某条公告」的弹窗详情才用得到 —— 控制台预取全部路由 chunk，于是每次会话都白下这 108 KB，哪怕从不打开公告页。
+
+已在 `fc4cd97` 把详情弹窗拆成按需加载的独立 chunk（并在公告行悬停/聚焦时预热，把首次打开的等待抹掉）：
+
+| | 拆之前 | 拆之后 |
+| --- | --- | --- |
+| 全站预取 transfer | 357,696 | 249,521（−30.2%） |
+| 全站预取 decoded | 1,106,259 | 770,673（−30.3%） |
+| `#/announcements` chunk | 111,127 | 2,950 |
+| 最大路由占比 | 31.1%（打告警） | 9.3%（无告警） |
+
+拆完软告警消失，脚本 stderr 干净。**维护点**：`AnnouncementDetail.tsx` 不要再被 `AnnouncementsPage.tsx` 静态 `import` 回去，否则那 336 KB 会悄悄回到预取里 —— 靠这条门禁能立刻发现（`#/announcements` 会重新冲到 30% 以上并打告警）。
 
 **维护点**：新增页面时要在 `PAGE_CHUNK_ROUTES` 里补一条（组件名 → 路由）。漏了不会静默——脚本会打 `[warn] page chunk ... is not in PAGE_CHUNK_ROUTES`，因为该页 chunk 会落进 `unattributed`，单页门禁看不见它。
 
@@ -387,6 +398,9 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 | `internal/app/site_checkin_method_cache_test.go` | `cachedCheckinMethod` 的 TTL / 取值契约（含 `unavailable` 必须命中） |
 | `internal/site/provider/checkin_status_test.go` | 上游原文 fixture 的分类测试 |
 | `console/src/pages/siteCheckinMethod.ts` | 控制台纯逻辑：`siteCheckinMethodHint`、`needsBrowserCheckin`（放 `.ts` 才可被 `node --test` 覆盖） |
+| `scripts/console_ui_smoke.py` | 真实浏览器门禁：功能断言 + **按路由**的体积预算（三级判定，见 §2） |
+| `console/src/pages/AnnouncementDetail.tsx` | 公告详情（markdown 栈约 336 KB）。**必须保持按需加载**，别被 `AnnouncementsPage.tsx` 静态 `import` 回去，否则预取体积涨 30%（见 §2） |
+| `console/src/pages/announcementContent.ts` | 公告链接解析纯函数（`/api/` 前缀、`javascript:`、空 `base_url` 等边界），配套 `.test.ts` |
 
 ---
 
