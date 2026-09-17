@@ -113,6 +113,30 @@ func (p *Veloera) Checkin(ctx context.Context, req AccountRequest) (CheckinResul
 	return CheckinResult{Status: checkinStatusFromCode(ErrorCode(failure)), Message: message}, failure
 }
 
+// CheckedInToday reports whether the credential already checked in today.
+//
+// Veloera publishes its own status route. Delegating to the New API family
+// implementation would query /api/user/checkin, which does not exist here and
+// answers 404. The flag is inverted as well: can_check_in is true while the
+// day's check-in is still outstanding.
+func (p *Veloera) CheckedInToday(ctx context.Context, req AccountRequest) (bool, error) {
+	if req.Credentials.AccessToken == "" && req.Credentials.Cookie == "" {
+		return false, &Error{Code: CodeUnsupported, Message: "Veloera check-in status requires a session token"}
+	}
+	var payload envelope
+	if err := p.family.doJSONWithHeaders(ctx, req, http.MethodGet, "/api/user/check_in_status", nil, veloeraHeaders(req.Credentials), &payload); err != nil {
+		return false, err
+	}
+	if !payload.Success {
+		return false, responseError(payload, http.StatusOK)
+	}
+	canCheckIn, ok := boolValue(payload.Data, "can_check_in")
+	if !ok {
+		return false, &Error{Code: CodeInvalidResponse, Message: "Veloera check-in status is missing can_check_in"}
+	}
+	return !canCheckIn, nil
+}
+
 func (p *Veloera) ListAnnouncements(ctx context.Context, req AccountRequest) ([]Announcement, error) {
 	return p.family.ListAnnouncements(ctx, req)
 }

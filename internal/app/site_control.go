@@ -1523,7 +1523,7 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 		// The public status endpoint already named the blocker: an interactive
 		// Turnstile challenge. Say so, instead of leaving the operator to guess
 		// whether the credential or the site is at fault.
-		result.Message = "站点启用了 Turnstile 人机验证，服务端无法自动完成；请在浏览器完成签到后由系统复核"
+		result.Message = turnstileCheckinMessage(adapter)
 	}
 	attempt.Status = result.Status
 	attempt.Message = result.Message
@@ -1594,6 +1594,21 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 		return
 	}
 	s.updateTask(ctx, task, model.SiteTaskStatusSuccess, "checkin_run:"+fmt.Sprint(run.ID), "")
+}
+
+// turnstileCheckinMessage explains that a Turnstile challenge needs a human.
+//
+// Only an adapter that implements CheckinStatusProvider can reconcile the day
+// afterwards, so only those may promise a re-check. Veloera sat behind the
+// promise without implementing it until its own status route was wired up, and
+// AnyRouter cannot implement it at all — its upstream publishes no status
+// endpoint. Promising there would leave the operator waiting on a
+// reconciliation that never runs.
+func turnstileCheckinMessage(adapter provider.SiteAdapter) string {
+	if _, ok := adapter.(provider.CheckinStatusProvider); ok {
+		return "站点启用了 Turnstile 人机验证，服务端无法自动完成；请在浏览器完成签到后由系统复核"
+	}
+	return "站点启用了 Turnstile 人机验证，服务端无法自动完成；请在浏览器完成签到"
 }
 
 func loadSiteLocation(accountTZ, siteTZ string) *time.Location {

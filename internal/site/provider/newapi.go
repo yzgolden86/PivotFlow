@@ -591,17 +591,24 @@ func envelopeCheckedInToday(payload envelope) bool {
 //
 // Forks disagree on the field. AnyRouter and older New API builds publish
 // data.reward as an already formatted string; current New API publishes
-// data.quota_awarded as an integer count of quota units and no reward at all.
-// Reading only reward therefore produced an empty label on every up-to-date
-// site, which is not fatal — the caller prefers the balance delta when the
-// follow-up refresh succeeds — but it silently degraded the fallback. The quota
-// count is labelled rather than dressed up as currency: the quota-to-currency
-// rate is a site setting this response does not carry.
+// data.quota_awarded as an integer count of quota units and no reward at all;
+// Veloera publishes that same count as data.quota. Reading only reward
+// therefore produced an empty label on every up-to-date site, which is not
+// fatal — the caller prefers the balance delta when the follow-up refresh
+// succeeds — but it silently degraded the fallback. The quota count is labelled
+// rather than dressed up as currency: the quota-to-currency rate is a site
+// setting this response does not carry.
+//
+// quota names the account balance on /api/user/self, but this helper only reads
+// check-in responses, where the field carries the reward.
 func checkinRewardText(data any) string {
 	if reward, ok := stringValue(data, "reward"); ok {
 		return reward
 	}
 	quota, ok := numberValue(data, "quota_awarded")
+	if !ok {
+		quota, ok = numberValue(data, "quota")
+	}
 	if !ok || quota <= 0 {
 		return ""
 	}

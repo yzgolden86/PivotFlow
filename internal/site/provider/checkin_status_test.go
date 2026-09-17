@@ -21,12 +21,30 @@ const (
 	// controller/checkin.go, DoCheckin success. Note the reward field is
 	// quota_awarded, not reward.
 	checkinSuccessPayload = `{"success":true,"message":"签到成功","data":{"quota_awarded":5,"checkin_date":"2026-09-17"}}`
+	// model/user.go, User.CheckIn: the already-checked branch. The wording
+	// splits 已 and 签到 across 已经, so it slipped past a "已签到" match.
+	veloeraAlreadyCheckedPayload = `{"success":false,"message":"你今天已经签到过了"}`
+	// controller/user.go, CheckIn success. Veloera names the reward quota,
+	// where current New API says quota_awarded.
+	veloeraCheckinSuccessPayload = `{"success":true,"message":"签到成功","data":{"quota":500000}}`
+	// controller/user.go, CheckInStatus: can_check_in is true while the day's
+	// check-in is still outstanding.
+	veloeraNotCheckedInPayload  = `{"success":true,"message":"","data":{"can_check_in":true}}`
+	veloeraAlreadyCheckedStatus = `{"success":true,"message":"","data":{"can_check_in":false}}`
 )
 
 func newCheckinPayloadServer(t *testing.T, body string) *httptest.Server {
 	t.Helper()
+	return newStatusPayloadServer(t, http.MethodPost, "", body)
+}
+
+// newStatusPayloadServer answers one JSON body for a single method and path;
+// every other request gets a 404, so a call to the wrong route fails the test
+// instead of quietly returning an empty payload.
+func newStatusPayloadServer(t *testing.T, method, path, body string) *httptest.Server {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
+		if r.Method != method || (path != "" && r.URL.Path != path) {
 			http.NotFound(w, r)
 			return
 		}
@@ -153,6 +171,8 @@ func TestCheckinRewardTextFallsBackFromRewardToQuota(t *testing.T) {
 	}{
 		{name: "a preformatted reward wins", data: map[string]any{"reward": "2.5", "quota_awarded": float64(500000)}, want: "2.5"},
 		{name: "quota_awarded is the fallback", data: map[string]any{"quota_awarded": float64(500000)}, want: "+500000 额度"},
+		{name: "veloera names it quota", data: map[string]any{"quota": float64(500000)}, want: "+500000 额度"},
+		{name: "quota_awarded outranks quota", data: map[string]any{"quota_awarded": float64(7), "quota": float64(500000)}, want: "+7 额度"},
 		{name: "a zero award is not a reward", data: map[string]any{"quota_awarded": float64(0)}, want: ""},
 		{name: "neither field present", data: map[string]any{}, want: ""},
 		{name: "data is not an object", data: "签到成功", want: ""},
@@ -163,5 +183,79 @@ func TestCheckinRewardTextFallsBackFromRewardToQuota(t *testing.T) {
 				t.Fatalf("reward=%q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// Veloera splits the two characters of 已签到 across 已经, so a matcher built
+// around "已签到" read "你今天已经签到过了" as an unrecognized failure: the day
+// was filed as failed, the failure webhook fired, and the 1h x 16 retry budget
+// kept hammering a site that could not answer differently until tomorrow.
+func TestVeloeraCheckinRecognizesAlreadyCheckedWording(t *testing.T) {
+	server := newCheckinPayloadServer(t, veloeraAlreadyCheckedPayload)
+
+	result, err := NewVeloera(ClientFactory{AllowPrivate: true}).Checkin(context.Background(), AccountRequest{
+		BaseURL: server.URL, Credentials: Credentials{AccessToken: "session"},
+	})
+	if err != nil || result.Status != CheckinAlreadyChecked {
+		t.Fatalf("result=%+v err=%v, want the already-checked outcome", result, err)
+	}
+}
+
+func TestVeloeraCheckinReportsQuotaReward(t *testing.T) {
+	server := newCheckinPayloadServer(t, veloeraCheckinSuccessPayload)
+
+	result, err := NewVeloera(ClientFactory{AllowPrivate: true}).Checkin(context.Background(), AccountRequest{
+		BaseURL: server.URL, Credentials: Credentials{AccessToken: "session"},
+	})
+	if err != nil || result.Status != CheckinSuccess {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if result.RewardText != "+500000 额度" {
+		t.Fatalf("reward=%q, want the quota count carried by data.quota", result.RewardText)
+	}
+}
+
+// The Veloera status route is /api/user/check_in_status, and its flag is
+// inverted: can_check_in is true while the check-in is still outstanding.
+// Delegating to the New API family method would query /api/user/checkin, which
+// does not exist here - the server below answers 404 for every other path so a
+// regression to the delegated call fails loudly instead of reporting "not
+// checked in".
+func TestVeloeraCheckedInTodayReadsItsOwnStatusRoute(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "a pending check-in means it is still open", body: veloeraNotCheckedInPayload, want: false},
+		{name: "a completed check-in inverts the flag", body: veloeraAlreadyCheckedStatus, want: true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newStatusPayloadServer(t, http.MethodGet, "/api/user/check_in_status", tt.body)
+
+			checked, err := NewVeloera(ClientFactory{AllowPrivate: true}).CheckedInToday(context.Background(), AccountRequest{
+				BaseURL: server.URL, Credentials: Credentials{AccessToken: "session"},
+			})
+			if err != nil {
+				t.Fatalf("err=%v", err)
+			}
+			if checked != tt.want {
+				t.Fatalf("checkedInToday=%v, want %v", checked, tt.want)
+			}
+		})
+	}
+}
+
+// A status body without the flag must not be read as "not checked in": silence
+// there would let a completed day slip back into the retry budget.
+func TestVeloeraCheckedInTodayRejectsPayloadWithoutFlag(t *testing.T) {
+	server := newStatusPayloadServer(t, http.MethodGet, "/api/user/check_in_status", `{"success":true,"message":"","data":{}}`)
+
+	_, err := NewVeloera(ClientFactory{AllowPrivate: true}).CheckedInToday(context.Background(), AccountRequest{
+		BaseURL: server.URL, Credentials: Credentials{AccessToken: "session"},
+	})
+	if err == nil || ErrorCode(err) != CodeInvalidResponse {
+		t.Fatalf("err=%v, want %q", err, CodeInvalidResponse)
 	}
 }
