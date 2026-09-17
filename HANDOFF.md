@@ -139,6 +139,36 @@ golangci-lint run ./...
 CGO_ENABLED=0 go build -tags sonic -trimpath -ldflags=... -o pivotflow .
 ```
 
+### ⚠️ `scripts/console_ui_smoke.py` 目前是**坏的**（已过时，与签到线无关）
+
+想在真实浏览器里验证 `web/console` 产物时，别直接用这个脚本 —— 它会在**第 145 行**
+失败，而失败点与签到无关：它期望 WebDAV 输入框的占位符是
+`https://dav.example.com/PivotFlow/backup.json`，源码
+（`console/src/pages/BackupSettingsPanel.tsx:184`）里却是
+`https://dav.example.com/PivotFlow`（没有 `/backup.json`）。占位符改过、脚本没跟上。
+
+但它的**前半段仍然有用**：路由循环（`console_routes`）会依次访问
+`#/sites` `#/accounts` `#/checkins` `#/announcements` `#/channels` `#/logs` `#/stats`
+`#/trend` `#/models` `#/tokens` `#/system`，对每个都断言「标题可见 + 导航项高亮」，
+并落一张全页截图。签到线改动后跑过一次：`console-checkins.png` / `console-sites.png`
+都正常写出、页面渲染无异常 —— 即**它在设置页失败之前已经证明了签到/站点两页可用**。
+所以要复用它，只需把那一行的占位符改对。
+
+跑法（本机）：
+
+```bash
+CGO_ENABLED=0 go build -tags sonic -o .tmp-smoke/pivotflow.exe .
+SQLITE_PATH=.tmp-smoke/smoke.db PIVOTFLOW_PASS=<任意> PORT=18080 ./.tmp-smoke/pivotflow.exe &
+
+# 必须用系统 Python（托管 3.13 没装 playwright）
+PIVOTFLOW_SMOKE_URL=http://127.0.0.1:18080 \
+PIVOTFLOW_SMOKE_PASSWORD=<同上> \
+"C:/Users/80470/AppData/Local/hermes/hermes-agent/venv/Scripts/python.exe" scripts/console_ui_smoke.py
+```
+
+密码**只从 `PIVOTFLOW_PASS` 读**（`internal/app/server.go:135`），不设会直接退出；
+DB 路径走 `SQLITE_PATH`。截图落在系统临时目录的 `pivotflow-console-ui/`。
+
 **本机只是开发环境，PivotFlow 实际跑在 VPS 的 Docker 里。** 本机 `data/pivotflow.db`、`.tmp-ui/pivotflow.db` 都是陈旧开发残留（旧 schema、0 行），**不能当线上库查签到历史**。要线上证据：向 hao哥 要 VPS 的 `docker logs` / 站点令牌，或直接读**上游开源源码**推导契约（本次会话就是靠这条定案的，最省事）。
 
 其他坑见仓库记忆 `.workbuddy-ai/memory/MEMORY.md`（构建测试约定、数据模型硬约束、存储层约定、适配器要点、调度器要点、环境坑）。
