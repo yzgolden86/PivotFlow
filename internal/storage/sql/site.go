@@ -42,7 +42,14 @@ func scanSite(scanner interface{ Scan(...any) error }) (*model.Site, error) {
 	return &site, nil
 }
 
-const siteColumns = `id, name, platform, base_url, enabled, timezone, use_system_proxy, proxy_url, external_checkin_url, tags_json, last_probe_status, last_error, checkin_method, checkin_method_checked_at, created_at, updated_at, deleted_at`
+// siteColumns 是站点查询的唯一真源：ListSites 与 GetSite 共用它，列顺序与 scanSite 逐字对应。
+//
+// proxy_url / external_checkin_url 在 schema 里是 nullable，而 scanSite 把它们扫进 string ——
+// database/sql 拒绝把 NULL 赋给 string（converting NULL to string is unsupported），
+// 一旦真为 NULL，ListSites 直接失败，连带 /admin/sites、/admin/site-inventory、
+// /admin/dashboard 三个接口一起 500。这里用 COALESCE 把 NULL 归一成空串：
+// 对这两列而言空串本来就等于「未配置」，两种取值语义相同。
+const siteColumns = `id, name, platform, base_url, enabled, timezone, use_system_proxy, COALESCE(proxy_url,''), COALESCE(external_checkin_url,''), tags_json, last_probe_status, last_error, checkin_method, checkin_method_checked_at, created_at, updated_at, deleted_at`
 
 func (s *SQLStore) ListSites(ctx context.Context, filter model.SiteListFilter) ([]*model.Site, error) {
 	query := "SELECT " + siteColumns + " FROM sites"
@@ -219,7 +226,13 @@ func scanSiteAccount(scanner interface{ Scan(...any) error }) (*model.SiteAccoun
 	return &a, nil
 }
 
-const siteAccountColumns = `id, site_id, label, credential_type, credential_ciphertext, credential_key_version, enabled, auto_checkin, auto_refresh, timezone, status, balance, balance_currency, balance_updated_at, last_refresh_at, last_refresh_status, consecutive_failures, last_checkin_at, last_checkin_status, last_error, created_at, updated_at, deleted_at`
+// siteAccountColumns 是账号查询的唯一真源：ListSiteAccounts 与 GetSiteAccount 共用它，
+// 列顺序与 scanSiteAccount 逐字对应。
+//
+// timezone 在 schema 里是 nullable 而 scanSiteAccount 扫进 string，理由同 siteColumns：
+// 空串与 NULL 都表示「未指定，跟随站点时区」（见 loadSiteLocation 的回退链），
+// 所以 COALESCE 成空串不丢信息。balance 是 DOUBLE，另有 sql.NullFloat64 兜底。
+const siteAccountColumns = `id, site_id, label, credential_type, credential_ciphertext, credential_key_version, enabled, auto_checkin, auto_refresh, COALESCE(timezone,''), status, balance, balance_currency, balance_updated_at, last_refresh_at, last_refresh_status, consecutive_failures, last_checkin_at, last_checkin_status, last_error, created_at, updated_at, deleted_at`
 
 func (s *SQLStore) ListSiteAccounts(ctx context.Context, siteID int64, includeDeleted bool) ([]*model.SiteAccount, error) {
 	query := "SELECT " + siteAccountColumns + " FROM site_accounts WHERE 1=1"
@@ -635,7 +648,9 @@ func (s *SQLStore) ListSiteAnnouncements(ctx context.Context, filter model.SiteA
 	if err := s.QueryRowContext(ctx, "SELECT COUNT(1) FROM site_announcements"+where, args...).Scan(&count); err != nil {
 		return nil, 0, err
 	}
-	query := "SELECT id,site_id,source_key,title,content_markdown,level,source_url,upstream_created_at,upstream_updated_at,first_seen_at,last_seen_at,read_at,content_hash,created_at,updated_at FROM site_announcements" + where + " ORDER BY last_seen_at DESC"
+	// source_url 在 schema 里是 nullable 而这里扫进 model.SiteAnnouncement.SourceURL（string），
+	// 必须 COALESCE —— 空串与 NULL 都表示「这条公告没有来源页」，语义相同。
+	query := "SELECT id,site_id,source_key,title,content_markdown,level,COALESCE(source_url,''),upstream_created_at,upstream_updated_at,first_seen_at,last_seen_at,read_at,content_hash,created_at,updated_at FROM site_announcements" + where + " ORDER BY last_seen_at DESC"
 	if filter.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, filter.Limit, max(0, filter.Offset))
@@ -820,7 +835,10 @@ func (s *SQLStore) UpdateSiteTask(ctx context.Context, t *model.SiteTask) (bool,
 }
 func (s *SQLStore) GetSiteTask(ctx context.Context, id string) (*model.SiteTask, error) {
 	t := new(model.SiteTask)
-	err := s.QueryRowContext(ctx, "SELECT id,kind,status,site_id,site_account_id,progress_json,result_ref,error,created_at,started_at,finished_at,cancelled_at FROM site_tasks WHERE id=?", id).Scan(&t.ID, &t.Kind, &t.Status, &t.SiteID, &t.SiteAccountID, &t.ProgressJSON, &t.ResultRef, &t.Error, &t.CreatedAt, &t.StartedAt, &t.FinishedAt, &t.CancelledAt)
+	// site_id / site_account_id 在 schema 里是 nullable（全局任务不带归属），
+	// 而这里扫进 int64，NULL 会直接报错。COALESCE 成 0：SiteID/SiteAccountID 的
+	// JSON tag 带 omitempty，0 本来就表示「无归属」，两种取值语义相同。
+	err := s.QueryRowContext(ctx, "SELECT id,kind,status,COALESCE(site_id,0),COALESCE(site_account_id,0),progress_json,result_ref,error,created_at,started_at,finished_at,cancelled_at FROM site_tasks WHERE id=?", id).Scan(&t.ID, &t.Kind, &t.Status, &t.SiteID, &t.SiteAccountID, &t.ProgressJSON, &t.ResultRef, &t.Error, &t.CreatedAt, &t.StartedAt, &t.FinishedAt, &t.CancelledAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errors.New("not found")
 	}
