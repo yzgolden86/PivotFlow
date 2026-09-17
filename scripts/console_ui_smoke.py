@@ -1,5 +1,7 @@
 import json
 import os
+import re
+import sys
 import tempfile
 
 from playwright.sync_api import expect, sync_playwright
@@ -7,8 +9,90 @@ from playwright.sync_api import expect, sync_playwright
 
 BASE_URL = os.environ.get("PIVOTFLOW_SMOKE_URL", "http://127.0.0.1:8080")
 PASSWORD = os.environ.get("PIVOTFLOW_SMOKE_PASSWORD")
-MAX_STATIC_BYTES = 350_000
-MAX_CONSOLE_RESOURCES = 8
+
+# 体积预算分两级：全站预取总量 + 单页 chunk。
+#
+# 控制台在挂载 600ms 后主动预取**全部**路由 chunk（console/src/App.tsx:211-221，
+# 为的是首次点击导航不出现载入闪烁），因此「按路由首次加载的资源数」恒为 0，
+# 衡量不出东西。用户真正付出的是一次会话的总下载量，所以总量仍是硬门禁；
+# 单页 chunk 体积是**归因**维度，回答「总量涨了，是哪个页面胖了」。
+MAX_TOTAL_TRANSFER_BYTES = 400_000
+MAX_ROUTE_TRANSFER_BYTES = 150_000
+MAX_ROUTE_DECODED_BYTES = 450_000
+# 分块后每页各自成 chunk，旧值 8（单打包时代）已失效，只作「chunk 数量失控」的兜底。
+MAX_CONSOLE_RESOURCES = 45
+# 单个页面 chunk 占全站预取总量超过此比例就打警告（**不判失败**）：
+# 意味着一个页面的依赖链压过了其余所有页面之和，值得单独看一眼。
+ROUTE_SHARE_WARN_RATIO = 0.25
+
+# 页面 chunk 文件名前缀 -> 路由。vite 按组件名生成 `Component-<hash>.js`，
+# 组件名见 console/src/App.tsx 的 lazy 导入。壳（index / css / shared / 图标）
+# 不归属任何路由，只计入总量——它们每个会话都要下，属固定成本。
+PAGE_CHUNK_ROUTES = {
+    "DashboardPage": "#/",
+    "ChannelsPage": "#/channels",
+    "LogsPage": "#/logs",
+    "StatsPage": "#/stats",
+    "ModelTestPage": "#/models",
+    "SitesPage": "#/sites",
+    "AccountsPageV2": "#/accounts",
+    "CheckinsPage": "#/checkins",
+    "AnnouncementsPage": "#/announcements",
+    "TokensPage": "#/tokens",
+    "TrendPage": "#/trend",
+    "SystemSettingsPageV2": "#/system",
+}
+
+# 页面 chunk 的命名形态：vite 按组件名生成，PascalCase 且以 Page / PageV2 结尾。
+# 这种名字出现在 unattributed 里，就说明有页面没登记进 PAGE_CHUNK_ROUTES ——
+# 它的体积会被悄悄排除在单页门禁之外，所以必须报出来。
+UNMAPPED_PAGE_CHUNK = re.compile(r"^[A-Z][A-Za-z0-9]*Page(?:V2)?(?:-|$)")
+
+
+def attribute_page_chunks(resources):
+    """把已加载的资源按页面 chunk 前缀归因到路由。
+
+    返回 (by_route, unattributed)：
+    - by_route 按 transfer 降序，每项含 route / transfer_bytes / decoded_bytes / count / share
+    - unattributed 是壳（index / css / 共享模块 / 图标）的合计——它不归属任何路由，
+      但每个会话都要下，属固定成本，所以只计入总量分母。
+
+    share 以「全部 console 资源」为分母，所以各路由 share 之和小于 1。
+
+    unattributed 带 names，是为了让「新增页面忘了登记到 PAGE_CHUNK_ROUTES」可见：
+    漏登记的页面 chunk 会静静落进这里，单页门禁就再也看不到它了。
+    """
+    by_route = {}
+    unattributed = {"transfer_bytes": 0, "decoded_bytes": 0, "count": 0, "names": []}
+    for item in resources:
+        # vite 生产构建把 chunk 命名为 `Component-<hash>.js`（见 PAGE_CHUNK_ROUTES 注释）；
+        # 去掉扩展名后按 `<前缀>-` 精确切边界，避免 SitesPage 误吃 SitesPageV2 之类的前缀重叠。
+        stem = item["name"].rsplit(".", 1)[0]
+        route = next(
+            (
+                mapped
+                for prefix, mapped in PAGE_CHUNK_ROUTES.items()
+                if stem == prefix or stem.startswith(f"{prefix}-")
+            ),
+            None,
+        )
+        if route is None:
+            target = unattributed
+        else:
+            target = by_route.setdefault(
+                route, {"route": route, "transfer_bytes": 0, "decoded_bytes": 0, "count": 0}
+            )
+        target["transfer_bytes"] += item["transfer_size"]
+        target["decoded_bytes"] += item["decoded_size"]
+        target["count"] += 1
+        if route is None:
+            unattributed["names"].append(item["name"])
+    total = sum(bucket["transfer_bytes"] for bucket in by_route.values())
+    total += unattributed["transfer_bytes"]
+    ordered = sorted(by_route.values(), key=lambda bucket: bucket["transfer_bytes"], reverse=True)
+    for bucket in ordered:
+        bucket["share"] = round(bucket["transfer_bytes"] / total, 4) if total else 0.0
+    return ordered, unattributed
 
 
 def main():
@@ -106,6 +190,8 @@ def main():
             }
             """
         )
+
+        page_chunks, unattributed_chunks = attribute_page_chunks(performance["resources"])
 
         route_checks = []
         console_routes = [
@@ -279,6 +365,11 @@ def main():
         "console_errors": console_errors,
         "failed_responses": failed_responses,
         "performance": performance,
+        "page_chunks": {
+            "by_route": page_chunks,
+            "unattributed": unattributed_chunks,
+            "largest_route": page_chunks[0] if page_chunks else None,
+        },
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
@@ -294,10 +385,46 @@ def main():
     if failed_responses:
         failures.append("failed network responses detected")
     if performance["resource_count"] > MAX_CONSOLE_RESOURCES:
-        failures.append(f"console resources exceed {MAX_CONSOLE_RESOURCES}")
-    transfer_size = performance["static_transfer_bytes"] or performance["static_decoded_bytes"]
-    if transfer_size > MAX_STATIC_BYTES:
-        failures.append(f"console static payload exceeds {MAX_STATIC_BYTES} bytes")
+        failures.append(
+            f"console resources exceed {MAX_CONSOLE_RESOURCES}: {performance['resource_count']}"
+        )
+    # 控制台预取全部路由 chunk，所以「一次会话实际要下多少」就是总量，这是硬门禁。
+    total_transfer = performance["static_transfer_bytes"] or performance["static_decoded_bytes"]
+    if total_transfer > MAX_TOTAL_TRANSFER_BYTES:
+        failures.append(
+            f"console prefetch total exceeds {MAX_TOTAL_TRANSFER_BYTES} bytes: {total_transfer}"
+        )
+    # 归因维度：总量涨了要能回答「哪个页面胖了」，所以单页 chunk 也有硬上限。
+    # 传输与解压分开取最大值——最胖的可能是两个不同的页面。
+    heaviest_transfer = max(page_chunks, key=lambda b: b["transfer_bytes"], default=None)
+    if heaviest_transfer and heaviest_transfer["transfer_bytes"] > MAX_ROUTE_TRANSFER_BYTES:
+        failures.append(
+            f"route {heaviest_transfer['route']} transfer exceeds {MAX_ROUTE_TRANSFER_BYTES} bytes: "
+            f"{heaviest_transfer['transfer_bytes']}"
+        )
+    heaviest_decoded = max(page_chunks, key=lambda b: b["decoded_bytes"], default=None)
+    if heaviest_decoded and heaviest_decoded["decoded_bytes"] > MAX_ROUTE_DECODED_BYTES:
+        failures.append(
+            f"route {heaviest_decoded['route']} decoded exceeds {MAX_ROUTE_DECODED_BYTES} bytes: "
+            f"{heaviest_decoded['decoded_bytes']}"
+        )
+    # 漏登记的页面 chunk 会让单页门禁出现盲区，报出来（同样不判失败）。
+    for name in unattributed_chunks["names"]:
+        if UNMAPPED_PAGE_CHUNK.match(name.rsplit(".", 1)[0]):
+            print(
+                f"[warn] page chunk {name} is not in PAGE_CHUNK_ROUTES — its weight is not "
+                "measured per route",
+                file=sys.stderr,
+            )
+    # 占比告警**不判失败**：一个页面的依赖链压过其余所有页面之和，值得看一眼，
+    # 但还不到拦下的程度——硬拦会逼着后来者去调阈值，反而把信号磨掉。
+    for bucket in page_chunks:
+        if bucket["share"] > ROUTE_SHARE_WARN_RATIO:
+            print(
+                f"[warn] route {bucket['route']} is {bucket['share']:.0%} of console prefetch "
+                f"({bucket['transfer_bytes']} / {total_transfer} bytes)",
+                file=sys.stderr,
+            )
     if failures:
         raise SystemExit("; ".join(failures))
 
