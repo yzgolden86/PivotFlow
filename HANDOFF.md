@@ -38,8 +38,9 @@
 **§4 的 P1-0 ~ P1-3 已完成**（`3e4d97d`）：`Veloera` 现按自己的
 `/api/user/check_in_status` 实现 `CheckedInToday`；Turnstile 文案改为按能力位
 决定是否承诺复核；已签到文案补「已经签到」；reward 增加 `data.quota` 回落。
-**P1-4 结论不变**：AnyRouter 无状态端点，不补。仍待办的只有 §4 的 P2（真实站点
-验证）与 §6 里需要 hao哥 决策的三问。
+**P1-4 结论不变**：AnyRouter 无状态端点，不补。§6 的三问 hao哥 已答复（Veloera /
+AnyRouter 暂无可用站点；New API 已用真实令牌验证过；UTC 日界保留不处理）——
+**这条线上已无待办项**，后续只在真接入 Veloera / AnyRouter 站点时回归验证即可。
 
 三个平台的契约证据**已全部备齐**（Veloera 的 `/api/user/check_in`、
 `/api/user/check_in_status`、`data.can_check_in`、成功响应的 `data.quota` 与
@@ -171,13 +172,31 @@ https://raw.githubusercontent.com/Veloera/Veloera/main/<path>
 
 判断依据是「上游该路由的入参与语义」，不是「路由存不存在」。实现处（`veloera.go`）都留了注释说明为什么不委托。
 
+### 3.5 真实站点实测（2026-09-17）
+
+对两个公开可达的真实站点实测过（本机经沙箱代理出口 `144.34.225.182`）：
+
+| 站点 | 端点 | 结果 |
+| --- | --- | --- |
+| cun.ai | `GET /api/status` | HTTP 200 JSON：`checkin_enabled=true`、`turnstile_check=true`、`turnstile_site_key=0x4AAAAAADhQj66az9YHXxNJ`、`system_name=CUN.AI`、`version=2026.09.17-api-route-copy.1` |
+| cun.ai | `GET /api/user/self`（无凭证） | HTTP 401 JSON：`{"message":"Unauthorized, not logged in and no access token provided","success":false}` |
+| agentrouter.org | `GET /api/status` | HTTP 200 JSON（公开可读） |
+| agentrouter.org | `GET /api/user/self`（无凭证） | HTTP 401 JSON：`{"message":"无权进行此操作，未登录且未提供 access token","success":false}` |
+
+两点必须记下：
+
+- **`/api/status` 不带 UA 也能正常拿到 200** —— 它是公开端点，CDN 不拦。要验证 UA 相关行为，必须用 `/api/user/self` 这类端点。
+- **`380fbb4` 声称的「无 UA 会被 Cloudflare 403」复现不出来。** 用 Go 原生客户端（**不是 curl** —— curl 会发自己的头，不是忠实的替身）测了三种 UA：不设、显式 `Go-http-client/2.0`、显式 PivotFlow UA。cun.ai 与 agentrouter.org 的 `/api/user/self` **一律返回 401 标准 JSON，没有 403，也没有拦截页**。回显服务确认 Go 实际发出的是 `Go-http-client/2.0`，而非 commit message 里写的 `1.1`（那是旧版 Go 的默认值）。
+
+  这不否定「统一 UA」本身：项目其他出站链路（版本检查、渠道健康检测）早已统一用 `version.OutboundUserAgent()`，站点链路用 Go 默认 UA 确实不一致，统一是合理且无害的。但**它的动机证据在本次网络路径下不成立**，接手者不要把它当成「必须保留，否则会被 CDN 拦」的硬约束。差异可能来自出口 IP 信誉或 Cloudflare 的动态策略。
+
 ---
 
 ## 4. 下一步（未完成的工作）
 
-> **进度（`3e4d97d`）**：P1-0 ~ P1-3 **已完成**，下面保留原始条目以便追溯，
-> 每条标注了落点。仍然未做的只有 **P2**（真实站点验证，需要 hao哥 提供现场）
-> 与 §6 的三个决策问题。
+> **进度**：P1-0 ~ P1-3 **已完成**（`3e4d97d`），下面保留原始条目以便追溯，
+> 每条标注了落点。P2 的 New API 部分已完成（真实站点令牌验证过）；
+> Veloera / AnyRouter 因无可用站点无法验证。§6 的三个问题 hao哥 已全部答复。
 
 ### ~~P1-0~~（已完成，`3e4d97d`）让「由系统复核」这句话不再空头承诺
 
@@ -259,9 +278,11 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 - 已签到关键词：`['已经签到', '已签到', '重复签到', 'already checked', 'already signed']`
   —— 注意它**显式列了 `已经签到`**，与下面 P1-1 的发现一致，可作为佐证。
 
-### P2 真实站点验证
+### ~~P2~~（New API 部分已完成）真实站点验证
 
-以上都是读上游源码推导的。上线前最好有一次真实验证：向 hao哥 要 VPS 上一个 Veloera / AnyRouter 站点的令牌，或用 `docker logs` 看一次实际签到。
+- **New API：已完成** —— hao哥 提供了若干 New API 站点令牌，zcode 据此做过真实站点验证。
+- **Veloera / AnyRouter：无法完成** —— hao哥 答复目前没有这两个平台的可用站点，只能停留在上游源码推导层面（证据见 §3.1）。
+- 补充：本次另对两个公开可达站点做了**无凭证**的端点实测（§3.5），可用于核对平台识别与 401 行为，但覆盖不到签到动作本身。
 
 ---
 
@@ -283,11 +304,13 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 
 ---
 
-## 6. 需要 hao哥 决策的问题
+## 6. 待决策问题（2026-09-17 已全部答复）
 
-1. **Veloera / AnyRouter 目前有在用的站点吗？** 如果没有，P1-1 ~ P1-3 可以降级，优先只做 P1-0。（P1-4 已有定论：AnyRouter 无状态端点，不必再花时间查。）
-2. **能否提供一次 VPS 上的真实验证**（`docker logs` 或一个测试站点令牌）？目前全部结论都来自上游源码推导。
-3. **Veloera 的 UTC 日界与 PivotFlow 的 `local_day` 可能错配**，是否要处理？（建议先观察，不急）
+1. ~~Veloera / AnyRouter 有在用的站点吗？~~ → **答复：目前没有可用站点。**
+   影响：P1-1 ~ P1-3 的修复**代码正确但短期内无人消费**，等将来真有 Veloera / AnyRouter 站点接入才会生效。P1-4 结论不变（AnyRouter 无状态端点，不补）。
+2. ~~能否提供真实站点验证？~~ → **答复：已提供若干 New API 站点令牌，并由 zcode 完成过真实站点验证。**
+   影响：P2 的 **New API 部分已覆盖**；Veloera / AnyRouter 因无可用站点，仍只能停留在源码推导层面。
+3. ~~Veloera 的 UTC 日界与 `local_day` 可能错配，要处理吗？~~ → **答复：保留，不处理。** 不再跟进。
 
 ---
 
