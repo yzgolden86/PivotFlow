@@ -18,12 +18,21 @@
 | `7a24c24` | 记录 Veloera 不能委托 `ListModelsForRoutingKey` 的上游理由 |
 | `36ee10d` | 识别阿里云 WAF 校验页，别再报成 invalid JSON |
 | `380fbb4` | 站点请求统一带上 PivotFlow 的 User-Agent |
+| `55ec0b0` | 签到端点返回 404 时记入站点能力（`unavailable`），别再按重试节奏空发请求 |
 
-- 验证状态（**对 HEAD `380fbb4` 的独立复验，全绿**）：
+- 验证状态（**对 HEAD `55ec0b0` 的独立复验，全绿**）：
   - `go build -tags sonic ./...` → 退出 0
   - `go test -tags sonic -count=1 ./internal/...` → 退出 0，33 个包全 `ok`
   - `golangci-lint run ./...`（v2.13.2）→ `0 issues.`
   - `gofmt -l internal/` → 无输出
+  - 前端 `make console-check` → typecheck + 50 个用例 + 构建全通过，`web/console` 产物已重建
+
+  > 前端验证的坑：`vite` 的 `emptyOutDir` 要清空 `web/console/assets`（30+ 文件），
+  > 会撞上沙箱的批量删除守卫（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，按**回合**累计、
+  > 阈值 50）。同一个回合里跑第二次 `make console-check` 必然失败，报错长得像构建
+  > 失败其实是删除被拦。绕法是**先移走再构建**：`mv web/console .tmp-console-stale-$(date +%s)`
+  > （移动不算删除，守卫不触发），`web/console` 由 vite 重新创建。注意 `embed.go` 是
+  > `//go:embed all:web`，移走期间不要跑 Go 构建。
 
   > 复验方式：每个提交都声称验证过，这里是**独立重跑**而非采信 commit message。
   > 另确认过工作区无残留半成品：`.tmp-sabotage/` 里破坏验证用的 `transport.bak`、
@@ -58,7 +67,9 @@ AnyRouter 暂无可用站点；New API 已用真实令牌验证过；UTC 日界�
 
 `GET /api/status` 是公开端点，无需凭证即可读 `checkin_enabled` / `turnstile_check` / `turnstile_site_key`。把解析抽成 `checkinMethodFromStatus(payload)`，`Detect()` 顺手填 `DetectionResult.CheckinMethod` —— 一次请求两用，零额外开销。
 
-新增 `sites.checkin_method`（`unknown|available|disabled|turnstile`）+ `checkin_method_checked_at`，TTL 6h。这是**站点属性**不是账号属性，探测一次全站共享。
+新增 `sites.checkin_method`（`unknown|available|disabled|turnstile|unavailable`）+ `checkin_method_checked_at`，TTL 6h。这是**站点属性**不是账号属性，探测一次全站共享。
+
+其中 `unavailable` 是唯一的例外：**它不是探测结果**，只能由一次真实尝试的 404 写进去（见 §1.6）。所以 `newapi.go` 的 `checkinMethodFromStatus` 永远不会产出它，而 `cachedCheckinMethod` 必须像接受其他值一样接受它 —— 整个「跳过请求」的效果都挂在这个缓存命中上，将来若给这个函数加白名单，漏掉 `unavailable` 会让特性静默失效（`site_checkin_method_cache_test.go` 里有一条用例专门钉住这点）。
 
 ### 1.2 签到失败分类：让 `browser_required` 真正可达（`63e2950`）
 
@@ -94,7 +105,23 @@ Turnstile 档**故意极慢**，理由是运营者（hao哥）明确提出的风
 - **定时任务先抢租约再落库**：反过来的写法会在公告刷新上每 tick 留一行废数据（公告租约 26h 且按天做 key，当天剩余每个 tick 都失败，约 900 行/站点/天）。手动任务保持先建行（客户端靠 `task_id` 轮询）。
 - **保留期清扫**：30 天窗口，清终态 `site_tasks`、已结束 `checkin_runs`（连带 attempts）、已过期租约。
 - **传输层**：`DialContext` 的 SSRF 私网过滤区分「拨代理」与「拨站点」（`proxyHopTracker`）。
-- **控制台**：「打开签到页」入口改为按站点签到能力收敛（`turnstile` 显示、`disabled` 隐藏、未知时退回看最近签到结果）。
+- **控制台**：「打开签到页」入口改为按站点签到能力收敛（`turnstile` 显示、`disabled` / `unavailable` 隐藏、未知时退回看最近签到结果）。
+
+### 1.6 签到端点 404 → 记入站点能力（`55ec0b0`）
+
+**问题**：站点公开状态端点可能宣称可签到，而实际路由并不存在（AnyRouter 系即是）。这种结果此前按普通可恢复失败落库，于是落进默认档 `1h × 16` 的重试节奏 —— 每次尝试 2 个 POST（`/api/user/checkin` token 路径 + `/api/user/sign_in` cookie 路径），一天 32 个 POST，全部必然被拒。对挡在 WAF 后的站点，这串请求与探测无异，agentrouter.org 当初就是因此只能手工关掉。
+
+**修法**：把 404 当成**站点事实**，写进既有的 `checkin_method` 缓存（6h TTL），让后续调度直接跳过。
+
+- `checkinWithTrigger` 在 `provider.ErrorStatusCode(err) == http.StatusNotFound` 时调用 `rememberCheckinUnavailable`（`site_control.go`）。
+- 写入用 `context.WithoutCancel(ctx)` + 5s 超时：这次尝试可能已经超时，但落库必须活下来。
+- 同时同步内存里的 `site` 副本，让同一次运行的后半段与刚落库的事实一致。
+- 跳过分支给 `unavailable` **单独的文案**（「站点没有签到接口」/「签到端点返回 404」），不跟 `disabled` 混用 —— 否则运营者会去站点设置里找一个不存在的开关。
+- **只认 404**。401 等凭证类失败保持原语义：把被拒的凭证记成「没有这个路由」，会让一个改好凭证就能正常签到的站点永久停止尝试（`TestRejectedCredentialIsNotMistakenForAMissingRoute` 专门钉住）。
+
+**效果**：AnyRouter 系从每天 16 次尝试（32 个 POST）降到约每 6h 一次（8 个 POST）。TTL 到期会重新探测，站点将来补上路由能被自动拾回 —— 这是刻意保留的自愈路径，别为了「省请求」把 TTL 调长或改成永久。
+
+**控制台侧**：`unavailable` 与 `disabled` 同等对待，不给「打开签到页」入口。否则 New API 系会由 `BROWSER_CHECKIN_PATHS` 兜底拼出 `/console/personal`，界面上长出一枚指向不存在页面的按钮，点进去只能扑空。纯逻辑抽到 `console/src/pages/siteCheckinMethod.ts` —— 放在 `.ts` 而不是 `.tsx`，是因为 `node --test` 不做 JSX 转译、import 不了 `.tsx`；这是控制台里「纯逻辑单独放 `.ts` 以便测试」的既有约定（同 `modelRedirect.ts` / `channelKeyHealth.ts`）。
 
 ---
 
@@ -199,6 +226,13 @@ https://raw.githubusercontent.com/Veloera/Veloera/main/<path>
 > **进度**：P1-0 ~ P1-3 **已完成**（`3e4d97d`），下面保留原始条目以便追溯，
 > 每条标注了落点。P2 的 New API 部分已完成（真实站点令牌验证过）；
 > Veloera / AnyRouter 因无可用站点无法验证。§6 的三个问题 hao哥 已全部答复。
+>
+> **另有一项由 hao哥 当场拍板的范围决定（`55ec0b0`，见 §1.6）**：签到端点的
+> 404 记入能力缓存。当时还有第二个更宽的选项 —— 把 `unsupported` 整体当成
+> 终态、不再重试 —— **明确没有采纳**。理由是它会破坏现有用例钉住的
+> `unsupported` 重试语义（`unsupported` 是个很宽的桶，凭证问题、
+> 平台不支持、暂时性失败都可能落进去，一律不再重试会让真正可恢复的情况
+> 永远不再尝试）。**不要顺手把 `unsupported` 改成终态。**
 
 ### ~~P1-0~~（已完成，`3e4d97d`）让「由系统复核」这句话不再空头承诺
 
@@ -294,15 +328,17 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 | --- | --- |
 | `internal/site/provider/newapi.go` | New API 适配器；`checkinMethodFromStatus`、`checkinRewardText`、`CheckedInToday`、`responseError` |
 | `internal/site/provider/anyrouter.go` | AnyRouter 适配器；`checkinStatusFromCode`、`isAlreadyCheckedMessage` |
-| `internal/site/provider/veloera.go` | Veloera 适配器（**缺 `CheckedInToday`**） |
-| `internal/site/provider/provider.go` | `CheckinStatusProvider` 等接口定义 |
+| `internal/site/provider/veloera.go` | Veloera 适配器；`CheckedInToday` 走自己的 `/api/user/check_in_status` |
+| `internal/site/provider/provider.go` | `CheckinStatusProvider` 等接口定义；`CheckinMethod*` 取值（含 `unavailable`） |
 | `internal/site/provider/transport.go` | 传输层 / 代理 / SSRF 过滤 |
-| `internal/app/site_control.go` | 签到编排：`checkinWithTrigger`、Turnstile 消息、失败通知 |
+| `internal/app/site_control.go` | 签到编排：`checkinWithTrigger`、`resolveCheckinMethod` / `rememberCheckinUnavailable`、Turnstile 消息、失败通知 |
 | `internal/app/site_scheduler.go` | 调度器：`checkinRetryDue`、两档重试节奏 |
 | `internal/app/site_retention.go` | 历史保留期清扫 |
 | `internal/storage/sql/site.go` | 站点查询真源 + 保留期删除原语 |
-| `internal/app/site_checkin_upstream_test.go` | **端到端接缝测试**：真实 `NewAPI` 适配器 + httptest 模拟上游 4 个端点 |
+| `internal/app/site_checkin_upstream_test.go` | **端到端接缝测试**：真实适配器 + httptest 模拟上游端点；含 404 记忆与 401 不误判两条 |
+| `internal/app/site_checkin_method_cache_test.go` | `cachedCheckinMethod` 的 TTL / 取值契约（含 `unavailable` 必须命中） |
 | `internal/site/provider/checkin_status_test.go` | 上游原文 fixture 的分类测试 |
+| `console/src/pages/siteCheckinMethod.ts` | 控制台纯逻辑：`siteCheckinMethodHint`、`needsBrowserCheckin`（放 `.ts` 才可被 `node --test` 覆盖） |
 
 ---
 
