@@ -85,6 +85,13 @@ func (p *Veloera) ListModels(ctx context.Context, req AccountRequest) ([]ModelSn
 	return p.family.ListModels(ctx, req)
 }
 
+// ListModelsForRoutingKey is deliberately NOT delegated, even though the
+// management route exists: Veloera's GetUserModels ignores the ?group=
+// parameter the family implementation sends and returns every model the user's
+// groups may use. The caller treats a group-scoped answer as authoritative for
+// that routing key, so delegating would hand a key models its group cannot
+// call. The unscoped per-key endpoint stays in charge instead.
+
 // FetchPricing reads the site's own price table. Veloera keeps the New API
 // /api/pricing layout, and applyAuth already sends the Veloera-User header
 // variant alongside the family ones, so the family implementation applies

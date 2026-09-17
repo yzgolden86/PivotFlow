@@ -147,7 +147,16 @@ https://raw.githubusercontent.com/Veloera/Veloera/main/<path>
 
 ### 3.4 适配器结构
 
-`Veloera` / `AnyRouter` 用具名字段 `family *NewAPI` **包装而非嵌入**，**不继承方法**。新增 `NewAPI` 方法后必须在这两个适配器上**显式委托**，否则类型断言失败（这正是 §4 缺口的成因）。
+`Veloera` / `AnyRouter` 用具名字段 `family *NewAPI` **包装而非嵌入**，**不继承方法**。新增 `NewAPI` 方法后要在这两个适配器上**显式委托**，否则类型断言失败（这正是 §4 缺口的成因）。
+
+**但委托前必须对着上游路由确认一次**，「同一个 New API 家族」不等于「同一个接口」——两个已踩过的反例：
+
+| 方法 | 结论 | 理由 |
+| --- | --- | --- |
+| `CheckedInToday` | Veloera **委托不了** | 家族版走 `/api/user/checkin`，Veloera 只有 `/api/user/check_in_status`，委托会 404（已按自有路由实现，`3e4d97d`） |
+| `ListModelsForRoutingKey` | Veloera **不能委托**（保持不实现） | 路由 `/api/user/models` 存在，但 Veloera 的 `GetUserModels` **不读 `?group=`**，会返回用户全部可用模型；调用方把分组查询结果当该 Key 的权威清单，委托等于让 Key 路由到本组用不了的模型 |
+
+判断依据是「上游该路由的入参与语义」，不是「路由存不存在」。实现处（`veloera.go`）都留了注释说明为什么不委托。
 
 ---
 
