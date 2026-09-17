@@ -204,6 +204,22 @@ python -m fontTools.varLib.instancer step1.woff2 opsz=16 -o inter-variable-latin
 
 **维护点**：① 字号只允许两种写法 —— 字面量 px 或 `--fs-*` 令牌；写别的（`em`/`%` 除外）会让 `smallTextLegibility.test.ts` 当场报错，这是**故意的**（令牌名打错会让守卫静默失效）。② 新的顶层规则如果覆盖了某个选择器在媒体查询里设过的属性，窄屏会被顶掉（媒体查询不加权重）——概览页的 620px 断点就设过 `.kpi-grid` 的列数，所以 v2 层没碰这两个属性。③ `AnnouncementDetail.tsx` 仍然不许被静态 `import` 回页面。④ 概览页还有一处彩条没动：`.tool-card::after` 是**厂商**标识色（Claude / Codex / Gemini / OpenAI），那是「这是哪家」的信息，不是装饰 —— 别顺手一起删掉。
 
+### 1.8 灌演示数据之后暴露的三个问题（已修，`5348e93` `2ae78ee` `4f24e55`）
+
+hao 哥的要求是「先填充一些测试数据看下效果，图表也要有」。空库下概览页的趋势图 / 消耗分配 / 工具消耗**全都不渲染**，于是先写了 `scripts/seed_demo_data.py`（固定种子，4 站点 / 6 账号 / 5 渠道 / 4 令牌 / 约 3100 条日志 / 3 条公告）。数据一上，三个问题立刻现形 —— **这三个都是「空库看不出来」的，说明造数据不只是为了好看，它本身就是一次有效的端到端验证**。
+
+**① 金额精度按单个值分档，导致同一列混排。** 工具卡是 `$7.80 / $0.8906 / $0.7054 / $0.7791`，趋势轴是 `$1.84` 上一格、`$0.9219` 下一格，消费趋势的模型列表里 `$4.23` 与 `$0.0693` 并排。根因：`formatMoney` 按单个值分档（`>= 1` 两位、否则四位），一列里跨过 1 就裂开。4 位小数还把 89 美分写成 89.06 美分，凭空多两位有效数字。
+
+改法两层：**默认不再按值分档**（改成「2 位，除非值本身不到 1 分钱」）—— 这一条同时修掉了消费趋势 / 用量统计 / 令牌管理这些本次没动布局的页面；另加 `moneyDigits(整组)` 供成组展示时显式取值。顺带合并了两份重复的 `formatMoney`（`shared.tsx` 与 `DashboardPage.tsx` 各一份、规则还不一样），统一到新的 `console/src/format.ts`。放在 `.ts` 而非 `shared.tsx`，是因为 `node --test` import 不了 `.tsx`。
+
+回归测试钉的是**一类**缺陷而不是某个数字：任意一组金额格式化后小数位必须唯一。探针验证过（让 `formatMoney` 忽略组精度 → 稳定 4 条失败）。
+
+**② 侧栏只做了减法，看上去像没改。** 上一版去掉了「每组一个色相」的轮转，却没补替代层级 —— 光靠 10px 小字撑不起结构。已改为「字距 0.14em + 标签右侧发丝线 + 组间距 24px」分区，三样都不表示状态。**教训：拿掉一个视觉手段时必须同时给出替代手段，否则读者只会觉得「变平了」，不会觉得「变干净了」。**
+
+**③ 两个手写 SQL 的坑**（见 `scripts/seed_demo_data.py` 的文件头注释）：`channels.url` **不是 URL 字符串**，是 `ChannelURLs` 的 JSON（写裸 URL 会让 `/admin/dashboard` 与 `/admin/channels` 一起 500）；`site_channel_bindings` 是 `logs.channel_id` 归到站点的**唯一**桥梁，没有它「站点消耗分配」永远是空的。
+
+**另外两条环境事实**：控制台用 **Bearer token**（localStorage 的 `pivotflow_token`），**不是 cookie** —— 拿 `fetch` 探测接口必须显式带 `Authorization`，否则一律 401（登录本身是 `POST /login` 返回 token，不落 cookie）。以及 `resource_count` 37 → 38：新增的 `format-*.js`（446 B）是 Vite 把纯逻辑模块单独成块，与既有的 `donutGeometry` / `siteCheckinMethod` / `siteCredentials` 一致，属既有约定的代价，不是回归。
+
 ## 2. 环境与验证（必读）
 
 ```bash
@@ -526,7 +542,9 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 | `internal/app/site_checkin_method_cache_test.go` | `cachedCheckinMethod` 的 TTL / 取值契约（含 `unavailable` 必须命中） |
 | `internal/site/provider/checkin_status_test.go` | 上游原文 fixture 的分类测试 |
 | `console/src/pages/siteCheckinMethod.ts` | 控制台纯逻辑：`siteCheckinMethodHint`、`needsBrowserCheckin`（放 `.ts` 才可被 `node --test` 覆盖） |
-| `scripts/console_ui_smoke.py` | 真实浏览器门禁：功能断言 + **按路由**的体积预算（三级判定，见 §2） |
+| `scripts/console_ui_smoke.py` | 真实浏览器门禁：功能断言 + **按路由**的体积预算（三级判定，见 §2）。**用空库跑**，别拿灌了演示数据的库跑 —— 它断言的是空态与布局，不是数据 |
+| `scripts/seed_demo_data.py` | 灌演示数据供 UI 评审（固定种子，可复现）。空库下概览页的图表全不渲染，评审时必须先灌。三个手写 SQL 的坑见 §1.8 |
+| `console/src/format.ts` | 数字/金额/百分比的**唯一**实现（`moneyDigits` 是「一组金额共用一套精度」的入口，见 §1.8）。放 `.ts` 是为了能被 `node --test` 直接测 |
 | `scripts/console_announcement_detail_check.py` | 公告详情弹窗的真实渲染验证（markdown / 链接解析 / sanitize / 懒加载），冒烟脚本覆盖不到（空库没有行可点，见 §2） |
 | `console/src/pages/AnnouncementDetail.tsx` | 公告详情（markdown 栈约 336 KB）。**必须保持按需加载**，别被 `AnnouncementsPage.tsx` 静态 `import` 回去，否则预取体积涨 30%（见 §2） |
 | `console/src/pages/announcementContent.ts` | 公告链接解析纯函数（`/api/` 前缀、`javascript:`、空 `base_url` 等边界），配套 `.test.ts` |
