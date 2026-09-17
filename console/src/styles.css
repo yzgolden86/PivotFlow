@@ -5502,10 +5502,18 @@ body {
   border-radius: var(--radius-pill);
 }
 
-/* 面板顶部那 2px 彩条同理去掉：它是按面板轮换的固定色，不表示任何状态，
+/* 面板顶部那 2px/3px 彩条一律去掉：它是按面板轮换的固定色，不表示任何状态，
    而「工具消耗」那块用的是 --coral —— 一个纯中性容器顶着红边，会被读成出错。
-   分类识别交给标题旁的图标芯片（保留 --panel-tone），边框回到统一的发丝线。 */
-.dashboard-page .data-panel {
+   分类识别交给标题旁的图标芯片（保留 --panel-tone），边框回到统一的发丝线。
+
+   这里必须**同时**列上 .usage-panel / .trend-panel / .site-panel / .trend-workbench：
+   它们的彩条写在各自的规则里（1235-1237 与 3679），只中和 .dashboard-page .data-panel
+   的话，统计页与趋势页的面板顶上照样顶着一道彩色边 —— 之前就是这样漏的。 */
+.dashboard-page .data-panel,
+.usage-panel,
+.trend-panel,
+.site-panel,
+.trend-workbench {
   border-top: 1px solid var(--border);
 }
 
@@ -5521,6 +5529,74 @@ body {
   font-weight: 500;
   font-variant-numeric: normal;
   letter-spacing: 0;
+}
+
+/* ── 共享基元：KPI 条 ────────────────────────────────────────────────────
+   `.compact-summary` 被 8 个页面共用（站点 / 账号 / 签到 / 公告 / 渠道 /
+   模型测试 / 令牌 / AccountsPageV2）。原实现按 nth-child 给每个格子叠了
+   **三重按位置轮换的颜色**：::before 的 3px 彩条、淡色底、彩色数字。
+   三样都只取决于「第几格」，不表示任何状态 —— 正是「颜色只表示状态」
+   要拿掉的那类装饰。
+
+   但**单纯去色会把整条读成「变平了」而不是「变干净了」**（侧栏分组那次
+   已经翻过一次车），所以同时用排版把层级补回来：彩条→隐藏（分隔交给原本
+   就有的 border-right 发丝线），淡色底→统一表面，彩色数字→中性文字色 +
+   展示字体 + tabular-nums + 紧字距。
+
+   选择器刻意写成 `:nth-child(n)`：与要覆盖的 `:nth-child(1..5)` 同权重，
+   靠「在后面」取胜。写成 `.compact-summary > span` 权重更低，会被原规则盖掉。 */
+.compact-summary > span:nth-child(n) {
+  background: var(--surface);
+}
+
+.compact-summary > span:nth-child(n)::before {
+  display: none;
+}
+
+.compact-summary > span:nth-child(n) strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* ── 共享基元：筛选条 ────────────────────────────────────────────────────
+   `.filter-bar` 被 10 个页面共用。原样式是「绿色渐变底 + 双层阴影」的浮起
+   卡片，属于旧语言里的分层手法；v2 用**发丝边**而不是阴影来分层，表面色
+   也不再随页面偏色。 */
+.filter-bar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+
+/* ── 共享基元：迷你 KPI 卡（趋势页 / 统计页）─────────────────────────────
+   `.stat-kpis article` 和 .compact-summary 是同一类问题：按 nth-child 轮换颜色。
+   按概览页已经定下的原则处理 —— **分类色只留在图标芯片上**，所以芯片的
+   green/blue/amber/coral 保留，与概览页的 .metric-card 保持一致；
+   去掉的是右上角那团 108px 的径向光晕：纯装饰，而且和芯片重复表达同一个分类。
+   卡片本身回到发丝边 + 无阴影，与 .metric-card 对齐。 */
+.stat-kpis article {
+  border-radius: var(--radius-panel);
+  box-shadow: none;
+}
+
+.stat-kpis article:nth-child(n)::after {
+  display: none;
+}
+
+/* ── 面板顶边的彩色条：还剩两处 ──────────────────────────────────────────
+   .balance-change-panel（统计页「余额变化」）与 .trend-breakdown .data-panel
+   （趋势页「模型消耗 / 站点消耗」，nth-of-type 决定蓝还是琥珀）。
+   与 .usage-panel 那一组同理：彩条不表示状态，去掉。 */
+.balance-change-panel,
+.trend-breakdown .data-panel {
+  border-top: 1px solid var(--border);
+}
+
+/* nth-of-type(2) 那条只改 border-top-color，权重(0,3,0) 比上面高，
+   必须用同权重的选择器在后面压掉，否则第二块面板照样是琥珀色。 */
+.trend-breakdown .data-panel:nth-of-type(n) {
+  border-top-color: var(--border);
 }
 
 @media (prefers-reduced-motion: reduce) {

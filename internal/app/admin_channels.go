@@ -228,8 +228,11 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// this request (not the shared config the proxy reads), so filling in the
 	// zero value here cannot leak into other paths.
 	for i := range out {
-		if out[i].Config != nil && out[i].Config.ModelEntries == nil {
-			out[i].Config.ModelEntries = []model.ModelEntry{}
+		if out[i].Config == nil {
+			continue
+		}
+		if out[i].ModelEntries == nil {
+			out[i].ModelEntries = []model.ModelEntry{}
 		}
 	}
 

@@ -220,6 +220,27 @@ hao 哥的要求是「先填充一些测试数据看下效果，图表也要有�
 
 **另外两条环境事实**：控制台用 **Bearer token**（localStorage 的 `pivotflow_token`），**不是 cookie** —— 拿 `fetch` 探测接口必须显式带 `Authorization`，否则一律 401（登录本身是 `POST /login` 返回 token，不落 cookie）。以及 `resource_count` 37 → 38：新增的 `format-*.js`（446 B）是 Vite 把纯逻辑模块单独成块，与既有的 `donutGeometry` / `siteCheckinMethod` / `siteCredentials` 一致，属既有约定的代价，不是回归。
 
+### 1.9 其余 10 页对齐 v2 语言（`b9543b0` + 本次）
+
+**先修了一个阻断问题，它不是排版问题。** 有数据时打开渠道页必崩：`/admin/channels` 在渠道没有任何模型时把 `models` 序列化成 `null`（Go 的 `[]ModelEntry` 为 nil 时 `encoding/json` 就是这么写的），而控制台的 `Channel` 类型把它声明成非可选数组，于是 `useMemo` 里的 `item.models.filter(...)` 抛 TypeError。**真正的杀伤力在于 React 默认没有错误边界：渲染期抛异常会卸载整棵树，所以不只是渠道页白屏 —— 之后点任何导航都是白屏，只能刷新。** 这解释了为什么早先截图里 `channels.png` 和 `announcements.png` 逐字节相同：后者是在崩溃之后拍的。
+
+三处一起改（缺一都不完整）：① 根因在 Go，列表字段的契约就是数组，空即 `[]`（改的是 `ListConfigs` 刚查出来的请求内对象，不是代理热路径共享的配置）；② `getChannels` 在数据边界归一化，缓存前做，让 `peekChannels` 拿到同一形状，约 30 个读 `channel.models` 的调用点不必各自加守卫；③ 新增 `PageErrorBoundary`（`console/src/components/`），把崩溃限制在当前页并**在路由变化时复位**，否则错误页自己会把控制台锁死。回归测试 `admin_channels_models_null_test.go` 用 `json.RawMessage` 断言字面量 —— 解成 `[]ModelEntry` 的话 `null` 和 `[]` 都是长度 0，测不出这个回归。
+
+**盘点：真正的问题是 v2 层的作用域，不是「10 个页面各缺一套样式」。** `styles.css:5508` 的 v2 覆盖写的是 `.dashboard-page .data-panel`，只中和了概览页自己那条 2px 彩条；全局的 `.usage-panel` / `.trend-panel` / `.site-panel`（1235-1237）与 `.trend-workbench`（3679）、`.trend-breakdown .data-panel`（3680-3681）、`.balance-change-panel`（2103）都各自写着彩条，于是统计页与趋势页的面板顶上照样顶着一道彩色边。**同一个「分类色只留在图标芯片上」的原则，之前只落实到了一个页面上。**
+
+按杠杆改，一处覆盖多页：
+
+| 共享基元 | 覆盖页面 | 处理 |
+| --- | --- | --- |
+| `.compact-summary` | **8 页** | 按 `nth-child` 的三重配色（`::before` 3px 彩条 + 淡色底 + 彩色数字）全部去掉，改用排版立层级 |
+| `.filter-bar` | **10 页** | 绿色渐变底 + 双层阴影 → 纯中性表面 + 发丝边 |
+| `.stat-kpis article` | 趋势 / 统计 | 去掉右上角 108px 径向光晕；**图标芯片的配色保留**（与概览页 `.metric-card` 一致） |
+| 面板顶边彩条 | 统计 / 趋势 | 统一回到 1px 发丝线 |
+
+**方法论：别用肉眼比对缩放后的截图。** 3px 的彩条和 38px 的图标芯片在缩放图里长得几乎一样，我两次把图标芯片误读成「整卡泛色」，两次都是靠实测纠正的（一次读 computed style，一次扫 PNG 像素，结论都是卡片纯白 `(255,255,255)`，只有芯片是 `(227,243,235)`）。所以这次写了一个 DOM 扫描脚本，直接列出「`border-top-width >= 2` 且颜色饱和」的元素与「2-8px 高的彩色伪元素」，**一次覆盖全部 12 个路由**，结果是 11 个路由完全干净。比逐张看图快且不会看错。
+
+**刻意保留、别再顺手删的三处**：① **页头 `tone`**（每页一个色相，驱动 4px 左竖条 + 背景径向渐变）—— 页头属于外壳，是随「外壳 + 概览页」一起评审过的，且 12 个页面一致，要改是设计决策而不是漏改；② `.tool-card::after` 的厂商标识色（见 §1.7 维护点）；③ 图表内部的分类配色（环形图各扇区、`.trend-breakdown-list` 的排名色阶）—— 分布图靠颜色区分系列，属必要。
+
 ## 2. 环境与验证（必读）
 
 ```bash
