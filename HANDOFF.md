@@ -20,7 +20,7 @@
 | `380fbb4` | 站点请求统一带上 PivotFlow 的 User-Agent |
 | `55ec0b0` | 签到端点返回 404 时记入站点能力（`unavailable`），别再按重试节奏空发请求 |
 
-`55ec0b0` 之后是三个**不属于签到线**的收尾提交：`cf6648d`（HANDOFF 记录本次改动与范围决定）、`f56b1ff`（HANDOFF 记录冒烟脚本过时）、`286e99d`（修正 `console_ui_smoke.py` 的过时定位器与分页断言，见 §2）。当前 HEAD 是 `286e99d`。
+`55ec0b0` 之后是四个**不属于签到线**的收尾提交：`cf6648d`（HANDOFF 记录本次改动与范围决定）、`f56b1ff`（HANDOFF 记录冒烟脚本过时）、`286e99d`（修正 `console_ui_smoke.py` 的过时定位器与分页断言）、`effd6f6`（把冒烟脚本的体积预算改按路由衡量，见 §2）。当前 HEAD 是 `effd6f6`。
 
 - 验证状态（**对 HEAD `55ec0b0` 的独立复验，全绿**）：
   - `go build -tags sonic ./...` → 退出 0
@@ -28,7 +28,7 @@
   - `golangci-lint run ./...`（v2.13.2）→ `0 issues.`
   - `gofmt -l internal/` → 无输出
   - 前端 `make console-check` → typecheck + 50 个用例 + 构建全通过，`web/console` 产物已重建
-  - 浏览器端（`console_ui_smoke.py`，起本地服务跑真实产物）→ **`console_errors` 为空、`failed_responses` 为空**，11 条路由的标题/导航高亮断言全过，签到页与站点页截图正常；仅收尾两条性能预算未过（既有问题，见下）
+  - 浏览器端（`console_ui_smoke.py`，起本地服务跑真实产物）→ **全绿**：`console_errors` 为空、`failed_responses` 为空，11 条路由的标题/导航高亮断言全过，性能预算也过（`effd6f6` 重做后），只有一条 `#/announcements` 占全站 31% 的软告警（不判失败，见 §2）
 
   > 前端验证的坑：`vite` 的 `emptyOutDir` 要清空 `web/console/assets`（30+ 文件），
   > 会撞上沙箱的批量删除守卫（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，按**回合**累计、
@@ -142,23 +142,35 @@ golangci-lint run ./...
 CGO_ENABLED=0 go build -tags sonic -trimpath -ldflags=... -o pivotflow .
 ```
 
-### `scripts/console_ui_smoke.py`：功能断言已修好，**性能预算仍未过**（与签到线无关）
+### `scripts/console_ui_smoke.py`：门禁已修好，**含性能预算在内全过**
 
-想在真实浏览器里验证 `web/console` 产物时用这个脚本。它此前跑不起来，有两处早已与源码脱节，已在 `286e99d` 修正：
+想在真实浏览器里验证 `web/console` 产物时用这个脚本。它此前跑不起来，两处早已与源码脱节，已在 `286e99d` 修正：
 
 1. WebDAV 输入框的占位符：脚本等的是带 `/backup.json` 的版本，源码（`console/src/pages/BackupSettingsPanel.tsx:184`）里是 `https://dav.example.com/PivotFlow`。
 2. 三处分页断言仍按「默认 20、选项 20/50/100」写，而 `SitesPage` / `AccountsPageV2` / `ChannelsPage` 早已是 `useState(50)` + `pageSizes={[50, 100]}`。
 
-修完后脚本能跑到底，**功能类断言全过**：`console_errors` 为空、`failed_responses` 为空、无横向溢出、无遗留 `/web/` 链接。路由循环（`console_routes`）会依次访问 `#/sites` `#/accounts` `#/checkins` `#/announcements` `#/channels` `#/logs` `#/stats` `#/trend` `#/models` `#/tokens` `#/system`，对每个都断言「标题可见 + 导航项高亮」并落一张全页截图。
+修完后功能类断言全过：`console_errors` 为空、`failed_responses` 为空、无横向溢出、无遗留 `/web/` 链接。路由循环（`console_routes`）会依次访问 `#/sites` `#/accounts` `#/checkins` `#/announcements` `#/channels` `#/logs` `#/stats` `#/trend` `#/models` `#/tokens` `#/system`，对每个都断言「标题可见 + 导航项高亮」并落一张全页截图。
 
-**仍未通过的是收尾的两条性能预算**（实测 2026-09-17，控制台已代码分割）：
+收尾的两条性能预算原本也过不了（`resource_count` 36 vs 8、`static_transfer_bytes` 357,696 vs 350,000），已在 `effd6f6` 按**路由**重做衡量方式。
 
-| 指标 | 实测 | 阈值 | 备注 |
-| --- | --- | --- | --- |
-| `resource_count` | 36 | `MAX_CONSOLE_RESOURCES = 8` | 代码分割后每个页面各自成 chunk，8 这个数**结构上不可能满足** |
-| `static_transfer_bytes` | 357,696 | `MAX_STATIC_BYTES = 350_000` | 超出约 2%；且它是「走完全部路由」的累计，随应用增长必然上升 |
+**为什么不能按「单页首次加载的资源数」衡量**：控制台在挂载 600ms 后主动预取**全部**路由 chunk（`console/src/App.tsx:211-221`，为的是首次点击导航不出现载入闪烁），所以「打开某页时才加载的资源」恒为 0，衡量不出东西。于是改成两级：
 
-两者在扣除签到线新增的 1 个 chunk（567 B）后仍然超标，属**既有问题**。**没动这两个常量** —— 调阈值等于把门禁挪开，而「该用什么指标衡量控制台体积」是取舍，需要 hao 哥定（例如：把资源数改成「单页首次加载的 chunk 数」，或按路由分别设预算）。在此之前，跑这个脚本会看到这两条失败，**别误判成新引入的回归**。
+- **硬门禁（总量）** —— 一次会话的实际下载量，这才是用户真正付出的成本。
+- **硬门禁（单页 chunk）** —— 归因维度，回答「总量涨了，是哪个页面胖了」。
+- **软告警**（只打 stderr，**不判失败**）—— 单页占总量比例过高；或有页面 chunk 没登记进 `PAGE_CHUNK_ROUTES`（那会让单页门禁出现盲区）。
+
+实测 2026-09-17（控制台已代码分割：12 个路由 chunk 各归一条路由，另 24 个为壳/共享模块/图标）：
+
+| 指标 | 实测 | 阈值 |
+| --- | --- | --- |
+| `resource_count` | 36 | `MAX_CONSOLE_RESOURCES = 45` |
+| `static_transfer_bytes`（全站预取总量） | 357,696 | `MAX_TOTAL_TRANSFER_BYTES = 400_000` |
+| 最重路由 transfer（`#/announcements`） | 111,127 | `MAX_ROUTE_TRANSFER_BYTES = 150_000` |
+| 最重路由 decoded（`#/announcements`） | 340,975 | `MAX_ROUTE_DECODED_BYTES = 450_000` |
+
+当前会打一条软告警：`#/announcements` 占全站预取 31%（超过 `ROUTE_SHARE_WARN_RATIO = 0.25`）——公告页的依赖链比其余所有页面都重，值得留意，但不拦。
+
+**维护点**：新增页面时要在 `PAGE_CHUNK_ROUTES` 里补一条（组件名 → 路由）。漏了不会静默——脚本会打 `[warn] page chunk ... is not in PAGE_CHUNK_ROUTES`，因为该页 chunk 会落进 `unattributed`，单页门禁看不见它。
 
 跑法（本机）：
 
