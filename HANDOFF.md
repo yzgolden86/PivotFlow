@@ -29,6 +29,7 @@
   - `gofmt -l internal/` → 无输出
   - 前端 `make console-check` → typecheck + 60 个用例 + 构建全通过，`web/console` 产物已重建（用例数在 `fc4cd97` 从 50 涨到 60）
   - 浏览器端（`console_ui_smoke.py`，起本地服务跑真实产物）→ **全绿，且 stderr 干净**：`console_errors` 为空、`failed_responses` 为空，11 条路由的标题/导航高亮断言全过，性能预算全过（`effd6f6` 重做指标、`fc4cd97` 消掉那条软告警，见 §2）
+  - 公告详情弹窗（`console_announcement_detail_check.py`，造一条公告真实点开）→ **全过**：markdown（`h1` / 粗体 / GFM 表格 / 列表）、站内相对链接按 `base_url` 解析、`javascript:` 链接降级成 `span`、原始 HTML 由 `rehype-raw` 解析、详情 chunk **预取 0 次 / 打开 1 次**，`console_errors` 与 `failed_responses` 均空（见 §2）
 
   > 前端验证的坑：`vite` 的 `emptyOutDir` 要清空 `web/console/assets`（30+ 文件），
   > 会撞上沙箱的批量删除守卫（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，按**回合**累计、
@@ -197,6 +198,32 @@ PIVOTFLOW_SMOKE_PASSWORD=<同上> \
 
 密码**只从 `PIVOTFLOW_PASS` 读**（`internal/app/server.go:135`），不设会直接退出；
 DB 路径走 `SQLITE_PATH`。截图落在系统临时目录的 `pivotflow-console-ui/`。
+
+> **`SQLITE_PATH` 别写 `$PWD/...`**：Git Bash 的 `$PWD` 是 `/e/Dev/...` 这种 POSIX 形式，
+> Go 在 Windows 上会把它解析成 `E:\e\Dev\...`，于是库被建到仓库外的幽灵目录
+> `E:\e\` 里（`rm -rf .tmp-xxx` 也清不掉它）。用相对路径（如 `.tmp-smoke/smoke.db`）
+> 或显式 Windows 路径（`E:/Dev/tools/api/PivotFlow/.tmp-smoke/smoke.db`）。
+
+### `scripts/console_announcement_detail_check.py`：公告详情弹窗的真实渲染验证
+
+`console_ui_smoke.py` 跑的是**空库** —— 公告列表为空、没有行可点，所以「打开公告详情」这条路径**一直没有被任何自动化覆盖**。而公告详情是**唯一**渲染 markdown 的地方，`fc4cd97` 又恰好把它的加载方式从静态 `import` 改成了 `lazy()`。bundle 层能验证 chunk 没被预取，但组件从没真正渲染过 —— 静态改懒加载正是那种「类型检查过、运行时才炸」的改动（default 导出解析、`Modal` 里的 `Suspense`）。
+
+所以补了这个脚本：造一条公告，真实点开详情弹窗，断言 `h1` / 粗体 / GFM 表格 / 列表 / 站内相对链接按 `base_url` 解析 / `javascript:` 链接被降级成 `span` / 原始 HTML 被 `rehype-raw` 解析而不是转义，并确认详情 chunk **预取时为 0 次、打开时加载 1 次**。
+
+```bash
+CGO_ENABLED=0 go build -tags sonic -o .tmp-detail/pivotflow.exe .
+SQLITE_PATH=.tmp-detail/check.db PIVOTFLOW_PASS=<任意> PORT=18082 ./.tmp-detail/pivotflow.exe &
+
+PIVOTFLOW_DETAIL_CHECK_URL=http://127.0.0.1:18082 \
+PIVOTFLOW_DETAIL_CHECK_PASSWORD=<同上> \
+PIVOTFLOW_DETAIL_CHECK_DB=.tmp-detail/check.db \
+PIVOTFLOW_DETAIL_CHECK_SEED=1 \
+"C:/Users/80470/AppData/Local/hermes/hermes-agent/venv/Scripts/python.exe" scripts/console_announcement_detail_check.py
+```
+
+`PIVOTFLOW_DETAIL_CHECK_SEED` 是**显式开关**，因为写库有风险；开了之后也**只 INSERT、不 DELETE**，用的是 id `999999` / 名字 `__detail_check__` 这种不会和真实数据撞上的取值。**别把线上库路径传给它。** 服务端要先起（脚本在服务端运行时写库即可，SQLite WAL 允许）。
+
+**顺带发现（未修，记录备查）**：`sites.proxy_url` 与 `external_checkin_url` 在 schema 里是 **nullable**（`VARCHAR(500)`，无 `NOT NULL`），但 Go 侧的扫描器**不接受 NULL** —— 一旦真为 NULL，`/admin/sites`、`/admin/site-inventory`、`/admin/dashboard` 三个接口**全部 500**（`converting NULL to string is unsupported`）。应用自己的 `CreateSite` 永远写空串，所以现实中不触发；但 schema 与读取端这个不一致是隐患（将来迁移新增可空列时尤其）。这个脚本的 seed 因此显式写空串。
 
 **本机只是开发环境，PivotFlow 实际跑在 VPS 的 Docker 里。** 本机 `data/pivotflow.db`、`.tmp-ui/pivotflow.db` 都是陈旧开发残留（旧 schema、0 行），**不能当线上库查签到历史**。要线上证据：向 hao哥 要 VPS 的 `docker logs` / 站点令牌，或直接读**上游开源源码**推导契约（本次会话就是靠这条定案的，最省事）。
 
@@ -399,6 +426,7 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 | `internal/site/provider/checkin_status_test.go` | 上游原文 fixture 的分类测试 |
 | `console/src/pages/siteCheckinMethod.ts` | 控制台纯逻辑：`siteCheckinMethodHint`、`needsBrowserCheckin`（放 `.ts` 才可被 `node --test` 覆盖） |
 | `scripts/console_ui_smoke.py` | 真实浏览器门禁：功能断言 + **按路由**的体积预算（三级判定，见 §2） |
+| `scripts/console_announcement_detail_check.py` | 公告详情弹窗的真实渲染验证（markdown / 链接解析 / sanitize / 懒加载），冒烟脚本覆盖不到（空库没有行可点，见 §2） |
 | `console/src/pages/AnnouncementDetail.tsx` | 公告详情（markdown 栈约 336 KB）。**必须保持按需加载**，别被 `AnnouncementsPage.tsx` 静态 `import` 回去，否则预取体积涨 30%（见 §2） |
 | `console/src/pages/announcementContent.ts` | 公告链接解析纯函数（`/api/` 前缀、`javascript:`、空 `base_url` 等边界），配套 `.test.ts` |
 
