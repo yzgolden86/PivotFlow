@@ -722,7 +722,7 @@ func (p *NewAPI) doJSONWithResponseHeaders(ctx context.Context, req AccountReque
 		return nil, &Error{Code: CodeRequestFailed, StatusCode: resp.StatusCode, Message: "provider returned HTTP " + strconv.Itoa(resp.StatusCode)}
 	}
 	if err := decodeProviderJSON(raw, out); err != nil {
-		return nil, &Error{Code: CodeInvalidResponse, Message: "provider returned invalid JSON"}
+		return nil, &Error{Code: CodeInvalidResponse, Message: describeUnexpectedPayload(resp, raw)}
 	}
 	return resp.Header.Clone(), nil
 }
@@ -742,12 +742,54 @@ func applyAuth(req *http.Request, c Credentials) {
 		}
 	}
 }
+
+// looksLikeChallenge reports whether a response is a browser/WAF interstitial
+// rather than the JSON a management endpoint is supposed to return.
+//
+// A marker list alone is not enough. Aliyun WAF answers with a page that has no
+// <html> tag at all - only a doctype and a pair of <meta name="aliyun_waf_*">
+// elements - so the body used to slip past detection and die in the JSON
+// decoder as "invalid JSON", which is what operators reported as an
+// intermittent, unexplained sync failure.
+//
+// Order matters. A body that parses as JSON is the endpoint's answer, whatever
+// words it carries: an upstream error is allowed to say "Turnstile token 为空"
+// without being mistaken for the interstitial that phrase also appears in.
+// Only what is left is matched against the challenge markers, and failing that
+// against the HTML shape - a doctype, an <html> tag, or a bare text/html
+// content type, which is how the Aliyun page gives itself away.
 func looksLikeChallenge(contentType string, raw []byte) bool {
-	text := strings.ToLower(string(raw))
-	// Management endpoints should always return JSON. Treat an HTML response as
-	// a browser/WAF challenge even when the vendor's challenge page uses a
-	// custom title and does not contain Cloudflare's usual markers.
-	return strings.Contains(strings.ToLower(contentType), "text/html") && (strings.Contains(text, "turnstile") || strings.Contains(text, "cf-chl-") || strings.Contains(text, "cloudflare") || strings.Contains(text, "acw_sc__v2") || strings.Contains(text, "<html"))
+	trimmed := bytes.TrimSpace(raw)
+	if json.Valid(trimmed) {
+		return false
+	}
+	text := strings.ToLower(string(trimmed))
+	if strings.Contains(text, "turnstile") || strings.Contains(text, "cf-chl-") ||
+		strings.Contains(text, "cloudflare") || strings.Contains(text, "acw_sc__v2") ||
+		strings.Contains(text, "aliyun_waf") {
+		return true
+	}
+	return strings.Contains(text, "<!doctype html") || strings.Contains(text, "<html") ||
+		strings.Contains(strings.ToLower(contentType), "text/html")
+}
+
+// describeUnexpectedPayload names what actually came back. "provider returned
+// invalid JSON" on its own sent operators looking for a parsing bug when the
+// real cause was, say, a proxy's HTML error page or a truncated body; the small
+// verbatim excerpt makes that visible from the console and the logs alone.
+func describeUnexpectedPayload(resp *http.Response, raw []byte) string {
+	kind := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if kind == "" {
+		kind = "no content type"
+	}
+	body := strings.Join(strings.Fields(string(raw)), " ")
+	if len(body) > 64 {
+		body = body[:64] + "..."
+	}
+	if body == "" {
+		return fmt.Sprintf("provider returned an empty body (HTTP %d, %s)", resp.StatusCode, kind)
+	}
+	return fmt.Sprintf("provider returned invalid JSON (HTTP %d, %s, body=%q)", resp.StatusCode, kind, body)
 }
 
 func decodeProviderJSON(raw []byte, out any) error {

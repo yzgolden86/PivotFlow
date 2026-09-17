@@ -259,3 +259,18 @@ func TestVeloeraCheckedInTodayRejectsPayloadWithoutFlag(t *testing.T) {
 		t.Fatalf("err=%v, want %q", err, CodeInvalidResponse)
 	}
 }
+
+// newRawPayloadServer serves one body with an explicit status and content type,
+// for cases where the response shape itself is the subject.
+func newRawPayloadServer(t *testing.T, status int, contentType, body string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
