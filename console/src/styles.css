@@ -5312,12 +5312,31 @@ body {
   color: var(--text-muted);
 }
 
+/* 分组标签做成真正的「眉标」：字距放开、右侧拖一条发丝线、组间距加大。
+   原来五组各染一色，靠**颜色**分区；把颜色去掉之后光靠 10px 小字撑不起层级，
+   整条侧栏就看上去像没改。现在分区改由「字距 + 发丝线 + 组间距」承担 ——
+   这三样都不表示状态，所以不违反「颜色只表示状态」。 */
+.nav-group + .nav-group {
+  margin-top: var(--space-5);
+}
+
 .nav-group-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   margin: 0 10px var(--space-2);
   color: var(--sidebar-muted);
   font-size: var(--fs-micro);
   font-weight: 600;
-  letter-spacing: var(--ls-wide);
+  letter-spacing: 0.14em;
+  line-height: 16px;
+}
+
+.nav-group-label::after {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--sidebar-muted) 30%, transparent);
+  content: "";
 }
 
 .nav-item {
