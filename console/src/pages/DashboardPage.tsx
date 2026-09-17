@@ -141,9 +141,10 @@ export default function DashboardPage() {
         />
         <MetricCard
           icon={ShieldCheck}
-          tone={successRate >= 95 || snapshot.totals.requests === 0 ? 'green' : 'coral'}
+          tone="green"
+          alert={snapshot.totals.requests > 0 && successRate < 95}
           label="路由成功率"
-          value={snapshot.totals.requests ? `${successRate.toFixed(1)}%` : '—'}
+          value={snapshot.totals.requests ? `${successRate.toFixed(1)}%` : <MetricEmpty />}
           meta={`${formatCompact(snapshot.totals.errors)} 次失败`}
           href={`#/logs?range=${range}`}
         />
@@ -223,6 +224,7 @@ export default function DashboardPage() {
 function MetricCard({
   icon: Icon,
   tone,
+  alert = false,
   label,
   value,
   meta,
@@ -230,13 +232,19 @@ function MetricCard({
 }: {
   icon: typeof WalletCards
   tone: string
+  /** 真状态：跌破阈值时整卡给出信号。tone 只表示分类，别用它表达状态。 */
+  alert?: boolean
   label: string
   value: React.ReactNode
   meta: string
   href: string
 }) {
   return (
-    <a className={`metric-card metric-card--${tone}`} href={href} aria-label={`${label}，查看详情`}>
+    <a
+      className={`metric-card metric-card--${tone}${alert ? ' metric-card--alert' : ''}`}
+      href={href}
+      aria-label={`${label}，${meta}，查看详情`}
+    >
       <div className="metric-card-top">
         <span className="metric-label">{label}</span>
         <span className="metric-icon"><Icon size={18} /></span>
@@ -247,8 +255,14 @@ function MetricCard({
   )
 }
 
+/** 空值占位。em dash 在展示级字号下会连成一道粗横杠、看着像分隔线或边框，
+ *  所以用 .metric-empty 缩到正文级并压成三级灰 —— 读作「没有数据」。 */
+function MetricEmpty() {
+  return <span className="metric-empty">—</span>
+}
+
 function BalanceValue({ balances }: { balances: DashboardBalance[] }) {
-  if (!balances.length) return <>—</>
+  if (!balances.length) return <MetricEmpty />
   return (
     <span
       className={`balance-value${balances.length > 1 ? ' balance-value--multiple' : ''}`}

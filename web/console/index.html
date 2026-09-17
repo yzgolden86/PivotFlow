@@ -9,13 +9,17 @@
     <link rel="apple-touch-icon" href="/web/apple-touch-icon.png?v=__VERSION__" />
     <title>PivotFlow</title>
     <style>
-      .console-boot { position: fixed; inset: 0; display: grid; place-items: center; background: #f4f7f5; color: #28433c; font: 600 14px/1.5 "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif; }
+      /* 启动态在 bundle 之前显示，用不了 styles.css 的令牌，只能抄字面量。
+         取值对齐 :root 的 --bg / --text-secondary / --border-strong / --green，
+         这样 React 挂载后底色不会跳一下。改令牌时记得同步这里。 */
+      .console-boot { position: fixed; inset: 0; display: grid; place-items: center; background: #f4f6f8; color: #46554f; font: 600 14px/1.5 "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif; }
       .console-boot div { display: flex; align-items: center; gap: 12px; }
-      .console-boot img { width: 38px; height: 38px; border-radius: 11px; }
-      .console-boot i { width: 18px; height: 18px; border: 2px solid #b9cbc3; border-top-color: #278e73; border-radius: 50%; animation: console-spin .75s linear infinite; }
-      :root[data-theme="dark"] .console-boot { background: #111513; color: #dce7e1; }
-      :root[data-theme="dark"] .console-boot i { border-color: #405048; border-top-color: #55b690; }
+      .console-boot img { width: 38px; height: 38px; border-radius: 8px; }
+      .console-boot i { width: 18px; height: 18px; border: 2px solid #c9d2d8; border-top-color: #10865d; border-radius: 50%; animation: console-spin .75s linear infinite; }
+      :root[data-theme="dark"] .console-boot { background: #111513; color: #b6c1bb; }
+      :root[data-theme="dark"] .console-boot i { border-color: #3a443f; border-top-color: #49b884; }
       @keyframes console-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .console-boot i { animation-duration: 1.6s; } }
     </style>
     <script>
       (() => {
@@ -27,8 +31,12 @@
             (preference !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
           const root = document.documentElement
           root.dataset.theme = dark ? 'dark' : 'light'
-          root.dataset.themePreset = ['jade', 'ocean', 'coral'].includes(appearance.preset) ? appearance.preset : 'jade'
-          root.dataset.themeFont = ['modern', 'system', 'serif'].includes(appearance.font) ? appearance.font : 'modern'
+          // 下面三行必须覆盖 theme.ts 里 themePresetOptions / themeFontOptions /
+          // radius 的全部取值。抄漏的后果不是报错而是「每次刷新先闪一下默认主题」：
+          // 这里拒绝的值会被替换成默认值，随后 bundle 挂载才改回用户真正选的那个。
+          // 两边的清单由 console/src/themeBoot.test.ts 逐个比对，别再手工同步。
+          root.dataset.themePreset = ['jade', 'ocean', 'coral', 'anthropic', 'violet', 'slate', 'forest', 'plum'].includes(appearance.preset) ? appearance.preset : 'jade'
+          root.dataset.themeFont = ['system', 'yahei', 'pingfang', 'dengxian', 'harmony', 'notoserif', 'songti', 'kaiti', 'segoe', 'consolas', 'cascadia', 'sarasa'].includes(appearance.font) ? appearance.font : 'system'
           root.dataset.themeRadius = ['compact', 'balanced', 'soft'].includes(appearance.radius) ? appearance.radius : 'balanced'
         } catch (_) {}
 
@@ -44,8 +52,8 @@
         }
       })()
     </script>
-    <script type="module" crossorigin src="/web/console/assets/index-gLenRsHT.js"></script>
-    <link rel="stylesheet" crossorigin href="/web/console/assets/index-CflJ766c.css">
+    <script type="module" crossorigin src="/web/console/assets/index-CMvjOhEw.js"></script>
+    <link rel="stylesheet" crossorigin href="/web/console/assets/index-CYupn4L2.css">
   </head>
   <body>
     <div id="root"><div class="console-boot" role="status"><div><img src="/web/brand-mark.svg?v=__VERSION__" alt="" /><i aria-hidden="true"></i><span>正在验证登录状态</span></div></div></div>

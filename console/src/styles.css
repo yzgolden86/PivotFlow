@@ -5097,6 +5097,413 @@ body { font-size: 14px; line-height: 1.5; }
   .key-health-actions { width: 100%; justify-content: flex-end; }
 }
 
+/* ==========================================================================
+   视觉语言 v2：精密仪表（Precision Instrument）
+   --------------------------------------------------------------------------
+   整站视觉语言的底座，追加在样式表末尾（同权重靠后覆盖）。设计主张：
+   控制台是「读数的仪表」，不是「填表的表单」。四条落点——
+
+   1. 层级靠尺度对比，不靠到处一样小。原来 326 处 ≤12px 声明把所有东西压成
+      同一个音量，页面没有主次。现在把**上端拉开**（展示级数字 26/34/44px），
+      下端仍守住 11px 可读性下限（见上面「二级/三级小字统一下限 11px」那段）。
+   2. 标签安静、数值响亮。标签：11px + 大写 + 放开字距 + 三级灰；
+      数值：展示级 + 表格数字 + 收紧字距。
+   3. 颜色只表示状态。装饰性彩色描边一律去掉——琥珀色出现在 KPI 顶部边框上
+      却不代表任何状态，等于在教用户忽略颜色。
+   4. 层次用「分层面 + 发丝边框」，不用重投影。动效只服务于因果：入场 stagger，
+      交互反馈短时长，全部尊重 prefers-reduced-motion（见文件末尾那段）。
+
+   注意：--fs-* 一律写成 Npx 字面量。smallTextLegibility.test.ts 会把
+   var(--fs-*) 解析回 px 逐个判下限，写错令牌名会当场报错而不是静默漏测。
+   ========================================================================== */
+
+/* 自托管的 Inter 变量子集：ASCII + 控制台实际用到的 14 个非 ASCII 字符
+   （— · “ ” → × – € £ ¥ … ≥ ≤ °），共 113 个码位、26.8 KB。
+   码位清单由源码扫描得出（console/src 全量文本，排除 CJK）。
+   中文不在 unicode-range 内，会自动回落到系统字体（Noto Sans SC / 微软雅黑），
+   所以中文字形不进包。变量轴只保留 wght 100-900；Inter v4 的 opsz 轴已定在 16，
+   留着它会让 gvar 变成二维、体积从 26.8 KB 涨到 41.3 KB，而收益很小。
+   带 tnum（表格数字）与 kern/calt/case。 */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/fonts/inter-variable-latin.woff2") format("woff2");
+  unicode-range: U+0020-007E, U+00A0, U+00A3, U+00A5, U+00B0, U+00B7, U+00D7, U+2013-2014, U+2018-2019, U+201C-201D, U+2026, U+20AC, U+2192, U+2212, U+2264-2265;
+}
+
+:root {
+  /* 字体栈：Inter 只管数字与拉丁，中文继续走系统字体。 */
+  --font-ui: "Inter", "Segoe UI Variable Text", "Segoe UI", "Noto Sans SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-display: "Inter", "Segoe UI Variable Display", "Segoe UI Variable Text", "Noto Sans SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-numeric: "Inter", "Cascadia Mono", "SFMono-Regular", Consolas, "Noto Sans SC", monospace;
+  --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+
+  /* 字阶：命名按用途不按大小，调比例只动这里。 */
+  --fs-micro: 11px;
+  --fs-small: 12px;
+  --fs-body: 14px;
+  --fs-lead: 16px;
+  --fs-title: 20px;
+  --fs-display-1: 26px;
+  --fs-display-2: 34px;
+  --fs-display-3: 44px;
+
+  /* 行高与字距：展示级数字收紧，大写小标签放开。 */
+  --lh-tight: 1.15;
+  --lh-snug: 1.4;
+  --lh-base: 1.55;
+  --ls-tight: -0.02em;
+  --ls-wide: 0.08em;
+
+  /* 4px 基准的间距节奏。 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* 动效：入场用 expo-out（起步快、收尾长），交互反馈用标准曲线。 */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 360ms;
+  --dur-enter: 520ms;
+  --ease-standard: cubic-bezier(.2, .8, .2, 1);
+  --ease-enter: cubic-bezier(.16, 1, .3, 1);
+  --ease-exit: cubic-bezier(.4, 0, 1, 1);
+
+  /* 层次：发丝边框 + 极浅投影，三级够用。 */
+  --elev-1: 0 1px 2px rgba(20, 29, 26, .04);
+  --elev-2: 0 2px 8px rgba(20, 29, 26, .06);
+  --elev-3: 0 12px 32px rgba(20, 29, 26, .1);
+  --radius-pill: 999px;
+}
+
+:root[data-theme="dark"] {
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .28);
+  --elev-2: 0 2px 10px rgba(0, 0, 0, .34);
+  --elev-3: 0 14px 36px rgba(0, 0, 0, .46);
+}
+
+/* ---- 基础排版 ---- */
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--fs-body);
+  line-height: var(--lh-base);
+  font-feature-settings: "calt" 1;
+}
+
+/* 区块标题：比正文大两档，收紧字距，字重跟着变量字体走。 */
+.page-header h1 {
+  font-size: var(--fs-display-1);
+  font-weight: 640;
+  line-height: var(--lh-tight);
+  letter-spacing: var(--ls-tight);
+}
+
+.console-modal > header h2,
+.section-heading h2,
+.settings-section-header h2 {
+  font-size: var(--fs-lead);
+  font-weight: 620;
+  line-height: var(--lh-snug);
+  letter-spacing: -.01em;
+}
+
+/* 大写小标签：安静的那一半。用在眉标、字段名、分组标题上。 */
+.page-eyebrow,
+.nav-group-label,
+.metric-label,
+.record-head,
+.token-table-head,
+.search-results-label {
+  font-size: var(--fs-micro);
+  font-weight: 560;
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+}
+
+/* 数字一律表格对齐：等宽数字让刷新时列不左右跳，也更容易纵向比大小。 */
+.stat-kpis strong,
+.stat-kpis em,
+.metric-card strong,
+.donut-chart strong,
+.balance-delta,
+.account-balance-amount,
+.key-health-summary button strong,
+.usage-rank,
+.tool-share,
+.trend-axis {
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* ---- 动效基元 ---- */
+
+@keyframes pf-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 换页入场：<Routes> 每次切换都会卸载旧页、挂载新页，所以动画自然重放。
+   .main-content 的直接子元素就是当前页面的根节点。 */
+.main-content > * {
+  animation: pf-rise var(--dur-enter) var(--ease-enter) both;
+}
+
+/* ---- 外壳：品牌 / 导航 / 侧栏 ---- */
+
+/* 侧栏靠「发丝边框 + 极浅投影」立住层次，不用 8px 的宽投影。 */
+.sidebar {
+  box-shadow: var(--elev-1);
+  transition: width var(--dur-base) var(--ease-standard), min-width var(--dur-base) var(--ease-standard), transform var(--dur-base) var(--ease-standard);
+}
+
+/* 品牌区那条 48px 三色渐变短线是纯装饰：三种颜色都不指向任何状态，
+   删掉后品牌靠字重与字距立住，反而更稳。 */
+.sidebar-brand::after {
+  display: none;
+}
+
+.sidebar-brand {
+  min-height: 76px;
+  gap: var(--space-3);
+  padding: var(--space-4) 17px;
+}
+
+.brand-copy strong {
+  font-family: var(--font-display);
+  font-size: var(--fs-lead);
+  font-weight: 660;
+  letter-spacing: var(--ls-tight);
+}
+
+.brand-copy > span {
+  margin-top: 2px;
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+/* 取消「每个分组一个色相」的轮转。五组各染一色不承载信息，只会稀释
+   「当前在哪一页」这个真正的状态；统一到一个主强调色后，激活态才是唯一的彩色。 */
+.nav-group:nth-child(n) {
+  --nav-tone: var(--green);
+  --nav-soft: var(--green-soft);
+}
+
+.nav-group:nth-child(2) .nav-item:not(.nav-item--active) svg,
+.nav-group:nth-child(3) .nav-item:not(.nav-item--active) svg,
+.nav-group:nth-child(4) .nav-item:not(.nav-item--active) svg,
+.nav-group:nth-child(5) .nav-item:not(.nav-item--active) svg {
+  color: var(--text-muted);
+}
+
+.nav-group-label {
+  margin: 0 10px var(--space-2);
+  color: var(--sidebar-muted);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: var(--ls-wide);
+}
+
+.nav-item {
+  position: relative;
+  min-height: 40px;
+  padding: 9px 11px;
+  font-size: var(--fs-body);
+  font-weight: 520;
+  border-radius: var(--radius-control);
+  transition: color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
+}
+
+.nav-item:hover {
+  background: var(--surface-strong);
+}
+
+/* 激活态只留一个指示器：左侧 3px 圆角竖条 + 浅底。
+   原来同时挂着 inset 3px 阴影和一条绝对定位的 ::before——而 .nav-item 并非定位
+   元素，那条 ::before 实际是相对 .sidebar 定位、再靠 -11px 负 margin 凑回位置的，
+   两个指示器互相重复且一改布局就错位。 */
+.nav-item--active {
+  color: var(--green-text);
+  font-weight: 620;
+  background: var(--green-soft);
+  border-color: color-mix(in srgb, var(--green) 30%, var(--border));
+  box-shadow: none;
+}
+
+.nav-item--active::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 20px;
+  margin: 0;
+  background: var(--green);
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+  content: "";
+  transform: translateY(-50%);
+}
+
+.sidebar-footer {
+  padding: var(--space-3) 11px 14px;
+}
+
+.global-search-trigger {
+  min-height: 38px;
+  flex: 0 0 38px;
+  border-radius: var(--radius-control);
+  transition: color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard);
+}
+
+.global-search-trigger span {
+  font-size: var(--fs-small);
+}
+
+.sidebar-theme-button,
+.theme-picker button {
+  border-radius: var(--radius-control);
+  transition: color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard);
+}
+
+.sidebar-theme-button {
+  font-size: var(--fs-small);
+}
+
+.icon-button {
+  border-radius: var(--radius-control);
+  transition: color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-standard);
+}
+
+/* ---- 概览页：KPI 卡与空态 ---- */
+
+/* 去掉左侧那条 3px 彩色竖条：它按 tone 上色，但前三张卡的 tone 是「分类」
+   不是「状态」，第四张才是真状态——同一种视觉语言表达两件事，等于教用户
+   忽略颜色。现在分类色只留在图标芯片上，状态改用整卡的 --alert 变体表达。 */
+.metric-card::before {
+  display: none;
+}
+
+.metric-card {
+  padding: 18px 18px 16px;
+  background: var(--surface);
+  border-color: var(--border);
+  transition: border-color var(--dur-base) var(--ease-standard), box-shadow var(--dur-base) var(--ease-standard), transform var(--dur-base) var(--ease-standard);
+}
+
+.metric-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-2px);
+}
+
+/* 标签安静：11px、三级灰、放开字距。数值响亮：展示级 + 表格数字 + 收紧字距。
+   层级全靠这一对反差立起来，而不是把整页都压成 11-12px。 */
+.metric-label {
+  color: var(--text-muted);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: var(--ls-wide);
+}
+
+.metric-value {
+  margin-top: var(--space-3);
+  font-family: var(--font-numeric);
+  font-size: var(--fs-display-2);
+  font-weight: 620;
+  line-height: var(--lh-tight);
+  letter-spacing: var(--ls-tight);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.metric-meta {
+  margin-top: var(--space-2);
+  font-size: var(--fs-micro);
+  line-height: 18px;
+}
+
+/* 真状态：成功率跌破阈值时整卡给出可感知的信号，而不是只把图标换个颜色。 */
+.metric-card--alert {
+  background: color-mix(in srgb, var(--coral-soft) 45%, var(--surface));
+  border-color: color-mix(in srgb, var(--coral) 42%, var(--border));
+}
+
+.metric-card--alert .metric-value {
+  color: var(--coral-text);
+}
+
+.metric-card--alert .metric-icon {
+  color: var(--coral);
+  background: var(--coral-soft);
+}
+
+/* KPI 入场：错峰 40ms 依次浮起。 */
+.kpi-grid {
+  gap: var(--space-3);
+}
+
+.kpi-grid > * {
+  animation: pf-rise var(--dur-enter) var(--ease-enter) both;
+}
+
+.kpi-grid > *:nth-child(1) { animation-delay: 0ms; }
+.kpi-grid > *:nth-child(2) { animation-delay: 40ms; }
+.kpi-grid > *:nth-child(3) { animation-delay: 80ms; }
+.kpi-grid > *:nth-child(4) { animation-delay: 120ms; }
+
+/* 空态：原来是一个 220px 高、只居中一行 12px 小字的空盒子，看着像加载失败。
+   收窄高度、给图标一个软芯片、把文案提到 13px，让它读起来是「确实没有数据」。 */
+.empty-data {
+  min-height: 168px;
+  flex-direction: column;
+  gap: var(--space-3);
+  font-size: var(--fs-body);
+}
+
+.empty-data svg {
+  width: 34px;
+  height: 34px;
+  padding: 8px;
+  color: var(--text-muted);
+  background: var(--surface-strong);
+  border-radius: var(--radius-pill);
+}
+
+/* 面板顶部那 2px 彩条同理去掉：它是按面板轮换的固定色，不表示任何状态，
+   而「工具消耗」那块用的是 --coral —— 一个纯中性容器顶着红边，会被读成出错。
+   分类识别交给标题旁的图标芯片（保留 --panel-tone），边框回到统一的发丝线。 */
+.dashboard-page .data-panel {
+  border-top: 1px solid var(--border);
+}
+
+.tool-section {
+  border-top: 1px solid var(--border);
+}
+
+/* 空值占位。em dash 在 34px 展示级字号下会连成一道粗横杠、看着像分隔线或边框，
+   所以缩到正文级并压成三级灰：读作「没有数据」，而不是「这里有一条线」。 */
+.metric-empty {
+  color: var(--text-muted);
+  font-size: var(--fs-lead);
+  font-weight: 500;
+  font-variant-numeric: normal;
+  letter-spacing: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
