@@ -79,6 +79,14 @@ export function siteBrowserCheckinURL(site?: Pick<Site, 'base_url' | 'external_c
   }
 }
 
+// 站点公开状态端点报告的签到能力（turnstile / disabled / …），只在值得注意时给一句
+// 中文提示。能自动签到的站点返回空串，不占版面；尚未探测到也一样留空。
+export function siteCheckinMethodHint(site?: Pick<Site, 'checkin_method'>): string {
+  if (site?.checkin_method === 'turnstile') return '需人机验证'
+  if (site?.checkin_method === 'disabled') return '站点已关闭签到'
+  return ''
+}
+
 export function formatAccountBalance(account: SiteAccount): string {
   if (account.balance == null) return '—'
   const currency = (account.balance_currency || 'USD').toUpperCase()

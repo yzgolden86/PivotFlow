@@ -478,6 +478,10 @@ export interface Site {
   tags_json: string
   last_probe_status: string
   last_error?: string
+  // 站点公开状态端点报告的签到能力（unknown/available/disabled/turnstile）。
+  // 站点级事实，探测一次后由所有账号共享；空表示尚未探测到。
+  checkin_method?: string
+  checkin_method_checked_at?: number
   created_at: number
   updated_at: number
 }

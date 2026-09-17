@@ -3,7 +3,7 @@ import { Copy, ExternalLink, Globe2, Network, Pencil, Plus, Power, Radar, Refres
 import { createSite, deleteSite, getSiteInventory, peekSiteInventory, probeSite, updateSite } from '../api'
 import type { Site, SiteAccount, SiteCascadeResult } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagination, SecretInput } from './shared'
-import { Modal, siteConfiguredCheckinURL, StatusBadge, siteErrorMessage } from './siteShared'
+import { Modal, siteCheckinMethodHint, siteConfiguredCheckinURL, StatusBadge, siteErrorMessage } from './siteShared'
 import { useLocation } from 'react-router-dom'
 import { credentialLabel, credentialOptions, normalizeCredentialType, platformSupportsCheckin, type CredentialType } from '../siteCredentials'
 
@@ -246,7 +246,7 @@ function SiteRow({ site, accounts, selected, busy, focused, rowRef, select, copy
     <div className="site-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${site.name}`} /><span className={`status-dot ${site.enabled ? 'status-dot--success' : 'status-dot--muted'}`} /><div><a className="entity-link" href={`#/sites?focus_site_id=${site.id}`}><strong>{site.name}</strong></a><span>#{site.id} · {site.timezone || 'Asia/Shanghai'}</span></div></div>
     <div className="site-address"><a className="site-base-link" href={site.base_url} target="_blank" rel="noreferrer" title={`在新标签页打开 ${site.base_url}`}><strong>{site.base_url}</strong></a><span>{site.platform || 'unknown'} · {site.proxy_url ? '自定义代理' : site.use_system_proxy ? '系统代理' : '直连'}</span></div>
     <div className="site-account-summary"><strong>{healthy}/{accounts.length}</strong><div className="site-account-links">{accounts.length ? accounts.slice(0, 2).map((account) => <a className="entity-chip" key={account.id} href={`#/accounts?focus_account_id=${account.id}${['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}>{account.label}</a>) : <span>暂无账号</span>}</div></div>
-    <div className="site-probe"><StatusBadge status={site.last_probe_status} /><span title={site.last_error}>{site.last_error || '最近探测状态'}</span></div>
+    <div className="site-probe"><StatusBadge status={site.last_probe_status} /><span title={site.last_error}>{site.last_error || '最近探测状态'}{siteCheckinMethodHint(site) ? ` · ${siteCheckinMethodHint(site)}` : ''}</span></div>
     <div className="row-actions">
       {checkinURL && <a className="icon-button icon-button--surface" href={checkinURL} target="_blank" rel="noreferrer" aria-label={`打开 ${site.name} 签到页`} title="浏览器辅助签到页"><ExternalLink size={16} /></a>}
       <button className="icon-button icon-button--surface" type="button" onClick={() => execute('probe')} disabled={busy} aria-label={`探测 ${site.name}`} title="探测站点"><Radar className={busy ? 'spin' : ''} size={16} /></button>
