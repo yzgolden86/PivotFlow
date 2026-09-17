@@ -21,7 +21,12 @@
   - `golangci-lint run ./...` → `0 issues.`
   - `gofmt -l internal/` → 无输出
 
-**唯一未闭环的缺口**：只有 `NewAPI` 实现了 `CheckedInToday`，`Veloera` 与 `AnyRouter` 没有。这意味着对这两个平台的 Turnstile 站点，系统会对运营者承诺「由系统复核」，但复核根本不会发生。§4 是下一步，证据已全部备齐，可以直接开工。
+**唯一未闭环的缺口**：只有 `NewAPI` 实现了 `CheckedInToday`，`Veloera` 与 `AnyRouter` 没有。这意味着对这两个平台的 Turnstile 站点，系统会对运营者承诺「由系统复核」，但复核根本不会发生。
+
+三个平台的契约证据**已全部备齐**，§4 可直接开工，不需要再做调研：
+
+- **New API / Veloera** —— 直接读上游 Go 源码
+- **AnyRouter** —— 闭源，反推自实战签到脚本 `millylee/anyrouter-check-in`（结论：没有状态端点，只能靠 POST 响应文案判断）
 
 ---
 
@@ -95,14 +100,17 @@ CGO_ENABLED=0 go build -tags sonic -trimpath -ldflags=... -o pivotflow .
 
 ### 3.1 New API 系签到契约（读上游源码实测）
 
-| 场景 | New API | Veloera |
-| --- | --- | --- |
-| 状态路由 | `GET /api/user/checkin?month=YYYY-MM`（**不挂** Turnstile） | `GET /api/user/check_in_status`（**注意下划线**） |
-| 状态字段 | `data.stats.checked_in_today`: bool | `data.can_check_in`: bool（**语义相反**，true = 今天还没签） |
-| 签到路由 | `POST /api/user/checkin`（**挂** Turnstile） | `POST /api/user/check_in`（**挂** Turnstile） |
-| 成功响应 | `data.quota_awarded`: N | `data.quota`: N（**键名不同**） |
-| 已签到文案 | `"今日已签到"` ✅ 已识别 | `"你今天已经签到过了"` ❌ **未识别** |
-| Turnstile 文案 | `"Turnstile token 为空"` ✅ | `"Turnstile token 为空"` ✅ |
+| 场景 | New API | Veloera | AnyRouter |
+| --- | --- | --- | --- |
+| 状态路由 | `GET /api/user/checkin?month=YYYY-MM`（**不挂** Turnstile） | `GET /api/user/check_in_status`（**注意下划线**） | **无**（闭源，实战脚本只用 self + sign_in） |
+| 状态字段 | `data.stats.checked_in_today`: bool | `data.can_check_in`: bool（**语义相反**，true = 今天还没签） | — |
+| 签到路由 | `POST /api/user/checkin`（**挂** Turnstile） | `POST /api/user/check_in`（**挂** Turnstile） | `POST /api/user/sign_in` |
+| 成功响应 | `data.quota_awarded`: N | `data.quota`: N（**键名不同**） | 未知；实战脚本看 `ret==1 or code==0 or success` |
+| 已签到文案 | `"今日已签到"` ✅ 已识别 | `"你今天已经签到过了"` ❌ **未识别** | 未知；实战脚本认 `已经签到`/`已签到`/`重复签到` |
+| Turnstile 文案 | `"Turnstile token 为空"` ✅ | `"Turnstile token 为空"` ✅ | 未知 |
+
+> 三者的证据强度不同：New API 与 Veloera 是直接读上游 Go 源码；AnyRouter 闭源，
+> 结论反推自实战签到脚本 `millylee/anyrouter-check-in`，可信但非一手。
 
 关键推论：
 
@@ -151,6 +159,13 @@ if methodKnown && method.Status == provider.CheckinMethodTurnstile && provider.E
 
 只有 `NewAPI` 实现了 `CheckinStatusProvider`，`Veloera` / `AnyRouter` 没有。这段话对后两者是**空头支票** —— 类型断言失败，复核根本不会跑。
 
+两者的性质不同，别一概而论：
+
+- **Veloera 是「暂时没实现」**：上游有 `/api/user/check_in_status`，可以补（见 P1-2）
+- **AnyRouter 是「实现不了」**：上游根本没有状态端点，补不了（见 P1-4）
+
+所以即便 P1-2 将来补齐了 Veloera，这句话对 AnyRouter 仍然必须收敛。这也是本项该先做的原因 —— 它是唯一能同时覆盖两者的修复。
+
 **修法**：仅当 `adapter.(provider.CheckinStatusProvider)` 断言成功时才附加「由系统复核」；否则改成「请在浏览器完成签到」（不承诺复核）。
 
 **验收**：加一个单测，用一个**不**实现 `CheckinStatusProvider` 的 stub 适配器 + turnstile 方法，断言消息里不含「由系统复核」；再用一个实现了的 stub，断言消息含之。
@@ -168,6 +183,11 @@ if methodKnown && method.Status == provider.CheckinMethodTurnstile && provider.E
 后果：落入 `!payload.Success` → `responseError` → 无 turnstile / 未登录关键词 → `CodeRequestFailed` → `checkinStatusFromCode` → **`CheckinFailed`**。
 
 于是「今天已经签过」被记成失败：`last_checkin_status=failed`、触发失败通知，并且**当天按 1h × 16 重试**（最多 48 个请求）。这与 hao哥 明确提过的「别被当外部攻击、容易 ban 号」的顾虑**直接冲突**。
+
+**不是拍脑袋**：实战签到脚本 `millylee/anyrouter-check-in` 的已签到关键词表是
+`['已经签到', '已签到', '重复签到', 'already checked', 'already signed']` ——
+**显式列了 `已经签到`**。说明 New API 系确实存在用「已经签到」措辞的分支，
+而我们漏掉了它。（详见 P1-4）
 
 **修法**：扩展 `isAlreadyCheckedMessage`，纳入 `已经签到`。注意别误伤其他分支（该函数被三个适配器共用）。
 
@@ -191,11 +211,21 @@ Veloera 成功响应是 `{"success":true,"message":"签到成功","data":{"quota
 
 **修法**：在 `checkinRewardText` 里加 `quota` 回落。注意 `quota` 这个键在 `/api/user/self` 里是**余额**语义，但 `checkinRewardText` 只在签到响应上调用，所以安全 —— 改的时候确认调用点没变。
 
-### P1-4 AnyRouter 的状态端点未知
+### P1-4 AnyRouter 没有状态端点——结论已定，别再找了
 
-AnyRouter 的签到端点是 `/api/user/sign_in`（cookie 分支）和 `/api/user/checkin`（token 分支，带 `X-Requested-With`）。**状态端点尚未确认**。公开仓库没找到（`anyrouter/anyrouter` 返回 404）。
+AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实战签到脚本可反推契约。查 `millylee/anyrouter-check-in`（被 `rakuyoMo/autocheck-anyrouter` 等多个项目基于）确认：
 
-建议：要么找到它的上游源码确认，要么**只做 P1-0 的兜底**（不承诺复核），不要凭猜测实现 `CheckedInToday`。
+- `utils/config.py`：`sign_in_path = '/api/user/sign_in'`、`user_info_path = '/api/user/self'`
+- `checkin.py` 全流程**只有两个请求**：`GET /api/user/self`（拿余额，`quota/500000`）→ `POST /api/user/sign_in` → 再 `GET /api/user/self` 用**余额差**判断签到是否真的成功
+- **没有任何状态查询端点**
+
+结论：**AnyRouter 无法实现 `CheckedInToday`**，因此对 AnyRouter 的 Turnstile 站点，「由系统复核」必然是空头承诺。这正是 P1-0 存在的理由，别试图给它补一个。
+
+顺带两个可借鉴的点（该脚本的成功判定比我们宽松）：
+
+- 成功：`ret == 1 or code == 0 or success`（我们只看 `success`）
+- 已签到关键词：`['已经签到', '已签到', '重复签到', 'already checked', 'already signed']`
+  —— 注意它**显式列了 `已经签到`**，与下面 P1-1 的发现一致，可作为佐证。
 
 ### P2 真实站点验证
 
@@ -223,7 +253,7 @@ AnyRouter 的签到端点是 `/api/user/sign_in`（cookie 分支）和 `/api/use
 
 ## 6. 需要 hao哥 决策的问题
 
-1. **Veloera / AnyRouter 目前有在用的站点吗？** 如果没有，P1-1 ~ P1-4 可以降级，优先只做 P1-0。
+1. **Veloera / AnyRouter 目前有在用的站点吗？** 如果没有，P1-1 ~ P1-3 可以降级，优先只做 P1-0。（P1-4 已有定论：AnyRouter 无状态端点，不必再花时间查。）
 2. **能否提供一次 VPS 上的真实验证**（`docker logs` 或一个测试站点令牌）？目前全部结论都来自上游源码推导。
 3. **Veloera 的 UTC 日界与 PivotFlow 的 `local_day` 可能错配**，是否要处理？（建议先观察，不急）
 
