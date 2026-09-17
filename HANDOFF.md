@@ -239,6 +239,12 @@ PIVOTFLOW_DETAIL_CHECK_SEED=1 \
 
 - **为什么改读取端而不是改 schema**：`migrate.go` 开头写明「不得在启动迁移中删除废弃字段或表」，而 SQLite 改列可空性要重建表 —— 老库改不了。既然老库永远是 nullable，读取端就必须容忍 NULL；只把新库的 schema 收紧，反而会让下面那条回归测试（靠 `PRAGMA table_info` 找可空列）失去覆盖。**schema 是契约，代码服从它。**
 - **回归测试** `internal/storage/sql/site_nullable_columns_test.go`：先走公开写路径建行（保证 NOT NULL 列都有值），再用 `PRAGMA table_info` 把该表**所有**可空列刷成 NULL，最后走公开读路径断言读得出来且归一正确。刻意**不列举列名** —— 将来新增可空列会被自动带上。四处修复各自单独回退验证过，报错正是上面那句。
+- **审计查了两个来源**，因为「新库的 schema」和「老库升级上来的 schema」是两套独立定义：
+  1. `schema/tables.go` 的 `Define*Table` —— 新库长什么样（38 个可空列，逐个核对扫描目标）。
+  2. `migrate_columns.go` / `migrate_data.go` 里 `ensureColumn` 的 `mysqlDef`/`sqliteDef` 字符串 —— 老库升级时加什么列。这批里没有 `NOT NULL` 的定义对应 **11 个列**，其中 **10 个本来就有归属**：`original_req_url` / `original_req_headers` / `translated_resp_headers`（`debug_log.go` 已 COALESCE）、`custom_request_rules` / `cooldown_detection_rules` / `oauth_credential`（已 COALESCE / `sql.NullString`）、`token_ciphertext`（`TEXT NULL` → `NullString`）、`checkin_attempts.balance_before` / `balance_after` / `balance_delta`（`NullFloat64`）。
+  - 唯一看着像漏网的 `fingerprint_test_results.distribution` **不是缺陷**：SQLite 分支加的就是 `TEXT NOT NULL DEFAULT '[]'`（本项目线上跑 SQLite）；MySQL/PG 分支虽然先加可空列，但同一个函数**每次启动都无条件**回填（`UPDATE ... WHERE distribution IS NULL OR ''`）再 `MODIFY ... NOT NULL`，没有迁移标记保护 —— 也就是说它**自愈**，可空窗口活不过一次重启。所以它在新库和升级库里都不可空，不属这一类。
+  - 于是可以写死一条**不变量**：**`tables.go` 里 nullable 的列，读路径必须容忍 NULL** ——要么 `sql.Null*`，要么 `[]byte`（`database/sql` 收 NULL 得 nil），要么 SELECT 里 `COALESCE`。违反它就会得到本文开头那个 500。
+  - **生成式测试的边界**：它靠 `PRAGMA table_info` 问测试库，而测试库是按 `tables.go` 建的 —— 所以它只覆盖「新库 schema 可空」的列。**迁移单独添加的可空列不在它的覆盖范围内**，那部分要靠上面的第 2 项人工核对。加这类列时记得同时想清楚读取端。
 - 上面这个 seed 脚本仍显式写空串：现在不是必须了，但留着无害，且能让脚本在任何库上都跑得动。
 
 **本机只是开发环境，PivotFlow 实际跑在 VPS 的 Docker 里。** 本机 `data/pivotflow.db`、`.tmp-ui/pivotflow.db` 都是陈旧开发残留（旧 schema、0 行），**不能当线上库查签到历史**。要线上证据：向 hao哥 要 VPS 的 `docker logs` / 站点令牌，或直接读**上游开源源码**推导契约（本次会话就是靠这条定案的，最省事）。
