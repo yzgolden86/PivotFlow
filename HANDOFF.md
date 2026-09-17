@@ -7,7 +7,7 @@
 ## 0. 当前状态
 
 - 仓库：`E:\Dev\tools\api\PivotFlow`，分支 `main`
-- 工作区**干净**，最近的三个提交就是本次会话的成果：
+- 工作区**干净**。签到这条线的提交（由远及近）：
 
 | Commit | 主题 |
 | --- | --- |
@@ -15,12 +15,25 @@
 | `2122d29` | 签到结果落库、重试分档与历史保留期清扫（app 编排层） |
 | `a6c82f9` | 控制台按签到能力收敛「打开签到页」入口 + 重建 `web/console` 产物 |
 | `3e4d97d` | 补齐 Veloera 签到状态契约，收敛 Turnstile 复核承诺（§4 的 P1-0 ~ P1-3） |
+| `7a24c24` | 记录 Veloera 不能委托 `ListModelsForRoutingKey` 的上游理由 |
+| `36ee10d` | 识别阿里云 WAF 校验页，别再报成 invalid JSON |
+| `380fbb4` | 站点请求统一带上 PivotFlow 的 User-Agent |
 
-- 验证状态（提交前实测，全绿）：
+- 验证状态（**对 HEAD `380fbb4` 的独立复验，全绿**）：
   - `go build -tags sonic ./...` → 退出 0
   - `go test -tags sonic -count=1 ./internal/...` → 退出 0，33 个包全 `ok`
-  - `golangci-lint run ./...` → `0 issues.`
+  - `golangci-lint run ./...`（v2.13.2）→ `0 issues.`
   - `gofmt -l internal/` → 无输出
+
+  > 复验方式：每个提交都声称验证过，这里是**独立重跑**而非采信 commit message。
+  > 另确认过工作区无残留半成品：`.tmp-sabotage/` 里破坏验证用的 `transport.bak`、
+  > `newapi.final.bak` 与当前源码逐字一致，说明破坏已正确还原；最后一次提交与最后
+  > 一次全绿日志同为 14:40，是先验证后提交。
+  >
+  > 复验时的坑：Git Bash 下 `export PATH="$PATH:$(go env GOPATH)/bin"` 无效
+  > （`go env GOPATH` 是 Windows 格式，反斜杠路径 bash 认不了），`golangci-lint`
+  > 会报 **exit 127（command not found）——这不是 lint 失败**。请用全路径
+  > `/c/Users/80470/go/bin/golangci-lint.exe`，并放后台跑（约 4 分钟，前台会被 SIGTERM）。
 
 **§4 的 P1-0 ~ P1-3 已完成**（`3e4d97d`）：`Veloera` 现按自己的
 `/api/user/check_in_status` 实现 `CheckedInToday`；Turnstile 文案改为按能力位
