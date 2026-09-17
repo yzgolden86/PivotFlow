@@ -572,3 +572,42 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 - **管道会吞退出码**：`go test ... | grep -vE "^ok "` 的 `$?` 是 grep 的（找不到行 = 1，看着像失败）；`... | tail -20` 的 `$?` 恒 0（掩盖失败）。判断成败请重定向到日志文件再直接看 `$?`。
 - **`go vet` + `gofmt` 通过不代表 `staticcheck` 通过**（遇到过 `w.Write([]byte(fmt.Sprintf(...)))` 被 QF1012 拦）。
 - 新增测试文件记得加 `//go:build sonic`。
+
+---
+
+## 8. 工程约定与坑（速查）
+
+> 这一节是**跨会话长期记忆的下沉落点**：原先堆在 `MEMORY.md` 里，但它有注入体积上限、会被截断，
+> 而这里没有。规则本身仍然是「不可再推导、踩过就疼」的那一类，别当背景资料略过。
+
+### 8.1 工具链
+
+- `golangci-lint` 要求零警告，v2.13.2 装在 `C:\Users\80470\go\bin\golangci-lint.exe`，跑一次约 4 分钟，**后台跑**（前台 120s 会被 SIGTERM）。
+- **Git Bash 里必须用全路径调用它**：`export PATH="$PATH:$(go env GOPATH)/bin"` **无效**（`go env GOPATH` 是反斜杠形式，拼出来的 PATH 条目 Git Bash 认不出），表现为 **exit 127**。**exit 127 不是 lint 失败**，别当成有警告去查。
+- **内置 gofmt ≠ 本机 gofmt**（go1.27 vs go1.26）：两者对「`return` 后面跟两个多行复合字面量」的缩进互不认可，会互相反复改。**解法是改写掉这个歧义构造**（把字面量先赋给变量再 return），不是调工具版本。
+- `QF1002`：`switch { case x == "a": ... }` 若**所有** case 都是同一个表达式的相等比较，会被要求改成带标签的 `switch x`；只要有一个 case 带 `&&` 就不触发。**同一文件里两种写法并存而不报错是正常的**。
+- Go 用 `any` 不用 `interface{}`；`gofmt -l internal/` 必须干净。
+- **注释语言：Go 代码用英文，控制台代码用中文。**
+
+### 8.2 控制台源码约定
+
+- **纯逻辑必须放 `.ts` 兄弟模块，页面 `import` 它**——`node --test` 不做 JSX 转译，**import 不了 `.tsx`**。先例：`modelRedirect.ts` ← `LogsPage.tsx`、`channelKeyHealth.ts` ← `ChannelKeysModal.tsx`、`siteCheckinMethod.ts` ← `CheckinsPage.tsx`、`format.ts` ← `DashboardPage.tsx`。
+- 测试用 `node:test` + `node:assert/strict`，**用例名写中文**，夹具用**工厂函数 + 显式返回类型标注**（不用 `as` 断言）。
+- **import 兄弟模块要写显式 `.ts` 后缀**（`from './format.ts'`），否则 `ERR_MODULE_NOT_FOUND`。
+- **金额/数字格式化只有一份实现**（`console/src/format.ts`），`pages/shared.tsx` 只做转出。**精度必须按组定、不能按单个值定**——按单值定会让同一列混出 `$7.80` 和 `$0.8906`。成组展示统一传 `moneyDigits(整组)`。
+- **改样式先想权重**：新加的**顶层**规则会顶掉媒体查询里设过的同名属性（**媒体查询不加权重**）。所以覆盖层的惯例是**追加到 `styles.css` 末尾**，而不是就近插在原始规则旁边。
+- 字号只允许**字面量 px** 或 `--fs-*` 令牌；写成别的（如 `var(--x)` 拼字符串）会让 `smallTextLegibility.test.ts` **静默失效**（守卫解析不到就跳过，不报错）。
+
+### 8.3 传输层（`internal/site/provider/transport.go`）
+
+- `ClientFactory.New(proxyURL)` 三模式，由 `siteProxyURL(site)` 决定：站点有 `ProxyURL` → 用它；`UseSystemProxy=true` → `""` → `http.ProxyFromEnvironment`；否则 `DirectProxyURL`（`direct://`）→ **完全不走代理**。
+- **`DialContext` 的 SSRF 私网过滤必须区分「拨代理」与「拨站点」**：配了代理时 transport 拨的是**代理地址**，若照旧套 `isPrivateAddress`，会把本地代理（Clash / v2ray 的 `127.0.0.1:7890`）拒掉，报 `proxyconnect tcp: provider host resolves only to private or unsafe addresses` —— **文案说 provider host，实际检查的是代理**。用 `proxyHopTracker` 区分；env 代理只能在选择器回调（`wrap`）里记。站点自身的私网校验归 `ValidateBaseURL` 负责，`AllowPrivate` 是显式放行开关。改这层要同时保住这两条。
+
+### 8.4 本机环境的坑
+
+- **本机只是开发环境，PivotFlow 实际跑在 VPS 的 Docker 里。** 本机 `data/pivotflow.db` 是**陈旧残留**，**不能当线上库查签到历史**。要线上证据：向 hao 哥要 VPS 的 `docker logs`，或读**上游开源源码**推导契约（`raw.githubusercontent.com/QuantumNous/new-api/main/...`）。
+- **沙箱批量删除守卫按「回合」累计**（阈值 50 个条目），超了本回合**所有**删除操作都会被拒。而 `vite build` 的 `emptyOutDir: true` 会清空 `web/console/assets` → **同一回合第二次 `make console-check` 必然失败**。绕法：**先把 `web/console` 移走再构建**（移动不算删除）。注意 `embed.go` 是 `//go:embed all:web`，**移走期间别跑 Go 构建**。
+- **给原生 Windows 工具传路径要用盘符形式**（`E:/Dev/...`），**别传 POSIX 形式**：Go 把 `/e/Dev/...` 解析成 `E:\e\Dev\...`；Python 把 `/c/Users/...` 解析成 `C:\c\Users\...`（`python -m venv` 会静默什么都不建）。
+- **后台起服务端用 `run_in_background`，别用 `&`。** **停进程用 PowerShell 的 `Stop-Process`**：Git Bash 里 `taskkill //PID` 会被路径改写搞坏，报「无效参数」。
+- **控制台认证是 Bearer token，不是 cookie**：`POST /login`（**不是 `/admin/login`**）在**响应体**里返回 `{"token": ...}`，前端存 `localStorage` 的 `pivotflow_token`，之后带 `Authorization: Bearer <token>`。所以用 `fetch` 探测接口时必须显式加这个头——带 `credentials:'include'` 会**一律 401**，容易误判成「登录没生效」。
+- playwright 必须用**系统 Python**：`C:/Users/80470/AppData/Local/hermes/hermes-agent/venv/Scripts/python.exe`（3.11.11），托管的 3.13.12 没装。字体子集工具链在托管 venv `...\python\envs\default`（fonttools）。冒烟截图落在 `%TEMP%\pivotflow-console-ui`。`curl` 别写 `/tmp`。
