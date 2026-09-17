@@ -1,6 +1,10 @@
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ResolvedTheme = 'light' | 'dark'
-export type ThemePreset = 'jade' | 'ocean' | 'coral' | 'anthropic' | 'violet' | 'slate' | 'forest' | 'plum'
+// 预设清单是**唯一真源**：类型、校验、以及 index.html 里那段在 bundle 之前
+// 跑的内联脚本都从它派生。内联脚本没法 import（它必须先于模块执行），
+// 所以只能把字面量抄一份过去，由 themeBoot.test.ts 盯着两边不许漂移。
+export const themePresetOptions = ['jade', 'ocean', 'coral', 'anthropic', 'violet', 'slate', 'forest', 'plum'] as const
+export type ThemePreset = typeof themePresetOptions[number]
 // 字体只列 Windows / macOS 预装的常用款：项目不加载 webfont，
 // 写进未安装的字体只会静默回落，让选项之间看不出差别。
 export const themeFontOptions = [
@@ -19,7 +23,8 @@ export const themeFontOptions = [
 ] as const
 
 export type ThemeFont = typeof themeFontOptions[number]['value']
-export type ThemeRadius = 'compact' | 'balanced' | 'soft'
+export const themeRadiusOptions = ['compact', 'balanced', 'soft'] as const
+export type ThemeRadius = typeof themeRadiusOptions[number]
 
 export interface ThemeCustomization {
   preference: ThemePreference
@@ -44,8 +49,7 @@ function isThemePreference(value: unknown): value is ThemePreference {
 }
 
 function isThemePreset(value: unknown): value is ThemePreset {
-  return value === 'jade' || value === 'ocean' || value === 'coral' || value === 'anthropic' ||
-    value === 'violet' || value === 'slate' || value === 'forest' || value === 'plum'
+  return themePresetOptions.some((preset) => preset === value)
 }
 
 function isThemeFont(value: unknown): value is ThemeFont {
@@ -53,7 +57,7 @@ function isThemeFont(value: unknown): value is ThemeFont {
 }
 
 function isThemeRadius(value: unknown): value is ThemeRadius {
-  return value === 'compact' || value === 'balanced' || value === 'soft'
+  return themeRadiusOptions.some((radius) => radius === value)
 }
 
 function readStoredAppearance(): Partial<ThemeCustomization> {
