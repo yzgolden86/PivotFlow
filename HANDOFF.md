@@ -134,6 +134,76 @@ Turnstile 档**故意极慢**，理由是运营者（hao哥）明确提出的风
 
 ---
 
+### 1.7 视觉语言 v2：外壳 + 概览页（**已提交**，`f6f8bab` `2b40977` `34d5c71`）
+
+hao 哥要求「对标 Awwwards 顶级网站」的 UI 大改造。经确认选定的范围是**换一套视觉语言**、**加自托管的数字/拉丁子集变量字体**、**先只做外壳 + 概览页**（作为样板，其余 10 页等评审后再推）。
+
+设计主张：控制台是「读数的仪表」，不是「填表的表单」。四条落点，都在 `console/src/styles.css` 末尾新增的「视觉语言 v2」层里（追加在末尾，同权重靠后覆盖，沿用本文件既有的分层惯例）：
+
+1. **层级靠尺度对比**。改前统计：326 处声明 ≤12px（139×11px、111×12px、58×10px、18×9px），而 >15px 的只有 18 处 —— 全站一个音量，没有主次。现在把上端拉开（展示级数字 26/34/44px），下端仍守住 11px 可读性下限。
+2. **标签安静、数值响亮**。标签 11px + 大写 + 放开字距 + 三级灰；数值展示级 + 表格数字 + 收紧字距。
+3. **颜色只表示状态**。删掉三处纯装饰上色：KPI 卡左侧 3px 彩色竖条、品牌区 48px 三色渐变短线、导航「每组一个色相」的轮转（五组各染一色不承载信息，只会稀释「当前在哪一页」这个真状态）。
+4. **层次用分层面 + 发丝边框**，动效只服务于因果。
+
+改动清单：
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `console/src/styles.css` | 新增「视觉语言 v2」层约 386 行：`@font-face`、字阶/间距/动效/层次令牌、外壳、概览页、动效基元 |
+| `console/src/assets/fonts/inter-variable-latin.woff2` | 新增，26,784 B（自托管子集） |
+| `console/src/assets/fonts/LICENSE-Inter.txt` | 新增，SIL OFL 1.1（再分发必需） |
+| `console/src/pages/DashboardPage.tsx` | `MetricCard` 新增显式 `alert` 属性；成功率卡不再用 `tone` 表达状态；`aria-label` 补上 meta |
+| `console/src/pages/smallTextLegibility.test.ts` | 守卫加固：解析 `var(--fs-*)` |
+| `console/src/themeBoot.test.ts` | 新增，钉住 `index.html` 内联清单与 `theme.ts` 不漂移 |
+| `console/src/theme.ts` | 预设/圆角清单提成运行时数组，作为唯一真源 |
+| `console/index.html` | 修内联脚本的过时清单 + 启动态配色对齐令牌 |
+
+**字体怎么来的**（可复现，别手改 `woff2`）：
+
+```bash
+# 1. 取完整 Inter 变量字体（Google Fonts 的 latin 子集缺 → ≥ ≤，不能用）
+curl -sSL -o InterVariable.woff2 \
+  https://cdn.jsdelivr.net/gh/rsms/inter@v4.1/docs/font-files/InterVariable.woff2
+# 2. 先按用字子集化（码位清单由 .tmp-audit/non_ascii_chars.py 扫源码得出）
+python -m fontTools.subset InterVariable.woff2 --flavor=woff2 \
+  --unicodes="U+0020-007E,U+00A0,U+00A3,U+00A5,U+00B0,U+00B7,U+00D7,U+2013,U+2014,U+2018,U+2019,U+201C,U+201D,U+2026,U+20AC,U+2192,U+2212,U+2264,U+2265" \
+  --layout-features=kern,liga,calt,tnum,case --desubroutinize --no-hinting -o step1.woff2
+# 3. 再定住 opsz 轴（顺序不能反）
+python -m fontTools.varLib.instancer step1.woff2 opsz=16 -o inter-variable-latin.woff2
+```
+
+三个坑：**① 必须先子集再定轴**，反过来会触发 `OTLOffsetOverflowError` 的自动修复（GPOS 被改写）；**② opsz 轴留着会让 gvar 变二维**，体积从 26.8 KB 涨到 41.3 KB，收益很小，所以定在 16；**③ Google Fonts 的 latin 子集不含 `→` `≥` `≤`**，而控制台用了 15 处 `→`，必须用完整字体作源。中文不在 `unicode-range` 内，自动回落系统字体，中文字形不进包。
+
+**提交拆分**（三个，按「守卫先于依赖它的改动」排）：
+
+| commit | 内容 |
+| --- | --- |
+| `f6f8bab` | `test(console)`：小字守卫改解析 `var(--fs-*)`。**必须排在字体/令牌之前** —— 不先修守卫，字号一迁到令牌它就会静默失效 |
+| `2b40977` | `fix(console)`：修 `index.html` 内联启动态与 `theme.ts` 漂移（顺手把清单提成运行时数组，加 `themeBoot.test.ts` 钉住） |
+| `34d5c71` | `feat(console)`：视觉语言 v2 本体 + 字体子集 + 重建的 `web/console`（42 文件，+596/−75） |
+
+**门禁结果**：`typecheck` 0 错；`node --test` **62/62**（新增 2 条）；`vite build` 通过；`go test -tags sonic ./internal/...` **33 包全过**；`golangci-lint` 未重跑（本次没动任何 Go 文件，结论不变）。**浏览器门禁 `console_ui_smoke.py` 已跑，全绿**：`console_errors` 与 `failed_responses` 均为空，11 条路由断言（无溢出、无遗留链接）全过，体积预算三级判定全过。产物同步已复验：移开 `web/console` 后重跑 `make console-check`，`diff -rq` 与 `git status` 均为空 —— **可复现且就是当前提交内容**。
+
+**A/B 实测**（同一脚本、同一空库，改造前/后各跑一次；改造前那一份由 `.tmp-console-stale-1789656383` 单独构建成 `.tmp-smoke/before.exe` 得到，**是真正的改造前产物**，不是估算）：
+
+| 指标 | 改前 | 改后 | 阈值 |
+| --- | --- | --- | --- |
+| `resource_count` | 36 | 37 | 45 |
+| `static_transfer_bytes` | 249,521 | **278,258** | 400,000 |
+| `static_decoded_bytes` | 770,673 | 804,269 | — |
+| `dom_content_loaded_ms` | 29.9 | 38.9 | — |
+| 最重路由 transfer | 23,133（9.27%） | 23,133（8.31%） | 150,000 |
+| `console_errors` / `failed_responses` | 0 / 0 | 0 / 0 | 0 |
+
+字体净增 **+28,737 B**（26.8 KB 字体 + 约 1.9 KB CSS），与事前估算的 +28.4 KB 基本吻合；余量仍有 **121.7 KB**。唯一变慢的是 `dom_content_loaded` +9 ms（字体请求），最重路由的占比反而从 9.27% 降到 8.31%（分母变大）。截图落在 `%TEMP%\pivotflow-console-ui`，本次的「改前 / 改后」两套已分别留档在 `.tmp-audit/shots-before` 与 `.tmp-audit/shots-after`（各 16 张）。
+
+**看图之后又修的两处**（都是「颜色只表示状态」没贯彻到底）：
+
+1. **面板顶部那 2px 彩条**：`.dashboard-page .data-panel` 的 `border-top: 2px solid var(--panel-tone)` 与 `.tool-section` 的 `border-top: 2px solid var(--coral)` —— 按面板轮换的固定色，不表示状态；「工具消耗」那块更是**中性容器顶着红边**，会被读成出错。已统一回 1px 发丝边框，分类识别交给标题旁的图标芯片（`--panel-tone` 保留）。
+2. **空值占位在展示级字号下变成一道横杠**：`BalanceValue` 空时返回裸 `—`，在 34px / 620 字重下连成一条粗线，看着像分隔线或边框。已改为 `<MetricEmpty />`（`.metric-empty`：正文级 + 三级灰）。成功率卡的空值同样处理。
+
+**维护点**：① 字号只允许两种写法 —— 字面量 px 或 `--fs-*` 令牌；写别的（`em`/`%` 除外）会让 `smallTextLegibility.test.ts` 当场报错，这是**故意的**（令牌名打错会让守卫静默失效）。② 新的顶层规则如果覆盖了某个选择器在媒体查询里设过的属性，窄屏会被顶掉（媒体查询不加权重）——概览页的 620px 断点就设过 `.kpi-grid` 的列数，所以 v2 层没碰这两个属性。③ `AnnouncementDetail.tsx` 仍然不许被静态 `import` 回页面。④ 概览页还有一处彩条没动：`.tool-card::after` 是**厂商**标识色（Claude / Codex / Gemini / OpenAI），那是「这是哪家」的信息，不是装饰 —— 别顺手一起删掉。
+
 ## 2. 环境与验证（必读）
 
 ```bash
@@ -173,6 +243,8 @@ CGO_ENABLED=0 go build -tags sonic -trimpath -ldflags=... -o pivotflow .
 | `static_transfer_bytes`（全站预取总量） | 249,521 | `MAX_TOTAL_TRANSFER_BYTES = 400_000` |
 | 最重路由 transfer（`#/channels`） | 23,133 | `MAX_ROUTE_TRANSFER_BYTES = 150_000` |
 | 最重路由 decoded（`#/channels`） | 69,861 | `MAX_ROUTE_DECODED_BYTES = 450_000` |
+
+> **2026-09-17 视觉语言 v2 之后（已实测，见 §1.7）**：新增的自托管字体让 `static_transfer_bytes` 从 249,521 涨到 **278,258**（+28,737 B：字体 26,784 + CSS 约 1,953），`resource_count` 36 → 37，最重路由 transfer 仍是 23,133 但占比从 9.27% 降到 8.31%。余量 121.7 KB。字体是**每个会话的固定成本**，且 woff2 已压缩、吃不到 gzip 收益 —— 以后再往字体里加字形，涨多少就是多少。`#/` 路由的 transfer 没被顶破（字体算在初始路由上）。
 
 **这条门禁第一次跑起来就抓到了一个真问题。** `#/announcements` 当时占全站预取 31%（111,127 B / 解压后 340,975 B）：那个路由 chunk 里塞着整个 markdown 渲染栈（`react-markdown` + `remark`/`rehype` 全家桶，约 336 KB 解压后），而它只有「打开某条公告」的弹窗详情才用得到 —— 控制台预取全部路由 chunk，于是每次会话都白下这 108 KB，哪怕从不打开公告页。
 
@@ -456,6 +528,10 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 | `scripts/console_announcement_detail_check.py` | 公告详情弹窗的真实渲染验证（markdown / 链接解析 / sanitize / 懒加载），冒烟脚本覆盖不到（空库没有行可点，见 §2） |
 | `console/src/pages/AnnouncementDetail.tsx` | 公告详情（markdown 栈约 336 KB）。**必须保持按需加载**，别被 `AnnouncementsPage.tsx` 静态 `import` 回去，否则预取体积涨 30%（见 §2） |
 | `console/src/pages/announcementContent.ts` | 公告链接解析纯函数（`/api/` 前缀、`javascript:`、空 `base_url` 等边界），配套 `.test.ts` |
+| `console/src/styles.css` 末尾「视觉语言 v2」层 | 全站视觉语言底座：`@font-face`、字阶/间距/动效/层次令牌、外壳、概览页（见 §1.7）。**追加在末尾靠后覆盖**是本文件既有的分层惯例 |
+| `console/src/assets/fonts/inter-variable-latin.woff2` | 自托管 Inter 子集，26.8 KB，113 码位。**别手改**，构建命令见 §1.7 |
+| `console/src/pages/smallTextLegibility.test.ts` | 小字可读性守卫：字号 ≥11px + 8 套预设 × 明暗的 WCAG AA。**会把 `var(--fs-*)` 解析回 px**；令牌名写错会当场报错（见 §1.7） |
+| `console/src/themeBoot.test.ts` | 钉住 `index.html` 内联脚本的主题清单与 `theme.ts` 不漂移（漏抄 = 每次刷新闪一下默认主题，见 §1.7） |
 
 ---
 
