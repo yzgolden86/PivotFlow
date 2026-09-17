@@ -3,20 +3,11 @@ import { CalendarCheck2, ExternalLink, History, Info, Play, RefreshCw, Users } f
 import { getCheckinAttemptsBatch, getSiteInventory, peekCheckinAttempts, peekSiteInventory, runAccountTask as executeAccountTask } from '../api'
 import type { CheckinAttempt, Site, SiteAccount } from '../types'
 import { EmptyState, ErrorState, formatTime, LoadingState, OperationNotice, PageHeader } from './shared'
-import { siteBrowserCheckinURL, siteCheckinMethodHint, siteErrorMessage, StatusBadge } from './siteShared'
+import { siteBrowserCheckinURL, siteErrorMessage, StatusBadge } from './siteShared'
+import { needsBrowserCheckin, siteCheckinMethodHint } from './siteCheckinMethod'
 import { platformSupportsCheckin } from '../siteCredentials'
 
 type CheckinView = 'accounts' | 'history'
-
-// 「打开签到页」只在真的需要人工介入时才出现。优先用站点已探测到的签到能力判断：
-// turnstile 是确定绕不过去的拦路石，直接给入口；disabled 表示站点自己关了签到，
-// 给了也没用。能力未知（还没探测过，或站点不发布这个字段）时才退回看最近一次签到结果。
-// 给所有支持签到的站点都铺这个链接，会把操作列挤满，也让它失去「这里出问题了」的提示意义。
-const needsBrowserCheckin = (account: SiteAccount, site?: Site) => {
-  if (site?.checkin_method === 'turnstile') return true
-  if (site?.checkin_method === 'disabled') return false
-  return ['browser_required', 'failed', 'unsupported'].includes(account.last_checkin_status)
-}
 
 
 export default function CheckinsPage() {
@@ -90,5 +81,5 @@ function CheckinRow({ attempt, account, site, busy, rerun }: { attempt: CheckinA
   const delta = attempt.balance_delta
   const reward = delta != null && delta > 0.000001 ? `+${delta.toFixed(2)} ${attempt.balance_currency || account?.balance_currency || ''}` : attempt.reward_text || attempt.message || attempt.error_code || '—'
   const balanceDetail = attempt.balance_before != null && attempt.balance_after != null ? `${attempt.balance_before.toFixed(2)} → ${attempt.balance_after.toFixed(2)}` : attempt.error_code || '无余额变化数据'
-  return <article className="record-row checkin-grid"><div><a className="entity-link" href={`#/accounts?focus_account_id=${attempt.site_account_id}${account && ['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}><strong>{account?.label || `账号 #${attempt.site_account_id}`}</strong></a>{account ? <a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || '未知站点'}</a> : <span>未知站点</span>}<span>{attempt.provider_id}</span></div><div><StatusBadge status={attempt.status} /><span>第 {attempt.attempt_no} 次尝试</span></div><div><strong>{attempt.local_day || '—'}</strong><span>{attempt.trigger_scope || 'manual'}</span></div><div><strong className={delta != null && delta > 0.000001 ? 'balance-delta' : ''} title={reward}>{reward}</strong><span>{balanceDetail}</span></div><div><strong>{attempt.finished_at ? formatTime(attempt.finished_at) : '进行中'}</strong><span>{attempt.started_at ? `开始 ${formatTime(attempt.started_at)}` : '—'}</span></div><div className="checkin-actions">{[ 'browser_required', 'failed', 'unsupported' ].includes(attempt.status) && site?.checkin_method !== 'disabled' && siteBrowserCheckinURL(site) && <a className="secondary-button" href={siteBrowserCheckinURL(site)} target="_blank" rel="noreferrer" title="在上游站点手动完成签到或验证">打开签到页<ExternalLink size={12} /></a>}<button className="secondary-button" type="button" onClick={rerun} disabled={!account || busy}>{busy ? <RefreshCw className="spin" size={13} /> : null}重试</button></div></article>
+  return <article className="record-row checkin-grid"><div><a className="entity-link" href={`#/accounts?focus_account_id=${attempt.site_account_id}${account && ['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}><strong>{account?.label || `账号 #${attempt.site_account_id}`}</strong></a>{account ? <a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || '未知站点'}</a> : <span>未知站点</span>}<span>{attempt.provider_id}</span></div><div><StatusBadge status={attempt.status} /><span>第 {attempt.attempt_no} 次尝试</span></div><div><strong>{attempt.local_day || '—'}</strong><span>{attempt.trigger_scope || 'manual'}</span></div><div><strong className={delta != null && delta > 0.000001 ? 'balance-delta' : ''} title={reward}>{reward}</strong><span>{balanceDetail}</span></div><div><strong>{attempt.finished_at ? formatTime(attempt.finished_at) : '进行中'}</strong><span>{attempt.started_at ? `开始 ${formatTime(attempt.started_at)}` : '—'}</span></div><div className="checkin-actions">{[ 'browser_required', 'failed', 'unsupported' ].includes(attempt.status) && !['disabled', 'unavailable'].includes(site?.checkin_method || '') && siteBrowserCheckinURL(site) && <a className="secondary-button" href={siteBrowserCheckinURL(site)} target="_blank" rel="noreferrer" title="在上游站点手动完成签到或验证">打开签到页<ExternalLink size={12} /></a>}<button className="secondary-button" type="button" onClick={rerun} disabled={!account || busy}>{busy ? <RefreshCw className="spin" size={13} /> : null}重试</button></div></article>
 }

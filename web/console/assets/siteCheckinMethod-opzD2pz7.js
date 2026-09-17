@@ -1,0 +1,1 @@
+function r(e){return e?.checkin_method==="turnstile"?"需人机验证":e?.checkin_method==="disabled"?"站点已关闭签到":e?.checkin_method==="unavailable"?"站点没有签到接口":""}function t(e,n){return n?.checkin_method==="turnstile"?!0:n?.checkin_method==="disabled"||n?.checkin_method==="unavailable"?!1:["browser_required","failed","unsupported"].includes(e.last_checkin_status)}export{t as n,r as s};

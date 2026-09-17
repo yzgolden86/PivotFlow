@@ -3,7 +3,8 @@ import { Copy, ExternalLink, Globe2, Network, Pencil, Plus, Power, Radar, Refres
 import { createSite, deleteSite, getSiteInventory, peekSiteInventory, probeSite, updateSite } from '../api'
 import type { Site, SiteAccount, SiteCascadeResult } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagination, SecretInput } from './shared'
-import { Modal, siteCheckinMethodHint, siteConfiguredCheckinURL, StatusBadge, siteErrorMessage } from './siteShared'
+import { Modal, siteConfiguredCheckinURL, StatusBadge, siteErrorMessage } from './siteShared'
+import { siteCheckinMethodHint } from './siteCheckinMethod'
 import { useLocation } from 'react-router-dom'
 import { credentialLabel, credentialOptions, normalizeCredentialType, platformSupportsCheckin, type CredentialType } from '../siteCredentials'
 

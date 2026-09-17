@@ -173,6 +173,14 @@ const (
 	// challenge is required. A headless request cannot satisfy it, so the
 	// server-side check-in is impossible until a human completes it.
 	CheckinMethodTurnstile = "turnstile"
+	// CheckinMethodUnavailable means the site does not serve a check-in
+	// endpoint at all: the attempt came back 404. It differs from
+	// CheckinMethodDisabled in where the fact comes from — disabled is what the
+	// site says about itself on its public status endpoint, unavailable is what
+	// the site did when actually asked. The conclusion for the scheduler is the
+	// same either way: posting again cannot succeed, so do not spend the
+	// request.
+	CheckinMethodUnavailable = "unavailable"
 )
 
 // CheckinMethod describes how (or whether) a site can be checked in on the

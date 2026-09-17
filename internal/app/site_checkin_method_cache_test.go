@@ -32,6 +32,16 @@ func TestCachedCheckinMethod(t *testing.T) {
 			want: true,
 		},
 		{
+			// Not a discovery result — it is only ever written after a real
+			// attempt came back 404. It has to be cached like any other answer,
+			// because the skip that saves the request depends on this hit: a
+			// whitelist of "expected" statuses that omitted it would quietly
+			// turn the whole feature back off.
+			name: "a route that turned out not to exist is cached",
+			site: siteAt(provider.CheckinMethodUnavailable, time.Minute),
+			want: true,
+		},
+		{
 			name: "a missing timestamp cannot be trusted",
 			site: &model.Site{ID: 1, CheckinMethod: provider.CheckinMethodAvailable},
 			want: false,

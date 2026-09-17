@@ -328,3 +328,123 @@ func TestVeloeraAlreadyCheckedDaySettlesInsteadOfFailing(t *testing.T) {
 		t.Fatalf("last check-in status=%q, want %q", updated.LastCheckinStatus, provider.CheckinAlreadyChecked)
 	}
 }
+
+// newMissingCheckinRouteUpstreamServer models the agentrouter.org shape: the
+// public status endpoint advertises check-in as enabled, but none of the routes
+// a check-in would go to exist, so every attempt is a POST the site can only
+// answer with 404.
+//
+// checkinPosts counts those POSTs so a test can prove the scheduler stops making
+// them, rather than merely recording a different status.
+func newMissingCheckinRouteUpstreamServer(checkinPosts *atomic.Int64) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"system_name":"AnyRouter","checkin_enabled":true}}`))
+		case "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"id":42,"username":"operator","quota":500000}}`))
+		case "/api/user/checkin", "/api/user/sign_in":
+			checkinPosts.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+// A site that advertises check-in but serves no such route has to be remembered
+// as such. Filed as an ordinary recoverable failure it stays in the retry
+// cadence, and each retry is another POST the site's own guard gets to count —
+// for a site behind a WAF, a request stream indistinguishable from probing. That
+// is exactly why agentrouter.org had to be switched off by hand.
+func TestMissingCheckinRouteIsRememberedAndNotRetried(t *testing.T) {
+	var checkinPosts atomic.Int64
+	server := newMissingCheckinRouteUpstreamServer(&checkinPosts)
+	defer server.Close()
+
+	service, account := newUpstreamCheckinService(t, provider.NewAnyRouter(provider.ClientFactory{AllowPrivate: true}), model.SitePlatformAnyRouter, server.URL)
+	ctx := context.Background()
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	day := start.In(location).Format("2006-01-02")
+
+	service.runSchedule(ctx, start)
+
+	// Count rather than assume: AnyRouter walks more than one route, and the
+	// point of the test is that the number stops growing.
+	firstRound := checkinPosts.Load()
+	if firstRound == 0 {
+		t.Fatal("no check-in POST was made, so the 404 path was never exercised")
+	}
+
+	attempt, err := service.store.GetDailyCheckinAttempt(ctx, account.ID, day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt == nil || attempt.Status != provider.CheckinUnsupported {
+		t.Fatalf("daily attempt=%+v, want an unsupported attempt", attempt)
+	}
+
+	site, err := service.store.GetSite(ctx, account.SiteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if site.CheckinMethod != provider.CheckinMethodUnavailable {
+		t.Fatalf("checkin_method=%q, want %q", site.CheckinMethod, provider.CheckinMethodUnavailable)
+	}
+
+	// Past the ordinary retry cooldown the scheduler would normally try again.
+	// It must not: there is no route to reach, so a second attempt can only
+	// produce another rejected POST.
+	attempt.FinishedAt = time.Now().Add(-siteCheckinRetryInterval - time.Minute).UnixMilli()
+	if err := service.store.UpdateCheckinAttempt(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
+	service.runSchedule(ctx, start.Add(time.Minute))
+
+	if got := checkinPosts.Load(); got != firstRound {
+		t.Fatalf("check-in POSTs went from %d to %d after the retry window, want no further posts", firstRound, got)
+	}
+}
+
+// Only a 404 means "there is no such route". A rejected credential answers 401
+// and has to keep its own meaning: recording it as a missing route would stop
+// checking in on a site that works perfectly well once the credential is fixed.
+func TestRejectedCredentialIsNotMistakenForAMissingRoute(t *testing.T) {
+	var checkinPosts atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"system_name":"AnyRouter","checkin_enabled":true}}`))
+		case "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"id":42,"username":"operator","quota":500000}}`))
+		default:
+			checkinPosts.Add(1)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"message":"Unauthorized, not logged in and no access token provided"}`))
+		}
+	}))
+	defer server.Close()
+
+	service, account := newUpstreamCheckinService(t, provider.NewAnyRouter(provider.ClientFactory{AllowPrivate: true}), model.SitePlatformAnyRouter, server.URL)
+	ctx := context.Background()
+
+	service.runSchedule(ctx, time.Now())
+
+	if checkinPosts.Load() == 0 {
+		t.Fatal("no check-in POST was made, so the 401 path was never exercised")
+	}
+	site, err := service.store.GetSite(ctx, account.SiteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if site.CheckinMethod == provider.CheckinMethodUnavailable {
+		t.Fatal("a rejected credential was recorded as a missing check-in route")
+	}
+}

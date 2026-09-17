@@ -1385,6 +1385,37 @@ func (s *siteControlService) resolveCheckinMethod(ctx context.Context, site *mod
 	return method, true
 }
 
+// rememberCheckinUnavailable records that the site answered 404 for its check-in
+// endpoint, which means it does not serve one.
+//
+// The public status endpoint can advertise check-in as available while the route
+// it implies answers 404 — AnyRouter builds are the known case, where every
+// check-in path is absent and each attempt is a POST that can only be rejected.
+// Without this the result reads as an ordinary recoverable failure, so the
+// scheduler keeps re-posting on its retry cadence, and for a site sitting behind
+// a WAF that request stream is indistinguishable from probing. Writing the site
+// fact lets the next run skip the request entirely.
+//
+// It expires on the usual TTL, so a site that later grows the route is picked up
+// again. The write is detached from the caller's context: it has to survive the
+// attempt that just finished, including one whose deadline expired mid-flight.
+func (s *siteControlService) rememberCheckinUnavailable(ctx context.Context, site *model.Site) {
+	if site == nil {
+		return
+	}
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	checkedAt := time.Now().UnixMilli()
+	if err := s.store.UpdateSiteCheckinMethod(persistCtx, site.ID, provider.CheckinMethodUnavailable, checkedAt); err != nil {
+		log.Printf("[SITE] persist check-in unavailable for site %d: %v", site.ID, err)
+		return
+	}
+	// Keep the caller's copy consistent so the rest of this run agrees with what
+	// was just stored.
+	site.CheckinMethod = provider.CheckinMethodUnavailable
+	site.CheckinMethodCheckedAt = checkedAt
+}
+
 // prepareCheckinAttempt persists the row this run reports through. The table
 // holds one row per account, local day, and trigger scope, so a scheduled
 // check-in that is retried later in the day has to reuse the row its earlier
@@ -1489,10 +1520,18 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 	// "already checked" once a human finished the browser step, and the
 	// challenge only matters when the attempt actually fails.
 	method, methodKnown := s.resolveCheckinMethod(ctx, site, adapter)
-	skipCheckin := methodKnown && method.Status == provider.CheckinMethodDisabled
+	// Two remembered facts mean "do not spend the request": the site says it
+	// switched check-in off, or a previous attempt found no such route. They are
+	// kept apart because they read differently to an operator, but the scheduler
+	// treats them the same.
+	skipCheckin := methodKnown && (method.Status == provider.CheckinMethodDisabled || method.Status == provider.CheckinMethodUnavailable)
 	if skipCheckin {
-		result = provider.CheckinResult{Status: provider.CheckinUnsupported, Message: "站点已关闭签到"}
-		err = &provider.Error{Code: provider.CodeUnsupported, Message: "站点已关闭签到（checkin_enabled=false）"}
+		message, reason := "站点已关闭签到", "站点已关闭签到（checkin_enabled=false）"
+		if method.Status == provider.CheckinMethodUnavailable {
+			message, reason = "站点没有签到接口", "站点没有签到接口（签到端点返回 404）"
+		}
+		result = provider.CheckinResult{Status: provider.CheckinUnsupported, Message: message}
+		err = &provider.Error{Code: provider.CodeUnsupported, Message: reason}
 	}
 	for try := 1; !skipCheckin && try <= 3; try++ {
 		result, err = adapter.Checkin(ctx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
@@ -1524,6 +1563,14 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 		// Turnstile challenge. Say so, instead of leaving the operator to guess
 		// whether the credential or the site is at fault.
 		result.Message = turnstileCheckinMessage(adapter)
+	}
+	// A 404 is a fact about the site, not about this attempt: the route does not
+	// exist here, so no retry can succeed and every one of them is another
+	// request the site's guard gets to count. Remember it the way a published
+	// capability is remembered, so the next scheduled run skips the request
+	// instead of re-posting on the ordinary retry cadence.
+	if provider.ErrorStatusCode(err) == http.StatusNotFound {
+		s.rememberCheckinUnavailable(ctx, site)
 	}
 	attempt.Status = result.Status
 	attempt.Message = result.Message
