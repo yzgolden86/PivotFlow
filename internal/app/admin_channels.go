@@ -219,6 +219,20 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		}
 	}
 
+	// A channel with no models leaves ModelEntries nil, which marshals to JSON
+	// null. The console declares `models` as a non-optional array, so a single
+	// null is enough to make the channels page throw inside a useMemo; React
+	// then unmounts the whole tree, so it is not just that page that goes
+	// blank -- every route after it does too. A list field is a list: empty
+	// means []. These configs come straight from ListConfigs and are scoped to
+	// this request (not the shared config the proxy reads), so filling in the
+	// zero value here cannot leak into other paths.
+	for i := range out {
+		if out[i].Config != nil && out[i].Config.ModelEntries == nil {
+			out[i].Config.ModelEntries = []model.ModelEntry{}
+		}
+	}
+
 	if hasPagination {
 		c.JSON(http.StatusOK, gin.H{
 			"success":       true,

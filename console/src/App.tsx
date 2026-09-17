@@ -25,6 +25,7 @@ import {
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { getCheckinAttemptsBatch, getSiteInventory } from './api'
 import GlobalSearch from './components/GlobalSearch'
+import PageErrorBoundary from './components/PageErrorBoundary'
 import { applyTheme, readThemePreference, resolveTheme } from './theme'
 import type { ResolvedTheme, ThemePreference } from './theme'
 
@@ -353,25 +354,27 @@ function App() {
 
       <main className="main-content" id="main-content" tabIndex={-1}>
         <Suspense fallback={<PageLoading />}>
-          <Routes>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/channels" element={<ChannelsPage />} />
-            <Route path="/logs" element={<LogsPage />} />
-            <Route path="/stats" element={<StatsPage />} />
-            <Route path="/models" element={<ModelTestPage />} />
-            <Route path="/model-test" element={<ModelTestPage />} />
-            <Route path="/advanced" element={<Navigate to="/system" replace />} />
-			<Route path="/settings" element={<Navigate to="/system" replace />} />
-            <Route path="/system" element={<SystemSettingsPage />} />
-            <Route path="/tokens" element={<TokensPage />} />
-            <Route path="/trend" element={<TrendPage />} />
-			<Route path="/fingerprints" element={<Navigate to="/models" replace />} />
-            <Route path="/sites" element={<SitesPage />} />
-            <Route path="/accounts" element={<AccountsPage />} />
-            <Route path="/checkins" element={<CheckinsPage />} />
-            <Route path="/announcements" element={<AnnouncementsPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          <PageErrorBoundary resetKey={location.pathname}>
+            <Routes>
+              <Route path="/" element={<DashboardPage />} />
+              <Route path="/channels" element={<ChannelsPage />} />
+              <Route path="/logs" element={<LogsPage />} />
+              <Route path="/stats" element={<StatsPage />} />
+              <Route path="/models" element={<ModelTestPage />} />
+              <Route path="/model-test" element={<ModelTestPage />} />
+              <Route path="/advanced" element={<Navigate to="/system" replace />} />
+              <Route path="/settings" element={<Navigate to="/system" replace />} />
+              <Route path="/system" element={<SystemSettingsPage />} />
+              <Route path="/tokens" element={<TokensPage />} />
+              <Route path="/trend" element={<TrendPage />} />
+              <Route path="/fingerprints" element={<Navigate to="/models" replace />} />
+              <Route path="/sites" element={<SitesPage />} />
+              <Route path="/accounts" element={<AccountsPage />} />
+              <Route path="/checkins" element={<CheckinsPage />} />
+              <Route path="/announcements" element={<AnnouncementsPage />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </PageErrorBoundary>
         </Suspense>
       </main>
     </div>

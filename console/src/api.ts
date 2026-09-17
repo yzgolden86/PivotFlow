@@ -220,7 +220,14 @@ export function getChannels(filters: ChannelFilters, signal?: AbortSignal, optio
     const generation = channelsGeneration
     request = requestEnvelope<Channel[]>(`/admin/channels?${params}`).then((payload) => {
       const result = {
-        data: payload.data,
+        // `models` is declared as a non-optional array, but a channel with no
+        // models used to come back as JSON null and blew up the channels page
+        // inside a useMemo (see PageErrorBoundary for why that blanked every
+        // route). The backend now always emits [], and this is the belt to that
+        // braces: normalise once at the boundary so none of the ~30 call sites
+        // that read channel.models has to guard. Normalising before caching
+        // means peekChannels returns the same shape.
+        data: payload.data.map((channel) => ({ ...channel, models: channel.models ?? [] })),
         count: payload.count ?? payload.data.length,
         enabled_count: typeof payload.enabled_count === 'number' ? payload.enabled_count : undefined,
       }
