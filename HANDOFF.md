@@ -14,6 +14,7 @@
 | `63e2950` | 站点签到能力发现、失败分类、传输层与模型错误码修复（provider / storage / model 层） |
 | `2122d29` | 签到结果落库、重试分档与历史保留期清扫（app 编排层） |
 | `a6c82f9` | 控制台按签到能力收敛「打开签到页」入口 + 重建 `web/console` 产物 |
+| `3e4d97d` | 补齐 Veloera 签到状态契约，收敛 Turnstile 复核承诺（§4 的 P1-0 ~ P1-3） |
 
 - 验证状态（提交前实测，全绿）：
   - `go build -tags sonic ./...` → 退出 0
@@ -21,9 +22,16 @@
   - `golangci-lint run ./...` → `0 issues.`
   - `gofmt -l internal/` → 无输出
 
-**唯一未闭环的缺口**：只有 `NewAPI` 实现了 `CheckedInToday`，`Veloera` 与 `AnyRouter` 没有。这意味着对这两个平台的 Turnstile 站点，系统会对运营者承诺「由系统复核」，但复核根本不会发生。
+**§4 的 P1-0 ~ P1-3 已完成**（`3e4d97d`）：`Veloera` 现按自己的
+`/api/user/check_in_status` 实现 `CheckedInToday`；Turnstile 文案改为按能力位
+决定是否承诺复核；已签到文案补「已经签到」；reward 增加 `data.quota` 回落。
+**P1-4 结论不变**：AnyRouter 无状态端点，不补。仍待办的只有 §4 的 P2（真实站点
+验证）与 §6 里需要 hao哥 决策的三问。
 
-三个平台的契约证据**已全部备齐**，§4 可直接开工，不需要再做调研：
+三个平台的契约证据**已全部备齐**（Veloera 的 `/api/user/check_in`、
+`/api/user/check_in_status`、`data.can_check_in`、成功响应的 `data.quota` 与
+`model/user.go` 的「你今天已经签到过了」均已对着上游源码复核过），不需要再做
+调研：
 
 - **New API / Veloera** —— 直接读上游 Go 源码
 - **AnyRouter** —— 闭源，反推自实战签到脚本 `millylee/anyrouter-check-in`（结论：没有状态端点，只能靠 POST 响应文案判断）
@@ -145,9 +153,11 @@ https://raw.githubusercontent.com/Veloera/Veloera/main/<path>
 
 ## 4. 下一步（未完成的工作）
 
-按优先级排列。**P1-0 建议先做**，它是最小、最安全的修复，且能立刻消除「承诺做不到的事」。
+> **进度（`3e4d97d`）**：P1-0 ~ P1-3 **已完成**，下面保留原始条目以便追溯，
+> 每条标注了落点。仍然未做的只有 **P2**（真实站点验证，需要 hao哥 提供现场）
+> 与 §6 的三个决策问题。
 
-### P1-0（推荐先做）让「由系统复核」这句话不再空头承诺
+### ~~P1-0~~（已完成，`3e4d97d`）让「由系统复核」这句话不再空头承诺
 
 `internal/app/site_control.go` 约 1522 行：
 
@@ -170,7 +180,7 @@ if methodKnown && method.Status == provider.CheckinMethodTurnstile && provider.E
 
 **验收**：加一个单测，用一个**不**实现 `CheckinStatusProvider` 的 stub 适配器 + turnstile 方法，断言消息里不含「由系统复核」；再用一个实现了的 stub，断言消息含之。
 
-### P1-1 Veloera 已签到文案未被识别 → 每天 16 次无效重试
+### ~~P1-1~~（已完成，`3e4d97d`）Veloera 已签到文案未被识别 → 每天 16 次无效重试
 
 `isAlreadyCheckedMessage`（`anyrouter.go` 第 171 行）匹配 `already` / `已签到` / `重复签到` / `今日已`。
 
@@ -193,7 +203,7 @@ if methodKnown && method.Status == provider.CheckinMethodTurnstile && provider.E
 
 **验收**：单测，喂 `{"success":false,"message":"你今天已经签到过了"}` 给 `Veloera.Checkin`，断言 `Status == CheckinAlreadyChecked`；同时保留 New API 的 `"今日已签到"` 用例不回归。
 
-### P1-2 Veloera 缺 `CheckedInToday`
+### ~~P1-2~~（已完成，`3e4d97d`）Veloera 缺 `CheckedInToday`
 
 **不要盲目委托 `family.CheckedInToday`** —— 它 GET `/api/user/checkin?month=`，而这个路由在 Veloera 上**不存在**（Veloera 是 `/api/user/check_in_status`），会 404。
 
@@ -205,7 +215,7 @@ if methodKnown && method.Status == provider.CheckinMethodTurnstile && provider.E
 
 > 附带发现：Veloera 的 `CanCheckInToday()` 按 **UTC** 比较日期（`model/user.go` 第 1235 行），而 PivotFlow 用 `local_day`。跨时区站点可能错配 —— 先记下，不必现在动。
 
-### P1-3 Veloera 的 reward 字段是 `quota`，不是 `quota_awarded`
+### ~~P1-3~~（已完成，`3e4d97d`）Veloera 的 reward 字段是 `quota`，不是 `quota_awarded`
 
 Veloera 成功响应是 `{"success":true,"message":"签到成功","data":{"quota": reward}}`。`checkinRewardText` 目前只认 `reward` 和 `quota_awarded`，所以在 Veloera 上仍是空标签。
 
