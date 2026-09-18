@@ -952,9 +952,26 @@ a:focus-visible {
   z-index: 1;
 }
 
+.page-header-eyebrow-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.page-header-pulse {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: var(--header-tone, var(--green));
+  box-shadow: 0 0 8px var(--header-tone, var(--green));
+}
+
 .page-eyebrow {
-  margin: 0 0 5px;
-  color: var(--green-text);
+  margin: 0;
+  color: var(--header-tone, var(--green-text));
   font-family: Bahnschrift, sans-serif;
   font-size: 11px;
   font-weight: 700;
@@ -5300,10 +5317,11 @@ body {
 
 /* 取消「每个分组一个色相」的轮转。五组各染一色不承载信息，只会稀释
    「当前在哪一页」这个真正的状态；统一到一个主强调色后，激活态才是唯一的彩色。 */
-.nav-group:nth-child(n) {
-  --nav-tone: var(--green);
-  --nav-soft: var(--green-soft);
-}
+.nav-group:nth-child(1) { --nav-tone: var(--green); --nav-soft: var(--green-soft); }
+.nav-group:nth-child(2) { --nav-tone: var(--blue); --nav-soft: var(--blue-soft); }
+.nav-group:nth-child(3) { --nav-tone: var(--amber); --nav-soft: var(--amber-soft); }
+.nav-group:nth-child(4) { --nav-tone: var(--coral); --nav-soft: var(--coral-soft); }
+.nav-group:nth-child(5) { --nav-tone: var(--graphite); --nav-soft: var(--surface-strong); }
 
 .nav-group:nth-child(2) .nav-item:not(.nav-item--active) svg,
 .nav-group:nth-child(3) .nav-item:not(.nav-item--active) svg,
@@ -5358,11 +5376,11 @@ body {
    元素，那条 ::before 实际是相对 .sidebar 定位、再靠 -11px 负 margin 凑回位置的，
    两个指示器互相重复且一改布局就错位。 */
 .nav-item--active {
-  color: var(--green-text);
+  color: var(--nav-tone, var(--green));
   font-weight: 620;
-  background: var(--green-soft);
-  border-color: color-mix(in srgb, var(--green) 30%, var(--border));
-  box-shadow: none;
+  background: var(--nav-soft, var(--green-soft));
+  border-color: color-mix(in srgb, var(--nav-tone, var(--green)) 30%, var(--border));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--nav-tone, var(--green)) 10%, transparent);
 }
 
 .nav-item--active::before {
@@ -5372,8 +5390,9 @@ body {
   width: 3px;
   height: 20px;
   margin: 0;
-  background: var(--green);
+  background: var(--nav-tone, var(--green));
   border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--nav-tone, var(--green)) 65%, transparent);
   content: "";
   transform: translateY(-50%);
 }
@@ -5597,6 +5616,295 @@ body {
    必须用同权重的选择器在后面压掉，否则第二块面板照样是琥珀色。 */
 .trend-breakdown .data-panel:nth-of-type(n) {
   border-top-color: var(--border);
+}
+
+/* ==========================================================================
+   Awwwards / FWA 级先锋交互数智画布 (Avant-Garde Digital Art Canvas)
+   --------------------------------------------------------------------------
+   对标 Awwwards SOTD 与 CSS Design Awards 顶级数字化交互水准：
+   1. 环境光影：微米级点阵画布 + 多层深邃环境辐射光晕（Ambient Mesh Lighting）
+   2. 材质与物理感：磨砂玻璃拟态（Backdrop Blur）+ 发丝高光微倒角 + 弹性物理抬升（Spring Hover）
+   3. 文字冲击力：展示级等宽数字 + 紧致字距 + 战术级微眉标（Eyebrow Badges）
+   4. 图表与数据艺术：发光流体切片 + 曲线投影微芒 + 交互式准星悬浮卡
+   5. 严守字号底线（所有生效字号 ≥11px）、零 Emoji、全量 Lucide 规范
+   ========================================================================== */
+
+/* ── 1. 画卷环境与全局空间层 ────────────────────────────────────────── */
+.app-shell {
+  background:
+    radial-gradient(ellipse 75% 45% at 20% -8%, color-mix(in srgb, var(--green) 7%, transparent), transparent 60%),
+    radial-gradient(ellipse 65% 45% at 85% 92%, color-mix(in srgb, var(--blue) 5%, transparent), transparent 60%),
+    radial-gradient(circle, color-mix(in srgb, var(--border-strong) 25%, transparent) 1px, transparent 1px),
+    var(--bg);
+  background-size: 100% 100%, 100% 100%, 28px 28px, 100% 100%;
+}
+
+:root[data-theme="dark"] .app-shell {
+  background:
+    radial-gradient(ellipse 80% 50% at 22% -10%, color-mix(in srgb, var(--green) 12%, transparent), transparent 65%),
+    radial-gradient(ellipse 70% 50% at 88% 90%, color-mix(in srgb, var(--blue) 9%, transparent), transparent 65%),
+    radial-gradient(circle, color-mix(in srgb, var(--border-strong) 42%, transparent) 1px, transparent 1px),
+    var(--bg);
+  background-size: 100% 100%, 100% 100%, 28px 28px, 100% 100%;
+}
+
+/* ── 2. 先锋侧栏与控制枢纽 ────────────────────────────────────────────── */
+.sidebar {
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  background: color-mix(in srgb, var(--sidebar) 92%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--sidebar-border) 80%, transparent);
+}
+
+.brand-mark {
+  box-shadow: 0 0 20px color-mix(in srgb, var(--green) 30%, transparent);
+  transition: transform 300ms var(--ease-enter), box-shadow 300ms ease;
+}
+
+.sidebar-brand:hover .brand-mark {
+  transform: scale(1.05) rotate(-2deg);
+  box-shadow: 0 0 26px color-mix(in srgb, var(--green) 45%, transparent);
+}
+
+.nav-item {
+  transition: transform 180ms var(--ease-enter), color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+.nav-item:hover {
+  transform: translateX(3px);
+  background: color-mix(in srgb, var(--surface-strong) 85%, transparent);
+}
+
+.app-shell--collapsed .nav-item:hover {
+  transform: scale(1.08);
+}
+
+/* ── 3. 先锋页面标头与命令控制台横幅 ──────────────────────────────────── */
+.page-header--elevated {
+  position: relative;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--surface) 94%, transparent), color-mix(in srgb, var(--surface-muted) 88%, transparent));
+  border: 1px solid color-mix(in srgb, var(--header-tone, var(--green)) 22%, var(--border));
+  border-radius: var(--radius-large);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 12px 32px -8px color-mix(in srgb, var(--header-tone, var(--green)) 10%, transparent);
+}
+
+.page-header-icon {
+  position: relative;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--header-tone, var(--green)) 26%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  transition: transform 240ms var(--ease-enter), box-shadow 240ms ease;
+}
+
+.page-header:hover .page-header-icon {
+  transform: scale(1.06);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--header-tone, var(--green)) 40%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.page-header h1 {
+  font-weight: 720;
+  letter-spacing: -0.028em;
+}
+
+/* ── 4. 磨砂玻璃卡片与弹性物理悬浮体系 ────────────────────────────────── */
+.metric-card,
+.site-panel,
+.usage-panel,
+.trend-panel,
+.trend-workbench,
+.records-panel,
+.model-card,
+.stat-kpis article,
+.tool-card {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--elev-1);
+  transition: transform 260ms var(--ease-enter), box-shadow 260ms var(--ease-enter), border-color 260ms var(--ease-enter);
+}
+
+.metric-card:hover,
+.stat-kpis article:hover,
+.model-card:hover,
+.tool-card:hover {
+  transform: translateY(-3px) scale(1.002);
+  border-color: color-mix(in srgb, var(--metric-tone, var(--green)) 36%, var(--border-strong));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 16px 36px -10px color-mix(in srgb, var(--metric-tone, var(--green)) 18%, transparent), var(--elev-2);
+}
+
+.metric-value {
+  font-weight: 680;
+  letter-spacing: -0.038em;
+  font-variant-numeric: tabular-nums lining-nums;
+  text-shadow: 0 0 20px color-mix(in srgb, var(--metric-tone, var(--green)) 12%, transparent);
+}
+
+.metric-card:hover .metric-icon {
+  transform: scale(1.08) rotate(3deg);
+  transition: transform 220ms var(--ease-enter);
+}
+
+.metric-icon {
+  transition: transform 220ms var(--ease-enter);
+}
+
+/* ── 5. 精密微交互分段控制器与按钮 ────────────────────────────────────── */
+.range-control {
+  padding: 3px;
+  background: color-mix(in srgb, var(--surface-strong) 92%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.range-control button {
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  transition: color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.range-control button.is-active {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1), 0 0 0 1px color-mix(in srgb, var(--green) 25%, transparent);
+}
+
+.primary-button {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 4px 14px color-mix(in srgb, var(--green) 30%, transparent);
+  transition: transform 180ms var(--ease-enter), box-shadow 180ms ease, background 180ms ease;
+}
+
+.primary-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 8px 22px color-mix(in srgb, var(--green) 40%, transparent);
+}
+
+.primary-button:active:not(:disabled),
+.secondary-button:active:not(:disabled),
+.icon-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* ── 6. 艺术级图表与可视化交互微动效 ──────────────────────────────────── */
+.stats-distribution-pie svg,
+.dashboard-donut-chart svg {
+  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.08));
+}
+
+.stats-distribution-slice,
+.dashboard-donut-slice {
+  transition: transform 220ms var(--ease-enter), filter 220ms ease, opacity 220ms ease;
+  transform-origin: center center;
+}
+
+.stats-distribution-slice:hover,
+.dashboard-donut-slice:hover {
+  filter: drop-shadow(0 0 10px currentColor);
+  opacity: 1;
+}
+
+.stats-distribution-center strong {
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stats-distribution-center b {
+  font-family: var(--font-numeric);
+  font-size: var(--fs-lead);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.trend-curve-chart path {
+  filter: drop-shadow(0 3px 10px color-mix(in srgb, currentColor 32%, transparent));
+}
+
+.stats-distribution-toggle {
+  padding: 3px;
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+}
+
+.stats-distribution-toggle button {
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  transition: all 180ms ease;
+}
+
+.stats-distribution-toggle button.is-active {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12), 0 0 0 1px color-mix(in srgb, var(--coral) 30%, transparent);
+}
+
+/* ── 7. 战术级数据表格与状态微指示点 ────────────────────────────────── */
+.log-grid.record-row,
+.token-row,
+.channel-row {
+  transition: background 150ms ease, box-shadow 150ms ease;
+}
+
+.log-grid.record-row:hover,
+.token-row:hover,
+.channel-row:hover {
+  background: color-mix(in srgb, var(--surface-strong) 88%, transparent);
+  box-shadow: inset 2px 0 0 var(--nav-tone, var(--coral));
+}
+
+.status-dot-live {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  animation: pf-radar 2.4s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+
+/* ── 8. 战术级遥测状态桥 (Resource Strip & Telemetry Bridges) ──────────── */
+.resource-strip {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: var(--radius-panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--elev-1);
+}
+
+.resource-status {
+  transition: background 180ms ease, box-shadow 180ms ease, transform 180ms var(--ease-enter);
+}
+
+.resource-status:hover {
+  background: color-mix(in srgb, var(--surface-strong) 80%, transparent);
+  box-shadow: inset 0 -2px var(--green), 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.compact-summary {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--elev-1);
+}
+
+.compact-summary > span {
+  transition: background 180ms ease;
+}
+
+.compact-summary > span:hover {
+  background: color-mix(in srgb, var(--surface-strong) 85%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

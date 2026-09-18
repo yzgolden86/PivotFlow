@@ -58,7 +58,7 @@ func TestCheckinRetryDue(t *testing.T) {
 		},
 		{
 			name:    "plain failure retries once the cooldown elapsed",
-			attempt: attemptAt(provider.CheckinFailed, 3, 2*siteCheckinRetryInterval),
+			attempt: attemptAt(provider.CheckinFailed, 2, 2*siteCheckinRetryInterval),
 			want:    true,
 		},
 		{
@@ -149,6 +149,46 @@ func TestChallengedDayIsCappedAtTwoAttempts(t *testing.T) {
 	for localDay, count := range attemptsPerDay {
 		if count != 2 {
 			t.Fatalf("%s made %d attempts, want 2 (one scheduled, one late retry)", localDay, count)
+		}
+	}
+}
+
+func TestFailedDayIsCappedAtThreeAttempts(t *testing.T) {
+	location := time.FixedZone("test", 8*60*60)
+	start := time.Date(2026, 9, 17, 0, 0, 0, 0, location)
+	attemptsPerDay := map[string]int{}
+	var attempt *model.CheckinAttempt
+	day := ""
+	for tick := 0; tick < 48*60; tick++ {
+		tickNow := start.Add(time.Duration(tick) * time.Minute)
+		if localDay := tickNow.Format("2006-01-02"); localDay != day {
+			day = localDay
+			attempt = nil
+		}
+		if !dailyCheckinDue(tickNow, 0) {
+			continue
+		}
+		due, _ := checkinRetryDue(attempt, tickNow)
+		if !due {
+			continue
+		}
+		attemptsPerDay[day]++
+		no := 1
+		if attempt != nil {
+			no = attempt.AttemptNo + 1
+		}
+		attempt = &model.CheckinAttempt{
+			Status:     provider.CheckinFailed,
+			AttemptNo:  no,
+			FinishedAt: tickNow.UnixMilli(),
+		}
+	}
+	if len(attemptsPerDay) != 2 {
+		t.Fatalf("simulated %d local days, want 2: %v", len(attemptsPerDay), attemptsPerDay)
+	}
+	for localDay, count := range attemptsPerDay {
+		if count != 3 {
+			t.Fatalf("%s made %d attempts, want 3 (one scheduled, two hourly retries)", localDay, count)
 		}
 	}
 }

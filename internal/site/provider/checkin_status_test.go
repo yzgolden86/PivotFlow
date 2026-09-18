@@ -188,7 +188,7 @@ func TestCheckinRewardTextFallsBackFromRewardToQuota(t *testing.T) {
 
 // Veloera splits the two characters of 已签到 across 已经, so a matcher built
 // around "已签到" read "你今天已经签到过了" as an unrecognized failure: the day
-// was filed as failed, the failure webhook fired, and the 1h x 16 retry budget
+// was filed as failed, the failure webhook fired, and the retry budget
 // kept hammering a site that could not answer differently until tomorrow.
 func TestVeloeraCheckinRecognizesAlreadyCheckedWording(t *testing.T) {
 	server := newCheckinPayloadServer(t, veloeraAlreadyCheckedPayload)

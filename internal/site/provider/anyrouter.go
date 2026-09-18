@@ -174,7 +174,7 @@ func checkinErrorResult(err error) (CheckinResult, error) {
 // "已经签到" is not interchangeable with "已签到": Veloera answers with
 // "你今天已经签到过了", where the two characters are split by "经". Missing that
 // phrasing filed a completed day as a failure, which raised a failure
-// notification and kept the 1h x 16 retry budget running against a site that
+// notification and kept the retry budget running against a site that
 // could not succeed again until tomorrow.
 func isAlreadyCheckedMessage(message string) bool {
 	lower := strings.ToLower(strings.TrimSpace(message))

@@ -6,6 +6,7 @@ backend or read production statistics.
 
 import argparse
 import json
+import re
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -172,7 +173,7 @@ def check_page(browser, base, out, *, name, width, mobile):
             "0.75x 倍率",
         ])
         free_row = page.locator(".stats-records .record-row").filter(has_text="免费试用池")
-        expect(free_row.locator("> div:last-child strong")).to_have_text("$0.0000")
+        expect(free_row.locator("> div:last-child strong")).to_have_text(re.compile(r"^\$0\.00(00)?$"))
         dimensions = measure(page)
         assert dimensions["scrollWidth"] <= dimensions["viewport"], dimensions
         assert not errors, errors

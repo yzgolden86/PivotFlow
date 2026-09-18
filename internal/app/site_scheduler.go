@@ -25,7 +25,7 @@ const (
 	// could "fail" while a manual click minutes later succeeded. A permanently
 	// blocked site stops after the cap instead of being hammered once a minute.
 	siteCheckinRetryInterval = time.Hour
-	siteCheckinRetryLimit    = 16
+	siteCheckinRetryLimit    = 3
 
 	// An interactive browser challenge is a different kind of failure. No number
 	// of server-side retries can clear it — only a human can — so each retry is
