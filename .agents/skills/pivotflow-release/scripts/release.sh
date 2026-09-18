@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: release.sh [beta|preview|stable] [--dry-run|--publish] [--commit-message <subject>]
+Usage: release.sh [beta|preview|stable] [--dry-run|--publish] [--commit-message <subject>] [--bump <major|minor|patch>]
        release.sh --self-test
 
 The default channel is beta. Stable releases require the explicit stable argument.
@@ -164,6 +164,10 @@ EOF
     fi
   else
     bump='patch'
+  fi
+
+  if [[ -n "${override_bump:-}" ]]; then
+    bump="$override_bump"
   fi
 
   if [[ "$channel" == stable ]]; then
@@ -389,6 +393,21 @@ while (( $# > 0 )); do
       ;;
     --commit-message=*)
       commit_message=${1#*=}
+      ;;
+    --bump)
+      (( $# >= 2 )) || fail "--bump requires a value (major|minor|patch)"
+      case "$2" in
+        major|minor|patch) override_bump=$2 ;;
+        *) fail "invalid bump value: $2 (expected major|minor|patch)" ;;
+      esac
+      shift
+      ;;
+    --bump=*)
+      val=${1#*=}
+      case "$val" in
+        major|minor|patch) override_bump=$val ;;
+        *) fail "invalid bump value: $val (expected major|minor|patch)" ;;
+      esac
       ;;
     --self-test)
       self_test
