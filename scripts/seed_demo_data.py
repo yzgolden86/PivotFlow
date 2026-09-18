@@ -87,6 +87,13 @@ CHANNELS = [
     ("relay-openai", "https://relay.example.com/v1", "openai", 0, 10, 60, 2),
 ]
 
+# 渠道的模型清单，按 CHANNELS 里的第三个字段（channel_type）取。
+CHANNEL_MODELS: dict[str, list[str]] = {
+    "anthropic": ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"],
+    "openai": ["gpt-5", "gpt-5-mini", "o3"],
+    "gemini": ["gemini-2.5-pro", "gemini-3-pro", "gemini-2.5-flash"],
+}
+
 TOKENS = [
     ("pf-demo-claude-code", "本机 Claude Code", 1),
     ("pf-demo-codex-cli", "Codex CLI", 1),
@@ -173,6 +180,25 @@ def seed_channels(cur: sqlite3.Cursor, now_s: int) -> list[int]:
         )
         ids.append(cur.lastrowid)
     return ids
+
+
+def seed_channel_models(cur: sqlite3.Cursor, channel_ids: list[int], now_s: int) -> None:
+    """给前 4 个渠道写几行模型，最后一个（已禁用的 relay-openai）故意留空。
+
+    不留空的话渠道页的「模型」KPI 恒为 0，看着像坏了。而故意留一个空的，
+    是为了让「渠道存在但没有任何模型」这一行在演示数据里长期存在 ——
+    它正是 `b9543b0` 修的那个崩溃（models 被序列化成 null）的触发条件。
+    留着它等于自带一个哨兵：万一回归，打开渠道页立刻白屏，当场可见。
+    Go 侧的回归测试是常驻防线，这个哨兵是演示时的即时防线。
+    """
+    for channel_id, channel in list(zip(channel_ids, CHANNELS))[:-1]:
+        for model in CHANNEL_MODELS[channel[2]]:
+            cur.execute(
+                """INSERT INTO channel_models
+                   (channel_id, model, redirect_model, disabled, created_at)
+                   VALUES (?,?,'',0,?)""",
+                (channel_id, model, now_s),
+            )
 
 
 def seed_bindings(cur: sqlite3.Cursor, account_ids: list[int], channel_ids: list[int], now_s: int) -> None:
@@ -344,6 +370,7 @@ def main() -> int:
         site_ids = seed_sites(cur, now_s)
         account_ids = seed_accounts(cur, site_ids, now_s)
         channel_ids = seed_channels(cur, now_s)
+        seed_channel_models(cur, channel_ids, now_s)
         seed_bindings(cur, account_ids, channel_ids, now_s)
         token_ids = seed_tokens(cur, now_s)
         seed_announcements(cur, site_ids, now_s)

@@ -7,6 +7,20 @@ PLIST_FILE = $(SERVICE_NAME).plist
 LAUNCH_AGENTS_DIR = $(HOME)/Library/LaunchAgents
 TARGET_PLIST = $(LAUNCH_AGENTS_DIR)/$(PLIST_FILE)
 BINARY_NAME = pivotflow
+# Windows 上 `go build -o <name>` **不会**自动补 .exe（-o 给什么名就写什么名），
+# 于是仓库里会同时存在 `pivotflow`（最新）和 `pivotflow.exe`（陈旧）两个同名
+# 二进制。Windows 的 PATH/双击/脚本通常优先命中带 .exe 的那个，结果就是
+# 「构建成功但跑的还是两周前的旧版本」——控制台的 web/console 是 //go:embed
+# 编译期打进去的，旧二进制里根本没有新样式。
+#
+# 判定必须用 uname 兜底：`OS=Windows_NT` 是 cmd/PowerShell 才有的变量，
+# **Git Bash 里通常是空的**，只写 ifeq ($(OS),Windows_NT) 在 Git Bash 下不生效。
+# MSYS/MINGW 的 `uname -s` 形如 MINGW64_NT-10.0，含 "NT"。
+ifeq ($(OS),Windows_NT)
+BINARY_NAME := $(BINARY_NAME).exe
+else ifneq (,$(findstring NT,$(shell uname -s 2>/dev/null)))
+BINARY_NAME := $(BINARY_NAME).exe
+endif
 LOG_DIR = logs
 PROJECT_DIR = $(shell pwd)
 GOTAGS ?= sonic
