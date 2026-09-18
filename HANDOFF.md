@@ -609,6 +609,8 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 - `QF1002`：`switch { case x == "a": ... }` 若**所有** case 都是同一个表达式的相等比较，会被要求改成带标签的 `switch x`；只要有一个 case 带 `&&` 就不触发。**同一文件里两种写法并存而不报错是正常的**。
 - Go 用 `any` 不用 `interface{}`；`gofmt -l internal/` 必须干净。
 - **注释语言：Go 代码用英文，控制台代码用中文。**
+- **改完控制台样式却看不到效果，几乎总是「跑的是旧二进制」，跟端口无关。** `web/console` 由 `embed.go` 的 `//go:embed all:web` **编译期**打进可执行文件 —— 任何在我这次改动之前构建的二进制里，物理上就没有新产物。所以：改 CSS → `make console-check` → `make build` → 重启 → 浏览器硬刷新（`Ctrl+F5`）。
+- **Windows 上同名新旧两份二进制的坑（已修，`eba07b3`）**：`go build -o <name>` 在 Windows **不会**自动补 `.exe`，`-o` 给什么名就写什么名。于是 `make build` 一直写无扩展名的 `pivotflow`，而仓库根还躺着一个被 gitignore 的 `pivotflow.exe`（陈旧），Windows 下双击 / PATH / 脚本优先命中带 `.exe` 的那个。已在 Makefile 里按 Windows 补后缀；**判定必须用 `uname -s` 兜底**，因为 `OS=Windows_NT` 是 Windows 命令行才有的变量，Git Bash 里通常是空的。
 
 ### 8.2 控制台源码约定
 
