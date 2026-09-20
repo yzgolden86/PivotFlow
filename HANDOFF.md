@@ -820,6 +820,19 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
   （`!`/`BREAKING` → major，`feat` → minor，其余 → patch）。所以**看 tag 之前先看
   `git log vX.Y.Z..HEAD --format=%s`** —— 区间里混进一个 `feat` 就会跳 minor，此时才需要
   `--bump patch` 把版本摁回去。`v0.3.7` 指向 `b9391a4`，所以 `0.3.8` 是默认算出来的，不用 `--bump`。
+- **沙箱里 `git fetch` 更新不了远端跟踪引用，所以 `git status -sb` 的 `ahead N` 是假的。**
+  `git fetch origin main` 会**打印** `aea59ee..b9391a4  main -> origin/main`，但紧接着
+  `git rev-parse origin/main` 仍是 `aea59ee` —— 写 `.git/refs/remotes/` 被挡了。
+  后果：`git status -sb` 会显示 `[ahead 48]` 这种把「陈旧引用 + 新提交」加在一起的数字。
+  **判断真实关系要问远端**：
+  ```bash
+  REMOTE=$(git ls-remote --heads origin main | cut -f1)
+  git rev-list --count "$REMOTE"..HEAD          # 真正领先几个提交
+  git merge-base --is-ancestor "$REMOTE" HEAD   # 是祖先 ⇒ 可 fast-forward
+  ```
+  （`release.sh` 里 `origin_sha=$(git rev-parse refs/remotes/origin/main)` 读的也是这个陈旧引用；
+  在本机它表现为 `local-ahead` 从而放行，但**推送后「确认本地 HEAD == origin/main」那一步会失败** ——
+  这是沙箱独有的假失败，hao 哥的机器上正常。）
 
 ### 8.5 设置的「热生效」与「需重启」
 
