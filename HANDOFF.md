@@ -805,6 +805,21 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 - playwright 必须用**系统 Python**：`C:/Users/80470/AppData/Local/hermes/hermes-agent/venv/Scripts/python.exe`（3.11.11），托管的 3.13.12 没装。字体子集工具链在托管 venv `...\python\envs\default`（fonttools）。冒烟截图落在 `%TEMP%\pivotflow-console-ui`。`curl` 别写 `/tmp`。
 - **`POST /login` 的 body 必须带 `"mode": "admin"`**（`auth_service.go:550`，`binding:"required"`）。只发 `{"password": ...}` 会得到 `400 Invalid request format`——**这个报错完全不提 mode，极易误判成密码错或路由错**。token 在 `data.token`。
 - **本机 HTTP 探测要显式关掉代理**：沙箱的 `http_proxy` / `https_proxy` 指向 `127.0.0.1:4868`，连 `127.0.0.1:<自己的端口>` 也会被劫走。Python 里用 `urllib.request.build_opener(urllib.request.ProxyHandler({}))`。
+- **发版（`release.sh --publish`）在本机跑不通，两条硬约束都不是网络问题**：
+  1. **没有 GitHub 凭据** —— `git push` 报 `could not read Username for 'https://github.com'`。
+     `credential.helper` 是 `helper-selector`（Windows 凭据管理器），但**非交互取不出东西**
+     （`git credential fill` 同样失败），环境里也没有 `GH_TOKEN`/`GITHUB_TOKEN`。
+     → **推送只能由 hao 哥在自己有凭据的终端里做**（v0.3.6 那次也是他推的，这是常态）。
+  2. **`gh` 没装**（`C:\Program Files\GitHub CLI\` 等常见路径都没有），而 `--publish` 在提交后要
+     `require_command gh` + `gh auth status`；`golangci-lint` 也不在 Git Bash 的 PATH 上
+     （在 `C:\Users\80470\go\bin\`），`require_command golangci-lint` 同样会挂。
+  **但 `--dry-run` 可以跑**（它在 `require_command` 之前就 `exit 0`），所以「版本号算得对不对」
+  在本机就能核对 —— 交付给 hao 哥之前**先跑 dry-run 把 target tag 确认下来**。
+  本地提交照做（提交不需要凭据），让脚本的 `worktree: clean` + `branch: push verified main` 生效。
+- **`--bump` 只在默认语义算错时才要**：`release.sh` 按 `最近稳定版..HEAD` 的提交语义算
+  （`!`/`BREAKING` → major，`feat` → minor，其余 → patch）。所以**看 tag 之前先看
+  `git log vX.Y.Z..HEAD --format=%s`** —— 区间里混进一个 `feat` 就会跳 minor，此时才需要
+  `--bump patch` 把版本摁回去。`v0.3.7` 指向 `b9391a4`，所以 `0.3.8` 是默认算出来的，不用 `--bump`。
 
 ### 8.5 设置的「热生效」与「需重启」
 
