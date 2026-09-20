@@ -42,7 +42,14 @@ func TestRegisteredSystemSettingsHaveRuntimeConsumers(t *testing.T) {
 		if activation.effect == "" {
 			t.Errorf("setting %q has no registered runtime consumer", setting.Key)
 		}
-		wantRestart := setting.Key != "auto_refresh_interval_seconds"
+		// 热生效（保存后不重启）的设置白名单。往这里加一项之前，必须先确认它的
+		// 消费方真的会在保存后重建派生状态 —— 见 Server.applyLiveSettings。
+		// 否则只是把「重启后生效」变成「永远不生效」，后者更难发现。
+		liveSettings := map[string]bool{
+			"auto_refresh_interval_seconds": true,
+			modelAliasGroupsSettingKey:      true,
+		}
+		wantRestart := !liveSettings[setting.Key]
 		if activation.requiresRestart != wantRestart {
 			t.Errorf("setting %q requiresRestart=%t, want %t", setting.Key, activation.requiresRestart, wantRestart)
 		}

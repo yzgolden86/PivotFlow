@@ -168,3 +168,27 @@ func (cs *ConfigService) ListAllSettings(ctx context.Context) ([]*model.SystemSe
 func (cs *ConfigService) BatchUpdateSettings(ctx context.Context, updates map[string]string) error {
 	return cs.store.BatchUpdateSettings(ctx, updates)
 }
+
+// RefreshSetting 从数据库重读单项配置并覆盖缓存。
+//
+// 只有「热生效」的设置需要它。其余设置改完就重启进程，缓存根本不必刷新 ——
+// 所以 UpdateSetting / BatchUpdateSettings 刻意不刷缓存（见上面的注释）。
+// 但热生效的设置不会重启，不刷的话 cs.GetString 返回的还是旧值，表现为
+// 「界面提示已保存，行为却没变」。调用点见 Server.applyLiveSettings。
+//
+// 数据库里没有这一行时清掉缓存条目，让 GetSetting 下次按「运行时新增配置项」
+// 的路径重新懒加载。
+func (cs *ConfigService) RefreshSetting(ctx context.Context, key string) error {
+	setting, err := cs.store.GetSetting(ctx, key)
+	if err != nil {
+		return fmt.Errorf("refresh setting %s: %w", key, err)
+	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if setting == nil {
+		delete(cs.cache, key)
+		return nil
+	}
+	cs.cache[key] = setting
+	return nil
+}

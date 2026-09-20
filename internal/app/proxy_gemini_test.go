@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
@@ -475,19 +474,11 @@ func TestProxyModelList_CanonicalizesAliasGroups(t *testing.T) {
 		}
 	}
 
-	registry := &modelAliasRegistry{byName: make(map[string]model.ModelAliasGroup)}
-	for _, group := range model.NormalizeModelAliasGroups([]model.ModelAliasGroup{{
+	server.modelAliases = newModelAliasRegistry([]model.ModelAliasGroup{{
 		Canonical: "glm-5.3",
 		Aliases:   []string{"z-ai/glm-5.3", "GLM-5.3-1M"},
 		Enabled:   true,
-	}}) {
-		registry.groups = append(registry.groups, group)
-		registry.byName[strings.ToLower(group.Canonical)] = group
-		for _, alias := range group.Aliases {
-			registry.byName[strings.ToLower(alias)] = group
-		}
-	}
-	server.modelAliases = registry
+	}})
 
 	fetchOpenAIIDs := func(t testing.TB, tokenHash string) map[string]bool {
 		t.Helper()

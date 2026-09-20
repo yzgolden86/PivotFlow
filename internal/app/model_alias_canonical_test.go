@@ -8,35 +8,13 @@ import (
 )
 
 // aliasRegistryFor builds a registry the way the server does at startup.
+//
+// 刻意调用生产构造函数而不是在这里重搭索引：之前这个辅助函数自带一份
+// 「小写 + 去空白」的实现，和生产用的 modelAliasKey 是两个版本（前者去掉所有
+// 空格，后者只去首尾），测试因此可能在生产已经错的情况下照样通过。
 func aliasRegistryFor(t *testing.T, groups ...model.ModelAliasGroup) *modelAliasRegistry {
 	t.Helper()
-	registry := &modelAliasRegistry{byName: make(map[string]model.ModelAliasGroup)}
-	registry.groups = model.NormalizeModelAliasGroups(groups)
-	for _, group := range registry.groups {
-		if !group.Enabled {
-			continue
-		}
-		registry.byName[lowerTrim(group.Canonical)] = group
-		for _, alias := range group.Aliases {
-			registry.byName[lowerTrim(alias)] = group
-		}
-	}
-	return registry
-}
-
-func lowerTrim(s string) string {
-	out := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == ' ' || c == '\t' {
-			continue
-		}
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		out = append(out, c)
-	}
-	return string(out)
+	return newModelAliasRegistry(groups)
 }
 
 // The user's exact question: a group maps DeepSeek-V4-Flash and two prefixed

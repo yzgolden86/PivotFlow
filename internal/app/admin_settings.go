@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +43,15 @@ type systemSettingActivation struct {
 	requiresRestart bool
 }
 
+// systemSettingRuntimeEffects 是设置注册表：键 = 设置名，值 = 消费方描述。
+//
+// 值以 `live:` 开头表示**保存后立即生效、不触发重启**；不带前缀的走保存后自动重启。
+// 加 `live:` 之前必须先确认消费方真的会在保存后重建派生状态（见
+// Server.applyLiveSettings），否则只是把「重启后生效」变成「永远不生效」——
+// 后者更难发现：接口照样返回 200，只是行为不变。
+//
+// 注意：gofmt 按「连续行块」对齐值列，往 map 中间插注释会切断对齐分组、让整个
+// map 被重新排版。所以说明写在这里，不要写进 map 里。
 var systemSettingRuntimeEffects = map[string]string{
 	"log_retention_days":                      "请求日志清理任务",
 	"max_key_retries":                         "渠道内 Key 重试循环",
@@ -61,7 +71,7 @@ var systemSettingRuntimeEffects = map[string]string{
 	"stream_timeout":                          "流式请求总超时",
 	"non_stream_timeout":                      "非流式请求总超时",
 	"route_strategy":                          "渠道选择策略",
-	"model_alias_groups":                      "全局模型统一映射",
+	"model_alias_groups":                      "live:全局模型统一映射",
 	"channel_test_content":                    "手动测试与定时巡检",
 	"channel_check_interval_hours":            "渠道定时巡检调度器",
 	"site_daily_checkin_time":                 "站点每日签到调度器",
@@ -170,6 +180,36 @@ func rejectSettingWithoutRuntimeConsumer(c *gin.Context, key string) bool {
 
 // AdminListSettings 获取所有配置项
 // GET /admin/settings
+// applyLiveSettings 把「热生效」的设置立刻落到内存，供三个写入接口共用。
+//
+// 为什么必须显式做：UpdateSetting / BatchUpdateSettings 刻意只写库、不刷缓存
+// （见 config_service.go 的注释），因为默认路径是保存后重启进程。而带 live: 前缀的
+// 设置**不会**重启，缓存里就还是旧值 —— 表现为「界面提示已保存，行为却没变」。
+// 所以这里要把缓存刷成新值，再让消费方重建派生状态。
+//
+// 需要重启的设置直接跳过：它们走 triggerRestart，重启后自然读到新值。
+func (s *Server) applyLiveSettings(ctx context.Context, keys []string) {
+	if s == nil || s.configService == nil {
+		return
+	}
+	for _, key := range keys {
+		if systemSettingRequiresRestart(key) {
+			continue
+		}
+		if err := s.configService.RefreshSetting(ctx, key); err != nil {
+			log.Printf("[WARN] 刷新热生效设置 %s 失败，本次改动不生效: %v", key, err)
+			continue
+		}
+		switch key {
+		case modelAliasGroupsSettingKey:
+			// 注册表是从设置派生出来的纯数据，用新值重建一份快照即可；
+			// 代理热路径上的读者会原子地切到新快照，不会看到半成品。
+			s.modelAliases.reload(s.configService)
+		}
+		log.Printf("[INFO] 设置 %s 已热生效（未重启）", key)
+	}
+}
+
 func (s *Server) AdminListSettings(c *gin.Context) {
 	settings, err := s.configService.ListAllSettings(c.Request.Context())
 	if err != nil {
@@ -254,6 +294,9 @@ func (s *Server) AdminUpdateSetting(c *gin.Context) {
 
 	// log.Printf("[INFO] Setting updated: %s = %s (restart required)", key, req.Value)
 
+	// 热生效的设置要在这里就落地，返回的 restart_required=false 才是实话。
+	s.applyLiveSettings(c.Request.Context(), []string{key})
+
 	// 返回成功响应，告知需要重启
 	restartRequired := systemSettingRequiresRestart(key)
 	RespondJSON(c, http.StatusOK, gin.H{
@@ -298,6 +341,8 @@ func (s *Server) AdminResetSetting(c *gin.Context) {
 	}
 
 	// log.Printf("[INFO] Setting reset to default: %s = %s (restart required)", key, setting.DefaultValue)
+
+	s.applyLiveSettings(c.Request.Context(), []string{key})
 
 	restartRequired := systemSettingRequiresRestart(key)
 	RespondJSON(c, http.StatusOK, gin.H{
@@ -355,12 +400,15 @@ func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 	}
 
 	restartRequired := false
+	changedKeys := make([]string, 0, len(req))
 	for key := range req {
+		changedKeys = append(changedKeys, key)
 		if systemSettingRequiresRestart(key) {
 			restartRequired = true
-			break
 		}
 	}
+	// 热生效的设置要在返回前落地，restart_required=false 才是实话。
+	s.applyLiveSettings(c.Request.Context(), changedKeys)
 	log.Printf("[INFO] 已批量更新 %d 项配置（restart_required=%t）", len(req), restartRequired)
 
 	RespondJSON(c, http.StatusOK, gin.H{
