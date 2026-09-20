@@ -5907,6 +5907,51 @@ body {
   background: color-mix(in srgb, var(--surface-strong) 85%, transparent);
 }
 
+/* 「标题 + 问号」必须同行。
+   问题：有一批 `<X> > div { display:grid }` 规则（本意是让「标题 + 描述」垂直排列）
+   会命中 .heading-with-hint，把「标题 + 问号」拆成两行、问号掉到标题下方白占一行。
+   另外 h2 是块级元素，问号跟在后面本来也会换行。
+   这里统一把它拉回行内 flex，问号紧跟标题右侧。
+
+   下面是**穷举**出来的三条会命中的父级规则（排查方式：`grep -n "> div {" styles.css | grep grid`
+   再逐条对照 JSX 里 .heading-with-hint 的父级）。以后再遇到同类问题，先跑这条 grep，
+   别一个个页面去猜：
+     :3411  .model-alias-panel > header > div
+     :4556  .system-access-head > div
+     :4845  .backup-type-card > div
+   父级是普通 div（如 .backup-block-header > div、.section-heading > div）时，
+   光靠上面那条通用规则就够了。 */
+.heading-with-hint {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.model-alias-panel > header > .heading-with-hint,
+.system-access-head > .heading-with-hint,
+.backup-type-card > .heading-with-hint {
+  display: flex;
+  align-items: center;
+}
+
+/* 间距交给父级 gap，避免 margin-left 叠加成 8px */
+.heading-with-hint > .help-tip {
+  margin-left: 0;
+}
+
+/* 「自动签到」列的小字宁可折行也不能被省略号吃掉。
+   .record-row span 全局是 nowrap + ellipsis，而这一列要放「需人机验证」
+   「站点没有签到接口」这类状态，130px 列宽装不下，被截断的恰好是最该看的内容。
+   这里放开换行；时区已经改为只在和本地不同时才显示（见 siteCheckinSchedule.ts），
+   所以正常情况下这行只有一个状态词，不会真的折到第二行。 */
+.checkin-account-grid .checkin-schedule > span {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

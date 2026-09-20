@@ -193,11 +193,9 @@ func (p *Sub2API) ListAnnouncements(ctx context.Context, req AccountRequest) ([]
 		if idOK && id > 0 {
 			sourceKey = "announcement:" + strconv.FormatInt(int64(id), 10)
 		}
-		upstreamAt := parseProviderTime(valueFromMap(item, "updated_at"))
-		if upstreamAt == 0 {
-			upstreamAt = parseProviderTime(valueFromMap(item, "created_at"))
-		}
-		out = append(out, Announcement{SourceKey: sourceKey, Title: title, ContentMarkdown: content, Level: "info", SourceURL: "/api/v1/announcements", UpstreamAt: upstreamAt, ContentHash: hash})
+		upstreamCreated := parseProviderTime(valueFromMap(item, "created_at"))
+		upstreamUpdated := parseProviderTime(valueFromMap(item, "updated_at"))
+		out = append(out, Announcement{SourceKey: sourceKey, Title: title, ContentMarkdown: content, Level: "info", SourceURL: "/api/v1/announcements", UpstreamCreatedAt: upstreamCreated, UpstreamUpdatedAt: upstreamUpdated, ContentHash: hash})
 	}
 	return out, nil
 }

@@ -36,11 +36,35 @@ export function moneyDigits(values: (number | undefined)[]): number {
  * 又有 0.4 分」这种边缘情况。
  */
 export function formatMoney(value: number | undefined, digits?: number): string {
+  return formatMoneyIn(value, 'USD', digits)
+}
+
+/**
+ * 币种符号。
+ *
+ * 上游给的是 `USD` / `CNY` 这类代码（见 admin_dashboard.go 里对 BalanceCurrency 的
+ * 归一化），直接贴在数字前会变成 `7.80 USD`，而同屏其它金额是 `$7.80` —— 同一份数据
+ * 两种写法。认不出的代码原样返回：至少不会把金额说成错误的币种。
+ */
+export function currencySymbol(currency: string | undefined): string {
+  const code = (currency || '').trim().toUpperCase()
+  if (code === 'USD') return '$'
+  if (code === 'CNY' || code === 'RMB') return '¥'
+  return code
+}
+
+/**
+ * 带币种的金额。精度规则与 formatMoney 完全一致，只是把写死的 `$` 换成实际币种。
+ *
+ * 币种缺失时退回 `$`：上游绝大多数站点按美元计价，这也是 formatMoney 的历史行为。
+ */
+export function formatMoneyIn(value: number | undefined, currency: string | undefined, digits?: number): string {
+  const symbol = currencySymbol(currency) || '$'
   const amount = value || 0
   const places = digits ?? (Math.abs(amount) > 0 && Math.abs(amount) < 0.01 ? 4 : 2)
   const floor = 10 ** -places
-  if (amount > 0 && amount < floor) return `< $${floor.toFixed(places)}`
-  return `$${formatNumber(amount, places)}`
+  if (amount > 0 && amount < floor) return `< ${symbol}${floor.toFixed(places)}`
+  return `${symbol}${formatNumber(amount, places)}`
 }
 
 /** 百分比。小于 1% 时保留一位，否则取整 —— 避免「0%」把非零的量抹掉。 */

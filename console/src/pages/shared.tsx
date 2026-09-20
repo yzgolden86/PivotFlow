@@ -112,7 +112,7 @@ export function Pagination({ page, pageSize, total, onPage, pageSizes, onPageSiz
 
 // 数字/金额/百分比的实现在 ../format.ts（纯逻辑，可被 node --test 直接测）。
 // 这里只做再导出，页面继续从 './shared' 拿，不用改 import 路径。
-export { formatMoney, formatNumber, formatPercent, moneyDigits } from '../format'
+export { currencySymbol, formatMoney, formatMoneyIn, formatNumber, formatPercent, moneyDigits } from '../format'
 
 export function formatTime(timestamp: number): string {
   const value = timestamp > 10_000_000_000 ? timestamp : timestamp * 1000

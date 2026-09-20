@@ -1716,7 +1716,7 @@ func (s *siteControlService) refreshAnnouncements(ctx context.Context, siteID in
 	now := time.Now().UnixMilli()
 	out := make([]model.SiteAnnouncement, 0, len(items))
 	for _, item := range items {
-		out = append(out, model.SiteAnnouncement{SiteID: siteID, SourceKey: item.SourceKey, Title: item.Title, ContentMarkdown: item.ContentMarkdown, Level: item.Level, SourceURL: resolveAnnouncementSourceURL(site.BaseURL, item.SourceURL), UpstreamCreatedAt: item.UpstreamAt, FirstSeenAt: now, LastSeenAt: now, ContentHash: item.ContentHash})
+		out = append(out, model.SiteAnnouncement{SiteID: siteID, SourceKey: item.SourceKey, Title: item.Title, ContentMarkdown: item.ContentMarkdown, Level: item.Level, SourceURL: resolveAnnouncementSourceURL(site.BaseURL, item.SourceURL), UpstreamCreatedAt: item.UpstreamCreatedAt, UpstreamUpdatedAt: item.UpstreamUpdatedAt, FirstSeenAt: now, LastSeenAt: now, ContentHash: item.ContentHash})
 	}
 	return s.store.UpsertSiteAnnouncements(ctx, out)
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { formatMoney, formatNumber, formatPercent, moneyDigits } from './format.ts'
+import { currencySymbol, formatMoney, formatMoneyIn, formatNumber, formatPercent, moneyDigits } from './format.ts'
 
 // 金额精度回归。
 //
@@ -93,4 +93,37 @@ test('formatPercent 只在不到 1% 时保留一位', () => {
   assert.equal(formatPercent(0.004), '0.4%', '不到 1% 不能被取整成 0%')
   assert.equal(formatPercent(0), '0%')
   assert.equal(formatPercent(-1), '0%', '负占比按 0 处理')
+})
+
+test('币种符号：美元 $、人民币 ¥，大小写与空白都容忍', () => {
+  assert.equal(currencySymbol('USD'), '$')
+  assert.equal(currencySymbol('usd'), '$')
+  assert.equal(currencySymbol(' USD '), '$')
+  assert.equal(currencySymbol('CNY'), '¥')
+  assert.equal(currencySymbol('RMB'), '¥')
+})
+
+test('认不出的币种原样返回，不冒充成美元', () => {
+  // 认不出就退回代码本身，至少不会把金额说成错误的币种。
+  assert.equal(currencySymbol('EUR'), 'EUR')
+  assert.equal(currencySymbol(''), '')
+  assert.equal(currencySymbol(undefined), '')
+})
+
+test('formatMoneyIn 与 formatMoney 的精度规则完全一致，只换符号', () => {
+  // formatMoney 就是 formatMoneyIn(值, USD)，这条守住「没有第二套精度规则」。
+  for (const value of [12.3456, 0.8906, 0.0693, 0.004, 0, -3.5, undefined]) {
+    assert.equal(formatMoney(value), formatMoneyIn(value, 'USD'), `值 ${value} 两条路径结果不一致`)
+  }
+})
+
+test('人民币金额带 ¥，小于一分钱时也给 ¥ 而不是 $', () => {
+  assert.equal(formatMoneyIn(7.8, 'CNY'), '¥7.80')
+  assert.equal(formatMoneyIn(0.004, 'CNY', 2), '< ¥0.01')
+  assert.equal(formatMoneyIn(1234.567, 'CNY', 2), '¥1,234.57')
+})
+
+test('币种缺失时退回 $（历史行为，绝大多数站点按美元计价）', () => {
+  assert.equal(formatMoneyIn(7.8, undefined), '$7.80')
+  assert.equal(formatMoneyIn(7.8, ''), '$7.80')
 })

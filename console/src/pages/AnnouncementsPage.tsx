@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react
 import { Bell, CheckCheck, RefreshCw } from 'lucide-react'
 import { getAnnouncements, getSites, markAllAnnouncementsRead, markAnnouncementRead, refreshAnnouncements, waitForSiteTask } from '../api'
 import type { Site, SiteAnnouncement } from '../types'
+import { announcementFetchedTime } from './announcementTime'
 import { EmptyState, ErrorState, formatTime, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
 import { Modal, siteErrorMessage } from './siteShared'
 
@@ -61,5 +62,5 @@ export default function AnnouncementsPage() {
 // warm 在悬停/聚焦时先把详情 chunk 拉下来，把「首次打开要等一下」的代价基本抹掉。
 function AnnouncementRow({ item, siteName, open, warm }: { item: SiteAnnouncement; siteName: string; open: () => void; warm: () => void }) {
   const preview = (item.content_markdown || '').replace(/[#>*_`\[\]]/g, '').trim()
-  return <article className={`announcement-row${item.read_at ? '' : ' announcement-row--unread'}`}><span className={`announcement-level announcement-level--${item.level || 'info'}`} /><div><button className="announcement-open" type="button" onClick={open} onMouseEnter={warm} onFocus={warm}><strong>{item.title || '无标题公告'}</strong><p>{preview || '暂无正文摘要'}</p></button><footer><a className="entity-chip" href={`#/sites?focus_site_id=${item.site_id}`}>{siteName}</a><time>{formatTime(item.upstream_updated_at || item.last_seen_at)}</time>{!item.read_at && <em>未读</em>}</footer></div></article>
+  return <article className={`announcement-row${item.read_at ? '' : ' announcement-row--unread'}`}><span className={`announcement-level announcement-level--${item.level || 'info'}`} /><div><button className="announcement-open" type="button" onClick={open} onMouseEnter={warm} onFocus={warm}><strong>{item.title || '无标题公告'}</strong><p>{preview || '暂无正文摘要'}</p></button><footer><a className="entity-chip" href={`#/sites?focus_site_id=${item.site_id}`}>{siteName}</a><time title="公告获取时间">{formatTime(announcementFetchedTime(item))}</time>{!item.read_at && <em>未读</em>}</footer></div></article>
 }

@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm'
 
 import type { Site, SiteAnnouncement } from '../types'
 import { resolveAnnouncementContentURL, resolveAnnouncementSourceURL } from './announcementContent'
+import { announcementDetailTime } from './announcementTime'
 import { formatTime } from './shared'
 
 // 这个组件刻意单独成文件：它带的 markdown 渲染栈（react-markdown + remark/rehype
@@ -17,6 +18,6 @@ import { formatTime } from './shared'
 // 340 KB —— 哪怕从不打开公告页。拆出来之后它不在 pageLoaders 里，只按需下载。
 // 改这里时别把它再 import 回 AnnouncementsPage，否则预取体积会悄悄涨回去。
 export default function AnnouncementDetail({ item, site, close }: { item: SiteAnnouncement; site?: Site; close: () => void }) {
-  const sourceURL = resolveAnnouncementSourceURL(item.source_url, site)
-  return <div className="announcement-detail"><div className="announcement-detail-meta"><a className="entity-chip" href={`#/sites?focus_site_id=${item.site_id}`} onClick={close}>{site?.name || `站点 #${item.site_id}`}</a><time>{formatTime(item.upstream_updated_at || item.last_seen_at)}</time>{sourceURL && <a href={sourceURL} target="_blank" rel="noopener noreferrer">查看原文<ExternalLink size={12} /></a>}</div><div className="announcement-markdown"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeRaw, rehypeSanitize]} components={{ a: ({ href, children }) => { const target = resolveAnnouncementContentURL(href, site); return target ? <a href={target} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span> } }}>{item.content_markdown || '暂无正文'}</ReactMarkdown></div></div>
+  const sourceURL = resolveAnnouncementSourceURL(item.source_url, site); const time = announcementDetailTime(item)
+  return <div className="announcement-detail"><div className="announcement-detail-meta"><a className="entity-chip" href={`#/sites?focus_site_id=${item.site_id}`} onClick={close}>{site?.name || `站点 #${item.site_id}`}</a><time title={time.source === 'published' ? '公告发布时间' : '上游未提供发布时间，这里显示的是本地获取时间'}>{time.source === 'published' ? '发布于' : '获取于'} {formatTime(time.at)}</time>{sourceURL && <a href={sourceURL} target="_blank" rel="noopener noreferrer">查看原文<ExternalLink size={12} /></a>}</div><div className="announcement-markdown"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeRaw, rehypeSanitize]} components={{ a: ({ href, children }) => { const target = resolveAnnouncementContentURL(href, site); return target ? <a href={target} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span> } }}>{item.content_markdown || '暂无正文'}</ReactMarkdown></div></div>
 }

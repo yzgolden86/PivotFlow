@@ -252,8 +252,14 @@ type Announcement struct {
 	ContentMarkdown string
 	Level           string
 	SourceURL       string
-	UpstreamAt      int64
-	ContentHash     string
+	// UpstreamCreatedAt / UpstreamUpdatedAt 是上游公告自身的发布时间与最后修改时间。
+	// 控制台的详情页要显示「发布时间」，所以这两个值必须分开传：
+	// 合成一个字段后就没法区分「刚发布」和「刚被改过」。
+	// 上游不给时间时保持 0 —— New API 系的 /api/notice 只返回一段纯文本通知，
+	// 响应里根本没有时间字段，这类站点的发布时间是拿不到的。
+	UpstreamCreatedAt int64
+	UpstreamUpdatedAt int64
+	ContentHash       string
 }
 
 type SiteAdapter interface {
