@@ -35,6 +35,8 @@
   - 前端 `make console-check` → typecheck + 60 个用例 + 构建全通过，`web/console` 产物已重建（用例数在 `fc4cd97` 从 50 涨到 60）
   - 浏览器端（`console_ui_smoke.py`，起本地服务跑真实产物）→ **全绿，且 stderr 干净**：`console_errors` 为空、`failed_responses` 为空，11 条路由的标题/导航高亮断言全过，性能预算全过（`effd6f6` 重做指标、`fc4cd97` 消掉那条软告警，见 §2）
   - 公告详情弹窗（`console_announcement_detail_check.py`，造一条公告真实点开）→ **全过**：markdown（`h1` / 粗体 / GFM 表格 / 列表）、站内相对链接按 `base_url` 解析、`javascript:` 链接降级成 `span`、原始 HTML 由 `rehype-raw` 解析、详情 chunk **预取 0 次 / 打开 1 次**，`console_errors` 与 `failed_responses` 均空（见 §2）
+  - **§1.10 那批改动（公告时间 / 问号位置 / 签到页显示）的复验**：前端 89 用例全过、`web/console` 重建后 `diff -rq` 逐字节一致；`go build -tags sonic ./...` + `go test`（provider / storage / app）全过；`golangci-lint --build-tags sonic --timeout 20m` → `0 issues.` exit 0；`console_ui_smoke.py`（11 路由 + 体积预算）与 `console_announcement_detail_check.py` 全绿、无告警；另用一次性探针在真实产物上量了问号位置与签到页那格的文本 / 截断（证据见 §1.10）。
+  - **§1.11 模型统一映射热生效**：`go build -tags sonic ./...` OK；`go vet -tags sonic ./...` exit 0；`gofmt -l internal/` 无输出；`go test -tags sonic -count=1 ./internal/...` → **33 包全 `ok`**（`internal/app` 121.5s）；`make console-check` 通过（未动控制台文件，产物 hash 与上次一致）；**端到端实测**（真实进程 + 真实 HTTP）4 → 2 个模型且 `restart_required=false`、服务日志只有一份启动横幅（见 §1.11）。
 
   > 前端验证的坑：`vite` 的 `emptyOutDir` 要清空 `web/console/assets`（30+ 文件），
   > 会撞上沙箱的批量删除守卫（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，按**回合**累计、
@@ -240,6 +242,171 @@ hao 哥的要求是「先填充一些测试数据看下效果，图表也要有�
 **方法论：别用肉眼比对缩放后的截图。** 3px 的彩条和 38px 的图标芯片在缩放图里长得几乎一样，我两次把图标芯片误读成「整卡泛色」，两次都是靠实测纠正的（一次读 computed style，一次扫 PNG 像素，结论都是卡片纯白 `(255,255,255)`，只有芯片是 `(227,243,235)`）。所以这次写了一个 DOM 扫描脚本，直接列出「`border-top-width >= 2` 且颜色饱和」的元素与「2-8px 高的彩色伪元素」，**一次覆盖全部 12 个路由**，结果是 11 个路由完全干净。比逐张看图快且不会看错。
 
 **刻意保留、别再顺手删的三处**：① **页头 `tone`**（每页一个色相，驱动 4px 左竖条 + 背景径向渐变）—— 页头属于外壳，是随「外壳 + 概览页」一起评审过的，且 12 个页面一致，要改是设计决策而不是漏改；② `.tool-card::after` 的厂商标识色（见 §1.7 维护点）；③ 图表内部的分类配色（环形图各扇区、`.trend-breakdown-list` 的排名色阶）—— 分布图靠颜色区分系列，属必要。
+
+### 1.10 公告时间语义、问号图标、签到页显示（本次）
+
+四个界面问题，外加一次核查。**结论先写在前面：公告的「发布时间」只有 Sub2API 拿得到。**
+
+**① 模型统一映射是否作用于对外模型列表 —— 已核实，实现是对的。** 用一个临时探针测试
+（`internal/app/zz_probe_alias_test.go`，`-tags sonic`）实测：给渠道配 4 个模型（3 个同属一个
+别名组 + 1 个 `gpt-4o`），`GET /v1/models` 只返回 **2 个**（组内折叠成 canonical + `gpt-4o`）。
+折叠发生在 `filterVisibleModelsForRequest`（`proxy_gemini.go`）里，`canonicalizeModelNames`
+先于 `FilterAllowedModels`，带 token 与不带 token 两条路径都过。探针已删除。
+顺带发现一个 UX 缺口：`model_alias_groups` 在 `systemSettingRuntimeEffects` 里
+没有 `live:` 前缀（= 需要重启），而 `modelAliases` 只在 `server.go:191` 构造时加载一次；
+但 V2 设置页没有任何「需重启」提示（只有旧的 `SystemSettingsPage.tsx:70` 有）。改完映射不重启
+不生效，且界面不说。**已在 §1.11 修掉**（不是补提示，而是让它真热生效）。
+
+**② 标题旁的问号掉到下一行 —— 根因是父级 `display:grid`，不是 `HelpTip` 自己。**
+有一批 `<X> > div { display:grid }` 规则（本意是让「标题 + 描述」垂直排）会命中
+`.heading-with-hint`，把「标题 + 问号」拆成两行。另外 `h2` 是块级元素，问号跟在后面本来
+也会换行。修法是在 `styles.css` **末尾**追加覆盖（`.heading-with-hint` 拉回行内 flex，
+**外加三条更高优先级的父级限定选择器**），并把 `.heading-with-hint > .help-tip` 的
+`margin-left` 归零避免和 `gap` 叠加。
+
+**排查方式是穷举而不是逐页猜**：`grep -n "> div {" console/src/styles.css | grep grid`
+列出全部候选，再对照 JSX 里 `.heading-with-hint` 的父级，命中的正好三条：
+`:3411` `.model-alias-panel > header > div`、`:4556` `.system-access-head > div`、
+`:4845` `.backup-type-card > div`。**第三条是复核截图时才发现的** —— 前两条修完后我看了
+一眼导入导出页的截图，发现三张备份卡片的问号还在标签下方；它权重 (0,1,1) 压过了通用的
+`.heading-with-hint` (0,1,0)，只靠通用规则修不掉。**教训：修「一类」缺陷时要穷举出全部
+命中点，别只修用户截图里那一个。** 父级是普通 `div` 时（`.backup-block-header > div`、
+`.section-heading > div`）通用规则就够了。
+
+**③ 公告：列表用获取时间、详情用发布时间。** 关键事实——**上游的时间字段只有 Sub2API 会给**：
+
+| Provider | 端点 | 响应里有时间吗 |
+| --- | --- | --- |
+| Sub2API | `/api/v1/announcements` | **有**：`created_at` / `updated_at` |
+| NewAPI / Veloera / AnyRouter | `/api/notice` | **没有**。`controller.GetNotice` 就是把 `OptionMap["Notice"]` 这个纯字符串原样返回（已读上游源码确认） |
+
+原来 provider 层只有一个 `UpstreamAt` 字段，取值是 `updated_at || created_at` —— 混成一个后
+没法区分「刚发布」和「刚被改过」，而且详情页要的是**发布时间**。所以拆成
+`UpstreamCreatedAt` / `UpstreamUpdatedAt`（`provider.go`），`sub2api.go` 分别解析，
+`site_control.go:1719` 分别落库。schema 里这两列本来就有（`tables.go:283-284`），upsert 也会
+刷新它们，**不用改 schema**。
+
+前端两个坑：
+- **列表原来写的是 `upstream_updated_at || last_seen_at`。** 因为 `upstream_updated_at` 此前
+  恒为 0，它一直静默落到 `last_seen_at`（获取时间），看起来「是对的」。这次一拆分，
+  Sub2API 站点就会把 `upstream_updated_at` 填上，列表会**悄悄变成显示发布时间** ——
+  所以必须显式改成 `last_seen_at`。判定逻辑抽到 `announcementTime.ts`（纯 `.ts`，可 `node --test`）。
+- 详情显示「发布于 X」；上游不给时间时退回获取时间，并把文案改成「获取于 X」+ tooltip 说明，
+  **不把抓取时间冒充成发布时间**。
+
+**④ 签到页「自动签到」列截断。** 那一格是 `时区 · 签到方式提示`，时区排在**前面**，
+而列宽只有 130px（`.checkin-account-grid` 第 4 列），于是被省略号吃掉的恰好是最该看的
+状态（「需人机验证」）。改法：状态在前，**时区只在它和浏览器时区不同时才显示**
+（绝大多数站点就是 `Asia/Shanghai`，与本地相同 = 不携带信息），两者无论显示与否都进 tooltip；
+另加一条 `.checkin-account-grid .checkin-schedule > span` 放开换行（`.record-row span` 全局是
+`nowrap`+`ellipsis`）。逻辑在 `siteCheckinSchedule.ts`。
+
+**⑤ 签到记录页：列名 + 币种符号。** 「奖励或说明」→「状态说明」。额度原来既没有符号、
+也没有固定精度（`delta.toFixed(2)` / `before.toFixed(2)`）。`formatMoney` 把 `$` 写死了，
+所以新增 `formatMoneyIn(value, currency, digits)` 与 `currencySymbol`（USD→`$`、CNY/RMB→`¥`，
+认不出的代码原样返回，**不冒充成美元**），`formatMoney` 改成 `formatMoneyIn(值, 'USD')`
+以保住既有行为。精度仍按**整行一组**取（`moneyDigits([delta, before, after])`）。
+奖励是增量、永远为正，所以**不走** `formatMoneyIn` 的「`< ¥0.01`」分支——那会拼出
+`+< ¥0.0001`。
+
+**测试与实测证据**：前端 60 → **89** 个用例（新增 `announcementTime` / `siteCheckinSchedule` /
+`format` 币种共 29 条）。浏览器端在真实产物上实测（DOM 取盒子，不看缩放截图）：
+
+- 「问号同行」：`#/system` 上 4 个 `.help-tip` **全部同行**（`.heading-with-hint` 计算样式
+  `display:flex`、容器高 28px 单行；`.system-access-head > .heading-with-hint` 同样）；
+  导入导出页 3 张备份卡片 `.backup-type-card > .heading-with-hint` 也全部同行
+  （`display:flex`、容器高 36px，修复前是两行）。量法见下面的**探针坑**。
+- 「自动签到」列：同本地时区 → 文本 `需人机验证`、tooltip `需人机验证 · Asia/Shanghai（与本地时区相同）`；
+  不同时区 → 文本 `站点没有签到接口 · America/New_York`。两种都是 `scrollWidth == clientWidth`、
+  `white-space: normal`，**无截断**。
+- 记录页表头实测 `账号 / 站点 | 结果 | 日期 / 触发 | **状态说明** | 完成时间 | 操作`；
+  行内金额实测 `+$0.50` / `$1.00 → $1.50` 与 `+¥7.80` / `¥10.00 → ¥17.80`。
+- `console_errors` 与 `failed_responses` 均为空。
+
+> **探针坑（会误判成 UI 缺陷）**：判断「问号是否与标题同行」时，别用
+> `parent.children` 找标题元素——`HelpTip` 嵌在 `<strong>` 里时标题是**纯文本节点**，
+> 取不到元素就会退化成整个容器，把同行误判成不同行（本次先误判了 3 处）。
+> 要用 `document.createRange()` 量文本节点的真实矩形，或比 `getClientRects()`。
+> 这与 §1.9 那条「别用肉眼比对缩放截图」是同一类问题：**量事实，别猜**。
+
+### 1.11 模型统一映射改为热生效（本次）
+
+§1.10① 发现的缺口：**改完映射不重启不生效，界面还不说**。这里记的是修法，以及为什么
+没走「加个『需重启』提示」那条路。
+
+**缺陷是三件事叠出来的**（缺一件都不成立）：
+
+1. `systemSettingRuntimeEffects["model_alias_groups"]` 没有 `live:` 前缀 ⇒ `requiresRestart=true`；
+2. `modelAliases` 只在 `server.go:191` 构造 `Server` 时加载一次，之后没人重建；
+3. `ConfigService.UpdateSetting` / `BatchUpdateSettings` **刻意不刷缓存**（源码注释：*仅写数据库，
+   不更新缓存，因为会重启*）—— 所以连 `cs.GetString("model_alias_groups")` 读到的都是旧值。
+
+于是接口老老实实回 `restart_required: true`，`triggerRestart()` 也确实会拉起新进程；但**跑裸二进制
+时那个重启不一定成功**，而**只要没重启，行为就停在旧映射上**，且没有任何提示。第 3 条尤其阴：
+即使把注册表加上 `live:`，`ConfigService` 的缓存也还是旧的 —— 于是「热生效」会变成「热生效但读到旧值」，
+表现和没修一模一样。
+
+**修法 = 让它真热生效，而不是加提示。** 加提示是承认「保存了但不生效」，用户还得手动重启一次；
+而这个设置本来就是纯派生状态，完全可以从数据库重读后原地重建，没有理由要重启。
+
+四处改动：
+
+- **`model_aliases.go` 重写为不可变快照。** `modelAliasRegistry` 从 `{groups, byName}` 就地持有
+  map，改成 `struct{ index atomic.Pointer[modelAliasIndex] }`。一次重建 = 造一个全新的
+  `modelAliasIndex`（含归一化后的 groups 与 `byName` 反查表）再 `Store` 换指针。**代理热路径上的
+  读者因此完全无锁**，也不会读到「建了一半」的映射。新增 `reload(cs)` 与 `snapshot()`；所有读方法
+  （`namesFor` / `actualModelFor` / `supports` / `canonicalModelFor` / `canonicalizeModelNames`）
+  都先取一次快照再用。快照为 nil 时退回朴素匹配（等于「没配映射」）。
+- **`ConfigService.RefreshSetting(ctx, key)`**（`config_service.go`）：按 key 从库里重读并覆盖缓存，
+  库里没了就删缓存项。**只有热生效的设置需要它**，其余设置照旧靠重启 —— 别顺手把它塞进
+  `UpdateSetting`，那会改掉「保存后重启」这条既有语义。
+- **`Server.applyLiveSettings(ctx, keys)`**（`admin_settings.go`）：逐个 key，先 `systemSettingRequiresRestart`
+  筛掉需重启的，再 `RefreshSetting`，然后 `switch key` 重建派生状态（目前只有
+  `case modelAliasGroupsSettingKey: s.modelAliases.reload(s.configService)`），最后打一行
+  `[INFO] 设置 %s 已热生效（未重启）`。**刷新失败只 WARN 不 500** —— 设置已经落库了，
+  这时报错会让界面以为没保存。
+- **三个写入口都接上**：`AdminUpdateSetting` / `AdminResetSetting` / `AdminBatchUpdateSettings`
+  在 `RespondJSON` **之前**调用它。`AdminBatchUpdateSettings` 原来在发现 `restartRequired` 时
+  `break`，改成继续扫完并把 key 收进 `changedKeys`。顺序很重要：**先落地再回包**，
+  `restart_required: false` 才是实话。
+
+**契约（写新设置时按这条判）**：往 `systemSettingRuntimeEffects` 加 `live:` 之前，必须能回答
+「这个设置派生出的内存状态由谁重建」。答不上来就**别加 `live:`** —— 加了 `live:` 却没人重建，
+就是「缓存刷新了、派生状态还是旧的」，比明确要求重启更难查。`internal/app/admin_settings_handler_test.go`
+的 `TestRegisteredSystemSettingsHaveRuntimeConsumers` 里有一张 `liveSettings` 白名单，加 `live:`
+必须同步加进去，否则测试会拦下来。
+
+**顺带修掉的一处测试腐化**：`model_alias_canonical_test.go` 里的 `aliasRegistryFor` 自带一份
+`lowerTrim`（**折叠全部空白**），而生产的 `modelAliasKey` 只 `TrimSpace`（**只去首尾**）——
+测试辅助函数和被测代码归一化规则不一致，等于在验一个不存在的实现。已改成直接调生产构造函数
+`newModelAliasRegistry`，并删掉那份 `lowerTrim`。
+
+**门禁结果**：`go build -tags sonic ./...` OK；`go vet -tags sonic ./...` exit 0；`gofmt -l internal/` 干净；
+`go test -tags sonic -count=1 ./internal/...` **33 包全过**（`internal/app` 121.5s）；
+`make console-check` 通过（本次没动任何控制台文件）。
+
+**端到端实测（真实进程 + 真实 HTTP，这是关键证据）**：两个渠道各带一种拼写
+（A：`deepseek-v4-flash` + `gpt-4o`；B：`DeepSeek-V4-Flash` + `deepseek/deepseek-v4-flash`），
+用管理接口建渠道、建 API Key，然后：
+
+| 步骤 | `/v1/models` | 响应 |
+| --- | --- | --- |
+| 改之前 | 4 个（3 种拼写 + `gpt-4o`） | — |
+| `POST /admin/settings/batch` | — | `restart_required: false`、*已保存 1 项配置，立即生效* |
+| 改之后（**进程未重启**） | **2 个**：`deepseek-v4-flash`、`gpt-4o` | — |
+| 还原成 `[]` | 回到 4 个 | `restart_required: false` |
+
+服务日志里 **只有一份启动横幅**（13:58:13–13:58:15，之后再无），并且打了两次
+`[INFO] 设置 model_alias_groups 已热生效（未重启）` —— 即列表变化只能来自热生效，不可能来自重启。
+脚本 `.tmp-e2e/e2e_alias_live.py` 用完即删。
+
+> **造数据别手写 SQL 造 `channels`。** 表里列名是 `url`（存的是 `ChannelURLs` 的 JSON），
+> **没有** `base_url` / `models` / `type` 这些列 —— 照着直觉写的 INSERT 一定报错。
+> 走 `POST /admin/channels` 更省事也更能反映真实路径。
+> 另：**同一渠道内模型名大小写不敏感查重**（`admin_types.go:275`），所以「同一模型的不同拼写」
+> 必须分散到**不同渠道**才能造出来 —— 而这恰好就是真实场景（两个上游站点各暴露一种写法）。
+> 登录是 `POST /login`，body 必须带 `"mode": "admin"`，缺了只会得到 `Invalid request format`。
+> 沙箱里 `http_proxy` 指向 `127.0.0.1:4868`，脚本里要显式装空 `ProxyHandler` 才连得上本机端口。
 
 ## 2. 环境与验证（必读）
 
@@ -618,7 +785,9 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 - 测试用 `node:test` + `node:assert/strict`，**用例名写中文**，夹具用**工厂函数 + 显式返回类型标注**（不用 `as` 断言）。
 - **import 兄弟模块要写显式 `.ts` 后缀**（`from './format.ts'`），否则 `ERR_MODULE_NOT_FOUND`。
 - **金额/数字格式化只有一份实现**（`console/src/format.ts`），`pages/shared.tsx` 只做转出。**精度必须按组定、不能按单个值定**——按单值定会让同一列混出 `$7.80` 和 `$0.8906`。成组展示统一传 `moneyDigits(整组)`。
+- **币种只有一份实现**：`currencySymbol`（USD→`$`、CNY/RMB→`¥`，**认不出的代码原样返回，不冒充成美元**）+ `formatMoneyIn(值, 币种, 精度)`。`formatMoney` 就是 `formatMoneyIn(值, 'USD')`，行为不变——**别在页面里自己拼符号**。另外：**增量（如签到奖励）不要用 `formatMoneyIn`**，它的「不到一分钱」分支会拼出 `+< ¥0.0001` 这种读不通的东西，增量应走 `currencySymbol + formatNumber`。
 - **改样式先想权重**：新加的**顶层**规则会顶掉媒体查询里设过的同名属性（**媒体查询不加权重**）。所以覆盖层的惯例是**追加到 `styles.css` 末尾**，而不是就近插在原始规则旁边。
+- **父级 `display:grid` 会把「标题 + 问号」拆成两行**。`.heading-with-hint` 里只有标题 + `.help-tip`，而 `.model-alias-panel > header > div`（`:3411`）、`.system-access-head > div`（`:4556`）都设了 `display:grid`（本意是「标题 + 描述」垂直排）。另外 `h2` 是块级元素，问号跟在它后面本来也会换行。修法是末尾覆盖成行内 flex，**覆盖时要写父级限定选择器**（只写 `.heading-with-hint` 权重不够）。
 - 字号只允许**字面量 px** 或 `--fs-*` 令牌；写成别的（如 `var(--x)` 拼字符串）会让 `smallTextLegibility.test.ts` **静默失效**（守卫解析不到就跳过，不报错）。
 
 ### 8.3 传输层（`internal/site/provider/transport.go`）
@@ -634,3 +803,17 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 - **后台起服务端用 `run_in_background`，别用 `&`。** **停进程用 PowerShell 的 `Stop-Process`**：Git Bash 里 `taskkill //PID` 会被路径改写搞坏，报「无效参数」。
 - **控制台认证是 Bearer token，不是 cookie**：`POST /login`（**不是 `/admin/login`**）在**响应体**里返回 `{"token": ...}`，前端存 `localStorage` 的 `pivotflow_token`，之后带 `Authorization: Bearer <token>`。所以用 `fetch` 探测接口时必须显式加这个头——带 `credentials:'include'` 会**一律 401**，容易误判成「登录没生效」。
 - playwright 必须用**系统 Python**：`C:/Users/80470/AppData/Local/hermes/hermes-agent/venv/Scripts/python.exe`（3.11.11），托管的 3.13.12 没装。字体子集工具链在托管 venv `...\python\envs\default`（fonttools）。冒烟截图落在 `%TEMP%\pivotflow-console-ui`。`curl` 别写 `/tmp`。
+- **`POST /login` 的 body 必须带 `"mode": "admin"`**（`auth_service.go:550`，`binding:"required"`）。只发 `{"password": ...}` 会得到 `400 Invalid request format`——**这个报错完全不提 mode，极易误判成密码错或路由错**。token 在 `data.token`。
+- **本机 HTTP 探测要显式关掉代理**：沙箱的 `http_proxy` / `https_proxy` 指向 `127.0.0.1:4868`，连 `127.0.0.1:<自己的端口>` 也会被劫走。Python 里用 `urllib.request.build_opener(urllib.request.ProxyHandler({}))`。
+
+### 8.5 设置的「热生效」与「需重启」
+
+- **默认语义是「保存后重启」**：`systemSettingRuntimeEffects` 里**没有** `live:` 前缀 = `requiresRestart=true`，`AdminUpdateSetting` / `AdminBatchUpdateSettings` 会在回包后 `go triggerRestart()`。
+- **`live:` 不是「加个前缀就完事」**。三件事必须同时成立，缺一件就表现为「保存成功、界面提示已生效、行为没变」（比明确要求重启更难查）：
+  1. 注册表里有 `live:` 前缀；
+  2. **`ConfigService` 缓存被刷新** —— `UpdateSetting` / `BatchUpdateSettings` **刻意不刷缓存**（源码注释：*仅写数据库，不更新缓存，因为会重启*），所以要显式调 `ConfigService.RefreshSetting(ctx, key)`；
+  3. **该设置派生出的内存状态被重建** —— 在 `Server.applyLiveSettings` 的 `switch` 里加 case（如 `modelAliasGroupsSettingKey` → `s.modelAliases.reload(...)`）。
+- 判定方法：加 `live:` 前先回答「这个设置派生出的内存状态由谁重建」。答不上来就**别加**。
+- `internal/app/admin_settings_handler_test.go` 的 `TestRegisteredSystemSettingsHaveRuntimeConsumers` 里有 `liveSettings` 白名单，**加 `live:` 必须同步加进去**，否则测试直接拦下。
+- 热生效的状态重建要**换不可变快照**（`atomic.Pointer[T]`），不要就地改 map —— 读者在代理热路径上并发跑，就地改会竞态。参考 `model_aliases.go` 的 `modelAliasIndex`。
+- 顺序：**先落地热生效、再 `RespondJSON`**，否则 `restart_required: false` 是假话。
