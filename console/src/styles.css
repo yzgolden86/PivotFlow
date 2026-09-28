@@ -699,10 +699,14 @@ a:focus-visible {
 }
 .sidebar-theme-button:hover { color: var(--text); background: var(--surface); border-color: var(--border); }
 .sidebar-theme-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 这个弹层由 `AnchoredPopover` portal 到 body 上、用 `position: fixed` + 视口坐标
+   定位，所以这里**不能**写 right/bottom —— 那会相对侧栏而不是视口，白算一遍。
+   原来它是 `absolute; right:-4px; bottom:calc(100% + 10px)`，锚在
+   `.sidebar-theme-wrap` 上；那个容器只有 `flex: 1` 的约 110px 宽，而菜单有 168px，
+   右对齐会把整块推出侧栏左边界，再被 `.sidebar` 的 `overflow: hidden` 裁掉
+   （截图里只剩右半截、左边文字被切）。锚点因此改到整条 `.sidebar-actions`。 */
 .theme-picker {
-  position: absolute;
-  right: -4px;
-  bottom: calc(100% + 10px);
+  position: fixed;
   z-index: 70;
   display: grid;
   width: 168px;
@@ -732,7 +736,8 @@ a:focus-visible {
 .theme-picker button i { width: 7px; height: 7px; margin-left: auto; background: var(--green); border-radius: 50%; }
 .app-shell--collapsed .sidebar-theme-wrap { flex: 0 0 34px; }
 .app-shell--collapsed .sidebar-theme-button { width: 34px; justify-content: center; padding-inline: 0; }
-.app-shell--collapsed .theme-picker { right: -8px; }
+/* 收起态不再需要给 `.theme-picker` 调 right —— 它已经改成视口坐标定位，
+   收起态由 `popoverPosition` 的 flyOut 贴着操作栏右侧外挂（侧栏只有 72px，装不下）。 */
 
 .app-shell--collapsed .sidebar-actions {
   flex-direction: column;
@@ -3976,7 +3981,9 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 
   .sidebar--open .sidebar-theme-wrap { flex: 1; }
   .sidebar--open .sidebar-theme-button { width: 100%; justify-content: flex-start; padding-inline: 9px; }
-  .sidebar--open .theme-picker { right: 0; }
+  /* 移动端原来在这里调 `.theme-picker { right: 0 }`。现在它是 portal 到 body 的
+     `position: fixed` + 内联视口坐标，写 right 既无效（内联样式优先，且 left 胜过
+     right）又会误导后来者，所以删掉 —— 定位统一由 `popoverPosition` 负责。 */
 
   .sidebar-collapse {
     display: none;
@@ -5642,11 +5649,18 @@ body {
   background-size: 100% 100%, 100% 100%, 28px 28px, 100% 100%;
 }
 
+/* 点阵的浓度按「合成后与底色的对比度」定，不按百分比拍脑袋。
+   亮色档 25% 叠在 #f4f6f8 上合成 #e9edf0，对比度 ≈1.09:1 —— 只是一层几乎看不见的
+   织理。暗色档原来用 42%，叠在 #111513 上合成 #222926，对比度 ≈1.24:1；
+   同一个数值在近黑的大面积底色上会被看成「一格一格的辅助点」，观感很脏。
+   降到 15% 后合成 #171c1a，对比度 ≈1.09:1，与亮色档感知强度对齐。
+   注意 `--border-strong` 在明暗两套里亮度方向相反（亮色 #c9d2d8 / 暗色 #3a443f），
+   所以两档的百分比不能直接沿用同一个数。 */
 :root[data-theme="dark"] .app-shell {
   background:
     radial-gradient(ellipse 80% 50% at 22% -10%, color-mix(in srgb, var(--green) 12%, transparent), transparent 65%),
     radial-gradient(ellipse 70% 50% at 88% 90%, color-mix(in srgb, var(--blue) 9%, transparent), transparent 65%),
-    radial-gradient(circle, color-mix(in srgb, var(--border-strong) 42%, transparent) 1px, transparent 1px),
+    radial-gradient(circle, color-mix(in srgb, var(--border-strong) 15%, transparent) 1px, transparent 1px),
     var(--bg);
   background-size: 100% 100%, 100% 100%, 28px 28px, 100% 100%;
 }

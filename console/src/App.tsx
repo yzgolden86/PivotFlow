@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { getCheckinAttemptsBatch, getSiteInventory } from './api'
+import AnchoredPopover from './components/AnchoredPopover'
 import GlobalSearch from './components/GlobalSearch'
 import PageErrorBoundary from './components/PageErrorBoundary'
 import { applyTheme, readThemePreference, resolveTheme } from './theme'
@@ -134,7 +135,10 @@ function App() {
   const location = useLocation()
   const sidebar = useRef<HTMLElement>(null)
   const mobileTrigger = useRef<HTMLButtonElement>(null)
-  const themePicker = useRef<HTMLDivElement>(null)
+  // 主题菜单的定位锚点取**整条底部操作栏**，不是那个 `flex: 1` 的按钮容器：
+  // 展开态要右对齐到操作栏内边缘（按钮容器只有约 110px 宽，168px 的菜单右对齐到它
+  // 会整块被推出侧栏左边界），收起态则要贴着操作栏右侧外挂。详见 popoverPosition。
+  const themePickerAnchor = useRef<HTMLDivElement>(null)
   const showLabels = !collapsed || mobileOpen
   const currentPage = navigation.flatMap((group) => group.entries).find((entry) => entry.href === location.pathname)?.label || '控制台'
 
@@ -163,20 +167,6 @@ function App() {
       mobileTrigger.current?.focus()
     }
   }, [mobileOpen])
-
-  useEffect(() => {
-    if (!themePickerOpen) return
-    const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !themePicker.current?.contains(event.target)) setThemePickerOpen(false)
-    }
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setThemePickerOpen(false) }
-    document.addEventListener('pointerdown', outside)
-    document.addEventListener('keydown', escape)
-    return () => {
-      document.removeEventListener('pointerdown', outside)
-      document.removeEventListener('keydown', escape)
-    }
-  }, [themePickerOpen])
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -313,8 +303,8 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="sidebar-actions">
-            <div className="sidebar-theme-wrap" ref={themePicker}>
+          <div className="sidebar-actions" ref={themePickerAnchor}>
+            <div className="sidebar-theme-wrap">
               <button
                 className="sidebar-theme-button"
                 type="button"
@@ -326,9 +316,18 @@ function App() {
                 {resolvedTheme === 'light' ? <Sun size={17} /> : <Moon size={17} />}
                 {showLabels && <span>{themePreference === 'system' ? '跟随系统' : themePreference === 'dark' ? '暗色' : '亮色'}</span>}
               </button>
-              {themePickerOpen && <div className="theme-picker" role="menu" aria-label="界面主题">
+              <AnchoredPopover
+                open={themePickerOpen}
+                onOpenChange={setThemePickerOpen}
+                anchorRef={themePickerAnchor}
+                placement="above"
+                flyOut
+                className="theme-picker"
+                role="menu"
+                ariaLabel="界面主题"
+              >
                 {([['system', '跟随系统', Monitor], ['light', '亮色', Sun], ['dark', '暗色', Moon]] as const).map(([value, label, Icon]) => <button className={themePreference === value ? 'is-selected' : ''} type="button" role="menuitemradio" aria-checked={themePreference === value} onClick={() => { setThemePreference(value); setThemePickerOpen(false); window.dispatchEvent(new CustomEvent('fusion:theme-changed', { detail: value })) }} key={value}><Icon size={16} /><span>{label}</span>{themePreference === value && <i />}</button>)}
-              </div>}
+              </AnchoredPopover>
             </div>
             <button
               className="icon-button icon-button--dark"
