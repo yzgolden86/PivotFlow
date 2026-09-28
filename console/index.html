@@ -31,13 +31,21 @@
             (preference !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
           const root = document.documentElement
           root.dataset.theme = dark ? 'dark' : 'light'
-          // 下面三行必须覆盖 theme.ts 里 themePresetOptions / themeFontOptions /
-          // radius 的全部取值。抄漏的后果不是报错而是「每次刷新先闪一下默认主题」：
-          // 这里拒绝的值会被替换成默认值，随后 bundle 挂载才改回用户真正选的那个。
+          // 下面六行必须覆盖 theme.ts 里 themePresetOptions / themeFontOptions /
+          // themeRadiusOptions / themeSidebarWidthOptions / themeContentWidthOptions /
+          // themeMotionOptions 的全部取值。抄漏的后果不是报错而是「每次刷新先闪一下
+          // 默认外观」：这里拒绝的值会被替换成默认值，随后 bundle 挂载才改回用户
+          // 真正选的那个。后三项虽然只是布局/动效，但闪一下同样是肉眼可见的位移。
           // 两边的清单由 console/src/themeBoot.test.ts 逐个比对，别再手工同步。
           root.dataset.themePreset = ['jade', 'ocean', 'coral', 'anthropic', 'violet', 'slate', 'forest', 'plum'].includes(appearance.preset) ? appearance.preset : 'jade'
           root.dataset.themeFont = ['system', 'yahei', 'pingfang', 'dengxian', 'harmony', 'notoserif', 'songti', 'kaiti', 'segoe', 'consolas', 'cascadia', 'sarasa'].includes(appearance.font) ? appearance.font : 'system'
           root.dataset.themeRadius = ['compact', 'balanced', 'soft'].includes(appearance.radius) ? appearance.radius : 'balanced'
+          root.dataset.sidebarWidth = ['narrow', 'default', 'wide'].includes(appearance.sidebarWidth) ? appearance.sidebarWidth : 'default'
+          root.dataset.contentWidth = ['narrow', 'default', 'full'].includes(appearance.contentWidth) ? appearance.contentWidth : 'default'
+          root.dataset.motion = ['full', 'reduced'].includes(appearance.motion) ? appearance.motion : 'full'
+          // 壁纸与自由 CSS 不在这里处理：壁纸图片本身要异步下载（先设也会再闪一次），
+          // 自由 CSS 的转义逻辑抄过来只会多一份会漂移的实现。两者都交给 bundle。
+          // 万一自由 CSS 把界面写坏了，地址带 plain=1 可以跳过它（见 theme.ts）。
         } catch (_) {}
 
         const token = localStorage.getItem('pivotflow_token')

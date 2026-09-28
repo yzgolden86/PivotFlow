@@ -3,6 +3,7 @@ import {
   Activity, ArrowRight, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, Clock3, ExternalLink, FileClock, Gauge, Network,
   DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
   KeyRound, ListPlus, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, Settings, SlidersHorizontal, TimerReset, Trash2, Type, Wrench, X,
+  Code, Image as ImageIcon, Maximize2,
 } from 'lucide-react'
 import { checkForUpdates, createSystemAccessToken, deleteSystemAccessToken, getModelAliasInventory, getSystemAccessTokens, getSystemSettings, resetSystemSetting, updateSystemAccessToken, updateSystemSettings } from '../api'
 import type { ModelAliasCandidate, ModelAliasInventory, ModelAliasSuggestion, SystemAccessToken, SystemSetting } from '../types'
@@ -13,8 +14,13 @@ import { Modal } from './siteShared'
 import HelpTip from '../components/HelpTip'
 import { adoptSuggestions, aliasMembers, parseAliasDraft, serializeAliasDraft, withMembers } from './modelAliasDraft'
 import type { AliasDraft } from './modelAliasDraft'
-import { applyThemeCustomization, readThemeCustomization, resetThemeCustomization, themeFontOptions } from '../theme'
-import type { ThemeCustomization, ThemeFont, ThemePreference, ThemePreset, ThemeRadius } from '../theme'
+import {
+  applyThemeCustomization, backgroundDimRange, readThemeCustomization, resetThemeCustomization, themeFontOptions,
+} from '../theme'
+import type {
+  ThemeBackgroundFit, ThemeContentWidth, ThemeCustomization, ThemeFont, ThemeMotion, ThemePreference, ThemePreset,
+  ThemeRadius, ThemeSidebarWidth,
+} from '../theme'
 
 // 分组只留名字：副标题（如外观→“主题与显示偏好”）是对标题的复述，纯噪音。
 const groups = [
@@ -555,6 +561,13 @@ function ModelPickerModal({ candidates, selected, close, apply }: { candidates: 
 }
 
 function AppearancePanel({ customization, change, reset }: { customization: ThemeCustomization; change: (patch: Partial<ThemeCustomization>, label: string) => void; reset: () => void }) {
+  // 两个自由文本框用草稿 + 失焦提交：`change` 每次都会写 localStorage 并弹一条
+  // 「已应用…」提示，逐键调用会刷屏；而且自定义 CSS 逐键生效会边打字边闪。
+  const [backgroundDraft, setBackgroundDraft] = useState(customization.backgroundImage)
+  const [cssDraft, setCssDraft] = useState(customization.customCss)
+  // 「恢复默认」等外部改动要把草稿一起拉回来，否则输入框会停在旧文本上。
+  useEffect(() => { setBackgroundDraft(customization.backgroundImage) }, [customization.backgroundImage])
+  useEffect(() => { setCssDraft(customization.customCss) }, [customization.customCss])
   const modes: Array<[ThemePreference, string, typeof Sun]> = [
     ['system', '跟随系统', Monitor],
     ['light', '亮色', Sun],
@@ -574,6 +587,25 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
     ['compact', '利落'],
     ['balanced', '均衡'],
     ['soft', '柔和'],
+  ]
+  const sidebarWidths: Array<[ThemeSidebarWidth, string]> = [
+    ['narrow', '紧凑'],
+    ['default', '标准'],
+    ['wide', '宽松'],
+  ]
+  const contentWidths: Array<[ThemeContentWidth, string]> = [
+    ['narrow', '收窄'],
+    ['default', '标准'],
+    ['full', '铺满'],
+  ]
+  const motions: Array<[ThemeMotion, string]> = [
+    ['full', '完整动效'],
+    ['reduced', '减少动效'],
+  ]
+  const backgroundFits: Array<[ThemeBackgroundFit, string]> = [
+    ['cover', '铺满裁切'],
+    ['contain', '完整显示'],
+    ['tile', '平铺重复'],
   ]
   return <div className="appearance-panel">
     <div className="appearance-intro"><div><strong>外观偏好<HelpTip label="外观偏好" text="主题、字体、圆角等偏好只保存在当前浏览器，不会同步到服务器。" /></strong></div><button className="secondary-button" type="button" onClick={reset}><RotateCcw size={15} />恢复默认</button></div>
@@ -608,6 +640,44 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
         <section className="appearance-control-group">
           <header><span><PanelsTopLeft size={17} /></span><strong>边角风格</strong></header>
           <div className="appearance-radius-list">{radii.map(([value, label]) => <button className={customization.radius === value ? 'is-selected' : ''} type="button" aria-pressed={customization.radius === value} onClick={() => change({ radius: value }, label)} key={value}><i className={`radius-shape radius-shape--${value}`} /><strong>{label}</strong>{customization.radius === value && <Check size={16} />}</button>)}</div>
+        </section>
+
+        <section className="appearance-control-group">
+          <header><span><Maximize2 size={17} /></span><strong>布局宽度</strong></header>
+          <div className="appearance-segmented">{sidebarWidths.map(([value, label]) => <button className={customization.sidebarWidth === value ? 'is-selected' : ''} type="button" aria-pressed={customization.sidebarWidth === value} onClick={() => change({ sidebarWidth: value }, label)} key={value}>{label}</button>)}</div>
+          <p className="appearance-hint">侧栏宽度（仅桌面宽度生效；880px 以下侧栏会变成覆盖层，那里不适用）</p>
+          <div className="appearance-segmented">{contentWidths.map(([value, label]) => <button className={customization.contentWidth === value ? 'is-selected' : ''} type="button" aria-pressed={customization.contentWidth === value} onClick={() => change({ contentWidth: value }, label)} key={value}>{label}</button>)}</div>
+          <p className="appearance-hint">内容区最大宽度</p>
+        </section>
+
+        <section className="appearance-control-group">
+          <header><span><Gauge size={17} /></span><strong>动效</strong></header>
+          <div className="appearance-segmented appearance-segmented--pair">{motions.map(([value, label]) => <button className={customization.motion === value ? 'is-selected' : ''} type="button" aria-pressed={customization.motion === value} onClick={() => change({ motion: value }, label)} key={value}>{label}</button>)}</div>
+          <p className="appearance-hint">「减少动效」关掉过渡与入场动画。系统的「减少动态效果」偏好独立生效，两者互不覆盖。</p>
+        </section>
+
+        <section className="appearance-control-group">
+          <header><span><ImageIcon size={17} /></span><strong>背景壁纸</strong></header>
+          <label className="appearance-field">
+            <span>图片地址（留空 = 不用壁纸）</span>
+            <input type="url" inputMode="url" spellCheck={false} placeholder="https://example.com/wallpaper.jpg" value={backgroundDraft} onChange={(event) => setBackgroundDraft(event.target.value)} onBlur={() => { if (backgroundDraft !== customization.backgroundImage) change({ backgroundImage: backgroundDraft }, '背景壁纸') }} aria-label="背景壁纸图片地址" />
+          </label>
+          <div className="appearance-segmented">{backgroundFits.map(([value, label]) => <button className={customization.backgroundFit === value ? 'is-selected' : ''} type="button" aria-pressed={customization.backgroundFit === value} onClick={() => change({ backgroundFit: value }, label)} key={value}>{label}</button>)}</div>
+          <label className="appearance-field appearance-field--range">
+            <span>压暗 {customization.backgroundDim}%</span>
+            <input type="range" min={backgroundDimRange.min} max={backgroundDimRange.max} step={5} value={customization.backgroundDim} onChange={(event) => change({ backgroundDim: Number(event.target.value) }, '背景压暗')} aria-label="背景压暗程度" />
+          </label>
+          <p className="appearance-hint">只接受 http/https 地址，图片由浏览器直接向该地址请求（图床因此能看出你在用这个控制台）。压暗是用当前主题底色叠加，调高可保住前景文字的可读性。</p>
+        </section>
+
+        <section className="appearance-control-group">
+          <header><span><Code size={17} /></span><strong>自定义 CSS</strong></header>
+          <label className="checkbox-field"><input type="checkbox" checked={customization.customCssEnabled} onChange={(event) => change({ customCssEnabled: event.target.checked }, '自定义 CSS')} /><span>启用自定义 CSS</span></label>
+          <textarea className="appearance-css-editor" rows={8} spellCheck={false} value={cssDraft} onChange={(event) => setCssDraft(event.target.value)} onBlur={() => { if (cssDraft !== customization.customCss) change({ customCss: cssDraft }, '自定义 CSS') }} placeholder={'.app-shell { --radius-panel: 2px; }'} aria-label="自定义 CSS" />
+          <p className="appearance-hint">
+            只作用于当前浏览器，不会同步到服务器；输入框失焦后生效。
+            {' '}万一写坏了导致界面点不动：<strong>在控制台地址后面加上 <code>?plain=1</code> 再回车</strong>，就会跳过这段 CSS，让你能进来把它关掉。
+          </p>
         </section>
       </div>
 

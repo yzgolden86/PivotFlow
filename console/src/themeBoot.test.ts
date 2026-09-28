@@ -1,7 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { defaultThemeCustomization, themeFontOptions, themePresetOptions, themeRadiusOptions } from './theme.ts'
+import {
+  defaultThemeCustomization,
+  themeContentWidthOptions,
+  themeFontOptions,
+  themeMotionOptions,
+  themePresetOptions,
+  themeRadiusOptions,
+  themeSidebarWidthOptions,
+} from './theme.ts'
 
 // index.html 里那段内联脚本必须先于 bundle 执行 —— 它要在 React 挂载前就把
 // data-theme / data-theme-preset 写进 <html>，否则会先闪一下默认主题。所以它
@@ -43,9 +51,20 @@ test('内联脚本的主题清单与 theme.ts 逐项一致', () => {
   assert.deepEqual(bootList('themeRadius'), [...themeRadiusOptions])
 })
 
+test('内联脚本的布局与动效清单与 theme.ts 逐项一致', () => {
+  // 后三项只是布局 / 动效，但闪一下同样是肉眼可见的位移（侧栏宽度、内容宽度、
+  // 动画起手），所以跟配色字体一样必须钉住。
+  assert.deepEqual(bootList('sidebarWidth'), [...themeSidebarWidthOptions])
+  assert.deepEqual(bootList('contentWidth'), [...themeContentWidthOptions])
+  assert.deepEqual(bootList('motion'), [...themeMotionOptions])
+})
+
 test('内联脚本的回落默认值与 theme.ts 的默认外观一致', () => {
   // 清单没抄漏、但默认值抄错，同样会闪 —— 这两件事要分别盯。
   assert.equal(bootFallback('themePreset'), defaultThemeCustomization.preset)
   assert.equal(bootFallback('themeFont'), defaultThemeCustomization.font)
   assert.equal(bootFallback('themeRadius'), defaultThemeCustomization.radius)
+  assert.equal(bootFallback('sidebarWidth'), defaultThemeCustomization.sidebarWidth)
+  assert.equal(bootFallback('contentWidth'), defaultThemeCustomization.contentWidth)
+  assert.equal(bootFallback('motion'), defaultThemeCustomization.motion)
 })

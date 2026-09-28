@@ -4740,6 +4740,21 @@ body { font-size: 14px; line-height: 1.5; }
 .radius-shape--compact { border-radius: 3px; }
 .radius-shape--balanced { border-radius: 8px; }
 .radius-shape--soft { border-radius: 13px; }
+/* 两选项的分段控件：基础规则是 `repeat(3, …)`，只有两项时右边会空一格。
+   权重与 `.appearance-segmented` 相同（都是单类），靠位置在后压住。 */
+.appearance-segmented--pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.appearance-field { display: grid; gap: 6px; }
+.appearance-field > span { color: var(--text-muted); font-size: 11px; }
+.appearance-field input[type="url"] { width: 100%; padding: 9px 11px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; font-size: 12px; }
+.appearance-field input[type="url"]:focus { border-color: var(--green); outline: none; }
+.appearance-field--range { grid-template-columns: minmax(0, 1fr); }
+.appearance-field input[type="range"] { width: 100%; accent-color: var(--green); }
+/* 说明文字统一 11px（项目字号下限），`code` 用等宽字体突出那串逃生参数。 */
+.appearance-hint { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.7; }
+.appearance-hint code { padding: 1px 5px; color: var(--text); background: var(--surface-strong); border-radius: 4px; font-family: var(--font-mono); font-size: 11px; }
+.appearance-css-editor { width: 100%; min-height: 132px; padding: 10px 12px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; font-family: var(--font-mono); font-size: 12px; line-height: 1.65; resize: vertical; tab-size: 2; }
+.appearance-css-editor:focus { border-color: var(--green); outline: none; }
+.appearance-css-editor::placeholder { color: var(--text-muted); }
 .appearance-preview { position: sticky; top: 88px; display: grid; min-height: 398px; grid-template-columns: 52px minmax(0, 1fr); overflow: hidden; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--radius-large); box-shadow: 0 18px 45px rgba(24, 47, 39, .11); }
 .appearance-preview > aside { display: flex; align-items: center; flex-direction: column; gap: 17px; padding: 14px 10px; background: var(--surface); border-right: 1px solid var(--border); }
 .appearance-preview-mark { display: grid; width: 30px; height: 30px; place-items: center; color: #fff; background: var(--green); border-radius: var(--radius-control); font-family: var(--font-display); font-weight: 750; }
@@ -5640,13 +5655,28 @@ body {
    ========================================================================== */
 
 /* ── 1. 画卷环境与全局空间层 ────────────────────────────────────────── */
+/* 自定义壁纸是**最底一层**（底色之上、光晕与点阵之下），直接挂在 `.app-shell`
+   自己的背景列表里 —— 不引额外 DOM 层、不动 z-index，所以没设壁纸时
+   `var(--app-bg-image)` 就是 `none`，渲染结果与加这个功能之前逐像素一致。
+   （曾考虑用单独一层 `position: fixed` 元素来做，好处是能上 `filter: blur()`；
+   但那要求 `.app-shell` 交出底色的不透明背景，会让 body 上那两层装饰渐变
+   漏出来 —— 拿视觉回归换一个模糊滑块不划算，所以**模糊这个旋钮没有做**。）
+   暗化层是 `--bg` 的 color-mix，盖在壁纸上保证前景文字仍可读；
+   `--app-bg-dim` 为 0 时它完全透明，等于不存在。
+   壁纸与暗化层都用 `background-attachment: fixed`，像壁纸一样钉在视口上，
+   不随长页面滚走（与 body 既有的那层 fixed 背景同一个套路）。 */
 .app-shell {
-  background:
+  background-image:
     radial-gradient(ellipse 75% 45% at 20% -8%, color-mix(in srgb, var(--green) 7%, transparent), transparent 60%),
     radial-gradient(ellipse 65% 45% at 85% 92%, color-mix(in srgb, var(--blue) 5%, transparent), transparent 60%),
     radial-gradient(circle, color-mix(in srgb, var(--border-strong) 25%, transparent) 1px, transparent 1px),
-    var(--bg);
-  background-size: 100% 100%, 100% 100%, 28px 28px, 100% 100%;
+    linear-gradient(color-mix(in srgb, var(--bg) var(--app-bg-dim, 0%), transparent), color-mix(in srgb, var(--bg) var(--app-bg-dim, 0%), transparent)),
+    var(--app-bg-image, none);
+  background-size: 100% 100%, 100% 100%, 28px 28px, 100% 100%, var(--app-bg-size, cover);
+  background-position: center, center, 0 0, center, center;
+  background-repeat: no-repeat, no-repeat, repeat, no-repeat, var(--app-bg-repeat, no-repeat);
+  background-attachment: scroll, scroll, scroll, fixed, fixed;
+  background-color: var(--bg);
 }
 
 /* 点阵的浓度按「合成后与底色的对比度」定，不按百分比拍脑袋。
@@ -5656,13 +5686,20 @@ body {
    降到 15% 后合成 #171c1a，对比度 ≈1.09:1，与亮色档感知强度对齐。
    注意 `--border-strong` 在明暗两套里亮度方向相反（亮色 #c9d2d8 / 暗色 #3a443f），
    所以两档的百分比不能直接沿用同一个数。 */
+/* 暗色档的图层顺序与亮色完全一致（见上面 `.app-shell` 的注释），
+   只换了光晕强度与点阵浓度 —— 壁纸相关的三层用的是同一组变量。 */
 :root[data-theme="dark"] .app-shell {
-  background:
+  background-image:
     radial-gradient(ellipse 80% 50% at 22% -10%, color-mix(in srgb, var(--green) 12%, transparent), transparent 65%),
     radial-gradient(ellipse 70% 50% at 88% 90%, color-mix(in srgb, var(--blue) 9%, transparent), transparent 65%),
     radial-gradient(circle, color-mix(in srgb, var(--border-strong) 15%, transparent) 1px, transparent 1px),
-    var(--bg);
-  background-size: 100% 100%, 100% 100%, 28px 28px, 100% 100%;
+    linear-gradient(color-mix(in srgb, var(--bg) var(--app-bg-dim, 0%), transparent), color-mix(in srgb, var(--bg) var(--app-bg-dim, 0%), transparent)),
+    var(--app-bg-image, none);
+  background-size: 100% 100%, 100% 100%, 28px 28px, 100% 100%, var(--app-bg-size, cover);
+  background-position: center, center, 0 0, center, center;
+  background-repeat: no-repeat, no-repeat, repeat, no-repeat, var(--app-bg-repeat, no-repeat);
+  background-attachment: scroll, scroll, scroll, fixed, fixed;
+  background-color: var(--bg);
 }
 
 /* ── 2. 先锋侧栏与控制枢纽 ────────────────────────────────────────────── */
@@ -5978,4 +6015,39 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ==========================================================================
+   外观自定义：布局宽度与动效
+   --------------------------------------------------------------------------
+   这三个 `data-*` 由 `console/src/theme.ts` 写进 `<html>`，同时 index.html 的
+   内联引导脚本会先写一遍（避免刷新时闪一下默认布局），两边由 themeBoot.test.ts
+   钉住不许漂移。默认值（default / default / full）下这一整段都不生效。
+   放在文件末尾是项目约定：顶层新规则会顶掉媒体查询里的同名属性，必须靠后 + 提高权重。
+   ========================================================================== */
+
+/* 侧栏宽度只在桌面宽度生效。880px 以下侧栏会变成覆盖层，那边
+   `--sidebar-width` 被强制为 0（见上面的 `@media (max-width: 880px)`），
+   不能被这里的偏好盖掉，所以用 `min-width` 圈起来。
+   `:not(.app-shell--collapsed)` 同样必须写：收起态的 72px 权重更低（0,1,0），
+   不排除的话会被这条（0,4,0）压掉。 */
+@media (min-width: 881px) {
+  :root[data-sidebar-width="narrow"] .app-shell:not(.app-shell--collapsed) { --sidebar-width: 184px; }
+  :root[data-sidebar-width="wide"] .app-shell:not(.app-shell--collapsed) { --sidebar-width: 248px; }
+}
+
+/* 内容最大宽度。原本是 `min(100%, 1920px)`；`narrow` 收到 1600 让超宽屏更好读，
+   `full` 直接不设上限。 */
+:root[data-content-width="narrow"] .workspace-page { width: min(100%, 1600px); }
+:root[data-content-width="full"] .workspace-page { width: 100%; }
+
+/* 「减少动效」开关：与系统 `prefers-reduced-motion` 用同一组声明，
+   只是触发条件从系统偏好换成用户选择 —— 两者可以各自独立生效。 */
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  scroll-behavior: auto !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
 }
