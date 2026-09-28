@@ -447,6 +447,75 @@ hao 哥的要求是「先填充一些测试数据看下效果，图表也要有�
 代码级证明（portal 到 body + 页头 overflow 仍在），没有运行时测量。补测脚本已写好并留在
 `.tmp-menu/check_source_menu.py`（含一次变异测试：把弹层塞回页头、还原旧 CSS，验证它确实被裁）。
 
+> **后记**：`sourceMenuPosition.ts` 在 §1.13 里被改名泛化成 `popoverPosition.ts`
+> （同一个实现，多支持了 `placement` / `flyOut`）。引用旧文件名的地方以新文件为准。
+
+### 1.13 暗色点阵过重 + 侧栏主题菜单被裁，浮层抽成 AnchoredPopover（本次）
+
+**① 暗色背景的「辅助点」**：`.app-shell` 的点阵层。亮色 `--border-strong` 25%，
+暗色原来 **42%**。按「合成后与底色的对比度」算：亮色 `#c9d2d8` 25% 叠 `#f4f6f8` → `#e9edf0`，
+≈**1.09:1**（几乎看不见）；暗色 `#3a443f` 42% 叠 `#111513` → `#222926`，≈**1.24:1** ——
+在近黑的大面积底色上就被看成「一格一格的辅助点」。**降到 15%**（合成 `#171c1a`，≈1.09:1）
+与亮色档感知强度对齐。**关键：`--border-strong` 在明暗两套里亮度方向相反，百分比不能沿用同一个数。**
+
+**② 侧栏主题菜单被裁**：`.theme-picker` 原来 `absolute; right:-4px; width:168px`，
+锚在 `.sidebar-theme-wrap` 上 —— 那是 `flex: 1`，展开态只有约 110px 宽。168px 的菜单
+右对齐算出 left ≈ −39，整块被推出侧栏左边界，再被 `.sidebar { overflow: hidden }` 裁掉。
+**收起态更糟**（侧栏只有 72px，绝对定位怎么摆都出界）。→ portal 到 body + `position: fixed`
++ 视口坐标；**锚点换成整条 `.sidebar-actions`**：展开态右对齐到操作栏内边缘（left = 33），
+收起态靠 `flyOut` 贴着操作栏右侧外挂（left = 64）。
+
+**③ 抽出 `AnchoredPopover.tsx` + `popoverPosition.ts`**（原 `sourceMenuPosition` 改名泛化）：
+portal + 定位 + 点击外部关闭 + Escape + resize/scroll 重定位，**一处实现**。`SourceMenu` 一并改用
+—— 否则这套「portal 才能逃开 overflow / 层叠上下文」的坑和关闭判断要在两个组件里各写一遍。
+`popoverPosition` 新增 `placement`（below/above）与 `flyOut`，**默认值与旧行为完全一致**，
+所以原有 6 条定位用例一条都不用改。删掉移动端已成死代码的 `.sidebar--open .theme-picker { right: 0 }`；
+`App.tsx` 里那段重复的「点外部关闭」useEffect 也删了（交给 `AnchoredPopover`）。
+
+**门禁**：typecheck 0 错；`node --test` **100/100**（删 6 条旧定位用例、加 11 条）；build 通过；
+产物**可复现**（移走 → 重建 → `diff -rq` 逐字节一致）。
+
+### 1.14 外观自定义：布局宽度、背景壁纸、自由 CSS（本次）
+
+**先说结论：主题 / 字体 / 圆角早就有了** —— `console/src/theme.ts` + `AppearancePanel`
+已有 8 套配色预设、12 种字体、3 档圆角、明暗模式 + 实时预览，存 `localStorage` 的
+`pivotflow_appearance`，**刻意不同步服务端**。本次新增的是下面这些。
+
+新增字段（都在 `ThemeCustomization`）：`backgroundImage` / `backgroundDim` / `backgroundFit` /
+`sidebarWidth` / `contentWidth` / `motion` / `customCss` / `customCssEnabled`。
+
+- **壁纸**：作为 `.app-shell` 背景列表的**最底一层**（底色之上、光晕与点阵之下）。
+  没设壁纸时 `var(--app-bg-image)` 是 `none`，那一层完全透明 → **渲染结果与改动前逐像素一致**。
+  暗化层是 `--bg` 的 color-mix，`--app-bg-dim` 为 0 时完全透明；壁纸与暗化层用
+  `background-attachment: fixed` 钉在视口上。
+- ⚠️ **「模糊」这个旋钮没做，是有意的**：给背景层单独上 `filter: blur()` 需要独立一层
+  `position: fixed` 元素，而那要求 `.app-shell` 交出底色的不透明背景 —— 会让 body 上那两层
+  装饰渐变漏出来（它们今天完全被 `.app-shell` 盖住）。拿视觉回归换一个模糊滑块不划算，
+  于是换成 `backgroundFit`（铺满裁切 / 完整显示 / 平铺重复）。
+- **布局宽度**：`sidebarWidth` 只在 `@media (min-width: 881px)` 里生效 —— 880px 以下侧栏变成
+  覆盖层、`--sidebar-width` 被强制为 0，不能被偏好盖掉；且必须写 `:not(.app-shell--collapsed)`，
+  否则会压掉收起态的 72px（权重 0,4,0 vs 0,1,0）。`contentWidth` 改 `.workspace-page` 的 `min(100%, N)`。
+- **动效**：`data-motion="reduced"` 复用系统 `prefers-reduced-motion` 那一组声明。
+- **自由 CSS**：写进 `<head>` 末尾一个 `<style id="pivotflow-custom-css">`（放最后才能盖住打包
+  样式表），用 `textContent` 而非 `innerHTML`；两个自由文本框都是**失焦才提交**（逐键提交会刷屏
+  提示、且边打字边闪）。
+- 🚨 **逃生开关是必须项，不是可选项**：用户自己写的 CSS 写坏了可能让设置页都点不进去，
+  那就再也没有入口关掉它。`shouldSkipCustomCss` 认地址里的 `plain=1`（`?plain=1` 放在 `#` 前，
+  也认 `#/system?plain=1`），命中就完全不注入；界面文案里也写明了。
+- **壁纸地址必须转义**：`backgroundImageValue` 只放行 http(s)，并把 `"` 与 `\` 转义 ——
+  否则 `https://a/x.png") , url("https://evil/y.png` 能提前闭合 `url("...")` 注入任意声明。
+
+⚠️ **加任何「刷新前就要生效」的外观项，必须同时改三处**，否则表现为「每次刷新先闪一下默认外观」：
+`theme.ts` 的清单、`console/index.html` 的内联引导脚本、`themeBoot.test.ts`（逐个比对）。
+本次把 `sidebarWidth` / `contentWidth` / `motion` 三项加进了内联脚本；**壁纸与自由 CSS 刻意只由
+bundle 处理**（壁纸图片本身要异步下载，先设也会再闪一次；自由 CSS 的转义逻辑抄进内联脚本
+只会多一份会漂移的实现）。
+
+**门禁**：typecheck 0 错；`node --test` **109/109**（新增 9 条：URL 转义 / 逃生开关 / 数值夹取）；
+`node --test web/auth/*.test.js` 2/2；build 通过（`SystemSettingsPageV2` chunk 69.22 → 74.65 kB）；
+产物**可复现**。**浏览器实测未做**（沙箱不能跑 Playwright，见 §8.4）：壁纸、布局宽度、自由 CSS
+都只有代码级 + 单测级证明，没有运行时测量。
+
 ## 2. 环境与验证（必读）
 
 ```bash
