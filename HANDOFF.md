@@ -875,19 +875,27 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
   （`!`/`BREAKING` → major，`feat` → minor，其余 → patch）。所以**看 tag 之前先看
   `git log vX.Y.Z..HEAD --format=%s`** —— 区间里混进一个 `feat` 就会跳 minor，此时才需要
   `--bump patch` 把版本摁回去。`v0.3.7` 指向 `b9391a4`，所以 `0.3.8` 是默认算出来的，不用 `--bump`。
-- **沙箱里 `git fetch` 更新不了远端跟踪引用，所以 `git status -sb` 的 `ahead N` 是假的。**
-  `git fetch origin main` 会**打印** `aea59ee..b9391a4  main -> origin/main`，但紧接着
-  `git rev-parse origin/main` 仍是 `aea59ee` —— 写 `.git/refs/remotes/` 被挡了。
-  后果：`git status -sb` 会显示 `[ahead 48]` 这种把「陈旧引用 + 新提交」加在一起的数字。
-  **判断真实关系要问远端**：
+- **`git status -sb` 的 `ahead N` 不可信时，先怀疑「跟踪引用陈旧」，不要怀疑 `fetch` 坏了。**
+  （2026-09-28 更正：早先这里写过「沙箱 `git fetch` 更新不了远端跟踪引用，写 `.git/refs/remotes/`
+  被挡」——**那条结论是错的**，已实测推翻，见下面的复现步骤。当时看到的 `[ahead 48]` 是
+  「跟踪引用早已陈旧 + 本地又攒了新提交」叠加出来的数字，跟 fetch 能不能写无关。）
+  **实测：`fetch` 在本沙箱里正常更新跟踪引用。** 复现/自证（把引用故意设错，看 fetch 是否纠正）：
+  ```bash
+  git update-ref refs/remotes/origin/main 341f209   # 故意设成错误值
+  git fetch --prune origin main
+  # 输出：341f209..b7240bf  main -> origin/main   ← fetch 确实写了
+  git rev-parse --short refs/remotes/origin/main    # → b7240bf，已纠正
+  ```
+  注意 `git fetch` **只在值真的变化时才写文件**，所以「fetch 完 mtime 没变」不能当作
+  「没写成功」的证据 —— 这正是当初误判的成因。
+  **`release.sh` 依赖这条链路**：`origin_sha=$(git rev-parse refs/remotes/origin/main)` 读跟踪引用，
+  再判 `equal / local-ahead / remote-ahead / diverged`。只要 fetch 正常，这套判断就是准的。
+  拿不准时仍可绕过本地引用、直接问远端（最权威）：
   ```bash
   REMOTE=$(git ls-remote --heads origin main | cut -f1)
   git rev-list --count "$REMOTE"..HEAD          # 真正领先几个提交
   git merge-base --is-ancestor "$REMOTE" HEAD   # 是祖先 ⇒ 可 fast-forward
   ```
-  （`release.sh` 里 `origin_sha=$(git rev-parse refs/remotes/origin/main)` 读的也是这个陈旧引用；
-  在本机它表现为 `local-ahead` 从而放行，但**推送后「确认本地 HEAD == origin/main」那一步会失败** ——
-  这是沙箱独有的假失败，hao 哥的机器上正常。）
 
 ### 8.5 设置的「热生效」与「需重启」
 
