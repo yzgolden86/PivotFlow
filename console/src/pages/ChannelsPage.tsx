@@ -7,6 +7,7 @@ import { useLocation } from 'react-router-dom'
 import { Modal, siteErrorMessage, StatusBadge } from './siteShared'
 import ChannelKeysModal from './ChannelKeysModal'
 import HelpTip from '../components/HelpTip'
+import SourceMenu from '../components/SourceMenu'
 
 const routeDiagnosticProtocols = [
   { value: 'openai', label: 'OpenAI' },
@@ -205,7 +206,16 @@ export default function ChannelsPage() {
       tone="amber"
         actions={<>
           <input ref={importInput} className="visually-hidden" type="file" accept="application/json,.json" multiple onChange={(event) => void importCredentials(event.target.files)} />
-		  <div className="source-menu"><button className="secondary-button" type="button" aria-haspopup="menu" aria-expanded={sourceMenuOpen} onClick={() => setSourceMenuOpen((open) => !open)}><Layers3 size={16} />其他来源</button>{sourceMenuOpen && <div className="source-menu-popover" role="menu"><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); importInput.current?.click() }}><FileUp size={15} />导入 OAuth</button><button type="button" role="menuitem" onClick={() => { setSourceMenuOpen(false); setEditing('new') }}><Plus size={15} />手工渠道</button></div>}</div>
+          <SourceMenu
+            open={sourceMenuOpen}
+            onOpenChange={setSourceMenuOpen}
+            label="其他来源"
+            icon={<Layers3 size={16} />}
+            items={[
+              { label: '导入 OAuth', icon: <FileUp size={15} />, onSelect: () => importInput.current?.click() },
+              { label: '手工渠道', icon: <Plus size={15} />, onSelect: () => setEditing('new') },
+            ]}
+          />
 		  <button className="primary-button" type="button" onClick={() => setSyncOpen(true)}><RefreshCw size={16} />同步站点渠道</button>
           <button className="icon-button icon-button--surface" type="button" disabled={refreshing} title="刷新渠道" onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新渠道"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
         </>}

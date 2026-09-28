@@ -3016,11 +3016,14 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 }
 
 .source-menu { position: relative; }
+/* 这个弹层由 SourceMenu.tsx 用 createPortal 挂到 body 上，不在页头里了 ——
+   页头 `.page-header--elevated` 的 `overflow: hidden` 会把往下弹的菜单裁掉。
+   因此改成 `position: fixed` + 由 sourceMenuPosition 算出的视口坐标（内联 style）。
+   层级取 60：高于页面内容 / `.sidebar`(30) / `.operation-notice`(40)，
+   低于 `.theme-picker`(70) 与 `.modal-layer`(80) —— 弹窗打开时应该盖住这个菜单。 */
 .source-menu-popover {
-  position: absolute;
-  top: calc(100% + 7px);
-  right: 0;
-  z-index: 20;
+  position: fixed;
+  z-index: 60;
   display: grid;
   min-width: 156px;
   padding: 5px;
