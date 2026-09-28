@@ -408,6 +408,45 @@ hao 哥的要求是「先填充一些测试数据看下效果，图表也要有�
 > 登录是 `POST /login`，body 必须带 `"mode": "admin"`，缺了只会得到 `Invalid request format`。
 > 沙箱里 `http_proxy` 指向 `127.0.0.1:4868`，脚本里要显式装空 `ProxyHandler` 才连得上本机端口。
 
+### 1.12 渠道页「其他来源」下拉菜单被页头裁掉（本次）
+
+**症状**：点「其他来源」，菜单只露出顶上一条缝，其余被切掉（截图里能看到菜单顶部几个像素、
+然后就是页头底边、页面背景、KPI 卡片）。
+
+**根因不是菜单自己，是页头的 `overflow: hidden`。** `.page-header--elevated`
+（`styles.css:886`）带 `overflow: hidden`，那是**必要的** —— 它要把左侧 4px 竖条
+（`::before`）和右上角那团径向光晕（`::after`，定位在 `top:-64px; right:-42px`，比页头还大）
+裁进圆角里。而 `.source-menu-popover` 是 `position: absolute; top: calc(100% + 7px); right: 0`
+往下弹的，正好落在同一个裁切范围里 —— 于是被页头底边整条切掉。
+
+**修法：把弹层 `createPortal` 到 `document.body`，位置改成视口坐标 + `position: fixed`。**
+这跟 `siteShared.tsx` 里 `Modal` 的做法是同一个套路（那边注释记的是另一条同源坑：
+`.workspace-page` 的 `animation: page-enter ... both` 形成层叠上下文，会把 `position: fixed`
+的 `.modal-layer` 关进去，于是 `z-index:80` 比不过外面 `z-index:30` 的侧边栏）。
+**凡是「挂在页头 / 页面容器里、又要往外弹」的浮层，都要走这条路。**
+
+新增 `console/src/components/SourceMenu.tsx`（受控组件，开合状态由页面持有）+ 
+`sourceMenuPosition.ts`（纯函数，右对齐到触发按钮、下弹 7px、贴边时夹进视口留 12px 边距）。
+层级取 `z-index: 60`：高于页面内容 / `.sidebar`(30) / `.operation-notice`(40)，
+低于 `.theme-picker`(70) 与 `.modal-layer`(80) —— 弹窗打开时应该盖住菜单。
+
+**刻意没做的事**：没有为了放行菜单而把页头的 `overflow: hidden` 去掉。去掉之后
+`::before` 的直角和 `::after` 那团 190px 光晕会**漏到圆角外面**，是用一个视觉回归换一个功能修复。
+也没有删掉页面里 `if (editing) setSourceMenuOpen(false)` 那个 effect —— 它的引入提交说明很笼统
+（`57bd8c2 feat: add batch management and model discovery`），无法证明是死代码，
+所以把 `SourceMenu` 做成**受控**组件，让这条既有行为原样保留。修 bug 的提交不夹带行为变更。
+
+**穷举过、确认只有这一处**：`grep -rn "aria-haspopup" console/src` 全项目只命中渠道页这一处；
+另外两个 `calc(100% + n)` 的浮层（`.theme-picker` 在侧栏、`.setting-choice-tip` 在设置页行内）
+都是**向上**弹且不在页头里，不受影响。
+
+**门禁**：`npm run typecheck` 0 错；`node --test` **95/95**（新增 6 条定位用例）；
+`npm run build` 通过（`ChannelsPage` chunk 69.83 → 71.14 kB）；`go test -tags sonic -count=1 ./internal/...`
+**33 包全过**；`golangci-lint --build-tags sonic --timeout 20m` → `0 issues.`。
+**浏览器实测未完成**（脚本被沙箱审批拦下，见 §8.4），所以「菜单确实可点」这一条只有
+代码级证明（portal 到 body + 页头 overflow 仍在），没有运行时测量。补测脚本已写好并留在
+`.tmp-menu/check_source_menu.py`（含一次变异测试：把弹层塞回页头、还原旧 CSS，验证它确实被裁）。
+
 ## 2. 环境与验证（必读）
 
 ```bash
@@ -789,6 +828,7 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 - **改样式先想权重**：新加的**顶层**规则会顶掉媒体查询里设过的同名属性（**媒体查询不加权重**）。所以覆盖层的惯例是**追加到 `styles.css` 末尾**，而不是就近插在原始规则旁边。
 - **父级 `display:grid` 会把「标题 + 问号」拆成两行**。`.heading-with-hint` 里只有标题 + `.help-tip`，而 `.model-alias-panel > header > div`（`:3411`）、`.system-access-head > div`（`:4556`）都设了 `display:grid`（本意是「标题 + 描述」垂直排）。另外 `h2` 是块级元素，问号跟在它后面本来也会换行。修法是末尾覆盖成行内 flex，**覆盖时要写父级限定选择器**（只写 `.heading-with-hint` 权重不够）。
 - 字号只允许**字面量 px** 或 `--fs-*` 令牌；写成别的（如 `var(--x)` 拼字符串）会让 `smallTextLegibility.test.ts` **静默失效**（守卫解析不到就跳过，不报错）。
+- **页头里不要放「往外弹」的浮层。** `.page-header--elevated` 带 `overflow: hidden`（为了裁左侧竖条与右上角光晕），任何绝对定位的下拉菜单都会被页头底边切掉。**要弹就 `createPortal` 到 `document.body` + `position: fixed` + 视口坐标**（见 `components/SourceMenu.tsx`）。同理，`.workspace-page` / `.dashboard-page` 的 `animation: page-enter ... both` 会形成层叠上下文，把 `position: fixed` 的浮层关进页面里 —— 所以 `Modal` 也是 portal 到 body（`siteShared.tsx` 里有注释）。判断依据：**「这个浮层的祖先里有没有 overflow / transform / filter / animation」**，有就必须 portal。
 
 ### 8.3 传输层（`internal/site/provider/transport.go`）
 
@@ -805,6 +845,12 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 - playwright 必须用**系统 Python**：`C:/Users/80470/AppData/Local/hermes/hermes-agent/venv/Scripts/python.exe`（3.11.11），托管的 3.13.12 没装。字体子集工具链在托管 venv `...\python\envs\default`（fonttools）。冒烟截图落在 `%TEMP%\pivotflow-console-ui`。`curl` 别写 `/tmp`。
 - **`POST /login` 的 body 必须带 `"mode": "admin"`**（`auth_service.go:550`，`binding:"required"`）。只发 `{"password": ...}` 会得到 `400 Invalid request format`——**这个报错完全不提 mode，极易误判成密码错或路由错**。token 在 `data.token`。
 - **本机 HTTP 探测要显式关掉代理**：沙箱的 `http_proxy` / `https_proxy` 指向 `127.0.0.1:4868`，连 `127.0.0.1:<自己的端口>` 也会被劫走。Python 里用 `urllib.request.build_opener(urllib.request.ProxyHandler({}))`。
+- **沙箱可能把「跑脚本」这一步拦下来等审批，超时就把输出整段扣留**（返回
+  `SENSITIVE_APPROVAL=TIMED_OUT ... Do not retry`）。2026-09-28 跑 Playwright 探针时撞上，
+  当轮**不允许重试或换写法绕过**。所以：**浏览器验证不要排在关键路径上** —— 先跑完
+  typecheck / 单测 / build / go test / lint 这些不需要审批的门禁，再单独跑浏览器探针，
+  被拦时至少还有可交付的结论，把探针脚本和命令留给 hao 哥自己跑。
+
 - **发版（`release.sh --publish`）：沙箱跑不了，但 hao 哥的机器只差一步登录。**
   1. **沙箱里没有 GitHub 凭据** —— `git push` 报 `could not read Username for 'https://github.com'`。
      `credential.helper` 是 `helper-selector`（Windows 凭据管理器），但**非交互取不出东西**
