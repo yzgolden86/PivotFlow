@@ -1,0 +1,25 @@
+/* ============================================================
+   04 数字全等宽
+   ------------------------------------------------------------
+   目的：金额、用量、比例在列表里按位对齐，扫列时不会左右跳。
+
+   只点名「数字语境」的元素，正文与其他文字不受影响。
+   用 --font-mono（等宽）而不是 --font-numeric —— 后者默认是 Inter，
+   本身不是等宽，只是开了 tabular-nums。
+   ============================================================ */
+
+.record-row strong,
+.metric-value,
+.stat-kpis strong,
+.usage-rank,
+.trend-axis,
+.token-row strong,
+.account-balance-amount,
+.donut-chart strong,
+.test-metrics strong,
+.compact-summary strong,
+.resource-status strong {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}

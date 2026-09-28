@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Activity, FlaskConical, Gauge, Globe2, Route, Search, Settings, Users, X } from 'lucide-react'
 import { getChannels, getSiteInventory, getSiteModels } from '../api'
 import type { Channel, Site, SiteAccount, SiteAccountModel } from '../types'
@@ -92,15 +93,26 @@ export default function GlobalSearch() {
 
   return <>
     <button className="global-search-trigger" type="button" onClick={() => setOpen(true)} aria-label="全局搜索" title="全局搜索"><Search size={16} /><span>全局搜索</span></button>
-    {open && <div className="search-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}>
-      <section className="search-dialog" role="dialog" aria-modal="true" aria-label="全局搜索">
-        <header><Search size={18} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索页面、站点、账号、渠道或模型" aria-label="全局搜索内容" /><button className="icon-button icon-button--surface" type="button" onClick={close} aria-label="关闭全局搜索"><X size={17} /></button></header>
-        <div className="search-results">
-          <div className="search-results-label"><span>{query.trim() ? '搜索结果' : '控制台页面'}</span>{loading && <span><Activity className="spin" size={12} />正在同步资源</span>}</div>
-          {!visible.length ? <div className="search-empty">没有找到匹配内容</div> : visible.map((entry) => <a href={entry.href} className="search-result" onClick={close} key={entry.id}><span className={`search-result-icon search-result-icon--${entry.kind}`}>{entryIcon(entry.kind)}</span><span><strong>{entry.label}</strong><small>{entry.detail}</small></span></a>)}
-        </div>
-      </section>
-    </div>}
+    {/* 必须 portal 到 body，不能留在 `.sidebar` 里。`<GlobalSearch />` 挂在 App.tsx 的
+        `<aside className="sidebar">` 内部，而 `.sidebar` 有 `backdrop-filter: blur(24px)`
+        —— 任何 `backdrop-filter` 不为 none 的元素都会成为后代 `position: fixed` 的包含块。
+        于是 `.search-overlay { position: fixed; inset: 0 }` 被关进 216px 宽的侧栏里，
+        `.search-dialog { width: min(100%, 650px) }` 实际只算到约 176px，搜索框被压成
+        一条竖条。同类的坑本项目已踩过三次（页头 overflow 裁下拉、侧栏 overflow 裁主题
+        菜单、页面入场动画关住弹窗），所以规则统一为：**祖先里有 overflow / transform /
+        filter / backdrop-filter / animation 的浮层，一律 portal 到 body**。 */}
+    {open && createPortal(
+      <div className="search-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}>
+        <section className="search-dialog" role="dialog" aria-modal="true" aria-label="全局搜索">
+          <header><Search size={18} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索页面、站点、账号、渠道或模型" aria-label="全局搜索内容" /><button className="icon-button icon-button--surface" type="button" onClick={close} aria-label="关闭全局搜索"><X size={17} /></button></header>
+          <div className="search-results">
+            <div className="search-results-label"><span>{query.trim() ? '搜索结果' : '控制台页面'}</span>{loading && <span><Activity className="spin" size={12} />正在同步资源</span>}</div>
+            {!visible.length ? <div className="search-empty">没有找到匹配内容</div> : visible.map((entry) => <a href={entry.href} className="search-result" onClick={close} key={entry.id}><span className={`search-result-icon search-result-icon--${entry.kind}`}>{entryIcon(entry.kind)}</span><span><strong>{entry.label}</strong><small>{entry.detail}</small></span></a>)}
+          </div>
+        </section>
+      </div>,
+      document.body,
+    )}
   </>
 }
 

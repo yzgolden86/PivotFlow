@@ -1,0 +1,32 @@
+/* ============================================================
+   02 大字模式（字阶令牌版）
+   ------------------------------------------------------------
+   目的：整体抬一档字号。
+
+   ⚠️ 重要局限：项目里还有不少规则把字号写成了字面量 px
+   （例如 .record-row strong { font-size: 11px }），
+   这些不受 --fs-* 影响，所以本片段**不是**全量等比放大。
+   要「整页等比放大」请用 03-ui-scale-zoom.css。
+   本片段的思路是：令牌负责设计系统那部分，再点名补上最常见的几处字面量。
+   ============================================================ */
+
+:root {
+  --fs-micro: 12.5px;
+  --fs-small: 13.5px;
+  --fs-body: 15.5px;
+  --fs-lead: 18px;
+  --fs-display-1: 28px;
+  --fs-display-2: 36px;
+  --lh-base: 1.62;
+  --lh-snug: 1.45;
+}
+/* 注意：没有覆盖 --fs-title / --fs-display-3 —— 这两个令牌在项目里只有定义、
+   没有任何 var() 读它们（死令牌），覆盖了也不会有任何效果。 */
+
+/* 以下几条在原样式里是字面量 px，令牌管不到，单独抬一档 */
+.record-row strong { font-size: 12.5px; line-height: 20px; }
+.record-row span { font-size: 11.5px; line-height: 18px; }
+.record-head { font-size: 12px; }
+.nav-group-label { font-size: 11px; }
+.nav-item { font-size: 15px; }
+.page-header h1 { font-size: 21px; }

@@ -1,0 +1,20 @@
+/* ============================================================
+   10 关掉全部动效
+   ------------------------------------------------------------
+   目的：录屏、远程桌面、低端机上更顺，也适合对动效敏感的人。
+
+   和设置里的「动效 → 减弱」等价，但这里更彻底 ——
+   设置那一档把时长压到 0.01ms，这里压到 0.001ms 并把 delay 也归零。
+   两者叠加没有副作用。
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+  animation-duration: 0.001ms !important;
+  animation-delay: 0ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  transition-delay: 0ms !important;
+  scroll-behavior: auto !important;
+}

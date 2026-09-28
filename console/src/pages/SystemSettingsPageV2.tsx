@@ -3,7 +3,7 @@ import {
   Activity, ArrowRight, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, Clock3, ExternalLink, FileClock, Gauge, Network,
   DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
   KeyRound, ListPlus, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, Settings, SlidersHorizontal, TimerReset, Trash2, Type, Wrench, X,
-  Code, Image as ImageIcon, Maximize2,
+  Code, Image as ImageIcon, Maximize2, Layers, Shuffle,
 } from 'lucide-react'
 import { checkForUpdates, createSystemAccessToken, deleteSystemAccessToken, getModelAliasInventory, getSystemAccessTokens, getSystemSettings, resetSystemSetting, updateSystemAccessToken, updateSystemSettings } from '../api'
 import type { ModelAliasCandidate, ModelAliasInventory, ModelAliasSuggestion, SystemAccessToken, SystemSetting } from '../types'
@@ -15,7 +15,8 @@ import HelpTip from '../components/HelpTip'
 import { adoptSuggestions, aliasMembers, parseAliasDraft, serializeAliasDraft, withMembers } from './modelAliasDraft'
 import type { AliasDraft } from './modelAliasDraft'
 import {
-  applyThemeCustomization, backgroundDimRange, readThemeCustomization, resetThemeCustomization, themeFontOptions,
+  applyThemeCustomization, backgroundDimRange, glassPresetValues, readThemeCustomization, rerollWallpaper,
+  resetThemeCustomization, surfaceBlurRange, surfaceOpacityRange, themeFontOptions,
 } from '../theme'
 import type {
   ThemeBackgroundFit, ThemeContentWidth, ThemeCustomization, ThemeFont, ThemeMotion, ThemePreference, ThemePreset,
@@ -643,21 +644,20 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
         </section>
 
         <section className="appearance-control-group">
-          <header><span><Maximize2 size={17} /></span><strong>布局宽度</strong></header>
+          <header><span><Maximize2 size={17} /></span><strong>布局宽度</strong><HelpTip label="布局宽度" text="侧栏宽度只在桌面宽度生效：880px 以下侧栏会变成覆盖层，那里不适用。内容区最大宽度决定正文的宽度上限，「铺满」= 不设上限。" /></header>
+          <p className="appearance-hint">侧栏宽度</p>
           <div className="appearance-segmented">{sidebarWidths.map(([value, label]) => <button className={customization.sidebarWidth === value ? 'is-selected' : ''} type="button" aria-pressed={customization.sidebarWidth === value} onClick={() => change({ sidebarWidth: value }, label)} key={value}>{label}</button>)}</div>
-          <p className="appearance-hint">侧栏宽度（仅桌面宽度生效；880px 以下侧栏会变成覆盖层，那里不适用）</p>
-          <div className="appearance-segmented">{contentWidths.map(([value, label]) => <button className={customization.contentWidth === value ? 'is-selected' : ''} type="button" aria-pressed={customization.contentWidth === value} onClick={() => change({ contentWidth: value }, label)} key={value}>{label}</button>)}</div>
           <p className="appearance-hint">内容区最大宽度</p>
+          <div className="appearance-segmented">{contentWidths.map(([value, label]) => <button className={customization.contentWidth === value ? 'is-selected' : ''} type="button" aria-pressed={customization.contentWidth === value} onClick={() => change({ contentWidth: value }, label)} key={value}>{label}</button>)}</div>
         </section>
 
         <section className="appearance-control-group">
-          <header><span><Gauge size={17} /></span><strong>动效</strong></header>
+          <header><span><Gauge size={17} /></span><strong>动效</strong><HelpTip label="动效" text="「减少动效」关掉过渡与入场动画。系统的「减少动态效果」偏好独立生效，两者互不覆盖。" /></header>
           <div className="appearance-segmented appearance-segmented--pair">{motions.map(([value, label]) => <button className={customization.motion === value ? 'is-selected' : ''} type="button" aria-pressed={customization.motion === value} onClick={() => change({ motion: value }, label)} key={value}>{label}</button>)}</div>
-          <p className="appearance-hint">「减少动效」关掉过渡与入场动画。系统的「减少动态效果」偏好独立生效，两者互不覆盖。</p>
         </section>
 
         <section className="appearance-control-group">
-          <header><span><ImageIcon size={17} /></span><strong>背景壁纸</strong></header>
+          <header><span><ImageIcon size={17} /></span><strong>背景壁纸</strong><HelpTip label="背景壁纸" text="只接受 http/https 地址，图片由浏览器直接向该地址请求（图床因此能看出你在用这个控制台）。「压暗」是用当前主题底色叠在壁纸上，调高可保住前景文字的可读性。" /></header>
           <label className="appearance-field">
             <span>图片地址（留空 = 不用壁纸）</span>
             <input type="url" inputMode="url" spellCheck={false} placeholder="https://example.com/wallpaper.jpg" value={backgroundDraft} onChange={(event) => setBackgroundDraft(event.target.value)} onBlur={() => { if (backgroundDraft !== customization.backgroundImage) change({ backgroundImage: backgroundDraft }, '背景壁纸') }} aria-label="背景壁纸图片地址" />
@@ -667,17 +667,36 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
             <span>压暗 {customization.backgroundDim}%</span>
             <input type="range" min={backgroundDimRange.min} max={backgroundDimRange.max} step={5} value={customization.backgroundDim} onChange={(event) => change({ backgroundDim: Number(event.target.value) }, '背景压暗')} aria-label="背景压暗程度" />
           </label>
-          <p className="appearance-hint">只接受 http/https 地址，图片由浏览器直接向该地址请求（图床因此能看出你在用这个控制台）。压暗是用当前主题底色叠加，调高可保住前景文字的可读性。</p>
+          <div className="appearance-inline-row">
+            <label className="checkbox-field"><input type="checkbox" checked={customization.backgroundRandom} onChange={(event) => change({ backgroundRandom: event.target.checked }, '随机壁纸')} /><span>每次打开换一张</span></label>
+            <HelpTip label="每次打开换一张" text="只做一件事：在图片地址后面追加一个随机参数，绕过浏览器对同一 URL 的缓存。很多随机图源（如 t.alcy.cc/fj）本身每次请求就返回新图、并且带 no-cache，这时勾不勾都一样 —— 勾了反而会让浏览器每次重新下载。固定图片的图床不要勾。" />
+            {customization.backgroundRandom && <button className="secondary-button" type="button" onClick={() => { rerollWallpaper(); change({ backgroundRandom: true }, '换一张壁纸') }}><Shuffle size={15} />换一张</button>}
+          </div>
         </section>
 
         <section className="appearance-control-group">
-          <header><span><Code size={17} /></span><strong>自定义 CSS</strong></header>
+          <header><span><Layers size={17} /></span><strong>面板通透（毛玻璃）</strong><HelpTip label="面板通透（毛玻璃）" text="把侧栏、面板、卡片、表头的底色改成半透明，让壁纸透过来，配合模糊就是毛玻璃。100% 是实心（默认，观感与改动前一致）。模糊只有在不透明度低于 100% 时才看得出来 —— 面板完全不透明时，背后根本看不见，模糊自然也没得可模糊。弹层（弹窗 / 全局搜索 / 下拉菜单 / 帮助气泡）始终保持不透明，否则底下的正文会透上来影响阅读。" /></header>
+          <label className="appearance-field appearance-field--range">
+            <span>面板不透明度 {customization.surfaceOpacity}%</span>
+            <input type="range" min={surfaceOpacityRange.min} max={surfaceOpacityRange.max} step={1} value={customization.surfaceOpacity} onChange={(event) => change({ surfaceOpacity: Number(event.target.value) }, '面板通透')} aria-label="面板不透明度" />
+          </label>
+          <label className="appearance-field appearance-field--range">
+            <span>模糊 {customization.surfaceBlur}px</span>
+            <input type="range" min={surfaceBlurRange.min} max={surfaceBlurRange.max} step={1} value={customization.surfaceBlur} onChange={(event) => change({ surfaceBlur: Number(event.target.value) }, '毛玻璃模糊')} aria-label="毛玻璃模糊半径" />
+          </label>
+          <div className="appearance-segmented appearance-segmented--pair">
+            <button className={customization.surfaceOpacity === glassPresetValues.surfaceOpacity ? 'is-selected' : ''} type="button" onClick={() => change({ ...glassPresetValues }, '毛玻璃预设')}>一键毛玻璃</button>
+            <button className={customization.surfaceOpacity === 100 ? 'is-selected' : ''} type="button" onClick={() => change({ surfaceOpacity: 100, surfaceBlur: 14 }, '恢复实心面板')}>恢复实心</button>
+          </div>
+        </section>
+
+        <section className="appearance-control-group">
+          <header><span><Code size={17} /></span><strong>自定义 CSS</strong><HelpTip label="自定义 CSS" text="只作用于当前浏览器，不会同步到服务器；输入框失焦后生效。可以改 :root 上的任何 CSS 变量，例如把 --radius-panel 改成 2px。" /></header>
           <label className="checkbox-field"><input type="checkbox" checked={customization.customCssEnabled} onChange={(event) => change({ customCssEnabled: event.target.checked }, '自定义 CSS')} /><span>启用自定义 CSS</span></label>
           <textarea className="appearance-css-editor" rows={8} spellCheck={false} value={cssDraft} onChange={(event) => setCssDraft(event.target.value)} onBlur={() => { if (cssDraft !== customization.customCss) change({ customCss: cssDraft }, '自定义 CSS') }} placeholder={'.app-shell { --radius-panel: 2px; }'} aria-label="自定义 CSS" />
-          <p className="appearance-hint">
-            只作用于当前浏览器，不会同步到服务器；输入框失焦后生效。
-            {' '}万一写坏了导致界面点不动：<strong>在控制台地址后面加上 <code>?plain=1</code> 再回车</strong>，就会跳过这段 CSS，让你能进来把它关掉。
-          </p>
+          {/* 这一条**故意留在外面**不塞进 HelpTip：它是界面被自己写坏之后的唯一退路，
+              而那时候你正需要看到它 —— 收进悬浮气泡等于在需要它的时候把它藏起来。 */}
+          <p className="appearance-hint">写坏了导致界面点不动：在控制台地址后面加上 <code>?plain=1</code> 再回车，就会跳过这段 CSS。</p>
         </section>
       </div>
 

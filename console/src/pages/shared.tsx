@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronLeft, ChevronRight, Eye, EyeOff, RefreshCw, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -42,11 +43,20 @@ export function OperationNotice({ children, persistent = false, onDismiss, tone 
 
   if (!visible) return null
 
-  return (
+  // portal 到 body：`.operation-notice` 是 `position: fixed; top: 22px; right: 24px`，
+  // 但它被渲染在页面根节点内部，而页面根节点正是 `.main-content > *`，带
+  // `animation: pf-rise ... both`（styles.css 末尾）。动画在跑的那一帧里
+  // `transform: translateY(8px)` 是非 none 值 —— 非 none 的 transform 会让元素成为
+  // 后代 fixed 元素的包含块。当前 `pf-rise` 的 `to` 落在 `transform: none`，动画结束后
+  // 包含块会释放，所以现状「看不出来坏」；但只要有人把收尾帧改成带 transform 的值，
+  // 这条提示就会从「钉在视口右上角」变成「跟着页面滚」。与 `.search-overlay` 是同一类坑，
+  // 这里顺手收口。
+  return createPortal(
     <div className={`operation-notice operation-notice--${tone}`} role={tone === 'error' ? 'alert' : 'status'} aria-live={tone === 'error' ? 'assertive' : 'polite'}>
       <span className="operation-notice__content">{children}</span>
       <button className="operation-notice__dismiss" type="button" onClick={dismiss} aria-label="关闭提示"><X size={15} /></button>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

@@ -7,7 +7,11 @@
 ## 0. 当前状态
 
 - 仓库：`E:\Dev\tools\api\PivotFlow`，分支 `main`
-- 工作区**干净**。签到这条线的提交（由远及近）：
+- **工作区状态以 `git status --short` 为准，本文不写快照**（同下面「不写当前 HEAD」的理由）。
+  需要知道的是**哪几节还没进提交**：§1.16 / §1.17 记录的是**尚在工作区**的改动 ——
+  控制台样式（点阵/毛玻璃/壁纸文字对比度）、`console/vite.config.ts` 的 dev 代理、
+  `SystemSettingsPageV2.tsx` 的 HelpTip 改造，以及 `web/console` 产物（已重建，未提交）。
+- 签到这条线的提交（由远及近）：
 
 | Commit | 主题 |
 | --- | --- |
@@ -492,6 +496,8 @@ portal + 定位 + 点击外部关闭 + Escape + resize/scroll 重定位，**一�
   `position: fixed` 元素，而那要求 `.app-shell` 交出底色的不透明背景 —— 会让 body 上那两层
   装饰渐变漏出来（它们今天完全被 `.app-shell` 盖住）。拿视觉回归换一个模糊滑块不划算，
   于是换成 `backgroundFit`（铺满裁切 / 完整显示 / 平铺重复）。
+  **注意与 §1.16 区分**：§1.16 做的模糊是**面板上的 `backdrop-filter`**（模糊面板背后透出来的
+  壁纸），和这里说的「模糊壁纸本身」是两回事，不需要独立图层，也不动 `.app-shell` 的背景。
 - **布局宽度**：`sidebarWidth` 只在 `@media (min-width: 881px)` 里生效 —— 880px 以下侧栏变成
   覆盖层、`--sidebar-width` 被强制为 0，不能被偏好盖掉；且必须写 `:not(.app-shell--collapsed)`，
   否则会压掉收起态的 72px（权重 0,4,0 vs 0,1,0）。`contentWidth` 改 `.workspace-page` 的 `min(100%, N)`。
@@ -515,6 +521,235 @@ bundle 处理**（壁纸图片本身要异步下载，先设也会再闪一次�
 `node --test web/auth/*.test.js` 2/2；build 通过（`SystemSettingsPageV2` chunk 69.22 → 74.65 kB）；
 产物**可复现**。**浏览器实测未做**（沙箱不能跑 Playwright，见 §8.4）：壁纸、布局宽度、自由 CSS
 都只有代码级 + 单测级证明，没有运行时测量。
+
+### 1.15 全局搜索被压成竖条：`backdrop-filter` 造出的包含块（本次）
+
+**症状**：Ctrl/⌘+K 打开的全局搜索对话框变成一条约 176px 宽的竖条，压在侧栏上，结果项的图标变成
+一排灰色小方块（那不是图片坏掉，是 Lucide `Gauge` 图标被挤在小盒子里）。
+
+**根因（确定）**：`<GlobalSearch />` 挂在 `App.tsx:283` 的 `<aside className="sidebar">` **内部**，
+而 `.sidebar` 有 `backdrop-filter: blur(24px)`（`styles.css:5707`，视觉语言 v2 引入）。
+**`backdrop-filter` 不为 `none` 的元素会成为后代 `position: fixed` 的包含块** ——
+于是 `.search-overlay { position: fixed; inset: 0 }` 的 `inset: 0` 只覆盖 216px 宽的侧栏，
+`.search-dialog { width: min(100%, 650px) }` 随之算成 ≈176px。
+`.sidebar` 同时还有 `overflow: hidden`，两者叠加把浮层彻底关死。
+
+**这是潜伏缺陷，不是我近期改动引入的**：`GlobalSearch.tsx` 自 `fef0342`（8 月 17 日）起未动，
+是视觉语言 v2 给 `.sidebar` 加 `backdrop-filter` 之后才暴露出来。
+
+**修法**：`.search-overlay` 用 `createPortal` 挂到 `document.body`，与 `Modal` / `HelpTip` /
+`AnchoredPopover` 一致。
+
+**穷举核对（修「一类」而不是修一个）** —— 全量列出 `styles.css` 里所有 `position: fixed`，
+逐个查挂载点与祖先是否含 overflow / transform / filter / backdrop-filter / animation：
+
+| 浮层 | 挂载点 | 祖先里的包含块属性 | 结论 |
+|---|---|---|---|
+| `.search-overlay` | **`.sidebar` 内部** | `backdrop-filter: blur(24px)`，**恒定生效** | ❌ 已修 |
+| `.operation-notice` | 页面根节点内（`.main-content > *`） | `animation: pf-rise … both` | ⚠️ 已顺手收口 |
+| `.skip-link` | `.app-shell` 直接子元素 | 无 | ✅ 安全 |
+| `.sidebar-scrim` | `.app-shell` 直接子元素 | 无 | ✅ 安全 |
+| `.theme-picker` / `.modal-layer` / `.source-menu-popover` / `.help-tip-bubble` | 已 portal | — | ✅ 安全 |
+
+`.operation-notice` 说明：它是 `position: fixed; top: 22px; right: 24px`，但渲染在页面根节点里，
+页面根节点带 `animation: pf-rise … both`。`pf-rise` 的 `to` 落在 `transform: none`，动画结束后
+包含块会释放，所以**现状看不出坏**；但动画在跑的那一帧 `transform: translateY(8px)` 是非 `none` 值，
+会临时成为包含块 —— 只要有人把收尾帧改成带 transform 的值，这条提示就会从「钉在视口右上角」
+变成「跟着页面滚」。它只有 `pages/shared.tsx` 一个实现（15 个调用方共用），所以一并改成 portal 收口。
+
+⚠️ 顺带纠正一处**过期注释**：`pages/siteShared.tsx` 的 `Modal` 注释说
+`.workspace-page`/`.dashboard-page` 带 `animation: page-enter … both` —— 实际上
+`@keyframes page-enter` 已无任何规则引用（`grep -n "page-enter" styles.css` 只命中 `:870` 的定义），
+换页入场现在是 `styles.css:5304` 的 `.main-content > * { animation: pf-rise … both }`。
+注释里的**结论仍然成立**（`Modal` 必须 portal），只是触发它的选择器换了名字。
+
+**门禁**：typecheck 0 错；`node --test` **109/109**；build 通过；两次构建产物**逐字节一致**；
+产物里确认 `createPortal(x.jsx("div",{className:"search-overlay"…`。
+**浏览器实测未做**（沙箱不能跑 Playwright，见 §8.4）。
+
+### 1.16 面板毛玻璃 + 随机壁纸图源（本次）
+
+hao哥 提的两件事：① 壁纸只从面板缝隙里露出来，想让侧栏 / 列表 / 表头 / 标题都半透明，
+做成毛玻璃；② 壁纸只支持固定 URL，想支持 `https://t.alcy.cc/fj` 这类每次返回不同图的随机接口。
+
+**毛玻璃的做法：不逐条改背景，而是重新定义「表面」令牌。**
+全项目有 200 多条规则用 `var(--surface*)` 当背景，逐条枚举写不完、也一定会漏；
+改成令牌后，侧栏 / 页头 / 面板 / 卡片 / 表头 / 输入框 / 分页一起跟着变。
+（`01-compact-density.css` 那种「字面量 px 只能点名覆盖」的老问题，这次不是 ——
+`.record-row` 本身没有背景，靠面板；`.record-head` 与 `.page-header--elevated` 走的都是令牌。）
+
+为此把 4 个令牌拆成「基础值 + 语义令牌」：
+
+```
+--surface-base / --surface-muted-base / --surface-strong-base / --sidebar-base   ← 基础值
+--surface: var(--surface-base)  …                                                ← 语义令牌
+```
+
+🚨 **为什么必须拆**：CSS 变量不能自引用。要把 `--surface` 算成「原色的 78% 不透明」，
+必须留一个**没被覆盖过的原色**给它引用。而 `--surface` 已经被覆盖过**四份**
+（`:root` / `:root[data-theme="dark"]` / `:root[data-theme-preset="anthropic"]` /
+`:root[data-theme="dark"][data-theme-preset="anthropic"]`）—— 在毛玻璃规则里直接写死
+`#ffffff`，会把 anthropic 那套米色配色打回白色。
+**所以：改配色只改 `--*-base`，别改 `--surface` / `--sidebar`。**
+（漏掉第 4 处是我实际犯的错：第一遍只改了 3 处，靠 `grep -n "^\s*--surface:"` 才揪出来。
+改这类令牌前先穷举定义处，别凭印象。）
+
+- 变量：`--surface-alpha` / `--sidebar-alpha` / `--glass-blur`，由 `theme.ts` 写入；
+  开关是 `data-glass="on"`（只在 `surfaceOpacity < 100` 时写）。
+- **默认 100% / 14px = 与改动前逐像素一致**：`data-glass="off"` 时
+  `:root[data-glass="on"]` 那条根本不匹配，四个令牌保持原值；`--glass-blur` 的默认值
+  14px 就是改造前写死在样式表里的值。
+- **侧栏的 62% 下限算在 JS 里**（`sidebarAlphaValue`），不写在 CSS 的 `clamp()` / `calc()`：
+  能被单元测试盯住，也不用赌浏览器对 `color-mix()` 里嵌 math 函数的支持。
+  顺带接管了 `.sidebar` 自己那条 `color-mix(in srgb, var(--sidebar) 92%, transparent)` ——
+  不然两层 alpha 相乘，透明度会随滑块非线性地漂。
+- **弹层强制不透明**（`.console-modal` / `.search-dialog` / `.theme-picker` /
+  `.source-menu-popover` / `.help-tip-bubble`）：它们底下压着正文，透上来直接读不清。
+- ⚠️ **三个变量都写了回退值 `var(--x, 100%)`，这不是装饰**：`color-mix()` 里只要有一个
+  未定义的变量，整条声明在**计算值阶段**失效，`--surface` 变成 guaranteed-invalid，
+  于是 `background: var(--surface)` 全线崩掉（面板直接全透明）——
+  比「闪一下实心」严重得多。回退到 100% 时行为等于实心，是安全降级。
+- `.data-panel` 此前**不在**视觉语言 v2 的毛玻璃名单里（漏了）。只在开启毛玻璃时补上，
+  否则会给每个面板平白加一个合成层和一个「fixed 后代包含块」。
+
+**随机图源的做法**：
+
+- `wallpaperUrl(url, random)`：勾了「每次打开换一张」才追加 `pf_r=<nonce>`；不勾则**原样返回**
+  —— 普通图床的固定图片不该因为多一个参数就重新下载。
+- **nonce 是模块级常量，一次页面加载生成一次**。必须是常量而不是每次现算：
+  `applyThemeCustomization` 会在用户每改一项外观设置时重跑，现算的话改个字体就换壁纸 ——
+  那是 bug 不是功能。主动换图有「换一张」按钮（`rerollWallpaper()`）。
+- 已确认全仓库**无 CSP**（grep 不到 `Content-Security-Policy`），外链图片与注入 `<style>`
+  都不会被拦。
+- ⚠️ 会顺带把「你正在用这个控制台」暴露给图床（每次打开都请求），界面文案里已写明。
+
+**没有改 `console/index.html` 的引导脚本**（虽然按 §8.5 的惯例，「刷新前就要生效的项」要写进去）：
+`main.tsx:17` 在 bundle 求值时（React 渲染前）就调了 `applyTheme`，而之前那段窗口被
+`.console-boot` 全屏遮罩盖住 —— 所以不存在可见闪烁。反过来，把 `sidebarAlphaValue` 的算术
+抄进内联脚本只会多一份会漂移的实现（与壁纸、自由 CSS 是同一个取舍）。
+**以后加外观项时先确认这一点**：`applyTheme` 早于首帧的话就不需要动引导脚本。
+
+**门禁**：typecheck 0 错；`node --test` **117/117**（新增 8 条：随机参数拼接 / nonce 会话内稳定 /
+拼参数后转义仍然有效 / 侧栏下限与单调性）；build 通过（`SystemSettingsPageV2` 74.65 → 77.65 kB）；
+两次构建产物**逐字节一致**；`docs/appearance-presets/` 15 个片段重跑静态校验仍全过。
+**浏览器实测未做**（沙箱不能跑 Playwright，见 §8.4）。
+
+### 1.17 壁纸/毛玻璃的第二轮修正（本次）
+
+hao哥 实测后报的 6 条，逐条对应：
+
+**(1) 自定义壁纸下点阵很明显 → 壁纸生效时整层去掉。**
+点阵是 `.app-shell` 背景列表的**第 3 层**（`radial-gradient(circle, … 1px, transparent 1px)`
++ `background-size: 28px 28px`）。背景列表**靠前 = 画在上面**，所以它压在壁纸**之上** ——
+这是它一有壁纸就变成噪点的原因，调低浓度只能让它从「很明显」变成「有点明显」。
+现在它是 `--app-bg-dots`（定义在 `:root` 与 `:root[data-theme="dark"]`，浓度取值的
+对比度推导写在那边），`theme.ts` 在壁纸生效时**内联覆盖成 `none`**，没有壁纸时
+`removeProperty` 交还给样式表（不能写回字面量：默认值依赖亮/暗主题，`--border-strong`
+在两套里亮度方向相反）。层数不变，`background-size` / `background-repeat` 仍然一一对应。
+
+**(2) 模糊滑块「没效果」→ 4 处硬编码半径没接 `--glass-blur`。**
+穷举 `grep -n backdrop-filter console/src/styles.css` 得到 8 处，其中 4 处是字面量：
+`.sidebar`(24px)、`.page-header--elevated`(16px)、`.resource-strip`(14px)、`.compact-summary`(14px)。
+**侧栏是最大的玻璃面却不跟滑块**，用户拖滑块最容易得出的结论就是「没效果」。
+全部改成 `var(--glass-blur, 14px)`，现在一个旋钮管全部玻璃面。
+两个 2px 遮罩（`.search-overlay` / `.modal-layer`）**故意不跟**：它们不是玻璃面，是压暗层。
+代价：默认观感里侧栏 24→14px、页头 16→14px —— 但侧栏自身底色只透 8%
+（`color-mix(--sidebar 92%)`），差别肉眼基本看不出。
+`themeLayers.test.ts` 用**取值集合**守这条（只允许 `blur(2px)` 与 `blur(var(--glass-blur, 14px))`
+两种），以后新增玻璃面只要接了变量就自动合规、写了字面量就被抓住。
+
+**(2b) 同一条链上还拆掉一个 backdrop root 隐患**：`.main-content > *` 的入场动画原来带
+`both`。`pf-rise` 的 `to` 帧是 `opacity: 1; transform: none`，与自然状态逐字相同，且
+**没有 `animation-delay`**（`backwards` 只在有延迟时才有意义）—— 所以 `both` 视觉上完全多余，
+但它让页面根节点一直挂着生效中的 opacity/transform 动画，整页成为 backdrop root，
+里面的 `backdrop-filter` 采不到壁纸。已去掉。
+**`.kpi-grid > *` 那条不能照做**：它靠 `animation-delay` 错峰，必须有 `backwards`，
+否则延迟期间先闪一下实体卡片。测试对这两条分别加断言。
+
+**(3) 壁纸下文字对比度 → 只把「小字」那两个令牌推向极端（2026-09-29 定的最终版）。**
+原配色是按**已知底色**调的（`--text-muted` 是按「在 4 种底色上都过 AA 4.5:1」反推的），
+壁纸把底色换成未知亮度的照片，前提失效。失效点在**裸文本**上最明显：
+`.dashboard-footer` / `.pagination` 直接压在壁纸上，没有面板垫底。
+
+**最终只做一件事**：`data-wallpaper="on"` 下明暗两套把 `--text-secondary` 与
+`--text-muted` 推向极端（亮色更黑、暗色更白），**其余一个令牌都不动**。范围是按
+**实测字号**定的（2026-09-29 由 hao哥 拍板，脚本在 `.tmp-dev-ui/tokens.py` 那类思路）：
+
+| 令牌 | 实际字号分布 | 消费点 | 改不改 |
+| --- | --- | --- | --- |
+| `--text-secondary` | 9~13px（中位 11px） | 95 | **改** |
+| `--text-muted` | 9~13px（中位 11px） | 186 | **改** |
+| `--text` | **11~27px**（中位 13px，含大标题、大数字） | 142 | 不改 |
+| `--sidebar-text` | 继承 | 1 | 不改 |
+| `--sidebar-muted` | 10~11px | 5 | 不改 |
+
+前两个字号分布**完全一样**，是最灰最吃力的一档；`--text` 一路到 27px，混着大标题和大
+数字，一起加深会让整页「变重」。`themeLayers.test.ts` 守：两个块都必须有那两个令牌、
+都必须**没有** `--text` / `--sidebar-*`（注意 `--text\s*:` 不会误伤 `--text-secondary:`，
+后者在 `--text` 后接的是 `-` 不是 `:`），并且**规则体里只允许这两个令牌**。
+
+⚠️ **描边这条路试过三档，全部被否，现在整条不做轮廓（别再走一遍）：**
+
+| 档位 | 实测反馈 |
+| --- | --- |
+| ① 纯软阴影 `0 1px 2px` | 「还是不行，有点看不清」—— 11px 小字上摊开后峰值太低，等于没加 |
+| ② 八向硬边 + 4px 辉光 + 88% | 「整体感觉都在发光」—— **辉光是主要元凶** |
+| ③ 八向硬边、零辉光、55% | 技术上最舒服的一档，但用户最终要求「**保留小字，其他改回去**」 |
+
+**③ 为什么必须整条撤掉（这是关键，别只看「被否」两个字）：** `text-shadow` 只能挂在
+**选择器**上，**不能挂在颜色令牌上**。想只给小字，唯一办法是维护一份「小字选择器清单」——
+而这份清单**会随着新增页面不断漏**，且「漏了」这件事**没有守卫能发现**（新增一个小字
+元素，它静默地没有轮廓）。反过来挂 `body` 靠继承全站兜底，又必然改到大字，与「只改小字」
+直接冲突。**两个方向都走不通 → 不做。** 颜色令牌是按定义精确落到它自己的 281 个消费点上，
+不用维护清单 —— 这才是能长期活下去的方案。
+守卫：`--halo` / `--wallpaper-halo` / 壁纸档 `text-shadow` / 壁纸档 `body` 规则
+一律不得存在；全项目 `text-shadow` 只剩 `.metric-value` 那条原有发光（变异验证过：
+把轮廓加回来会被 3 条守卫同时抓到）。
+（副作用是好的：`.primary-button` 那种硬编码白字 + 彩色底的表面，暗色主题下本来会有
+一圈近黑轮廓，现在没有了。）
+
+⚠️ **另一条被否的：页级裸文本垫底**（`.dashboard-footer` / `.pagination` 加 `--bg` 底 +
+圆角）→「**底部弄一长条，好丑**」。这两个是 `justify-content: space-between` 的**全宽
+flex 行**，加底色必然拉成一条横贯页面的带子。反向守卫：壁纸规则里不得出现 `background:`，
+也不得有 `.pagination` / `.dashboard-footer` 的壁纸专属规则。
+（该守卫的选择器正则要用 `(?:\[[^\]]*\])+` 整串吃属性再筛：写成
+`:root\[[^\]]*data-wallpaper…` 跨不过暗色那条中间的 `][`，会静默漏掉一半。）
+
+**残留缺口（已知、未解）：** 撤掉轮廓后，小字只靠颜色。实测（`--bg` = `#f4f6f8`，
+壁纸取中蓝 `#4a90d9` / 深灰 `#2b2f33`；「轮廓」两列是留档，说明那条路能买到什么）：
+
+| | 原默认 `#606d67` | 现行 `#38433f`（无轮廓） | 加 55% 轮廓 | 加 88% 轮廓 |
+| --- | --- | --- | --- | --- |
+| `--text-muted` on 中蓝 `#4a90d9` | 1.62:1 | **3.08:1** ✅ 更好 | 5.93:1 | 8.42:1 |
+| `--text-muted` on 深灰 `#2b2f33` | **2.49:1** | **1.31:1** ❌ **更差** | 3.75:1 | 7.63:1 |
+
+🚨 **注意第二行：深色照片 + 亮色主题时，把小字改深反而更差**（1.31 < 2.49）。
+原因是亮色主题的整套配色都假设「底是浅的」，文字越深对比越大；一旦照片是深色，
+这个前提就反过来 —— 越深越看不见。这是**亮色主题配深色照片**这个组合本身的问题，
+不是取值没调好：**这种组合下正确解法是「压暗」滑块把照片推向浅色，或者干脆切暗色主题。**
+（先前的版本把 `--text` 一起改深，等于把这个问题扩大到全站所有文字 —— 这也是
+「只改小字」这个范围决定的一部分收益。）
+真正无痕迹的杠杆仍是**把底色调淡**，即外观设置的「压暗」滑块（`--app-bg-dim`）：
+亮色主题下压暗把壁纸推向浅色，深字就立住；暗色主题下反过来。要根治得让颜色跟着
+**壁纸亮度**走，那需要读图片像素 —— 跨域图会污染 canvas（`getImageData` 抛错），
+方案与拦路石见 §4 的 P3。
+判据用 `wallpaperActive()`（= `backgroundImageValue(url) !== 'none'`），
+**不能直接看 `backgroundImage` 非空**：地址框里打个半截的 `ht` 也会非空。
+
+**(4) 「每次打开换一张」的语义**：它只做一件事 —— 在地址后追加随机参数绕过浏览器缓存。
+`t.alcy.cc/fj` 这类随机图源本身每次请求就返回新图且带 no-cache，**勾不勾都一样**，
+勾了反而让浏览器每次重新下载。文案已改成「每次打开换一张」并把完整说明收进 HelpTip。
+
+**(5) 提示小字 → HelpTip（圆圈问号，悬浮显示）**，放在对应分组的标题旁；
+勾选框的说明按要求放在**勾选框后面**（`appearance-inline-row` 一行装下
+勾选框 + 问号 + 「换一张」按钮）。**唯一故意留在外面的是自定义 CSS 的 `?plain=1` 逃生开关** ——
+它是界面被自己写坏后的唯一退路，收进气泡等于在最需要它的时候把它藏起来。
+
+**门禁**：typecheck 0 错；`node --test` **129/129**（+12：`themeCustomization.test.ts` 补 2 条
+`wallpaperActive`，新增 `themeLayers.test.ts` 10 条静态守卫）。新增守卫文件
+`console/src/themeLayers.test.ts`，沿用仓库「不引 jsdom、静态守形状」的做法
+（同 `pages/editableRowKeys.test.ts` 的取舍）。vite 能正常编译 styles.css 与设置页
+（已从 dev server 取回产物确认无错误载荷）。**浏览器实测仍未做**（沙箱不能跑 Playwright）。
 
 ## 2. 环境与验证（必读）
 
@@ -818,6 +1053,20 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 - **Veloera / AnyRouter：无法完成** —— hao哥 答复目前没有这两个平台的可用站点，只能停留在上游源码推导层面（证据见 §3.1）。
 - 补充：本次另对两个公开可达站点做了**无凭证**的端点实测（§3.5），可用于核对平台识别与 401 行为，但覆盖不到签到动作本身。
 
+### P3 外观：让壁纸下的文字对比度自适应（未做，仅记录方案）
+
+**问题**：轮廓色 `--halo` 由 `--bg` 派生，**不知道壁纸是深是浅**。于是亮色主题 +
+深色照片下的 `--text-muted`（11px 次级文字）只有 3.75:1，过不了 AA（完整表见 §1.17(3)）。
+
+**候选方案**：把壁纸图读进 `Image` → 画到 canvas → 缩到 1×1 → `getImageData` 取平均亮度
+→ 据此在「浅轮廓 / 深轮廓」两档之间切换，或直接把 `--halo` 换成黑/白派生。
+
+**已知拦路石**：**跨域图会污染 canvas**，`getImageData` 直接抛 `SecurityError`。
+用户现在用的 `https://t.alcy.cc/fj` 是否带 `Access-Control-Allow-Origin` 未验证；
+即使带，也要求 `<img crossOrigin="anonymous">`，而**没带的图源会直接加载失败**
+（比不加对比度更糟）。所以要么做「尝试 + 失败回退到当前固定档」，要么干脆不做。
+**别在没想清回退路径之前动这块。**
+
 ---
 
 ## 5. 关键文件索引
@@ -897,7 +1146,70 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 - **改样式先想权重**：新加的**顶层**规则会顶掉媒体查询里设过的同名属性（**媒体查询不加权重**）。所以覆盖层的惯例是**追加到 `styles.css` 末尾**，而不是就近插在原始规则旁边。
 - **父级 `display:grid` 会把「标题 + 问号」拆成两行**。`.heading-with-hint` 里只有标题 + `.help-tip`，而 `.model-alias-panel > header > div`（`:3411`）、`.system-access-head > div`（`:4556`）都设了 `display:grid`（本意是「标题 + 描述」垂直排）。另外 `h2` 是块级元素，问号跟在它后面本来也会换行。修法是末尾覆盖成行内 flex，**覆盖时要写父级限定选择器**（只写 `.heading-with-hint` 权重不够）。
 - 字号只允许**字面量 px** 或 `--fs-*` 令牌；写成别的（如 `var(--x)` 拼字符串）会让 `smallTextLegibility.test.ts` **静默失效**（守卫解析不到就跳过，不报错）。
-- **页头里不要放「往外弹」的浮层。** `.page-header--elevated` 带 `overflow: hidden`（为了裁左侧竖条与右上角光晕），任何绝对定位的下拉菜单都会被页头底边切掉。**要弹就 `createPortal` 到 `document.body` + `position: fixed` + 视口坐标**（见 `components/SourceMenu.tsx`）。同理，`.workspace-page` / `.dashboard-page` 的 `animation: page-enter ... both` 会形成层叠上下文，把 `position: fixed` 的浮层关进页面里 —— 所以 `Modal` 也是 portal 到 body（`siteShared.tsx` 里有注释）。判断依据：**「这个浮层的祖先里有没有 overflow / transform / filter / animation」**，有就必须 portal。
+- **页头里不要放「往外弹」的浮层。** `.page-header--elevated` 带 `overflow: hidden`（为了裁左侧竖条与右上角光晕），任何绝对定位的下拉菜单都会被页头底边切掉。**要弹就 `createPortal` 到 `document.body` + `position: fixed` + 视口坐标**（见 `components/SourceMenu.tsx`）。
+- 🚨 **判断依据（这条已踩过四次，务必按它做）：「这个浮层的祖先里有没有 `overflow` / `transform` / `filter` / `backdrop-filter` / `animation`」—— 有就必须 portal 到 `document.body`。** 四次的代价：
+  1. `.page-header--elevated { overflow: hidden }` → 裁掉 `.source-menu-popover`（渠道页「其他来源」）；
+  2. `.sidebar { overflow: hidden }` → 裁掉 `.theme-picker`（168px 菜单挂在 ~110px 的容器里）；
+  3. `.sidebar { backdrop-filter: blur(24px) }` → **不是裁切，是包含块**：`backdrop-filter` 不为 `none` 的元素会成为后代 `position: fixed` 的包含块，于是 `.search-overlay { inset: 0 }` 只覆盖 216px 的侧栏，搜索框被压成 ≈176px 竖条；
+  4. `.main-content > * { animation: pf-rise … both }` → 动画期间 `transform: translateY(8px)` 形成包含块。
+  ⚠️ 注意第 3 条最阴：**`backdrop-filter` 是视觉语言 v2 为了「毛玻璃」加的，加的时候完全没碰浮层代码**，是几个月后以「搜索框变竖条」的形式暴露出来的。**加 `backdrop-filter` / `filter` / `transform` / `will-change` 到任何容器类之前，先查它内部有没有 `position: fixed` 的浮层。**
+  ⚠️ 另外：**收尾帧是 `transform: none` 的入场动画，包含块在动画结束后会释放**（第 4 条即此类，所以它「现状看不出坏」但很脆）。别靠这个侥幸 —— 统一 portal。
+  ⚠️ `pages/siteShared.tsx` 里 `Modal` 的注释仍在说 `.workspace-page` / `.dashboard-page` 带 `animation: page-enter … both`，**这句已过期**：`@keyframes page-enter` 现在没有任何规则引用（`grep -n "page-enter" console/src/styles.css` 只命中 `:870` 的定义），换页入场已换成 `.main-content > * { animation: pf-rise … }`（**已去掉 `both`，见 §1.17 第 2b 条**）。注释的**结论仍然成立**（`Modal` 必须 portal），只是选择器换了名字。
+- 🚨 **所有「能透出背景」的表面必须共用 `--glass-blur` 一个半径。** 写死 `blur(24px)`
+  这种字面量 = 用户拖「模糊」滑块时它不动，得出的结论是「这个设置没效果」——
+  2026-09-28 踩过（侧栏 24px / 页头 16px / resource-strip / compact-summary 共 4 处）。
+  唯一允许的字面量是 `.search-overlay` / `.modal-layer` 的 `blur(2px)`（压暗层，不是玻璃面）。
+  `console/src/themeLayers.test.ts` 用**取值集合**守这条：只允许
+  `blur(2px)` 与 `blur(var(--glass-blur, 14px))` 两种，以后新增玻璃面接上变量即合规。
+- 🚨 **`.main-content > *` 的入场动画不能带 fill-mode（`both` / `forwards`）。**
+  `pf-rise` 的 `to` 帧与元素自然状态逐字相同且无 `animation-delay`，所以 `both` 视觉上多余；
+  但它让页面根节点**一直挂着生效中的 opacity/transform 动画** → 整页成为 **backdrop root**
+  → 里面所有 `backdrop-filter` 采不到壁纸 → 毛玻璃表现为「不透明度生效、模糊没效果」。
+  **`.kpi-grid > *` 例外**：它靠 `animation-delay` 错峰，必须有 `backwards`。
+  测试对这两条分别加断言，别把 `.kpi-grid` 一起「顺手修」。
+- **`--app-bg-dots` 是点阵纹理的唯一入口。** 它排在 `.app-shell` 背景列表的**第 3 层**
+  （靠前 = 画在上面），所以在壁纸**之上**。`theme.ts` 在壁纸生效时内联覆盖成 `none`、
+  没有壁纸时 `removeProperty` 交还样式表。**不要把它写回 `.app-shell` 的图层列表里** ——
+  内联覆盖救不了字面量。层数保持不变，`background-size` / `background-repeat` 仍然一一对应
+  （CSS 对短列表是循环取用，不是截断）。`themeLayers.test.ts` 守这两点。
+- **`data-wallpaper="on"` 下只改「小字」那两个令牌**（`--text-secondary` / `--text-muted`，
+  明暗两套推向极端）。**`--text`（含 27px 大标题、大数字）与 `--sidebar-*` 一律不许动** ——
+  范围是按**实测字号**定的（两个小字令牌都是 9~13px、中位 11px；`--text` 是 11~27px），
+  2026-09-29 由 hao哥 拍板。守卫：两个块都必须有那两个令牌、都必须没有 `--text` /
+  `--sidebar-*`，且**规则体里只允许这两个令牌**。
+  - **不做轮廓，`text-shadow` / `--halo` / `--wallpaper-halo` 一律不得存在。**
+    描边试过三档全被否，最后一档技术上最舒服，但**做不到只给小字**：
+    `text-shadow` 只能挂选择器、不能挂颜色令牌，只给小字就得维护一份**会随新增页面不断漏、
+    且漏了没有守卫能发现**的选择器清单；挂 `body` 全站兜底又必然改到大字。
+    两头都走不通 → 不做。完整理由见 §1.17(3)。
+  - **页级裸文本垫底也被否**（「底部弄一长条，好丑」）：`.dashboard-footer` / `.pagination`
+    是 `justify-content: space-between` 的全宽 flex 行，加底色必然成条。反向守卫盯着
+    「壁纸规则里不得有 `background:`」和「不得有这两个类的壁纸专属规则」。
+  - **已知取舍**：亮色主题 + **深色**照片下，把小字改深反而更差（`#2b2f33` 上
+    **1.31:1**，不如原来的 `2.49:1`）—— 亮色主题整套配色都假设底是浅的，照片一深就反过来。
+    这种组合该用「压暗」滑块把照片推向浅色，或切暗色主题。完整表见 §1.17(3)。
+  - **改动的实际作用域（2026-09-28/29 实测，别凭印象说）：** 字体**本身 0 改动** ——
+    `font-family` / `font-size` / `font-weight` / `font-style` / `letter-spacing` /
+    `line-height` / `font-variant` 在壁纸规则里**都是 0 次**，改的只有颜色。
+    现行版只覆盖 2 个令牌 = **281 个消费点**（`--text-muted` 186 + `--text-secondary` 95）。
+  - 判据必须是 `wallpaperActive(url)`，**不能看 `backgroundImage` 非空**：
+    地址框里打个半截的 `ht` 也非空，但不产生任何背景层。
+- **CSS 变量写进 `color-mix()` 时给回退值**（`var(--x, 100%)`）：只要有一个变量未定义，
+  整条声明在计算值阶段就失效，引用它的令牌变成 guaranteed-invalid，下游 `background: var(--x)`
+  全线崩掉（表现为面板突然全透明）。这类「未定义 → 整条崩」比「未定义 → 保持原样」危险得多，
+  凡是新引入的运行时变量都要给回退值。
+- **提示文案收进 `HelpTip`（悬浮气泡）而不是铺在界面上。** 但**恢复/逃生类说明必须留在外面**：
+  自定义 CSS 的 `?plain=1` 是界面被写坏后的唯一退路，收进气泡等于在最需要它的时候把它藏起来。
+  勾选框旁的 HelpTip 要放在 `<label>` **外面**（放进 label 里点图标会连带切换勾选状态）。
+- 🚨 **「表面」色有两层，改色只改 `--*-base`。** `--surface` / `--surface-muted` /
+  `--surface-strong` / `--sidebar` 是**派生令牌**（`--surface: var(--surface-base)`），
+  因为「面板通透（毛玻璃）」开启时要把它们重新算成带 alpha 的版本，而 CSS 变量不能自引用。
+  改 `--surface` 这类派生令牌，一开毛玻璃就会被毛玻璃规则盖掉（那条权重 0,2,0 > `:root` 的 0,1,0）。
+  **改配色的正确位置是 `--surface-base` 等 4 个基础令牌，且必须四处同步改**：
+  `:root`、`:root[data-theme="dark"]`、`:root[data-theme-preset="anthropic"]`、
+  `:root[data-theme="dark"][data-theme-preset="anthropic"]`。
+  漏改的后果是「某套主题 + 某个明暗组合下毛玻璃变成另一个颜色」，肉眼不一定立刻发现 ——
+  改之前先 `grep -n "^\s*--surface:" console/src/styles.css` 穷举定义处。
 
 ### 8.3 传输层（`internal/site/provider/transport.go`）
 
@@ -905,6 +1217,52 @@ AnyRouter 本身闭源（`anyrouter/anyrouter` 仓库 404），但有多个实�
 - **`DialContext` 的 SSRF 私网过滤必须区分「拨代理」与「拨站点」**：配了代理时 transport 拨的是**代理地址**，若照旧套 `isPrivateAddress`，会把本地代理（Clash / v2ray 的 `127.0.0.1:7890`）拒掉，报 `proxyconnect tcp: provider host resolves only to private or unsafe addresses` —— **文案说 provider host，实际检查的是代理**。用 `proxyHopTracker` 区分；env 代理只能在选择器回调（`wrap`）里记。站点自身的私网校验归 `ValidateBaseURL` 负责，`AllowPrivate` 是显式放行开关。改这层要同时保住这两条。
 
 ### 8.4 本机环境的坑
+
+- **本机起一套可登录的开发环境（2026-09-28 实测通过）**：
+
+  ```bash
+  # ① 后端。注意三点：
+  #    - 密码只从环境变量读、不存库（internal/app/server.go:135），所以任意值都行；
+  #    - 不设 PIVOTFLOW_PASS 会直接 FATAL 退出；
+  #    - **必须换 SQLITE_PATH**：默认的 data/pivotflow.db 里可能存着真实站点凭证，
+  #      起来后每日自动签到会打真实接口。用独立空库 + seed 演示数据最安全。
+  cd /e/Dev/tools/api/PivotFlow
+  C:/Users/80470/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe \
+    scripts/seed_demo_data.py --db .tmp-dev-ui/dev.db --reset
+  SQLITE_PATH=.tmp-dev-ui/dev.db PIVOTFLOW_PASS='<任意强密码>' PORT=8080 go run -tags sonic . &
+
+  # ② 前端 dev 服务器（端口 5174，localhost-only）
+  cd console && npm run dev &
+  ```
+
+  打开 `http://127.0.0.1:5174/web/console/`。登录页在 `http://127.0.0.1:5174/web/auth/`。
+  ⚠️ **后端 `addr` 恒为 `":"+PORT`，即监听 `0.0.0.0`**（`main.go:160`），没有只绑本机的开关 ——
+  所以本地实例的密码别用弱口令，用完记得停。前端 dev 服务器是 `127.0.0.1` only。
+
+- **`console/vite.config.ts` 的 dev 代理前缀必须穷举。** localStorage 按**源**隔离：dev 跑在
+  `127.0.0.1:5174`，和后端 `8080` 不共享登录态，所以登录页也得在 5174 这个源上打开、
+  由 vite 转发它的接口。**当前完整清单**（`/admin` `/login` `/logout` `/dashboard` `/web`）：
+  直接 `fetch` → `/dashboard/session`、`/logout`；`requestEnvelope` → `/admin/*`；
+  `location`/资源 → `/web/auth/`、`/web/brand-mark.svg`、`/web/favicon.svg`、`/web/apple-touch-icon.png`。
+  改完用 `grep -rhoE "[\`'\"]/[A-Za-z0-9_-]+" console/src/` 重新穷举一遍，
+  **新增一级前缀（不是新的 `/admin` 子路径）就要补进代理**。
+- **漏掉 `/dashboard` 的症状是「密码不对，登不进去」（2026-09-28 踩过）。** `main.tsx` 的
+  `bootstrap()` 会 `fetch('/dashboard/session')` 复核会话；这个请求没被转发就落到 vite 手里，
+  base 是 `/web/console/` → **404 + `text/plain`**。控制台把「非 200 / 无 `success`」一律
+  当会话无效 → 清掉刚存好的 token → `replace` 回 `/web/auth/`。于是：登录接口 200、
+  密码完全正确、页面却立刻弹回登录页，而且**不带 `error` 参数、不显示任何提示**，
+  看起来就是密码错。**排查第一步是看后端日志有没有收到 `GET /dashboard/session`** ——
+  只有 `POST /login 200` 而没有紧跟的 `/dashboard/session`，就是这个坑。
+  对照：`/admin/*` 漏了会 404 得更明显，但同样会被 `requestEnvelope` 的 401 分支弹回登录页。
+- **`/web` 的代理写法带 `bypass`，把 `/web/console` 留给 vite**：那是 dev 服务器在内存里现编的，
+  代理到后端会拿到 `web/console/` 里那份**旧的构建产物**，改动就看不见了。
+  验证方法：`curl -s http://127.0.0.1:5174/web/console/ | grep -oE 'src="[^"]*"'`
+  → dev 应当返回 `/web/console/@vite/client` 与 `/web/console/src/main.tsx`，
+  后端则返回 `/web/console/assets/index-*.js`。
+  另：`vite.config.ts` 改动会被 vite 自己监听到并**自动重启**，不用手动 kill 进程；
+  重启后原端口不变。
+- **本机 HTTP 探测必须关代理**：沙箱 `http_proxy` 指向 `127.0.0.1:4868`，连本机端口也会被劫。
+  `curl` 加 `--noproxy '*'`。
 
 - **本机只是开发环境，PivotFlow 实际跑在 VPS 的 Docker 里。** 本机 `data/pivotflow.db` 是**陈旧残留**，**不能当线上库查签到历史**。要线上证据：向 hao 哥要 VPS 的 `docker logs`，或读**上游开源源码**推导契约（`raw.githubusercontent.com/QuantumNous/new-api/main/...`）。
 - **沙箱批量删除守卫按「回合」累计**（阈值 50 个条目），超了本回合**所有**删除操作都会被拒。而 `vite build` 的 `emptyOutDir: true` 会清空 `web/console/assets` → **同一回合第二次 `make console-check` 必然失败**。绕法：**先把 `web/console` 移走再构建**（移动不算删除）。注意 `embed.go` 是 `//go:embed all:web`，**移走期间别跑 Go 构建**。

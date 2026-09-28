@@ -1,0 +1,52 @@
+/* ============================================================
+   15 打印友好
+   ------------------------------------------------------------
+   目的：Ctrl+P 时只留内容，去掉导航、工具栏与装饰。
+
+   注意：打印时浏览器不执行 JS，所以只能靠纯 CSS 隐藏。
+   ⚠️ 页面上那些「当前页」高亮、表格排序箭头属于内容的一部分，不在这里处理。
+   ============================================================ */
+
+@media print {
+  /* 导航与交互元素全部隐藏 */
+  .sidebar,
+  .sidebar-scrim,
+  .mobile-topbar,
+  .page-header,
+  .header-controls,
+  .global-search-trigger,
+  .pagination,
+  .row-actions,
+  .operation-notice,
+  .settings-savebar,
+  .batch-toolbar,
+  .filter-bar {
+    display: none !important;
+  }
+
+  /* 侧栏不在了，内容区收回左边距 */
+  .main-content {
+    margin-left: 0 !important;
+  }
+
+  /* 去掉背景装饰，省墨 */
+  .app-shell {
+    background-image: none !important;
+    background-color: #fff !important;
+  }
+
+  /* 面板：不跨页断开，去掉投影，边框换成明确的灰 */
+  .data-panel,
+  .metric-card,
+  .records-panel,
+  .tool-card {
+    break-inside: avoid;
+    box-shadow: none !important;
+    border-color: #9aa3a8 !important;
+  }
+
+  /* 记录行也不要在中间断开 */
+  .record-row {
+    break-inside: avoid;
+  }
+}

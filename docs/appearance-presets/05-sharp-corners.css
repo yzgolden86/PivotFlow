@@ -1,0 +1,34 @@
+/* ============================================================
+   05 硬朗直角
+   ------------------------------------------------------------
+   目的：所有圆角归零，观感更像终端工具。
+
+   分两步：
+   ① 改设计令牌（覆盖大部分走 --radius-* 的组件）；
+   ② 补几处把圆角写成了字面量 px 的容器（令牌管不到，例如
+      .data-panel { border-radius: 7px }）。
+   ============================================================ */
+
+:root {
+  --radius-control: 0px;
+  --radius-panel: 0px;
+  --radius-large: 0px;
+  --radius-pill: 0px;
+}
+
+/* 令牌管不到的容器：圆角是写死的 px，只能点名覆盖 */
+.data-panel,
+.metric-card,
+.tool-card,
+.records-panel,
+.console-modal,
+.search-dialog,
+.operation-notice,
+.theme-picker,
+.source-menu-popover,
+.setting-list,
+.stat-kpis article,
+.model-card,
+.status-badge {
+  border-radius: 0;
+}

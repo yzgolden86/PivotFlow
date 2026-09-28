@@ -49,6 +49,19 @@ const backgroundFitValues: Record<ThemeBackgroundFit, { size: string; repeat: st
 /** 壁纸暗化的取值范围（百分比）。界面滑块与读盘时的夹取共用，避免两边写岔。 */
 export const backgroundDimRange = { min: 0, max: 90 } as const
 
+/**
+ * 面板「表面」不透明度的取值范围（百分比）。
+ *
+ * 100 = 完全不透明，观感与引入毛玻璃之前逐像素一致（默认值）；
+ * 调低后 `.sidebar` / 面板 / 卡片 / 表头会透出壁纸，配合 `surfaceBlur` 形成毛玻璃。
+ * 下限取 40 而不是 0：再低文字就压不住壁纸了，与其给一个必然不可读的档位，不如不给。
+ */
+export const surfaceOpacityRange = { min: 40, max: 100 } as const
+/** 面板毛玻璃的模糊半径（px）。14 是改造前写在样式表里的固定值，所以它是默认值。 */
+export const surfaceBlurRange = { min: 0, max: 40 } as const
+/** 界面「一键毛玻璃」按钮用的推荐值：能透出壁纸，文字仍清楚。 */
+export const glassPresetValues = { surfaceOpacity: 78, surfaceBlur: 18 } as const
+
 export interface ThemeCustomization {
   preference: ThemePreference
   preset: ThemePreset
@@ -59,6 +72,15 @@ export interface ThemeCustomization {
   /** 用当前主题的底色把壁纸压暗多少（百分比），保证前景文字仍可读。 */
   backgroundDim: number
   backgroundFit: ThemeBackgroundFit
+  /**
+   * 壁纸地址是「随机图源」：每次打开页面追加一个随机参数，绕过浏览器缓存拿到新图。
+   * 适合 `https://t.alcy.cc/fj` 这类每次请求都返回不同图片的接口。
+   */
+  backgroundRandom: boolean
+  /** 面板 / 卡片 / 表头的「表面」不透明度（百分比）。100 = 实心。 */
+  surfaceOpacity: number
+  /** 面板毛玻璃的模糊半径（px）。0 = 不模糊。 */
+  surfaceBlur: number
   sidebarWidth: ThemeSidebarWidth
   contentWidth: ThemeContentWidth
   motion: ThemeMotion
@@ -75,6 +97,9 @@ export const defaultThemeCustomization: ThemeCustomization = {
   backgroundImage: '',
   backgroundDim: 0,
   backgroundFit: 'cover',
+  backgroundRandom: false,
+  surfaceOpacity: 100,
+  surfaceBlur: 14,
   sidebarWidth: 'default',
   contentWidth: 'default',
   motion: 'full',
@@ -113,6 +138,17 @@ export function clampNumber(value: unknown, min: number, max: number, fallback: 
 }
 
 /**
+ * 侧栏用的不透明度：比面板再透一档（×0.85），但不低于 62%。
+ *
+ * 侧栏在最外层，透一点才看得出壁纸；但导航文字必须读得清，所以要有下限。
+ * 这段算术放 JS 而不是 CSS 的 `clamp()` / `calc()`：能被单元测试盯住，
+ * 也不用赌浏览器对 `color-mix()` 里嵌 math 函数的支持。
+ */
+export function sidebarAlphaValue(surfaceAlpha: number): number {
+  return Math.max(62, Math.round(surfaceAlpha * 0.85))
+}
+
+/**
  * 把用户填的图片地址转成可以安全写进 CSS 的 `url(...)` 值。
  *
  * **引号和反斜杠必须转义** —— 否则 `https://a/x.png") , url("https://evil/y.png`
@@ -123,6 +159,51 @@ export function backgroundImageValue(url: string): string {
   const trimmed = url.trim()
   if (!trimmed || !/^https?:\/\//i.test(trimmed)) return 'none'
   return `url("${trimmed.replace(/[\\"]/g, '\\$&')}")`
+}
+
+/**
+ * 壁纸是否**真的**生效。
+ *
+ * 空串和非 http(s) 的地址都会被 `backgroundImageValue` 变成 `none`，此时界面上
+ * 没有任何壁纸 —— 所以「点阵要不要去掉」「文字要不要加对比度」这类判断必须看这个，
+ * 不能直接看 `backgroundImage` 非空：用户在地址框里打了个半截的 `ht` 也会让它非空。
+ */
+export function wallpaperActive(url: string): boolean {
+  return backgroundImageValue(url) !== 'none'
+}
+
+/**
+ * 每次**页面加载**生成一次、之后整个会话内不变。
+ *
+ * 必须是模块级常量而不是每次调用现算：`applyThemeCustomization` 会在用户每改一项
+ * 外观设置时重跑，如果每次现算，改一下字体就会换一张壁纸 —— 那是 bug 不是功能。
+ * 想主动换图有 `rerollWallpaper()`。
+ */
+let wallpaperNonce = createWallpaperNonce()
+
+function createWallpaperNonce(): string {
+  return Math.random().toString(36).slice(2, 10)
+}
+
+/**
+ * 给壁纸地址加上本次会话的随机参数，绕过浏览器对同一 URL 的缓存。
+ *
+ * 随机图源（如 `https://t.alcy.cc/fj`）每次请求都返回不同图片，但浏览器会按 URL 缓存，
+ * 不加这个参数就永远是第一次那张。`random` 为 false 时原样返回，不加任何东西 ——
+ * 普通图床的固定图片不该因为多一个参数就重新下载。
+ */
+export function wallpaperUrl(url: string, random: boolean): string {
+  const trimmed = url.trim()
+  if (!random || !trimmed) return trimmed
+  return `${trimmed}${trimmed.includes('?') ? '&' : '?'}pf_r=${wallpaperNonce}`
+}
+
+/** 「换一张」：重新生成随机参数并立刻重应用，用于随机图源。 */
+export function rerollWallpaper(): ThemeCustomization {
+  wallpaperNonce = createWallpaperNonce()
+  const current = readThemeCustomization()
+  applyThemeCustomization(current)
+  return current
 }
 
 /**
@@ -168,6 +249,9 @@ export function readThemeCustomization(): ThemeCustomization {
     backgroundImage: typeof stored.backgroundImage === 'string' ? stored.backgroundImage : defaultThemeCustomization.backgroundImage,
     backgroundDim: clampNumber(stored.backgroundDim, backgroundDimRange.min, backgroundDimRange.max, defaultThemeCustomization.backgroundDim),
     backgroundFit: isOneOf(themeBackgroundFitOptions, stored.backgroundFit) ? stored.backgroundFit : defaultThemeCustomization.backgroundFit,
+    backgroundRandom: stored.backgroundRandom === true,
+    surfaceOpacity: clampNumber(stored.surfaceOpacity, surfaceOpacityRange.min, surfaceOpacityRange.max, defaultThemeCustomization.surfaceOpacity),
+    surfaceBlur: clampNumber(stored.surfaceBlur, surfaceBlurRange.min, surfaceBlurRange.max, defaultThemeCustomization.surfaceBlur),
     sidebarWidth: isOneOf(themeSidebarWidthOptions, stored.sidebarWidth) ? stored.sidebarWidth : defaultThemeCustomization.sidebarWidth,
     contentWidth: isOneOf(themeContentWidthOptions, stored.contentWidth) ? stored.contentWidth : defaultThemeCustomization.contentWidth,
     motion: isOneOf(themeMotionOptions, stored.motion) ? stored.motion : defaultThemeCustomization.motion,
@@ -214,10 +298,30 @@ export function applyThemeCustomization(customization: ThemeCustomization): Reso
   // 壁纸与它的两个参数走 CSS 变量，由 `.app-shell` 的背景图层消费。
   // 没设壁纸时 `--app-bg-image` 是 `none`，那一层完全透明，观感与改动前一致。
   const fit = backgroundFitValues[customization.backgroundFit] ?? backgroundFitValues.cover
-  root.style.setProperty('--app-bg-image', backgroundImageValue(customization.backgroundImage))
+  const wallpaper = backgroundImageValue(wallpaperUrl(customization.backgroundImage, customization.backgroundRandom))
+  const hasWallpaper = wallpaper !== 'none'
+  root.style.setProperty('--app-bg-image', wallpaper)
   root.style.setProperty('--app-bg-dim', `${clampNumber(customization.backgroundDim, backgroundDimRange.min, backgroundDimRange.max, 0)}%`)
   root.style.setProperty('--app-bg-size', fit.size)
   root.style.setProperty('--app-bg-repeat', fit.repeat)
+  // 点阵纹理整层去掉。它是给纯色底做「织理」的，压在照片上就只剩噪点 ——
+  // 而且它排在壁纸**上面**（背景列表里靠前 = 更靠上），所以必须真的移除，
+  // 调低浓度只是让它从「很明显」变成「有点明显」。
+  // 用 `removeProperty` 而不是写回默认值：默认值本身依赖亮/暗主题（`--border-strong`
+  // 在两套里亮度方向相反，见 styles.css），写死一个值就会在另一套主题下变错。
+  if (hasWallpaper) root.style.setProperty('--app-bg-dots', 'none')
+  else root.style.removeProperty('--app-bg-dots')
+  // 壁纸下要把文字压得更实（styles.css 末尾 `data-wallpaper="on"` 那段）。
+  root.dataset.wallpaper = hasWallpaper ? 'on' : 'off'
+  // 面板毛玻璃：`--surface-alpha` 被样式表里那几条 `:root[data-glass="on"]` 规则用来
+  // 把 `--surface*` / `--sidebar` 重新算成带透明度的版本；`--glass-blur` 驱动面板的
+  // `backdrop-filter`。默认 100% / 14px，此时 glass 是 off，样式表那条规则不匹配，
+  // 四个令牌保持原样 —— 观感与引入毛玻璃之前逐像素一致。
+  const surfaceAlpha = clampNumber(customization.surfaceOpacity, surfaceOpacityRange.min, surfaceOpacityRange.max, 100)
+  root.style.setProperty('--surface-alpha', `${surfaceAlpha}%`)
+  root.style.setProperty('--sidebar-alpha', `${sidebarAlphaValue(surfaceAlpha)}%`)
+  root.style.setProperty('--glass-blur', `${clampNumber(customization.surfaceBlur, surfaceBlurRange.min, surfaceBlurRange.max, 14)}px`)
+  root.dataset.glass = surfaceAlpha < 100 ? 'on' : 'off'
   applyCustomCss(customization.customCss, customization.customCssEnabled)
   localStorage.setItem(themeKey, customization.preference)
   localStorage.setItem(appearanceKey, JSON.stringify(customization))

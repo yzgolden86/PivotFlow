@@ -12,9 +12,18 @@
   text-rendering: optimizeLegibility;
   letter-spacing: 0;
   --bg: #f4f6f8;
-  --surface: #ffffff;
-  --surface-muted: #f8fafb;
-  --surface-strong: #edf1f4;
+  /* 「表面」色的**基础值**与语义令牌分开。
+     毛玻璃要按用户给的不透明度，把 --surface 重新算成带 alpha 的版本
+     （见文件末尾 `:root[data-glass="on"]`），而 CSS 变量不能自引用 ——
+     必须留一个「不被毛玻璃规则覆盖」的基础色给它引用。
+     所以：**改配色只改 --*-base，不要把透明度写进基础值。** */
+  --surface-base: #ffffff;
+  --surface-muted-base: #f8fafb;
+  --surface-strong-base: #edf1f4;
+  --sidebar-base: #ffffff;
+  --surface: var(--surface-base);
+  --surface-muted: var(--surface-muted-base);
+  --surface-strong: var(--surface-strong-base);
   --text: #141d1a;
   --text-secondary: #46554f;
   /* 三级文字必须在 surface / surface-muted / surface-strong / bg 四种底色上
@@ -22,7 +31,13 @@
   --text-muted: #606d67;
   --border: #dee4e8;
   --border-strong: #c9d2d8;
-  --sidebar: #ffffff;
+  /* 环境点阵纹理。它是给**纯色底**做「织理」的，所以设了壁纸时 theme.ts 会把
+     这一项内联覆盖成 `none`（`data-wallpaper="on"`）—— 压在照片上只会变成噪点。
+     浓度按「合成后与底色的对比度」定，不按百分比拍脑袋：25% 叠在 #f4f6f8 上
+     合成 #e9edf0，对比度 ≈1.09:1，只是一层几乎看不见的织理。
+     暗色档在下面单独给值，因为 `--border-strong` 在两套里亮度方向相反。 */
+  --app-bg-dots: radial-gradient(circle, color-mix(in srgb, var(--border-strong) 25%, transparent) 1px, transparent 1px);
+  --sidebar: var(--sidebar-base);
   --sidebar-border: #dbe3e0;
   --sidebar-text: #17201c;
   /* 驱动 .nav-group-label 与 .core-status small（均为 10px 小字）。
@@ -56,15 +71,19 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #111513;
-  --surface: #191e1b;
-  --surface-muted: #1d2320;
-  --surface-strong: #252c28;
+  --surface-base: #191e1b;
+  --surface-muted-base: #1d2320;
+  --surface-strong-base: #252c28;
   --text: #f2f6f4;
   --text-secondary: #b6c1bb;
   --text-muted: #89948e;
   --border: #2d3531;
   --border-strong: #3a443f;
-  --sidebar: #111513;
+  /* 暗色档的点阵浓度 15%：叠在 #111513 上合成 #171c1a，对比度 ≈1.09:1，
+     与亮色档感知强度对齐。原来用 42% 合成 #222926（≈1.24:1）—— 同一个数值
+     在近黑的大面积底色上会被看成「一格一格的辅助点」，观感很脏。 */
+  --app-bg-dots: radial-gradient(circle, color-mix(in srgb, var(--border-strong) 15%, transparent) 1px, transparent 1px);
+  --sidebar-base: #111513;
   --sidebar-border: #2d3531;
   --sidebar-text: #f1f4f2;
   --sidebar-muted: #7f8a84;
@@ -143,15 +162,15 @@
 
 :root[data-theme-preset="anthropic"] {
   --bg: #f3f0e9;
-  --surface: #fbf9f5;
-  --surface-muted: #f0ebe3;
-  --surface-strong: #e8e1d7;
+  --surface-base: #fbf9f5;
+  --surface-muted-base: #f0ebe3;
+  --surface-strong-base: #e8e1d7;
   --text: #2d2925;
   --text-secondary: #625b53;
   --text-muted: #6b635b;
   --border: #ddd4c7;
   --border-strong: #cbbdac;
-  --sidebar: #f8f5ef;
+  --sidebar-base: #f8f5ef;
   --sidebar-border: #ddd4c7;
   --sidebar-text: #2d2925;
   --sidebar-muted: #796f65;
@@ -173,15 +192,15 @@
 
 :root[data-theme="dark"][data-theme-preset="anthropic"] {
   --bg: #1d1b18;
-  --surface: #27231f;
-  --surface-muted: #2d2924;
-  --surface-strong: #37312b;
+  --surface-base: #27231f;
+  --surface-muted-base: #2d2924;
+  --surface-strong-base: #37312b;
   --text: #f2ede5;
   --text-secondary: #c2b8aa;
   --text-muted: #a2988e;
   --border: #403931;
   --border-strong: #554a40;
-  --sidebar: #211e1a;
+  --sidebar-base: #211e1a;
   --sidebar-border: #403931;
   --sidebar-text: #f2ede5;
   --sidebar-muted: #9b9083;
@@ -809,6 +828,14 @@ a:focus-visible {
   display: none;
 }
 
+/* 这个浮层由 GlobalSearch.tsx 用 createPortal 挂到 body 上，**不能留在 `.sidebar` 里**。
+   `<GlobalSearch />` 挂在 App.tsx 的 `<aside className="sidebar">` 内部，而 `.sidebar`
+   带 `backdrop-filter`（`blur(var(--glass-blur, 14px))`）—— backdrop-filter 不为
+   none 的元素会成为后代 `position: fixed` 的包含块。留在侧栏里时 `inset: 0` 只覆盖
+   216px 宽的侧栏，`.search-dialog` 的 `width: min(100%, 650px)` 被压到约 176px，
+   搜索框成一条竖条。
+   层级取 120：高于所有页面浮层（`.modal-layer` 80 / `.theme-picker` 70 /
+   `.source-menu-popover` 60 / `.operation-notice` 40 / `.sidebar` 30）。 */
 .search-overlay {
   position: fixed;
   inset: 0;
@@ -4698,6 +4725,10 @@ body { font-size: 14px; line-height: 1.5; }
 .appearance-control-group > header { display: flex; align-items: center; gap: 9px; }
 .appearance-control-group > header > span { display: grid; width: 30px; height: 30px; place-items: center; color: var(--green); background: var(--green-soft); border-radius: var(--radius-control); }
 .appearance-control-group > header strong { color: var(--text); font-family: var(--font-display); font-size: 13px; }
+/* header 自己已经是 gap:9px 的 flex，`.help-tip` 默认还带 4px 左边距，
+   两个一叠就是 13px —— 比标题与图标之间的 9px 宽，看着像脱开了。归零对齐。
+   （同样的处理见 `.heading-with-hint > .help-tip`。） */
+.appearance-control-group > header > .help-tip { margin-left: 0; }
 .appearance-segmented { display: grid; width: min(100%, 460px); padding: 4px; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; background: var(--surface-strong); border-radius: var(--radius-control); }
 .appearance-segmented button { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 7px; padding: 7px 10px; color: var(--text-secondary); background: transparent; border: 0; border-radius: calc(var(--radius-control) - 2px); cursor: pointer; font-size: 12px; }
 .appearance-segmented button:hover { color: var(--text); }
@@ -4751,6 +4782,10 @@ body { font-size: 14px; line-height: 1.5; }
 .appearance-field input[type="range"] { width: 100%; accent-color: var(--green); }
 /* 说明文字统一 11px（项目字号下限），`code` 用等宽字体突出那串逃生参数。 */
 .appearance-hint { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.7; }
+/* 勾选框 / 帮助符号 / 小按钮排成一行。gap 用 10px 而不是 `.heading-with-hint` 的 4px：
+   这一行里会有真实按钮，4px 会贴在一起。`flex-wrap` 是给窄屏留的 —— 气泡触发器
+   本身有 28px 命中区，加上「换一张」按钮，面板收窄时必须能折行。 */
+.appearance-inline-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .appearance-hint code { padding: 1px 5px; color: var(--text); background: var(--surface-strong); border-radius: 4px; font-family: var(--font-mono); font-size: 11px; }
 .appearance-css-editor { width: 100%; min-height: 132px; padding: 10px 12px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; font-family: var(--font-mono); font-size: 12px; line-height: 1.65; resize: vertical; tab-size: 2; }
 .appearance-css-editor:focus { border-color: var(--green); outline: none; }
@@ -5300,9 +5335,18 @@ body {
 }
 
 /* 换页入场：<Routes> 每次切换都会卸载旧页、挂载新页，所以动画自然重放。
-   .main-content 的直接子元素就是当前页面的根节点。 */
+   .main-content 的直接子元素就是当前页面的根节点。
+
+   **这里刻意不写 `both`（fill-mode）**：`pf-rise` 的 `to` 帧是
+   `opacity: 1; transform: none`，与元素的自然状态逐字相同，而且没有 `animation-delay`
+   （`backwards` 只在有延迟时才有意义）—— 所以 `both` 在视觉上完全是多余的。
+   但它会让这个元素**一直挂着一个生效中的 opacity/transform 动画**，
+   于是整页内容成为一个 backdrop root：里面所有 `backdrop-filter` 只能采到
+   本层内画的东西（几乎为空），壁纸不会被模糊 —— 毛玻璃看起来就是「不透明度生效、
+   模糊没效果」。`.kpi-grid > *` 那条**不能**照此办理：它靠 `animation-delay` 错峰，
+   必须有 `backwards`，否则延迟期间会先闪一下实体。 */
 .main-content > * {
-  animation: pf-rise var(--dur-enter) var(--ease-enter) both;
+  animation: pf-rise var(--dur-enter) var(--ease-enter);
 }
 
 /* ---- 外壳：品牌 / 导航 / 侧栏 ---- */
@@ -5669,7 +5713,7 @@ body {
   background-image:
     radial-gradient(ellipse 75% 45% at 20% -8%, color-mix(in srgb, var(--green) 7%, transparent), transparent 60%),
     radial-gradient(ellipse 65% 45% at 85% 92%, color-mix(in srgb, var(--blue) 5%, transparent), transparent 60%),
-    radial-gradient(circle, color-mix(in srgb, var(--border-strong) 25%, transparent) 1px, transparent 1px),
+    var(--app-bg-dots),
     linear-gradient(color-mix(in srgb, var(--bg) var(--app-bg-dim, 0%), transparent), color-mix(in srgb, var(--bg) var(--app-bg-dim, 0%), transparent)),
     var(--app-bg-image, none);
   background-size: 100% 100%, 100% 100%, 28px 28px, 100% 100%, var(--app-bg-size, cover);
@@ -5679,20 +5723,18 @@ body {
   background-color: var(--bg);
 }
 
-/* 点阵的浓度按「合成后与底色的对比度」定，不按百分比拍脑袋。
-   亮色档 25% 叠在 #f4f6f8 上合成 #e9edf0，对比度 ≈1.09:1 —— 只是一层几乎看不见的
-   织理。暗色档原来用 42%，叠在 #111513 上合成 #222926，对比度 ≈1.24:1；
-   同一个数值在近黑的大面积底色上会被看成「一格一格的辅助点」，观感很脏。
-   降到 15% 后合成 #171c1a，对比度 ≈1.09:1，与亮色档感知强度对齐。
-   注意 `--border-strong` 在明暗两套里亮度方向相反（亮色 #c9d2d8 / 暗色 #3a443f），
-   所以两档的百分比不能直接沿用同一个数。 */
+/* 点阵那一层（第 3 项）现在是个变量，浓度定义在 `:root` / `:root[data-theme="dark"]`
+   里，理由与取值都写在那边。这里只需要知道：
+   - 它排在壁纸**上面**，所以设了壁纸时 theme.ts 会把它整层换成 `none`；
+   - 换成 `none` 不会打乱图层对齐 —— 背景列表的层数没变，`background-size` /
+     `background-repeat` 仍然一一对应（CSS 对短列表是循环取用，不是截断）。 */
 /* 暗色档的图层顺序与亮色完全一致（见上面 `.app-shell` 的注释），
-   只换了光晕强度与点阵浓度 —— 壁纸相关的三层用的是同一组变量。 */
+   只换了光晕强度 —— 壁纸相关的三层用的是同一组变量。 */
 :root[data-theme="dark"] .app-shell {
   background-image:
     radial-gradient(ellipse 80% 50% at 22% -10%, color-mix(in srgb, var(--green) 12%, transparent), transparent 65%),
     radial-gradient(ellipse 70% 50% at 88% 90%, color-mix(in srgb, var(--blue) 9%, transparent), transparent 65%),
-    radial-gradient(circle, color-mix(in srgb, var(--border-strong) 15%, transparent) 1px, transparent 1px),
+    var(--app-bg-dots),
     linear-gradient(color-mix(in srgb, var(--bg) var(--app-bg-dim, 0%), transparent), color-mix(in srgb, var(--bg) var(--app-bg-dim, 0%), transparent)),
     var(--app-bg-image, none);
   background-size: 100% 100%, 100% 100%, 28px 28px, 100% 100%, var(--app-bg-size, cover);
@@ -5703,9 +5745,19 @@ body {
 }
 
 /* ── 2. 先锋侧栏与控制枢纽 ────────────────────────────────────────────── */
+/* 模糊半径由外观设置的「模糊」滑块统一驱动（`--glass-blur`）。
+   这里原本硬编码 `blur(24px)` —— 侧栏是最大的玻璃面，它不跟滑块，
+   用户拖滑块时最容易得出的结论就是「模糊没效果」。
+   连带改的还有 `.page-header--elevated`(16px) / `.resource-strip` / `.compact-summary`(各 14px)：
+   全项目**所有**「能透出背景」的表面现在共用一个半径，一个旋钮管全部。
+   代价是默认观感里侧栏从 24px 变成 14px、页头从 16px 变成 14px —— 但侧栏自身底色是
+   `color-mix(--sidebar 92%)`（只透 8%），24→14 的差别肉眼基本看不出，
+   而换来的是「滑块确实有效」这个可预期的行为。
+   两个遮罩层（`.search-overlay` / `.modal-layer`，都是 2px）**故意不跟**：
+   它们不是玻璃面，是压暗层。 */
 .sidebar {
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(var(--glass-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
   background: color-mix(in srgb, var(--sidebar) 92%, transparent);
   border-right: 1px solid color-mix(in srgb, var(--sidebar-border) 80%, transparent);
 }
@@ -5736,8 +5788,8 @@ body {
 /* ── 3. 先锋页面标头与命令控制台横幅 ──────────────────────────────────── */
 .page-header--elevated {
   position: relative;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(var(--glass-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
   background: linear-gradient(135deg, color-mix(in srgb, var(--surface) 94%, transparent), color-mix(in srgb, var(--surface-muted) 88%, transparent));
   border: 1px solid color-mix(in srgb, var(--header-tone, var(--green)) 22%, var(--border));
   border-radius: var(--radius-large);
@@ -5770,8 +5822,9 @@ body {
 .model-card,
 .stat-kpis article,
 .tool-card {
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  /* 半径由外观设置的「毛玻璃」滑块驱动；14px 是改造前的固定值，所以是回退值。 */
+  backdrop-filter: blur(var(--glass-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--elev-1);
@@ -5927,8 +5980,8 @@ body {
 
 /* ── 8. 战术级遥测状态桥 (Resource Strip & Telemetry Bridges) ──────────── */
 .resource-strip {
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(var(--glass-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   border-radius: var(--radius-panel);
@@ -5945,8 +5998,8 @@ body {
 }
 
 .compact-summary {
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(var(--glass-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   border-radius: var(--radius-panel);
   overflow: hidden;
@@ -6051,3 +6104,121 @@ body {
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
 }
+
+/* ══ 面板毛玻璃 ═══════════════════════════════════════════════════════════
+   由外观设置里的「面板通透」驱动：`--surface-alpha` / `--sidebar-alpha` 是
+   不透明度（百分比），`--glass-blur` 是模糊半径。
+   `data-glass="on"` 只在用户把不透明度调到 100 以下时由 theme.ts 写上 ——
+   所以默认状态下本块**完全不匹配**，四个令牌保持原值，观感与引入毛玻璃之前
+   逐像素一致。
+
+   做法是**重新定义 4 个「表面」令牌**，而不是逐条改背景：全项目有 200 多条
+   规则用 `var(--surface*)` 当背景，逐条枚举既写不完、也一定会漏。改成令牌后，
+   侧栏、页头、面板、卡片、表头、输入框、分页……一起跟着变。
+
+   为什么引用 `--*-base` 而不是直接写颜色字面量：CSS 变量不能自引用，而
+   `--surface` 已经被主题/预设覆盖过（暗色、暗色+anthropic、anthropic 共四份）。
+   直接写死 #ffffff 会把 anthropic 那套米色配色打回白色。
+   ══════════════════════════════════════════════════════════════════════ */
+:root[data-glass="on"] {
+  /* 三个变量都写了回退值。这不是装饰：`color-mix()` 里只要有一个未定义的变量，
+     整条声明在计算值阶段就失效，`--surface` 会变成 guaranteed-invalid，
+     于是 `background: var(--surface)` 全线崩掉（面板直接变全透明）——
+     那比「闪一下实心」严重得多。回退到 100% 时行为等于实心，是安全的降级。 */
+  --surface: color-mix(in srgb, var(--surface-base) var(--surface-alpha, 100%), transparent);
+  --surface-muted: color-mix(in srgb, var(--surface-muted-base) var(--surface-alpha, 100%), transparent);
+  --surface-strong: color-mix(in srgb, var(--surface-strong-base) var(--surface-alpha, 100%), transparent);
+  --sidebar: color-mix(in srgb, var(--sidebar-base) var(--sidebar-alpha, 100%), transparent);
+}
+
+/* 侧栏自己那条背景是 `color-mix(in srgb, var(--sidebar) 92%, transparent)`
+   （视觉语言 v2 为毛玻璃写的，见上方 `.sidebar`）。上面已经把 `--sidebar` 换成
+   带 alpha 的值，两者相乘会再透一层 —— 与其让它随滑块非线性地漂，不如在这里
+   直接用算好的 `--sidebar-alpha` 接管，透明度完全可预测。 */
+:root[data-glass="on"] .sidebar {
+  background: color-mix(in srgb, var(--sidebar-base) var(--sidebar-alpha, 100%), transparent);
+}
+
+/* `.data-panel` 此前不在视觉语言 v2 的毛玻璃名单里（漏了）。这里只在开启毛玻璃时
+   补上 —— 默认状态下完全不改行为，否则会给每个 .data-panel 平白加一个合成层
+   和一个「fixed 后代包含块」。 */
+:root[data-glass="on"] .data-panel {
+  backdrop-filter: blur(var(--glass-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
+}
+
+/* 弹层必须保持不透明。这几个是项目里全部「浮在内容之上、底下压着正文」的面板，
+   让它们透出背景文字会直接读不清。注意 .modal-layer 的遮罩自己带半透明底，
+   不受这里影响。 */
+:root[data-glass="on"] .console-modal,
+:root[data-glass="on"] .search-dialog,
+:root[data-glass="on"] .theme-picker,
+:root[data-glass="on"] .source-menu-popover,
+:root[data-glass="on"] .help-tip-bubble {
+  background: var(--surface-base);
+}
+
+
+/* ══ 自定义壁纸下的可读性 ════════════════════════════════════════════════
+   `data-wallpaper="on"` 由 theme.ts 在「壁纸真的生效」时写上（空串、非 http(s)
+   都算没生效，见 theme.ts 的 `wallpaperActive`）。
+
+   这里**只做一件事：把「小字」这档文字色推向极端。** 不做描边、不做垫底 ——
+   都试过、都被否了，理由写在下面，**别再重新加回来**。
+
+   ── 为什么只改「小字」这一档 ──────────────────────────────────────────
+   项目原本的配色是按**已知底色**调的：`--text-muted` 的取值是按「在 surface /
+   surface-muted / surface-strong / bg 四种底色上都过 AA 4.5:1」反推的（见 `:root`
+   里那段注释）。壁纸把底色换成未知亮度的照片，那套推导的前提就失效了。
+
+   实测过字号分布后再定的范围（2026-09-29 由用户拍板）：
+
+       --text-secondary   9~13px（中位 11px）  95 处   ← 改
+       --text-muted       9~13px（中位 11px） 186 处   ← 改
+       --text            11~27px（中位 13px） 142 处   ← 不改（含大标题、大数字）
+       --sidebar-text     继承                  1 处   ← 不改
+       --sidebar-muted   10~11px                5 处   ← 不改
+
+   前两个字号分布**完全一样**，是最灰最吃力的那两档；`--text` 一路到 27px，
+   混着大标题和大数字，一起加深会让整页「变重」——所以只动前两个。
+
+   ── 试过、被否掉的四条（别再走一遍）──────────────────────────────────
+   ①②③ **描边这条路上试过三档，全都被否**（2026-09-28 一整天）：
+     ① 纯软阴影 `0 1px 2px`      → 「还是不行，有点看不清」（11px 上峰值太低）
+     ② 八向硬边 + 4px 辉光 + 88% → 「**整体感觉都在发光**」—— 辉光是主要元凶
+     ③ 八向硬边、零辉光、55%     → 技术上最舒服的一档，但用户最终要求
+                                   「保留小字、其他改回去」，而**轮廓做不到只给小字**
+                                   （见下），所以整条撤掉。
+   ④ **页级裸文本垫底**（`.dashboard-footer` / `.pagination` 加 `--bg` 底 + 圆角）
+      →「**底部弄一长条，好丑**」。这两个是 `justify-content: space-between` 的
+      **全宽 flex 行**，加底色必然拉成一条横贯页面的带子。
+
+   ── 为什么轮廓「做不到只给小字」────────────────────────────────────────
+   `text-shadow` 只能挂在**选择器**上，不能挂在颜色令牌上。想只给小字，唯一办法是
+   维护一份「小字选择器清单」——而这份清单**会随着新增页面不断漏**，且「漏了」这件事
+   没有守卫能发现（新增一个小字元素，它静默地没有轮廓）。挂 `body` 靠继承全站兜底
+   当初正是为了避免这个；但全站兜底又必然改到大字，与「只改小字」直接冲突。
+   两个方向都走不通 → **结论：不做轮廓。** 颜色令牌是按定义精确落到它自己的
+   281 个消费点上，不用维护清单，这才是能长期活下去的方案。
+   （副作用是好的：`.primary-button` 那种硬编码白字 + 彩色底的表面，
+   暗色主题下本来会有一圈近黑轮廓，现在整条没有了。）
+
+   ── 结论 / 兜底 ──────────────────────────────────────────────────────
+   底色不可控时，文字要么自带对比度（=描边，做不到只给小字），要么自带底色
+   （=垫底，会成条）。所以现在只剩**颜色**这一档，代价是小字在中蓝照片上
+   只有 3.08:1（比原来的 `#606d67` 好，但不到 AA 4.5:1）。
+   真正无痕迹的杠杆仍然是**把底色调淡**，即外观设置的「压暗」滑块
+   （`--app-bg-dim`，消费方见 `.app-shell` 的背景图层）：亮色主题下压暗把壁纸
+   推向浅色，深字就立住了；暗色主题下反过来。 */
+
+:root[data-wallpaper="on"] {
+  --text-secondary: #1f2926;
+  --text-muted: #38433f;
+}
+
+:root[data-theme="dark"][data-wallpaper="on"] {
+  --text-secondary: #e2e9e5;
+  --text-muted: #c3ccc7;
+}
+
+

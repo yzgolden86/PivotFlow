@@ -1,0 +1,17 @@
+/* ============================================================
+   09 记录列表斑马纹
+   ------------------------------------------------------------
+   目的：长列表扫行时不容易串行。
+
+   用 :nth-child(even) 而不是 tbody tr:nth-child(even) ——
+   本项目 .record-row 是 CSS grid 的子元素，不是 <tr>。
+
+   与既有状态不冲突：
+   - 悬浮态是 .record-row:not(.row-selected):hover（权重 0,3,0），
+   - 选中态是 .row-selected 系列，
+   都比本片段的 0,2,0 高，所以不会被盖掉。
+   ============================================================ */
+
+.record-row:nth-child(even) {
+  background: color-mix(in srgb, var(--surface-muted) 72%, transparent);
+}

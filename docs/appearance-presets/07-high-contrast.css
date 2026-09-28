@@ -1,0 +1,44 @@
+/* ============================================================
+   07 高对比
+   ------------------------------------------------------------
+   目的：投影仪、强光下、老显示器上也看得清。
+
+   做法是「加深边框 + 拉黑次级文字」，只调亮度不动色相，观感不变。
+   ⚠️ 明暗两套必须分开给：深色主题下「更深」等于没对比，要反过来往亮里推。
+   ⚠️ 深色块用 :root[data-theme="dark"]（权重 0,1,1）才压得住主题自带的同名变量。
+   ============================================================ */
+
+:root {
+  --border: #c3ccd3;
+  --border-strong: #96a4ad;
+  --text-secondary: #2f3c37;
+  --text-muted: #4b5952;
+  --surface-muted: #f3f6f8;
+  --surface-strong: #e6ebef;
+}
+
+:root[data-theme="dark"] {
+  --border: #4a5651;
+  --border-strong: #6d7c76;
+  --text-secondary: #d6ded9;
+  --text-muted: #a9b5af;
+}
+
+/* 面板边框从发丝改成明确的实线，块与块的边界更清楚。
+   注意 .data-panel 在深色主题下有一条权重更高的规则
+   （:root[data-theme="dark"] .data-panel，0,2,1），这里同步给一份。 */
+.data-panel,
+.metric-card,
+.records-panel,
+.tool-card,
+.console-modal,
+.setting-list {
+  border-color: var(--border-strong);
+}
+
+:root[data-theme="dark"] .data-panel,
+:root[data-theme="dark"] .metric-card,
+:root[data-theme="dark"] .records-panel,
+:root[data-theme="dark"] .tool-card {
+  border-color: var(--border-strong);
+}

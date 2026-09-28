@@ -1,0 +1,28 @@
+/* ============================================================
+   11 卡片悬浮抬升
+   ------------------------------------------------------------
+   目的：鼠标经过小卡片时轻微上浮 + 加深投影，强化「这是可交互区域」。
+
+   只给小卡片用，**不给大面板**（.data-panel / .records-panel）——
+   那类面板里常常整屏都是内容，跟着鼠标抖反而干扰。
+
+   ⚠️ 原理提示：给元素加 transform 会让它成为后代 position: fixed 浮层的
+   包含块。本项目所有浮层（弹窗 / 全局搜索 / 下拉菜单 / 帮助气泡）都已
+   portal 到 document.body，所以这里安全。如果你后续新增了「留在页面里」的
+   fixed 浮层，这个片段会让它错位。
+   ============================================================ */
+
+.metric-card,
+.tool-card,
+.model-card,
+.stat-kpis article {
+  transition: transform 180ms var(--ease-standard), box-shadow 180ms var(--ease-standard);
+}
+
+.metric-card:hover,
+.tool-card:hover,
+.model-card:hover,
+.stat-kpis article:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--elev-3);
+}

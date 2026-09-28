@@ -1,0 +1,29 @@
+/* ============================================================
+   14 去装饰
+   ------------------------------------------------------------
+   目的：关掉背景点阵与两团光晕，只留纯色底。
+   截图、录屏、低端机都更干净。
+
+   原理：.app-shell 的 background-image 是 5 层叠加
+   （光晕 ×2 → 点阵 → 暗化层 → 壁纸），整条清掉最省事。
+
+   ⚠️ 如果你在设置里配了「背景壁纸」，这个片段会连壁纸一起关掉 ——
+   因为壁纸就是第 5 层。只想去点阵保壁纸的话，用下面注释里那份写法。
+   ============================================================ */
+
+.app-shell {
+  background-image: none !important;
+  background-color: var(--bg);
+}
+
+/* --- 只关点阵与光晕、保留壁纸，改用这一份（注释掉上面那段再用） ---
+.app-shell {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--bg) var(--app-bg-dim, 0%), transparent), color-mix(in srgb, var(--bg) var(--app-bg-dim, 0%), transparent)),
+    var(--app-bg-image, none) !important;
+  background-size: 100% 100%, var(--app-bg-size, cover) !important;
+  background-position: center, center !important;
+  background-repeat: no-repeat, var(--app-bg-repeat, no-repeat) !important;
+  background-attachment: fixed, fixed !important;
+}
+--- */

@@ -1,0 +1,22 @@
+/* ============================================================
+   12 键盘聚焦环加强（无障碍）
+   ------------------------------------------------------------
+   目的：纯键盘操作时看得清焦点在哪。
+
+   用 :focus-visible 而不是 :focus —— 鼠标点击不会触发聚焦环，
+   只有键盘 Tab 过来才显示，不影响鼠标操作观感。
+
+   ⚠️ 这里用 !important 是有理由的：:where() 的权重是 0，
+   整条选择器只有 :focus-visible 贡献的 0,1,0，
+   压不过项目里已有的若干聚焦样式。这是少数几个正当使用场景。
+   ============================================================ */
+
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--blue) !important;
+  outline-offset: 2px !important;
+}
+
+/* 深色主题下换更亮的蓝，否则在深底上不够显眼 */
+:root[data-theme="dark"] :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline-color: #6aa9ff !important;
+}

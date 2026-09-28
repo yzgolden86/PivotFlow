@@ -1,0 +1,29 @@
+/* ============================================================
+   06 圆角拉满
+   ------------------------------------------------------------
+   目的：更柔和的观感。
+
+   注意：大面板（.data-panel / .metric-card）不要给到 999px，
+   那会变成气泡甚至椭圆。这里统一 16px，小控件给 12px。
+   ============================================================ */
+
+:root {
+  --radius-control: 12px;
+  --radius-panel: 16px;
+  --radius-large: 18px;
+}
+
+/* 与 05 同理：这些容器的圆角是字面量 px，令牌管不到 */
+.data-panel,
+.metric-card,
+.tool-card,
+.records-panel,
+.console-modal,
+.search-dialog,
+.operation-notice,
+.theme-picker,
+.source-menu-popover,
+.setting-list,
+.model-card {
+  border-radius: 16px;
+}
