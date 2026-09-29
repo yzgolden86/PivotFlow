@@ -321,7 +321,12 @@ function App() {
                 onOpenChange={setThemePickerOpen}
                 anchorRef={themePickerAnchor}
                 placement="above"
-                flyOut
+                // 只在**收起态**外挂：那时侧栏只剩 72px，168px 的菜单无论怎么夹
+                // 都装不下，外挂到操作栏右侧是唯一可用解。
+                // 展开态（标准 216 / 紧凑 184 / 宽松 248）必须留在侧栏里 ——
+                // 之前无条件打开 flyOut，紧凑档 `left` 算出 4px（< 12px 边距），
+                // 于是整块被挂到侧栏右边外面，实测溢出 163px。
+                flyOut={collapsed}
                 className="theme-picker"
                 role="menu"
                 ariaLabel="界面主题"

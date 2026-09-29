@@ -758,6 +758,18 @@ a:focus-visible {
 /* 收起态不再需要给 `.theme-picker` 调 right —— 它已经改成视口坐标定位，
    收起态由 `popoverPosition` 的 flyOut 贴着操作栏右侧外挂（侧栏只有 72px，装不下）。 */
 
+/* 紧凑档（`sidebarWidth: "narrow"` → 侧栏 184px）**装不下** 168px 的菜单：
+   锚点 `.sidebar-actions` 右边界 172，`left = 172 - 168 = 4`，小于 12px 边距，
+   于是 popoverPosition 的 flyOut 分支把整块挂到侧栏右侧外面 —— 实测右边界
+   溢出侧栏 163px（标准档 216px、宽松档 248px 都不会触发，所以只在紧凑档看得见）。
+   两处一起改才成立：App.tsx 把 flyOut 收成「只在收起态打开」（见那里的注释），
+   这里按档位把菜单收窄。152 + 左右各 12 = 176 ≤ 184 ✓（收窄后 left 算出 20）。
+   弹层 portal 到 body，拿不到 `.app-shell` 上的 `--sidebar-width`，
+   只能用挂在 `:root` 上的 `data-sidebar-width` 选中它。 */
+:root[data-sidebar-width="narrow"] .theme-picker {
+  width: 152px;
+}
+
 .app-shell--collapsed .sidebar-actions {
   flex-direction: column;
 }
@@ -5322,14 +5334,24 @@ body {
 
 /* ---- 动效基元 ---- */
 
+/* ⚠️ 入场**只动 `transform`，不能带 `opacity`**。
+   见下面 `.main-content > *` 那条注释：`pf-rise` 只用在这两种元素上 ——
+   玻璃面板自己（`.kpi-grid > *` = `.metric-card`）或玻璃面板的祖先（页面根节点）。
+   只要动画里出现 `opacity < 1`，该元素就成了 backdrop root，面板里的 `backdrop-filter`
+   采不到壁纸 → 毛玻璃退化成「清晰壁纸的取景窗」。
+
+   2026-09-29 实测（`.tmp-dev-ui/glassroot.html`，棋盘格底，「高频能量」越大 = 越没糊）：
+       plain / transform:translateY(0) / will-change:transform   → 4.0~5.3  正常
+       opacity: 0.999                                            → 24.3     失效
+       只动 opacity 的动画（跑动中）                                → 33.9     失效
+       只动 transform 的动画（跑动中 / 结束后）                      → 5.1 / 4.1 正常
+   结论：**唯一的触发条件是 opacity**，transform 无关。 */
 @keyframes pf-rise {
   from {
-    opacity: 0;
     transform: translateY(8px);
   }
 
   to {
-    opacity: 1;
     transform: none;
   }
 }
@@ -5337,14 +5359,23 @@ body {
 /* 换页入场：<Routes> 每次切换都会卸载旧页、挂载新页，所以动画自然重放。
    .main-content 的直接子元素就是当前页面的根节点。
 
-   **这里刻意不写 `both`（fill-mode）**：`pf-rise` 的 `to` 帧是
-   `opacity: 1; transform: none`，与元素的自然状态逐字相同，而且没有 `animation-delay`
-   （`backwards` 只在有延迟时才有意义）—— 所以 `both` 在视觉上完全是多余的。
-   但它会让这个元素**一直挂着一个生效中的 opacity/transform 动画**，
-   于是整页内容成为一个 backdrop root：里面所有 `backdrop-filter` 只能采到
-   本层内画的东西（几乎为空），壁纸不会被模糊 —— 毛玻璃看起来就是「不透明度生效、
-   模糊没效果」。`.kpi-grid > *` 那条**不能**照此办理：它靠 `animation-delay` 错峰，
-   必须有 `backwards`，否则延迟期间会先闪一下实体。 */
+   **这一层绝不能成为 backdrop root**，为此有两道约束（缺一不可）：
+
+   ① 不写 `both`/`forwards`（fill-mode）。它会**在动画结束后**继续挂着动画的 to 帧，
+      于是整页内容**永久**是 backdrop root，里面所有 `backdrop-filter` 只能采到本层内
+      画的东西（几乎为空）→ 壁纸不会被模糊。实测：已结束的 `... both` 高频 24.2（失效），
+      同一条去掉 fill-mode 后 5.4（正常）。这里没有 `animation-delay`，
+      而 to 帧与元素自然状态逐字相同，所以 fill-mode 本来就多余。
+
+   ② `pf-rise` 里不能有 `opacity`。**光去掉 fill-mode 还不够** —— 动画**跑动期间**
+      同样是 backdrop root。`--dur-enter` 是 520ms，这半秒里全站面板透出的是**清晰**壁纸，
+      动画一结束模糊才「啪」地出现。这正是 2026-09-29 hao哥 报的
+      「刚打开是一个样、立马又自己变一个样」（`.kpi-grid` 的 40~120ms 错峰会再拖长一点）。
+      修法：入场只动 transform。
+
+   `.kpi-grid > *` 那条必须有 `backwards`：它靠 `animation-delay` 错峰，没有 `backwards`
+   的话延迟期间会先闪一下实体。`backwards` 本身安全（实测已结束后高频 4.3，正常）——
+   它只在延迟期间生效，动画一结束就回到自然状态，不留 backdrop root。 */
 .main-content > * {
   animation: pf-rise var(--dur-enter) var(--ease-enter);
 }
@@ -5558,13 +5589,19 @@ body {
   background: var(--coral-soft);
 }
 
-/* KPI 入场：错峰 40ms 依次浮起。 */
+/* KPI 入场：错峰 40ms 依次浮起。
+   fill-mode 只能是 `backwards`，**不能是 `both`** —— 这四条 `.metric-card` 自己就带
+   `backdrop-filter`，而 `both` 的 forwards 会让动画的 to 帧一直生效，元素因此**永久**
+   是 backdrop root，模糊一辈子不生效。实测：同一张卡在 `both` 下高频 10.1（与纯壁纸
+   12.7 同档 = 完全没糊），改 `backwards` 之后才落到正常档。
+   `backwards` 够用：延迟期间停在 from 帧（现在是「低 8px」，因为 `pf-rise` 不再动
+   opacity），动画结束即回自然状态，不留 backdrop root。 */
 .kpi-grid {
   gap: var(--space-3);
 }
 
 .kpi-grid > * {
-  animation: pf-rise var(--dur-enter) var(--ease-enter) both;
+  animation: pf-rise var(--dur-enter) var(--ease-enter) backwards;
 }
 
 .kpi-grid > *:nth-child(1) { animation-delay: 0ms; }
@@ -6147,6 +6184,36 @@ body {
   -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
 }
 
+/* ══ 「自己就是一层表面」的元素，一个都不能漏 ═══════════════════════════════
+   上面 5816 行那份名单只覆盖了「卡片」那一小撮，`.data-panel` 是后来补的。
+   凡是**不在名单里、但背景用了 `var(--surface)`** 的元素，一旦开了毛玻璃就会变成
+   「清晰壁纸的取景窗」：壁纸原样、满对比地透出来，跟周围糊成奶白的面板完全不是一个观感。
+
+   2026-09-29 用「同一页面分别以棋盘格壁纸 / 同亮度纯灰壁纸截图再相减」量过
+   （文字与图标在两图里逐像素相同，相减后**被彻底抵消**，剩下的只有「透出来的清晰壁纸」）：
+
+       正常玻璃面（有 blur）       可见清晰壁纸量 1.7 ~ 8.9
+       .filter-bar                53 ~ 64     ← 全站 8 个页面
+       .site-row/.token-row/...   64 ~ 68
+       .tool-section              16.1
+
+   差 6~30 倍。而且这些块**对「模糊」滑块零响应**——把 blur 从 18px 调到 0px，
+   该区域像素零变化（有 blur 的面板同一操作差异 21~65）。用户看到的正是
+   「这几个页面的透明度怎么调都不对」。
+
+   ⚠️ 新增「自己带底色」的元素时，必须同步加进这里。themeLayers.test.ts 有覆盖守卫，
+      但那份名单也要靠人维护，所以**改完请用同一手法复量一遍**（做法见 HANDOFF §8.2）。 */
+:root[data-glass="on"] .filter-bar,
+:root[data-glass="on"] .content-state,
+:root[data-glass="on"] .tool-section,
+:root[data-glass="on"] .site-row,
+:root[data-glass="on"] .channel-row,
+:root[data-glass="on"] .token-row,
+:root[data-glass="on"] .announcement-row {
+  backdrop-filter: blur(var(--glass-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
+}
+
 /* 弹层必须保持不透明。这几个是项目里全部「浮在内容之上、底下压着正文」的面板，
    让它们透出背景文字会直接读不清。注意 .modal-layer 的遮罩自己带半透明底，
    不受这里影响。 */
@@ -6192,6 +6259,9 @@ body {
    ④ **页级裸文本垫底**（`.dashboard-footer` / `.pagination` 加 `--bg` 底 + 圆角）
       →「**底部弄一长条，好丑**」。这两个是 `justify-content: space-between` 的
       **全宽 flex 行**，加底色必然拉成一条横贯页面的带子。
+      ⚠️ 2026-09-29 补：这里否掉的是**给整行加底**，不等于「页脚永远不能有底」。
+      给**文字自己**加贴合垫片不会成条 —— 见文件末尾「页级裸文本的贴合垫片」。
+      那是本轮唯一新增的手段，起因见下面那段实测。
 
    ── 为什么轮廓「做不到只给小字」────────────────────────────────────────
    `text-shadow` 只能挂在**选择器**上，不能挂在颜色令牌上。想只给小字，唯一办法是
@@ -6205,20 +6275,92 @@ body {
 
    ── 结论 / 兜底 ──────────────────────────────────────────────────────
    底色不可控时，文字要么自带对比度（=描边，做不到只给小字），要么自带底色
-   （=垫底，会成条）。所以现在只剩**颜色**这一档，代价是小字在中蓝照片上
-   只有 3.08:1（比原来的 `#606d67` 好，但不到 AA 4.5:1）。
-   真正无痕迹的杠杆仍然是**把底色调淡**，即外观设置的「压暗」滑块
-   （`--app-bg-dim`，消费方见 `.app-shell` 的背景图层）：亮色主题下压暗把壁纸
-   推向浅色，深字就立住了；暗色主题下反过来。 */
+   （=垫底，会成条）。所以现在只剩**颜色**这一档。
+
+   2026-09-29 第二轮（用户看过第一版后要求「再清晰一些」）：把两个小字令牌
+   **顶到「不能再深」的位置**——即刚好还比 `--text` 浅一档，不再留中间层次。
+   用户壁纸实测是中等亮度（p10=75 / p50=118 / p90=162，相对亮度 Y=0.070/0.181/0.361），
+   在这个底色上按 WCAG 算（分母取 Y=0.181）：
+
+       令牌              改前      改后      改后/改前
+       --text-secondary  3.29  →  3.70       +12%
+       --text-muted      2.26  →  3.54       +57%
+       --text（不动）     3.79      3.79       —
+
+   为什么不能再深：`--text` 在本档不动（用户明确要求「其他字体不要调整」），
+   而小字比正文还重会直接翻转文字层级。3.54 就是「保住层级」这个约束下的上界。
+   `--text-muted` 现在几乎贴上 `--text-secondary` —— 这是**故意的**：WCAG 本来就要求
+   小字（4.5:1）比大字（3:1）有更高对比，在照片底上让层级让位于可读性是对的。
+
+   还想更清楚只有两条路，都不在「只改小字」范围内：
+     ① 连 `--text` 一起加深（整页会变重，且违反上面那条守卫）；
+     ② 走描边 / 垫底（都已被否，见上）。
+   另外「压暗」滑块（`--app-bg-dim`）是无痕迹的杠杆：亮色主题下压暗把壁纸推向浅色，
+   深字就立住了；暗色主题下反过来。
+
+   ── 2026-09-29 第三轮：换了一张「底部纯黑」的壁纸，颜色这一档见底了 ──────
+   用户报「小字我还是看不清楚」。直接量他给的两张截图（不是看，是量像素）：
+
+       区域                     文字色           底色            对比度
+       页脚「数据范围…」          #1a231f        rgb(0,0,0)      1.27:1   ← 消失
+       页脚「更新于…」            #1a231f        rgb(23,21,22)   1.05:1   ← 消失
+       KPI 卡内小字（人民币…）     #1a231f        面板底          4.07:1   ← 能看
+       站点消耗分配 标题          #1a231f        面板底          3.98:1   ← 能看
+       顶部页头 副标题            #1a231f        面板底          4.26:1   ← 能看
+
+   结论非常窄：**面板里的小字都是好的（≈4:1），坏的只有页脚**。原因也简单 ——
+   全站小字都坐在玻璃面板上（面板底 = 40% 浅色 surface 压在壁纸上，被提亮了），
+   **只有页脚和分页是裸文本，直接压在壁纸上**，而这张壁纸的底部一条是纯黑。
+   同一屏内「上半部要深字、下半部要浅字」，**任何单一令牌都无解** ——
+   颜色这条路到此为止（实测 dim 要拉到 ~60% 才能把页脚顶到 5.3:1，
+   那等于把壁纸整体洗掉，与「我想看见壁纸」直接冲突）。
+
+   所以本轮唯一的改动是：**把页脚/分页的裸文本也放到一层表面上**
+   （见文件末尾那条规则）。不是 ④ 的翻版 —— ④ 是给整行加底，这条是给文字加。 */
 
 :root[data-wallpaper="on"] {
-  --text-secondary: #1f2926;
-  --text-muted: #38433f;
+  --text-secondary: #161f1c;
+  --text-muted: #1a231f;
 }
 
 :root[data-theme="dark"][data-wallpaper="on"] {
-  --text-secondary: #e2e9e5;
-  --text-muted: #c3ccc7;
+  --text-secondary: #eef4f1;
+  --text-muted: #e0e7e3;
+}
+
+/* ── 页级裸文本：字色按壁纸**局部**明暗自适应 ───────────────────────────
+   这是本主题下「让小字看清」的**最后手段**，也是唯一还站得住的一个。
+
+   2026-09-29 之前试过并被否掉五档，全部是「给文字加东西」：
+     ① 软阴影 `0 1px 2px`        →「还是不行，有点看不清」
+     ② 八向硬边 + 4px 辉光 + 88%  →「整体感觉都在发光」
+     ③ 八向硬边、零辉光、55%      → 技术上最舒服，但「轮廓做不到只给小字」，整条撤掉
+     ④ 整行垫底（`.dashboard-footer` 加底）→「底部弄一长条，好丑」
+     ⑤ 贴合垫片（给文字自己加底）→ **「加了一个背景框，看起来好丑啊」**
+   **别再走这五条。**
+
+   剩下唯一的路是**只改文字颜色**。但同一屏里上半部要深字、下半部要浅字，
+   任何单一令牌都无解 —— 实测把「压暗」拉到 60% 才能把页脚顶到 5.3:1，
+   那等于把壁纸整体洗掉，与「我想看见壁纸」直接冲突。
+   所以必须知道**每一处文字底下到底是深是浅**：由 `console/src/wallpaperTone.ts`
+   采样壁纸、按结果在元素上打 `data-bare-text-tone`。
+
+   两套取值不是新颜色，就是上面 `data-wallpaper="on"` 那两档本身：
+   深底借用暗色档的浅字，浅底借用亮色档的深字。
+   属性打在**元素自己**身上，所以它覆盖的是继承自 `:root` 的令牌值 ——
+   继承永远输给元素自身的声明，不需要跟选择器权重较劲。
+
+   没有壁纸、取不到图、采样失败时**不会有这个属性**，也就是完全不生效，
+   页面回到本来的样子（只有壁纸档的小字令牌在起作用）。 */
+
+[data-bare-text-tone="on-dark"] {
+  --text-secondary: #eef4f1;
+  --text-muted: #e0e7e3;
+}
+
+[data-bare-text-tone="on-light"] {
+  --text-secondary: #161f1c;
+  --text-muted: #1a231f;
 }
 
 

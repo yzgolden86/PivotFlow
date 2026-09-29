@@ -6,14 +6,22 @@ import { readFileSync } from 'node:fs'
 // 的形状问题，所以静态守 —— 这个仓库没有 DOM 测试环境，不为它引入 jsdom
 // （同样的取舍见 pages/editableRowKeys.test.ts 的注释）。
 //
-// 守五件事：
+// 守七件事：
 //   1) 点阵纹理必须在壁纸生效时被**整层**去掉（它排在壁纸**上面**）；
 //   2) 全项目所有能透出背景的表面共用 `--glass-blur` 一个半径；
-//   3) `.main-content > *` 的入场动画不能带 fill-mode（backdrop root 陷阱）；
+//   3) 入场动画不能把页面变成 backdrop root —— 三条：`pf-rise` 关键帧不得含
+//      `opacity`、`.main-content > *` 不得带 fill-mode、`.kpi-grid > *` 只能用
+//      `backwards`（触发条件只有 opacity，实测见该组注释）；
 //   4) 壁纸下**只改「小字」那两个令牌**（`--text-secondary` / `--text-muted`），
 //      `--text`（含 27px 大标题）与 `--sidebar-*` 不许动；
-//   5) 壁纸下**没有轮廓**：`--halo` / `--wallpaper-halo` / 壁纸档 `text-shadow`
-//      一律不得存在（描边做不到只给小字，三档全被否，详见测试里的理由）。
+//   5) 壁纸下**没有任何看得见的底 / 边**：`--halo` / `--wallpaper-halo` / 壁纸档
+//      `text-shadow` / 页脚分页的 `background` 一律不得存在 —— 五档「给文字加东西」
+//      全被否（最后一档的原话是「加了一个背景框，看起来好丑啊」）。
+//      裸文本改成按壁纸局部明暗**换字色**（`data-bare-text-tone`，由
+//      wallpaperTone.ts 采样后打在元素上）；
+//   6) 每个「自己就是一层表面」的元素都在毛玻璃名单里 —— 第 2 组只守取值集合，
+//      守不住「漏写」，而 2026-09-29 那个 bug 正是漏写（详见测试里的实测数字）；
+//   7) 壁纸小字的对比度不能又被改浅（有下限断言）。
 const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8')
 const theme = readFileSync(new URL('./theme.ts', import.meta.url), 'utf8')
 // 去注释：注释里会引用 `blur(24px)`、`radial-gradient(circle, ...)` 这类片段，
@@ -109,24 +117,61 @@ test('两个遮罩层的 2px 是有意保留的，注释里说明了理由', () 
   assert.equal(occurrences(clean, /backdrop-filter:\s*blur\(2px\);/g), 2, '遮罩层应当正好两条（.search-overlay / .modal-layer）')
 })
 
-/* ---- 3. 入场动画不能留 fill-mode ---- */
+/* ---- 3. 入场动画不能把页面变成 backdrop root ---- */
+//
+// 触发条件**只有 opacity**：2026-09-29 用 `.tmp-dev-ui/glassroot.html`（棋盘格底，
+// 「高频能量」越大 = 越没糊）逐项实测过 ——
+//     plain / transform:translateY(0) / will-change:transform / filter:none /
+//     isolation:isolate / contain:paint                        → 4.0~5.3  正常
+//     opacity: 0.999                                            → 24.3     失效
+//     `animation … both`（**已结束**）                            → 24.2     失效
+//     `animation …`（只动 opacity，跑动中）                        → 33.9     失效
+//     `animation … backwards`（已结束）                           → 4.3      正常
+// 只要元素是 backdrop root，里面所有 `backdrop-filter` 就只能采到本层内画的东西
+// （几乎为空）→ 壁纸不被模糊，毛玻璃退化成「清晰壁纸的取景窗」。
+// 两种触发路径都要守：动画**跑动期间**（临时）、fill-mode 为 both/forwards 时（**永久**）。
+
+test('入场关键帧不得含 opacity（否则动画期间全站毛玻璃失效）', () => {
+  // pf-rise 只用在玻璃面板自己（.kpi-grid > * = .metric-card）或它的祖先（页面根节点）上，
+  // 所以一个 opacity 都不能有。这条正是 hao哥 2026-09-29 报的
+  // 「刚打开是一个样、立马又自己变一个样」：520ms 的入场里面板透出**清晰**壁纸，
+  // 动画一结束模糊才「啪」地出现。
+  const rise = /@keyframes pf-rise\s*\{([\s\S]*?)\n\}/.exec(clean)
+  assert.ok(rise, '找不到 @keyframes pf-rise')
+  assert.ok(
+    !/opacity\s*:/.test(rise[1]),
+    `pf-rise 里出现了 opacity —— 动画期间全站毛玻璃会失效：\n${rise[1].trim()}`,
+  )
+})
 
 test('.main-content > * 的入场动画不带 fill-mode', () => {
   const matched = /\.main-content > \* \{\s*animation:\s*([^;]+);/.exec(clean)
   assert.ok(matched, '找不到 .main-content > * 的 animation 声明')
-  // pf-rise 的 to 帧是 opacity:1 / transform:none，与自然状态逐字相同，且没有 delay
-  // （backwards 只在有延迟时才有意义）—— 所以 `both` 在视觉上完全多余。
-  // 但它会让页面根节点一直挂着一个生效中的 opacity/transform 动画，于是整页成为
-  // backdrop root，里面的 backdrop-filter 采不到壁纸，毛玻璃就只剩「不透明度生效、
-  // 模糊没效果」。
-  assert.ok(!/\bboth\b/.test(matched[1]), `.main-content > * 的动画带了 fill-mode：${matched[1]}`)
+  // 页面根节点带 fill-mode 会让整页**永久**是 backdrop root，里面的 backdrop-filter
+  // 采不到壁纸，毛玻璃就只剩「不透明度生效、模糊没效果」。
+  // 这里没有 animation-delay，to 帧又与自然状态逐字相同，fill-mode 本来就多余。
+  assert.ok(
+    !/\b(both|forwards)\b/.test(matched[1]),
+    `.main-content > * 的动画带了 fill-mode：${matched[1]}`,
+  )
 })
 
-test('.kpi-grid > * 必须保留 both（靠 delay 错峰，不能跟着一起删）', () => {
+test('.kpi-grid > * 的错峰只能用 backwards，不能用 both/forwards', () => {
   const matched = /\.kpi-grid > \* \{\s*animation:\s*([^;]+);/.exec(clean)
   assert.ok(matched, '找不到 .kpi-grid > * 的 animation 声明')
-  // 它有 animation-delay 错峰，必须有 backwards，否则延迟期间会先闪一下实体卡片。
-  assert.match(matched[1], /\bboth\b/, `.kpi-grid > * 的动画丢了 fill-mode：${matched[1]}`)
+  // 这四条就是 .metric-card，**自己就带 backdrop-filter**。`both` 的 forwards 会让动画的
+  // to 帧一直生效 → 元素永久是 backdrop root → 模糊一辈子不生效
+  // （实测高频 10.1，与纯壁纸 12.7 同档 = 完全没糊）。
+  // 必须有 backwards：靠 animation-delay 错峰，没有它延迟期间会先闪一下实体卡片。
+  assert.match(
+    matched[1],
+    /\bbackwards\b/,
+    `.kpi-grid > * 缺 backwards —— 延迟期间会闪一下实体卡片：${matched[1]}`,
+  )
+  assert.ok(
+    !/\b(both|forwards)\b/.test(matched[1]),
+    `.kpi-grid > * 用了 both/forwards —— 会让这四张卡的模糊永久失效：${matched[1]}`,
+  )
 })
 
 /* ---- 4. 壁纸下的可读性 ---- */
@@ -216,27 +261,143 @@ test('全项目唯一的 text-shadow 是 .metric-value 那条原有发光', () =
   )
 })
 
-test('壁纸下不得给元素加垫底（「底部一长条」已被否）', () => {
-  // `.dashboard-footer` / `.pagination` 是 `justify-content: space-between` 的
-  // **全宽 flex 行**，加底色必然拉成一条横贯页面的带子。实测结论：「好丑」。
-  const rules = [...clean.matchAll(/:root((?:\[[^\]]*\])+)\s*\{([^}]*)\}/g)]
+test('壁纸下不给裸文本加任何「看得见的底」，只靠 data-bare-text-tone 换字色', () => {
+  // 五档「给文字加东西」全被否，最后一条的原话是「加了一个背景框，看起来好丑啊」。
+  // 现在只剩「只改文字颜色」：wallpaperTone.ts 采样壁纸后给元素打
+  // data-bare-text-tone，样式表按它切深/浅两套小字令牌。
+  // 这条守卫做两件事：① 不许再冒出给裸文本加底的规则；② 两套字色必须真的存在。
+
+  // 1) 令牌规则（亮/暗）里仍然只允许颜色。
+  const tokenRules = [...clean.matchAll(/:root((?:\[[^\]]*\])+)\s*\{([^}]*)\}/g)]
     .filter((match) => match[1].includes('data-wallpaper="on"'))
-  assert.equal(rules.length, 2, `壁纸规则应当正好 2 条（亮/暗），实际 ${rules.length} 条`)
-  for (const rule of rules) {
+  assert.equal(tokenRules.length, 2, `壁纸令牌规则应当正好 2 条（亮/暗），实际 ${tokenRules.length} 条`)
+  for (const rule of tokenRules) {
     assert.ok(
       !/background:/.test(rule[2]),
-      `壁纸规则里不该出现 background（垫底已被否）：${rule[0].replace(/\s+/g, ' ').slice(0, 120)}`,
+      `令牌规则里不该出现 background：${rule[0].replace(/\s+/g, ' ').slice(0, 120)}`,
     )
   }
-  // 选择器要整串吃属性再筛，不能写 `:root\[[^\]]*data-wallpaper…` ——
-  // 那个 `[^\]]*` 跨不过暗色那条中间的 `][`，暗色规则会静默漏掉，
-  // 守卫只覆盖一半而测试照样绿。
+
+  // 2) 壁纸档下任何**碰到页脚/分页**的规则，都不许带垫底类声明。
+  //    按「选择器里出现 dashboard-footer 或 pagination」整条扫，比盯死某几个
+  //    选择器更难绕过去 —— 换个写法（> span / :last-child / 加个新类）照样会被抓到。
+  const offenders: string[] = []
+  for (const rule of clean.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/data-wallpaper="on"/.test(rule[1])) continue
+    if (!/dashboard-footer|pagination/.test(rule[1])) continue
+    if (/background:|backdrop-filter:|border-radius:/.test(rule[2])) {
+      offenders.push(`${rule[1].trim()} { ${rule[2].trim()} }`)
+    }
+  }
+  assert.deepEqual(offenders, [], `页脚/分页又出现了垫底类声明（五档全被否，别再试）：\n${offenders.join('\n')}`)
+
+  // 3) 两套自适应字色必须在，且方向不能反：深底那套必须比浅底那套**更亮**。
+  const onDark = /\[data-bare-text-tone="on-dark"\]\s*\{([^}]*)\}/.exec(clean)
+  const onLight = /\[data-bare-text-tone="on-light"\]\s*\{([^}]*)\}/.exec(clean)
+  assert.ok(onDark, '缺少 data-bare-text-tone="on-dark" 那套（深底要用浅字）')
+  assert.ok(onLight, '缺少 data-bare-text-tone="on-light" 那套（浅底要用深字）')
+  const tokenLuminance = (body: string): number => {
+    const hex = /--text-muted:\s*(#[0-9a-f]{6})/i.exec(body)
+    assert.ok(hex, `这套缺 --text-muted：${body.trim()}`)
+    return relativeLuminance(hex[1])
+  }
   assert.ok(
-    !/:root\[[^\]]*data-wallpaper="on"[^\]]*\]\s+\.pagination/.test(clean),
-    '分页条不该有壁纸专属规则',
+    tokenLuminance(onDark[1]) > tokenLuminance(onLight[1]),
+    'on-dark 那套（给深底用的）必须比 on-light 那套更亮，否则方向反了',
   )
+})
+
+/* ---- 6. 半透明面必须都被毛玻璃兜住 ---- */
+
+/**
+ * 收集所有「带 `backdrop-filter: blur(var(--glass-blur…))`」的规则里的类名。
+ *
+ * 上面第 2 组只守了**取值集合**（不许出现第三种半径），守不住**覆盖范围**：
+ * 一个元素只要压根不写 `backdrop-filter`，那条测试永远是绿的。
+ * 而「漏写」正是 2026-09-29 那个 bug 的形状 —— 名单是手写的，每次「想起来一个补一个」。
+ */
+function glassBlurredClasses(source: string): Set<string> {
+  const found = new Set<string>()
+  for (const rule of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/backdrop-filter:\s*blur\(var\(--glass-blur/.test(rule[2])) continue
+    for (const cls of rule[1].matchAll(/\.([a-zA-Z][\w-]*)/g)) found.add(cls[1])
+  }
+  return found
+}
+
+test('每个「自己就是一层表面」的元素都在毛玻璃名单里', () => {
+  // 漏一个的后果：那块变成「清晰壁纸的取景窗」，壁纸原样满对比透出来。
+  // 实测「可见清晰壁纸量」：正常玻璃面 1.7~8.9，漏掉的 16~68（差 6~30 倍），
+  // 且对「模糊」滑块零响应。用户的原话是「这几个页面的透明度怎么调都不对」。
+  const blurred = glassBlurredClasses(clean)
+  const required = [
+    // 视觉语言 v2 那一批（styles.css 5816 行）
+    'metric-card', 'records-panel', 'model-card', 'stat-kpis', 'tool-card',
+    'trend-workbench', 'usage-panel', 'trend-panel', 'site-panel',
+    // 后面陆续补的
+    'data-panel', 'compact-summary', 'resource-strip', 'sidebar', 'page-header--elevated',
+    // 2026-09-29 补漏：筛选条 / 列表行 / 空状态 / 概览页工具区
+    'filter-bar', 'content-state', 'tool-section',
+    'site-row', 'channel-row', 'token-row', 'announcement-row',
+  ]
+  const missing = required.filter((name) => !blurred.has(name))
+  assert.deepEqual(missing, [], `这些半透明面没有毛玻璃，会变成「清晰壁纸的取景窗」：${missing.join(', ')}`)
+})
+
+test('紧凑档的主题弹层必须收窄到能装进 184px 侧栏', () => {
+  // 紧凑档侧栏 184px、锚点 `.sidebar-actions` 右边界 172；菜单 168px 时
+  // `left = 172 - 168 = 4 < 12`，会触发 flyOut 挂到侧栏右边外面（实测溢出 163px）。
+  const narrow = /:root\[data-sidebar-width="narrow"\]\s*\.theme-picker\s*\{([^}]*)\}/.exec(clean)
+  assert.ok(narrow, '缺少紧凑档的 .theme-picker 宽度覆盖 —— 弹层会跑到侧栏外')
+  const width = /width:\s*(\d+)px/.exec(narrow[1])
+  assert.ok(width, `紧凑档的覆盖必须给出 px 宽度：${narrow[1].trim()}`)
+  // 172（锚点右边界） - width >= 12（popoverPosition 的 margin）才不会被判为「放不下」
   assert.ok(
-    !/:root\[[^\]]*data-wallpaper="on"[^\]]*\]\s+\.dashboard-footer/.test(clean),
-    '页脚不该有壁纸专属规则',
+    Number(width[1]) <= 160,
+    `紧凑档弹层宽 ${width[1]}px 仍然会让 left 落到 12px 边距以内，触发外挂`,
   )
+})
+
+/* ---- 7. 壁纸小字的对比度不能又被改浅 ---- */
+
+function relativeLuminance(hex: string): number {
+  const value = hex.replace('#', '')
+  const [r, g, b] = [0, 2, 4]
+    .map((i) => parseInt(value.slice(i, i + 2), 16) / 255)
+    .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+function contrastRatio(a: string, b: string): number {
+  const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x)
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+test('壁纸下的小字必须真的比默认色更清楚（对比度下限）', () => {
+  // 用户 2026-09-29 给的壁纸实测是中亮度（p10=75 / p50=118 / p90=162），
+  // #767676 就是那个中位数亮度，拿它当探针底。
+  // 这条守的是「方向」：以后有人为了好看把值改浅回去，这里会红。
+  const PROBE = '#767676'
+  const baseLight = /--text-muted:\s*(#[0-9a-f]{6})/i.exec(clean)
+  assert.ok(baseLight, '找不到默认的 --text-muted')
+  const blocks = [
+    { name: '亮色', re: /:root\[data-wallpaper="on"\]\s*\{([^}]*)\}/ },
+    { name: '暗色', re: /:root\[data-theme="dark"\]\[data-wallpaper="on"\]\s*\{([^}]*)\}/ },
+  ] as const
+  for (const { name, re } of blocks) {
+    const block = re.exec(clean)
+    assert.ok(block, `缺少${name}档的壁纸文字覆盖`)
+    const value = /--text-muted:\s*(#[0-9a-f]{6})/i.exec(block[1])
+    assert.ok(value, `${name}档缺少 --text-muted`)
+    const got = contrastRatio(value[1], PROBE)
+    const base = contrastRatio(baseLight[1], PROBE)
+    assert.ok(
+      got >= 3.0,
+      `${name}档 --text-muted (${value[1]}) 在中亮度壁纸上的对比度只有 ${got.toFixed(2)}:1，低于 3.0:1`,
+    )
+    assert.ok(
+      got >= base * 2,
+      `${name}档 --text-muted 的对比度 ${got.toFixed(2)}:1 没有比默认色 (${base.toFixed(2)}:1) 好一倍`,
+    )
+  }
 })

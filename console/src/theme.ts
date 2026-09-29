@@ -1,3 +1,9 @@
+// 兄弟模块**必须带 `.ts` 后缀**：`npm test` 是 `node --test "src/**/*.test.ts"`，
+// 而 `themeCustomization.test.ts` 会 import 本文件 —— Node 的 ESM 解析器不补后缀，
+// 少一个后缀整条 import 链就 ERR_MODULE_NOT_FOUND。这也是 `tsconfig.app.json` 里
+// 打开 `allowImportingTsExtensions` 的原因（它只在 `noEmit` 下合法，本项目正是 noEmit）。
+import { refreshBareTextTone, startBareTextToneWatch } from './wallpaperTone.ts'
+
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ResolvedTheme = 'light' | 'dark'
 // 预设清单是**唯一真源**：类型、校验、以及 index.html 里那段在 bundle 之前
@@ -298,7 +304,10 @@ export function applyThemeCustomization(customization: ThemeCustomization): Reso
   // 壁纸与它的两个参数走 CSS 变量，由 `.app-shell` 的背景图层消费。
   // 没设壁纸时 `--app-bg-image` 是 `none`，那一层完全透明，观感与改动前一致。
   const fit = backgroundFitValues[customization.backgroundFit] ?? backgroundFitValues.cover
-  const wallpaper = backgroundImageValue(wallpaperUrl(customization.backgroundImage, customization.backgroundRandom))
+  // 原始地址（含随机参数）单独留一份：小字自适应要拿它去后端取图，
+  // 而 `backgroundImageValue` 交出来的是包好的 `url("...")`，当不了接口参数。
+  const wallpaperSource = wallpaperUrl(customization.backgroundImage, customization.backgroundRandom)
+  const wallpaper = backgroundImageValue(wallpaperSource)
   const hasWallpaper = wallpaper !== 'none'
   root.style.setProperty('--app-bg-image', wallpaper)
   root.style.setProperty('--app-bg-dim', `${clampNumber(customization.backgroundDim, backgroundDimRange.min, backgroundDimRange.max, 0)}%`)
@@ -313,6 +322,20 @@ export function applyThemeCustomization(customization: ThemeCustomization): Reso
   else root.style.removeProperty('--app-bg-dots')
   // 壁纸下要把文字压得更实（styles.css 末尾 `data-wallpaper="on"` 那段）。
   root.dataset.wallpaper = hasWallpaper ? 'on' : 'off'
+  // 页级裸文本（页脚 / 分页）底下是**壁纸本身**而不是面板底，所以字色要按那一块的
+  // 实际明暗现算 —— 全站只有这三处没有面板兜着。这是唯一「不加框、不加描边」
+  // 还能让文字在任意照片上可读的手段，理由与被否掉的五档见 wallpaperTone.ts。
+  // 异步且失败即退回默认字色，不会因为取图失败把已经能看的页面弄坏。
+  startBareTextToneWatch()
+  void refreshBareTextTone(
+    hasWallpaper
+      ? {
+          url: wallpaperSource,
+          fit: customization.backgroundFit,
+          dim: clampNumber(customization.backgroundDim, backgroundDimRange.min, backgroundDimRange.max, 0),
+        }
+      : null,
+  )
   // 面板毛玻璃：`--surface-alpha` 被样式表里那几条 `:root[data-glass="on"]` 规则用来
   // 把 `--surface*` / `--sidebar` 重新算成带透明度的版本；`--glass-blur` 驱动面板的
   // `backdrop-filter`。默认 100% / 14px，此时 glass 是 off，样式表那条规则不匹配，

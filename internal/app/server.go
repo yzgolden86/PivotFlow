@@ -1205,6 +1205,11 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/settings/batch", s.AdminBatchUpdateSettings)
 		admin.POST("/version/check", s.HandleCheckForUpdates)
 
+		// 外观：把用户填的壁纸原样取回来，供浏览器 canvas 采样决定小字用深色还是浅色。
+		// 必须走后端，因为跨域图床多数不发 Access-Control-Allow-Origin，
+		// 前端直接读像素会静默失效（理由与实测见 admin_wallpaper.go）。
+		admin.GET("/appearance/wallpaper-bytes", s.HandleWallpaperBytes)
+
 		// 模型指纹
 		admin.GET("/fingerprints", s.HandleListFingerprints)
 		admin.GET("/fingerprints/test-results", s.HandleListFingerprintTestResults)
