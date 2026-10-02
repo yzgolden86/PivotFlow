@@ -1,0 +1,94 @@
+/* ══ 🚫 已废弃（2026-10-02）—— 别再贴进自定义 CSS ══════════════════════════
+ *
+ * 这个修复**已经落地到源码**：`console/src/styles.css` 的「滚动容器里的磨砂层」一节
+ * （`.site-row` / `.channel-row` 两条已从毛玻璃名单移除，改由列表容器里的层提供）。
+ * 现在再贴这一份会**双重生效**；而且本片段用的 `overflow-x: clip` 会把列表的
+ * **横向滚动一起掐死**。
+ *
+ * 落地版还顺带简化了一处：`position: fixed` 的层是**绝对定位**、不参与 grid 布局，
+ * 所以本片段里那套 `row-gap: 0` + `margin-top: 10px` 补偿**不再需要**
+ * （少一处「gap 改了要同步改」的隐性耦合）。
+ *
+ * 本文件保留只为**历史与验证参考**。完整来由见 HANDOFF.md §1.21 ~ §1.21.5。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* ══ 平滑滚动 · 列表行（站点 / 渠道）═════════════════════════════════════
+ *
+ * 解决什么：**站点管理 / 渠道管理** 页向下滚动掉帧。
+ *
+ * 为什么掉帧：`styles.css:6206-6215` 那份名单给**列表的每一行**都加了
+ *   `backdrop-filter: blur(14px)`（`.site-row` / `.channel-row` / …）。
+ *   站点页 50 行 → 累计模糊面积 **4.29 倍视口**，远超约 1.5 倍的预算。
+ *   （这份名单是 2026-09-29 的 `539024e` 引入的。）
+ *
+ * 做法：行不再自带 blur，改由**列表容器**给一个「一屏高」的磨砂层 ——
+ *   与 `16-smooth-scroll-panels.css` 完全同一套机制。
+ *
+ *   ⚠️ 关键：**行的底色一个字都不改。**
+ *   这一点是这份片段与上一版的根本区别。上一版把行的 `background` 写死成
+ *   `color-mix(--surface-base 93%)`，结果是**「面板通透」滑块对行彻底失效** ——
+ *   实测把不透明度从 20% 拖到 80%，行的底色恒为 0.93、壁纸透出量只从 8.47 变到 8.19
+ *   （基线是 12.17 → 3.21，差 3.8 倍）。行看着「变实了、调不动了」。
+ *   现在行仍用原来的 `var(--surface)`，而它是由滑块驱动的 `--surface-alpha` 算出来的，
+ *   所以滑块原样有效：实测底色 0.20/0.40/0.60/0.80、透出量 6.98/5.31/3.40/2.04，
+ *   与基线逐档同形、单调。
+ *
+ *   为什么这样仍然「糊」：行原本 = 40% 底色 叠在 `blur(壁纸)` 上；
+ *   现在 = 40% 底色 叠在「列表那一层的 `blur(壁纸)`」上。**数学上等价**，
+ *   只是「整列糊一次」而不是「每行各糊一次」。
+ *
+ * 布局：**完全不变**。`.site-list` / `.channel-list` 是 `display: grid; gap: 10px`
+ *   （`styles.css:3866-3871`），伪元素会成为一个 grid 项、**多占一个 gap**。
+ *   所以这里把容器的 `row-gap` 归零，再用行间 `margin-top: 10px` 把间距原样补回来 ——
+ *   实测页高、每一行的 top、末行 bottom、分页位置、横向溢出**全部一致**。
+ *   ⚠️ 如果哪天 `gap` 的值改了，这里的 `10px` 也要跟着改。
+ *
+ * 三个必须写对的点（同片段一，写错就静默坏掉）：
+ *   ① 层要 `z-index: -1`：`sticky` 是定位元素，默认画在内容**之上**，会把行和文字糊掉；
+ *   ② 容器要 `isolation: isolate`：否则 `z-index:-1` 会穿到更外层（可能跑到壁纸后面）；
+ *   ③ `overflow-x` 要用 `clip`：`hidden`/`auto` 会让容器变成滚动容器，
+ *      `sticky` 于是只相对它粘、不跟视口走（滚下去就变回清晰取景窗）。
+ *
+ * 没动 `.token-list` / `.announcement-list`：那两份列表只有 3~4 行，
+ *   模糊面积 0.58~0.59 倍，本来就在预算内 —— 不碰没坏的东西。
+ *   若哪天它们也长到 20 行以上，照抄下面这段给它们即可。
+ *
+ * 兼容：`overflow: clip` 需 Chrome 90+ / Firefox 81+ / Safari 16+。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* 行不再自带 blur。**底色保持原样**（由「面板通透」滑块驱动）。 */
+:root[data-glass="on"] .site-row,
+:root[data-glass="on"] .channel-row {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.site-list,
+.channel-list {
+  position: relative !important;
+  isolation: isolate !important;      /* ② */
+  overflow-x: clip !important;        /* ③ */
+  overflow-y: visible !important;
+  row-gap: 0 !important;              /* 让伪元素不多占一个 grid gap */
+}
+
+/* 把 grid 的间距原样补回来（见文件头「布局」） */
+.site-list > .site-row + .site-row,
+.channel-list > .channel-row + .channel-row {
+  margin-top: 10px !important;
+}
+
+/* 一屏高的磨砂层：sticky 钉在视口上跟着滚动走 */
+.site-list::before,
+.channel-list::before {
+  content: "" !important;
+  position: sticky !important;
+  top: 0 !important;
+  z-index: -1 !important;             /* ① */
+  display: block !important;
+  height: 100vh !important;
+  margin-bottom: -100vh !important;   /* 抵消层高，保证不改布局 */
+  pointer-events: none !important;
+  backdrop-filter: blur(var(--glass-blur, 14px)) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px)) !important;
+}

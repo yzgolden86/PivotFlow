@@ -5855,13 +5855,24 @@ body {
 .usage-panel,
 .trend-panel,
 .trend-workbench,
-.records-panel,
 .model-card,
 .stat-kpis article,
 .tool-card {
   /* 半径由外观设置的「毛玻璃」滑块驱动；14px 是改造前的固定值，所以是回退值。 */
   backdrop-filter: blur(var(--glass-blur, 14px));
   -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--elev-1);
+  transition: transform 260ms var(--ease-enter), box-shadow 260ms var(--ease-enter), border-color 260ms var(--ease-enter);
+}
+
+/* `.records-panel` 曾经就在上面那份名单里，观感与这批卡片**逐项相同**，唯独不能
+   自己带 `backdrop-filter` —— 它是横向滚动容器（`overflow-x: auto`），高度随记录
+   条数增长，模糊面积会失控（/checkins 6.01 倍视口）。毛玻璃改由容器内一层
+   `position: fixed` 的层提供，做法与实测数字见下方「滚动容器里的磨砂层」一节。
+   ⚠️ 底色 / 边框 / 阴影必须留在这里：底色仍由「面板通透」滑块驱动（`--surface`）。 */
+.records-panel {
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--elev-1);
@@ -6202,12 +6213,15 @@ body {
    「这几个页面的透明度怎么调都不对」。
 
    ⚠️ 新增「自己带底色」的元素时，必须同步加进这里。themeLayers.test.ts 有覆盖守卫，
-      但那份名单也要靠人维护，所以**改完请用同一手法复量一遍**（做法见 HANDOFF §8.2）。 */
+      但那份名单也要靠人维护，所以**改完请用同一手法复量一遍**（做法见 HANDOFF §8.2）。
+
+   ⚠️ 但**高度随内容增长的滚动容器不要加进这份名单** —— 自己带 blur 会让模糊面积
+      随条数线性增长（`.site-row` × 50 = 4.29 倍视口，`/checkins` 的单块面板 = 6.01 倍，
+      而滚动容器里超过约 1.5 倍视口就开始掉帧）。这类元素改走下方
+      「滚动容器里的磨砂层」那套机制：`.site-row` / `.channel-row` 两条已从本名单移除。 */
 :root[data-glass="on"] .filter-bar,
 :root[data-glass="on"] .content-state,
 :root[data-glass="on"] .tool-section,
-:root[data-glass="on"] .site-row,
-:root[data-glass="on"] .channel-row,
 :root[data-glass="on"] .token-row,
 :root[data-glass="on"] .announcement-row {
   backdrop-filter: blur(var(--glass-blur, 14px));
@@ -6223,6 +6237,102 @@ body {
 :root[data-glass="on"] .source-menu-popover,
 :root[data-glass="on"] .help-tip-bubble {
   background: var(--surface-base);
+}
+
+/* ══ 滚动容器里的磨砂层：一块视口大小的层，替掉「每个元素各自 blur」 ═══════════
+
+   为什么：`backdrop-filter` 的代价与**模糊面积**成正比，不是与元素个数成正比。
+   滚动容器里累计面积超过约 1.5 倍视口就开始掉帧（扫站点页行数实测：1.92 倍还顺、
+   2.73 倍起掉，单调）。而下面这些元素的高度**随内容增长**，代码里没有任何地方
+   给模糊面积设上限 —— 这才是掉帧的根因：
+
+       /checkins  .records-panel       6.01 倍视口（单块，签到记录）
+       /sites     .site-row × 50       4.29 倍
+       /channels  .channel-row × n     3.89 倍
+       /accounts  .records-panel       3.88 倍
+
+   做法：元素自己不再 blur，改成容器里**一块一屏高的层**去糊。面积 → 1.09~1.14 倍。
+   ⚠️ 不是「容器自己 blur 一次」—— 那还是整块面板的面积（3.88 / 6.01 倍），没解决问题。
+
+   ── 四个必须写对、写错就静默坏掉的地方 ──────────────────────────────────
+
+   ① 层要 `z-index: -1`。
+      `position: fixed` 是定位元素，默认画在普通流内容**之上** —— 实测会把容器里的行
+      和文字**整片糊掉**（截图确认，文字全成马赛克）。`z-index: -1` 让它落到容器背景
+      之后、普通流内容之前，只负责糊壁纸。
+
+   ② 容器要 `clip-path`，**不能**用 `overflow: clip` 替代。
+      层是**视口大小**的（`left:0; right:0; height:100vh`），必须裁到容器的框里。
+      实测容器之外的页面底「清晰壁纸量」38.13 → 38.13，逐像素不变。
+      而这些容器是**横向滚动容器**（内层 grid 有 1010~1190px 的 min-width：1440 下
+      溢出 38px、1280 下 198px、1024 下 454px，是**有意保留**的行为）。`overflow-x: clip`
+      会把横向滚动一起掐死 —— 实测「可滚动距离」38 → 0（三个断点全一样），
+      而内容照样溢出 = 内容被永久藏住。`clip-path` 只裁绘制、不动滚动。
+
+   ③ 层要 `position: fixed`，不能用 `sticky`。
+      容器是滚动容器，`sticky` 只相对**它自己**的 scrollport 粘、不跟视口走 ——
+      实测滚到 1500px 后「清晰壁纸量」从 1.97 跳到 80.5（= 又变回清晰取景窗）。
+
+   ④ 行 / 面板的**底色一个字都不许改**（由「面板通透」滑块驱动）。
+      曾经给行写死 `color-mix(--surface-base 93%)`，结果是滑块对行彻底失效：
+      实测不透明度 20% → 80%，行底色恒为 0.93。现在行仍用 `var(--surface)`，
+      实测 α=20/40/60/80 时底色 0.20/0.40/0.60/0.80，与改造前逐档相同。
+
+   ── 已知代价（量过，可接受）──────────────────────────────────────────────
+   `pf-rise` 入场动画跑动的 ~520ms 里，页面根节点（`.main-content > *`）带 `transform`
+   （`styles.css` 的 `@keyframes pf-rise`），会成为 fixed 后代的包含块 —— 层临时改成
+   相对页面根节点定位、并随文档滚动。实测这段窗口内无害：层仍从容器顶边覆盖到视口底
+   （可见区域全覆盖），且路由切换时 App.tsx 会把滚动位置归零。可见壁纸量在切页后
+   60/150/300/600/1200ms 五个时点稳定（极差 ≤7%，比改造前的 11% 还小）。
+
+   ⚠️ 别再用「不透明的底色」替代这里的 blur —— 那会把「面板通透」滑块对这块面
+      彻底掐死（工程约定见 HANDOFF §8.2）。
+   ══════════════════════════════════════════════════════════════════════ */
+
+.records-panel {
+  /* 圆角必须与面板自己的 `border-radius` 一致（`:root[data-theme-radius]` 那组规则
+     把它设成 `var(--radius-panel)`），否则会切掉边框的圆角。 */
+  clip-path: inset(0 round var(--radius-panel, 8px));
+}
+
+.records-panel::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100vh;
+  z-index: -1;                 /* ① */
+  pointer-events: none;
+  backdrop-filter: blur(var(--glass-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
+}
+
+/* 列表容器（站点 / 渠道）。行不再自带 blur —— 原名单里的 `.site-row` / `.channel-row`
+   两条已删（见上方「自己就是一层表面」一节）。
+   这里带 `:root[data-glass="on"]` 前缀，与原来那两条一致：不透明度 100 时行本来就是
+   实心的，层在实心行下面没有任何作用，不该白付一次全屏模糊。
+   （上面 `.records-panel` 那条**不带**前缀 —— 它原本就在「视觉语言 v2」那份
+   **无条件生效**的名单里，保持原样，默认档的观感才逐像素不变。）
+   `position: fixed` 是绝对定位，伪元素**不参与 grid 布局**，所以这里不需要动
+   `.site-list` / `.channel-list` 的 `gap`。 */
+:root[data-glass="on"] .site-list,
+:root[data-glass="on"] .channel-list {
+  clip-path: inset(0);
+}
+
+:root[data-glass="on"] .site-list::before,
+:root[data-glass="on"] .channel-list::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100vh;
+  z-index: -1;                 /* ① */
+  pointer-events: none;
+  backdrop-filter: blur(var(--glass-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
 }
 
 

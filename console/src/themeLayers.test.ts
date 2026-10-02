@@ -21,7 +21,11 @@ import { readFileSync } from 'node:fs'
 //      wallpaperTone.ts 采样后打在元素上）；
 //   6) 每个「自己就是一层表面」的元素都在毛玻璃名单里 —— 第 2 组只守取值集合，
 //      守不住「漏写」，而 2026-09-29 那个 bug 正是漏写（详见测试里的实测数字）；
-//   7) 壁纸小字的对比度不能又被改浅（有下限断言）。
+//      名单的形态有两种：元素自己带 blur，或由容器内一层 `::before` 提供
+//      （后者给「高度随内容增长的滚动容器」用，见第 8 组）；
+//   7) 壁纸小字的对比度不能又被改浅（有下限断言）；
+//   8) **横向滚动容器不许自己带 blur** —— 面积随条数线性增长，是掉帧的根因。
+//      反向的坑：第 6 组只守「有没有被糊住」，守不住「糊的代价会不会随内容增长」。
 const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8')
 const theme = readFileSync(new URL('./theme.ts', import.meta.url), 'utf8')
 // 去注释：注释里会引用 `blur(24px)`、`radial-gradient(circle, ...)` 这类片段，
@@ -338,10 +342,78 @@ test('每个「自己就是一层表面」的元素都在毛玻璃名单里', ()
     'data-panel', 'compact-summary', 'resource-strip', 'sidebar', 'page-header--elevated',
     // 2026-09-29 补漏：筛选条 / 列表行 / 空状态 / 概览页工具区
     'filter-bar', 'content-state', 'tool-section',
-    'site-row', 'channel-row', 'token-row', 'announcement-row',
+    'token-row', 'announcement-row',
+    // 2026-10-02：站点页/渠道页的行改走「容器里一层 ::before」的机制（面积随内容增长，
+    // 行不能自己带 blur，见第 8 组）。所以这里认的是**容器**，不再是行本身。
+    // `records-panel` 也换了机制，但类名不变，仍在上面第一批里。
+    'site-list', 'channel-list',
   ]
   const missing = required.filter((name) => !blurred.has(name))
   assert.deepEqual(missing, [], `这些半透明面没有毛玻璃，会变成「清晰壁纸的取景窗」：${missing.join(', ')}`)
+})
+
+/* ---- 8. 反向的坑：高度随内容增长的元素不许自己带 blur ---- */
+
+/**
+ * 同 `glassBlurredClasses`，但**只认元素自己**带 blur 的规则（选择器里不含伪元素）。
+ *
+ * 与上面那个集合的差别就是「元素自己糊」还是「容器里那层 ::before 糊」。
+ * 两种都算「被糊住」（第 6 组认这个），但只有前者会让**模糊面积随内容增长**。
+ */
+function selfBlurredClasses(source: string): Set<string> {
+  const found = new Set<string>()
+  for (const rule of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (/::(?:before|after)/.test(rule[1])) continue
+    if (!/backdrop-filter:\s*blur\(var\(--glass-blur/.test(rule[2])) continue
+    for (const cls of rule[1].matchAll(/\.([a-zA-Z][\w-]*)/g)) found.add(cls[1])
+  }
+  return found
+}
+
+/** 只收集 `::before` / `::after` 上带 blur 的规则里的类名（即「容器里那一层」）。 */
+function pseudoBlurredClasses(source: string): Set<string> {
+  const found = new Set<string>()
+  for (const rule of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/::(?:before|after)/.test(rule[1])) continue
+    if (!/backdrop-filter:\s*blur\(var\(--glass-blur/.test(rule[2])) continue
+    for (const cls of rule[1].matchAll(/\.([a-zA-Z][\w-]*)/g)) found.add(cls[1])
+  }
+  return found
+}
+
+test('高度随内容增长的列表/面板不许自己带 backdrop-filter，但必须仍被糊住', () => {
+  // 2026-10-02 的根因：让「高度随内容增长」的元素自己带 blur，而代码里**没有任何
+  // 地方**给模糊面积设上限。8 个路由按面积完全单调，超预算的正是这几个：
+  //     /checkins .records-panel 6.01 倍视口    /sites 50 行 4.29 倍
+  //     /accounts .records-panel 3.88 倍         /channels 3.89 倍
+  // 滚动容器里超过约 1.5 倍视口就开始掉帧（扫站点页行数：1.92 倍还顺、2.73 倍起掉）。
+  //
+  // ⚠️ 这条守的是**第 6 组守不住的那一半**：第 6 组只问「有没有被糊住」，
+  //    把 `.site-row` 加回 blur 名单反而会让它变绿 —— 而**正是这个改动**造成了掉帧。
+  //    所以判据不能是「是不是滚动容器」（`.site-row` 不是，它的父级 `.site-list` 才是，
+  //    两者类名不同），必须是**按名字点名**的这张表。
+  const grows = ['records-panel', 'site-row', 'channel-row', 'site-list', 'channel-list']
+
+  const selfBlurred = selfBlurredClasses(clean)
+  const offenders = grows.filter((name) => selfBlurred.has(name))
+  assert.deepEqual(
+    offenders,
+    [],
+    `这些元素的高度随内容增长，自己带 backdrop-filter 会让模糊面积线性增长（掉帧）：${offenders.join(', ')}\n` +
+      '改成「元素不带 blur + 容器内一层 position: fixed 的 ::before」（见 styles.css 的「滚动容器里的磨砂层」）。',
+  )
+
+  // 反向自检：这批元素还必须**确实被糊住**。否则「把 blur 从行上删掉、又忘了加层」
+  // 会让两条守卫互相放行 —— 一条说「别自己糊」，另一条说「这个类名不在必糊名单里」。
+  // 糊它们的是**容器**那一层，所以这里只点名三个容器（行由容器的层覆盖）。
+  const covered = ['records-panel', 'site-list', 'channel-list']
+  const layered = pseudoBlurredClasses(clean)
+  const uncovered = covered.filter((name) => !layered.has(name))
+  assert.deepEqual(
+    uncovered,
+    [],
+    `这些容器既没有自己的 backdrop-filter、也没有 ::before 层 —— 会变成「清晰壁纸的取景窗」：${uncovered.join(', ')}`,
+  )
 })
 
 test('紧凑档的主题弹层必须收窄到能装进 184px 侧栏', () => {

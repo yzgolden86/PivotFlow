@@ -1,0 +1,93 @@
+/* ══ 🚫 已废弃（2026-10-02）—— 别再贴进自定义 CSS ══════════════════════════
+ *
+ * 这个修复**已经落地到源码**：`console/src/styles.css` 的「滚动容器里的磨砂层」一节。
+ * 现在再贴这一份会**双重生效**；而且本片段用的 `overflow-x: clip` 会把面板的
+ * **横向滚动一起掐死**（实测可滚动距离 38 → 0，三个断点全一样，内容被永久藏住）。
+ *
+ * 落地版与本片段的机制差别：落地版用 `clip-path: inset(0 round …)` + `position: fixed`，
+ * 保留 `overflow-x: auto`，横向滚动照旧（38 / 198 / 454px 都能滚到底）。
+ *
+ * 本文件保留只为**历史与验证参考**（它记录了当时的推导与实测数字）。
+ * 完整来由见 HANDOFF.md §1.21 ~ §1.21.5。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* ══ 平滑滚动 · 内容高度的面板 ═════════════════════════════════════════════
+ *
+ * 解决什么：**账号管理 / 签到管理 / 统计 / 日志** 页向下滚动掉帧。
+ *
+ * 为什么掉帧：这几个页面的大头是**一个** `.records-panel`，它的高度随列表行数增长，
+ *   却自己带着 `backdrop-filter: blur(14px)`（来自 `styles.css:5853-5861` 的
+ *   「视觉语言 v2」玻璃卡片名单，**无条件生效**，不在毛玻璃开关里）。
+ *   实测模糊面积（元素面积 ÷ 视口面积）：
+ *
+ *        /checkins  6.01 倍     /accounts  3.88 倍
+ *        /stats     2.13 倍     /logs      1.52 倍
+ *
+ *   而滚动容器里累计模糊面积超过约 **1.5 倍视口** 就会开始掉帧
+ *   （站点页扫行数得到的阈值：1.92 倍还顺、2.73 倍开始掉，单调）。
+ *
+ * 做法：面板自己不再带 blur，改成**一个只有一屏高的层**去模糊。
+ *   模糊面积 → **1.09~1.14 倍**（全部落在预算内）。观感不变：
+ *   壁纸透出量 1.42 → 1.76 / 1.65 / 1.64（滚到 0 / 1500 / 3000），
+ *   参照区间「正常玻璃面 1.7~8.9」。
+ *
+ * 布局：**逐像素不变** —— 页高、首行位置、面板高度、横向溢出在
+ *   /sites /channels /accounts /checkins /stats /logs /trend /models / 上全部一致。
+ *
+ * ── 两个「必须写对、写错就静默坏掉」的地方 ────────────────────────────────
+ *
+ * ① **层必须 `z-index: -1`。**
+ *    这一层是 `position: sticky`，属于**定位元素**，默认绘制在普通流内容**之上** ——
+ *    实测会把面板里的行和文字**整片糊掉**（截图确认，文字全成马赛克）。
+ *    `z-index: -1` 让它落到「父元素背景之后、普通流内容之前」，
+ *    于是行和文字照常清晰地画在它上面，它只负责糊壁纸。
+ *
+ * ② **父元素必须 `isolation: isolate`。**
+ *    `z-index: -1` 是相对**最近的层叠上下文**定位的。面板自己不是层叠上下文，
+ *    不加这句，这层会一路穿到更外层（很可能跑到壁纸后面），等于白写。
+ *    `isolation: isolate` 让面板自己成为层叠上下文，把这一层关在里面。
+ *
+ * ③ **`overflow-x` 必须是 `clip`，不能留 `hidden`/`auto`。**
+ *    面板原本是 `overflow-x: auto; overflow-y: hidden`（`styles.css:1976-1983`）。
+ *    `overflow-y: hidden` 也会让面板成为**滚动容器**，`position: sticky` 于是只相对
+ *    它自己粘、不跟视口走 —— 实测滚到 1500px 后透出量从 1.97 跳到 80.5
+ *    （= 又变回「清晰取景窗」）。`overflow-x: clip` 保留横向裁剪，又**不产生滚动容器**。
+ *    实测横向溢出 -21 → -21，无变化。
+ *
+ * 兼容：`overflow: clip` 需 Chrome 90+ / Firefox 81+ / Safari 16+；
+ *   `:has()` 本片段没用到。更老的浏览器把 `overflow-x: clip` 换成
+ *   `overflow-x: hidden` 也能用，代价是那一层不再跟随滚动。
+ *
+ * 副作用：`.records-panel *` 会把面板内**所有**后代元素的 blur 一起关掉（含表格行）。
+ *   这正是想要的 —— 行在面板里，面板的磨砂层已经糊住了壁纸。
+ *   但面板里若嵌了自带毛玻璃的弹层，那个弹层会失去模糊。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+.records-panel,
+.records-panel * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.records-panel {
+  position: relative !important;
+  isolation: isolate !important;      /* ② 把 z-index:-1 关在面板里 */
+  overflow-x: clip !important;        /* ③ 裁横向、但不产生滚动容器 */
+  overflow-y: visible !important;
+}
+
+/* 一屏高的磨砂层：靠 sticky 钉在视口上跟着滚动走，
+   所以整个面板看过去始终是「糊过的壁纸」，而不是「清晰壁纸的取景窗」。
+   z-index:-1 让它画在内容之下（①）；margin-bottom 抵消层高，保证不改布局。 */
+.records-panel::before {
+  content: "" !important;
+  position: sticky !important;
+  top: 0 !important;
+  z-index: -1 !important;
+  display: block !important;
+  height: 100vh !important;
+  margin-bottom: -100vh !important;
+  pointer-events: none !important;
+  backdrop-filter: blur(var(--glass-blur, 14px)) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px)) !important;
+}
