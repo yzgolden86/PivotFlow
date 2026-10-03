@@ -416,6 +416,41 @@ test('高度随内容增长的列表/面板不许自己带 backdrop-filter，但
   )
 })
 
+/* ---- 9. 没有壁纸时不做毛玻璃：整屏磨砂层必须挂在 data-wallpaper 下 ---- */
+
+test('三块整屏磨砂层必须挂在 data-wallpaper="on" 下', () => {
+  // 2026-10-03：hao哥 的真机**关掉了硬件加速**（`chrome://gpu` → Rasterization:
+  // Software only, Hardware acceleration disabled），与沙箱同一条纯软件光栅路径。
+  // 这时每帧都要在 CPU 上重算一遍**整屏**高斯 —— 面积优化救不了它：
+  //   /sites 50 行、滚 40 步：现状 21~36 帧超 33ms（p90 33.3）
+  //                          只关这三块整屏层 → 0 帧（p90 16.7），逐次全 0
+  // 而没壁纸时面板背后就是纯色底，高斯≈恒等变换：逐像素最大差 2/255、超阈像素 0.000%。
+  //
+  // ⚠️ 判据必须是「**每一个**选择器里都带 `data-wallpaper="on"`」。两个坑：
+  //    ① 第 8 组那条只问「有没有 ::before 层」，把闸门摘掉之后**照样是绿的**；
+  //    ② 磨砂层是**分组选择器**（`.site-list::before, .channel-list::before { … }`），
+  //       按「整块规则」匹配会被同组里另一行洗白 —— 必须先把选择器按逗号拆开。
+  const pseudoSelectors: string[] = []
+  for (const m of clean.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/backdrop-filter:\s*blur\(var\(--glass-blur/.test(m[2])) continue
+    for (const sel of m[1].split(',')) {
+      if (/::(?:before|after)/.test(sel)) pseudoSelectors.push(sel.trim())
+    }
+  }
+  for (const name of ['records-panel', 'site-list', 'channel-list']) {
+    const sels = pseudoSelectors.filter((s) => new RegExp(`\\.${name}(?![\\w-])`).test(s))
+    assert.ok(sels.length > 0, `找不到 .${name} 的整屏磨砂层 —— 它又变回「清晰壁纸的取景窗」了`)
+    const ungated = sels.filter((s) => !/:root\[data-wallpaper="on"\]/.test(s))
+    assert.deepEqual(
+      ungated,
+      [],
+      `这些整屏磨砂层没有挂在 data-wallpaper="on" 下 —— 没有壁纸时它会白付每帧一次` +
+        `整屏高斯（实测 40 帧里 21~36 帧超 33ms）：\n  ${ungated.join('\n  ')}\n` +
+        '见 styles.css「滚动容器里的磨砂层」第 ⑤ 条。',
+    )
+  }
+})
+
 test('紧凑档的主题弹层必须收窄到能装进 184px 侧栏', () => {
   // 紧凑档侧栏 184px、锚点 `.sidebar-actions` 右边界 172；菜单 168px 时
   // `left = 172 - 168 = 4 < 12`，会触发 flyOut 挂到侧栏右边外面（实测溢出 163px）。

@@ -6287,6 +6287,24 @@ body {
 
    ⚠️ 别再用「不透明的底色」替代这里的 blur —— 那会把「面板通透」滑块对这块面
       彻底掐死（工程约定见 HANDOFF §8.2）。
+
+   ── ⑤ 三块整屏磨砂层必须挂在 `data-wallpaper="on"` 下（2026-10-03 补）────────
+   前面四条管的是「面积」，管不住「**没有 GPU 时每帧都要重算一遍整屏高斯**」。
+   实测（沙箱 = 纯软件光栅，与 hao哥 真机同一条路径：`chrome://gpu` →
+   `Rasterization: Software only, Hardware acceleration disabled`）：
+
+     /sites 50 行、滚 40 步   over33（40 帧里超 33ms 的帧数）
+       现状                     21~36 帧   p90 33.3ms   ← 就是能感觉到的「顿挫」
+       只关这三块整屏层的 blur   0 帧       p90 16.7ms   ← 顺
+     （`TaskMs` / `RasterTask` 反而是关掉后**更高** —— 工作量 ≠ 掉帧，别拿它判事。）
+
+   为什么可以只在**没有壁纸**时关：没有壁纸时面板背后是纯色底（`--bg` + 极淡的点阵），
+   对一块纯色做高斯 ≈ 恒等变换。逐像素实测（无壁纸 + 无点阵）最大差 **2/255**、
+   超阈像素 **0.000%**；连点阵一起算也只有 0.278% 的像素差 >2。
+   有壁纸时闸门放行，磨砂照旧。
+
+   ⚠️ 三条规则**都要**带这个前缀 —— 只守「有没有 ::before 层」的旧守卫在去掉闸门后
+      **照样是绿的**（见 `themeLayers.test.ts` 第 9 组，那条是专门守闸门的）。
    ══════════════════════════════════════════════════════════════════════ */
 
 .records-panel {
@@ -6295,7 +6313,7 @@ body {
   clip-path: inset(0 round var(--radius-panel, 8px));
 }
 
-.records-panel::before {
+:root[data-wallpaper="on"] .records-panel::before {
   content: "";
   position: fixed;
   top: 0;
@@ -6312,8 +6330,9 @@ body {
    两条已删（见上方「自己就是一层表面」一节）。
    这里带 `:root[data-glass="on"]` 前缀，与原来那两条一致：不透明度 100 时行本来就是
    实心的，层在实心行下面没有任何作用，不该白付一次全屏模糊。
-   （上面 `.records-panel` 那条**不带**前缀 —— 它原本就在「视觉语言 v2」那份
+   （上面 `.records-panel` 那条**不带** `data-glass` 前缀 —— 它原本就在「视觉语言 v2」那份
    **无条件生效**的名单里，保持原样，默认档的观感才逐像素不变。）
+   两个前缀都要 `data-wallpaper="on"`：理由见本节 ⑤（没壁纸时整屏高斯是纯成本）。
    `position: fixed` 是绝对定位，伪元素**不参与 grid 布局**，所以这里不需要动
    `.site-list` / `.channel-list` 的 `gap`。 */
 :root[data-glass="on"] .site-list,
@@ -6321,8 +6340,8 @@ body {
   clip-path: inset(0);
 }
 
-:root[data-glass="on"] .site-list::before,
-:root[data-glass="on"] .channel-list::before {
+:root[data-wallpaper="on"][data-glass="on"] .site-list::before,
+:root[data-wallpaper="on"][data-glass="on"] .channel-list::before {
   content: "";
   position: fixed;
   top: 0;

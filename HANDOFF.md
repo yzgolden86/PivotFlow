@@ -13,6 +13,8 @@
   `SystemSettingsPageV2.tsx` 的 HelpTip 改造；§1.19 / §1.20 是入场动画与页级裸文本字色；
   **§1.21 ~ §1.21.5 是滚动卡顿那条线 —— 诊断、两个来源、两次片段迭代、三个候选被量化否掉，
   最后在 §1.21.5 把修法从「自定义 CSS 片段」落地进了 `console/src/styles.css`**（含 `web/console` 产物重建）。
+  **§1.22 是它的续集**：hao哥 真机关掉了硬件加速（`Rasterization: Software only`），
+  面积优化救不了「每帧一次整屏 CPU 高斯」，于是给三块整屏磨砂层加了 `data-wallpaper` 闸门。
 - 签到这条线的提交（由远及近）：
 
 | Commit | 主题 |
@@ -1520,6 +1522,62 @@ hao哥 反馈「不是要在代码层面在修改吗」—— 前面几轮交付
 **复现脚本**：`.tmp-dev-ui/post_landing_verify.py`（`before` / `after` / `compare` 三档，**不注入任何 CSS**）、
 `clippath_verify.py`（落地前的五问验证）、`anim_layer_probe.py` + `anim_layer_geom.py`（动画窗口）、
 `enum_blur_classes.cjs`（枚举「自己带 blur 的类」与「滚动容器的类」的交集，用来预判守卫会不会误报）。
+
+### 1.22 【已修】真机「关掉硬件加速」后，整屏 `backdrop-filter` 变成每帧一次 CPU 高斯（本次）
+
+**触发**：hao哥 反馈「用了探针 A（`.app-shell{background-image:none}`）还是有一点卡卡的」，
+并给出决定性事实 —— **`chrome://gpu` → `Rasterization: Software only, Hardware acceleration disabled`**。
+
+**这条把之前所有「沙箱数字不可搬真机」的保留意见全部推翻**：真机与沙箱是**同一条纯软件光栅路径**
+（沙箱 `SystemInfo.getInfo` → `gpu_compositing: disabled_software` + `ANGLE ... SwiftShader`）。
+§1.21~§1.21.5 修的是「模糊**面积**」，那条只对有 GPU 的机器够用 ——
+软件光栅下**面积降到 1.0 倍视口仍然要每帧在 CPU 上重算一遍整屏高斯**。
+
+**实测**（`/sites` 50 行、页高 5315、视口 1440×900、滚 40 步；`over33` = 40 帧里超 33ms 的帧数）：
+
+| 状态 | `over33` | `p90` | 备注 |
+| --- | --- | --- | --- |
+| 探针 A + 三块整屏模糊层 | **21~36** | 33.3ms | 就是能感觉到的「顿挫」 |
+| 探针 A + 关掉那三块 | **0** | 16.7ms | 逐次全 0 |
+| 新二进制（闸门内置）vs 把闸门拆掉 | 配对差中位 **5.5 帧**，**6/6 轮方向一致** | — | 交替顺序消除顺序偏差 |
+
+⚠️ **`TaskMs` / `RasterTask` 是反的**：关掉模糊后这两个指标**更高**（319→422 / 561→683）。
+软件光栅下「工作量 ≠ 掉帧」，判事只能看帧节拍。这一条在 §1.21.4 已记过一次，这次再次印证。
+
+**修法**：三块整屏磨砂层（`.records-panel::before` / `.site-list::before` / `.channel-list::before`）
+全部挂上 `:root[data-wallpaper="on"]` 前缀 —— 没壁纸时不做毛玻璃。
+**只改这三块，不动其他毛玻璃规则**（侧栏 / 页头 / 卡片等照旧），
+所以「模糊」滑块**仍然有效**；这很重要 —— 整片关掉会让那个旋钮变成死的。
+
+**为什么没壁纸时可以关**：面板背后就是纯色 `--bg` + 极淡点阵，对纯色做高斯 ≈ 恒等变换。
+逐像素实测（无壁纸 + 探针 A）**最大差 2/255、超阈像素 0.000%**；
+连点阵一起算也只有 **0.278% 的像素差 >2、最大差 12**。有壁纸时闸门放行，磨砂照旧。
+
+**守卫**：`themeLayers.test.ts` 第 9 组。⚠️ 第一版**是坏的** —— 按「整块规则」匹配选择器，
+而磨砂层是**分组选择器**（`.site-list::before, .channel-list::before { … }`），
+闸门挂在第二行时第一行被「洗白」，摘掉闸门**照样绿**。改成**先按逗号拆选择器再逐条判**，
+并**实测确认能失败**（报出 `:root[data-glass="on"] .site-list::before`）。
+
+**本轮踩的测量坑**：`for rep: for variant:` 里如果同一轮内顺序固定，
+机器劣化会系统性偏向「先跑的那个」。改成**奇数轮正序、偶数轮逆序**，再做配对。
+另：这台机器上跑的时候**有 29 个 `chrome.exe`（hao哥 自己的浏览器）**，
+`headless_shell` 为 0（我的脚本没留残留）—— 绝对帧数不可信，**配对差才是可用的**。
+
+**根本原因仍然在浏览器侧**：`backdrop-filter` 是玻璃质感的实现方式，
+关掉硬件加速后它的代价从 GPU 着色器变成 CPU 高斯。**打开硬件加速才是正解**；
+本次修法是「没有壁纸时不白付这笔钱」，有壁纸时软件光栅下仍会掉帧。
+
+**参考物**：hao哥 想对齐的 `linux.do` 是 **Discourse** —— 帖子流**虚拟化**（DOM 里只留可见的十几帖）、
+纯色平面背景、**完全没有 `backdrop-filter`**、也没有整页渐变层。所以它在软件光栅机器上照样丝滑。
+（沙箱直连与走代理都打不开该站：DNS 解析到 `face:b00c:…`（Facebook 段）+ `116.89.243.8`，
+两条路都超时；用另一条通道才读到内容。）
+
+**复现脚本**：`.tmp-dev-ui/sr_hunt.py`（基线=探针 A，逐个砍「每帧要画的像素/合成复杂度」；
+支持 `ONLY` / `ROUTE` / `ALPHAS` / `REPEAT`，轮次交替）、
+`blur_cost_visual.py`（关掉那层模糊的**逐像素代价**）、
+`pseudo_layer_check.py`（品红法确认伪元素层是否真的渲染 + 打印祖先层叠上下文）、
+`gpu_check.py`（`SystemInfo.getInfo` 读渲染后端）、`layertree_probe.py`（合成原因）。
+结果：`sr-hunt-a40.json`、`deco-fixed.json`、`blurcost-*.png`、`magenta-*.png`。
 
 ## 2. 环境与验证（必读）
 
