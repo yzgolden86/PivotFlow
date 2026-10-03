@@ -16,7 +16,9 @@
   **§1.22 是它的续集**：hao哥 真机关掉了硬件加速（`Rasterization: Software only`），
   面积优化救不了「每帧一次整屏 CPU 高斯」，于是给三块整屏磨砂层加了 `data-wallpaper` 闸门。
   **§1.23 换了条线**：渠道 Key 的批量粘贴录入（新增 + 编辑同一个组件），
-  外加一条待择定项 —— 「健康管理里对单个 Key 检测」其实**早就有了**，已把三种可能意图交回 hao哥。
+  外加「健康管理里对单个 Key 检测」—— 核实后发现**功能自 v0.3.0 起就有**，缺的只是「看得出来」，
+  按 hao哥 择定做了**改名（复检→检测）+ 主次强调**。§1.23 里还记了两个写 CSS 的坑：
+  子选择器权重、以及**紧凑尺寸只改 `width` 漏了 `flex` 会让两行之外的两个字标签折行**。
 - 签到这条线的提交（由远及近）：
 
 | Commit | 主题 |
@@ -1581,7 +1583,7 @@ hao哥 反馈「不是要在代码层面在修改吗」—— 前面几轮交付
 `gpu_check.py`（`SystemInfo.getInfo` 读渲染后端）、`layertree_probe.py`（合成原因）。
 结果：`sr-hunt-a40.json`、`deco-fixed.json`、`blurcost-*.png`、`magenta-*.png`。
 
-### 1.23 【已做一半】渠道 Key 的批量录入（本次）；「单个 Key 检测」待 hao哥 择定
+### 1.23 渠道 Key 的批量录入 + 「单个 Key 检测」改名/显眼化（已全部落地）
 
 hao哥 的三点诉求：① 添加新渠道时能批量添加 Key；② 修改已有渠道时也能批量添加 Key；
 ③ 健康管理里支持对**单个** Key 检测，而不是只有复检。
@@ -1599,16 +1601,24 @@ hao哥 的三点诉求：① 添加新渠道时能批量添加 Key；② 修改�
 - 落表用的还是 `blankKeyDraft(defaultMultiplier)` —— 新 Key 继承渠道默认倍率、模型范围为「全部」，
   和手工点「添加 Key」完全一致，**没有第二条建行路径**。
 
-**③ 核实结果与现状不符，已暂停等择定。** 代码里「Key 健康管理」弹窗（`ChannelKeysModal.tsx`）
-**每个 Key 早就有一个独立的「复检」按钮**（`runChecks([key])`），自 `v0.3.0` 起就在；
+**③ 核实结果与现状不符 —— 功能早就有，缺的是「看得出来」。** 代码里「Key 健康管理」弹窗
+（`ChannelKeysModal.tsx`）**每个 Key 早就有一个独立的按钮**（`runChecks([key])`），自 `v0.3.0` 起就在；
 后端 `POST /admin/channels/:id/test` 也支持 `key_index` + `key_id` 精确定向，
 `admin_testing.go:670-673` 甚至专门写了注释说明「指定了 key_index 就严格用该 Key，不静默回退」，
 并回传 `tested_key_index`。也就是说**单把 Key 的检测在功能上已经完整**。
-三种可能：`(a)` hao哥 没注意到那个按钮（想改名/更显眼）；`(b)` 想要的是**不花模型费用**的
-轻量检测（现在「复检」会真调模型，`admin_testing.go:588` 会校验 `cfg.SupportsModel`，
-**没有模型可选的渠道根本测不了**）；`(c)` 想在**渠道编辑界面**里直接测，不用先保存再去健康管理。
-`(b)` 需要新增后端接口（前端拿不到明文 Key —— `HandleChannelKeyHealth` 刻意只回 `masked_key`，
-这是设计约束，不要为了图省事把明文 Key 发到前端），`(c)` 是纯前端。**已把三个选项交给 hao哥 择定。**
+我因此给了三个候选：`(a)` 没注意到那个按钮、只想改名/更显眼；`(b)` 想要**不花模型费用**的轻量检测；
+`(c)` 想在**渠道编辑界面**里直接测。**hao哥 择定 `(a)`：就是现有按钮，改名/更显眼。**
+
+于是 ③ 变成纯前端改动，已落地：
+
+- 全弹窗 `复检` → **`检测`**（批量确认文案、结果条、暂停提示、`复检模型` 标签、进度行、
+  原因兜底文案、脚注、单卡按钮，一处不剩）。
+- 单卡按钮按「有没有检测记录」区分主次：**从未检测过 → `primary-button`（实心绿、一眼看得出能点）**，
+  检测过 → `secondary-button`。`title` 两个状态各写一句（前者「这把 Key 还没有检测记录，点这里直接检测」）。
+- `aria-label` 是 `` 检测 Key #N ``，明确指向第几把。
+
+> `(b)` 若以后要做，**必须新增后端接口**：`HandleChannelKeyHealth` 刻意只回 `masked_key`，
+> 明文 Key 从来不发到前端 —— 这是设计约束，不要为了图省事把明文 Key 发下来。
 
 **踩到的权重坑（写 CSS 时最该记住的一条）**：`styles.css:2919` 有
 `.key-editor-header > div { display: grid; gap: 3px; }`，它是 **(0,1,1)**（一个类 + 一个类型）。
@@ -1617,22 +1627,50 @@ hao哥 的三点诉求：① 添加新渠道时能批量添加 Key；② 修改�
 修法是把新类也写成子选择器 `.key-editor-header > .key-editor-header-actions`（(0,2,0)）。
 **凡是往「父级已有 `> div` / `> *` / `:first-child` 规则」的容器里加包裹层，新类都必须跟着写成子选择器。**
 
+**第二个坑（更阴，靠截图才发现）—— 紧凑尺寸只改 `width/height`、漏了 `flex`。**
+`.icon-button` 基类（`styles.css:777-781`）是 `width: 34px; height: 34px; flex: 0 0 34px`。
+紧凑规则 `.key-health-actions .icon-button { width: 30px; height: 30px; }` 只改了 `width`。
+**在行里主尺寸由 `flex-basis` 决定，所以它实际还是 34px 宽**，`width: 30px` 被无视。
+后果不是「图标大了 4px」这么轻：`.key-health-actions` 的内在尺寸按 `60+6+60+6+30=162` 算，
+实际子项要 `166`，**4px 缺口被分摊到两个文字按钮上各缩 2px**；而文字 flex 项的 `min-width: auto`
+让 CJK 可以在**任意字间**断行，于是「检测」「停用」各自掉成一行一个字、按钮 44px 高 —— 看着像「没对齐」，
+根因却在两行之外的图标按钮上。修法是**宽度和 `flex` 必须一起写**（桌面 `0 0 30px`、窄屏 `0 0 40px`），
+外加 `white-space: nowrap` 兜底（两个字的标签永远不该重排）。
+**通用规则：给 flex 子项改尺寸，`width/height` 和 `flex-basis` 是两个独立旋钮，只改一个等于没改。**
+同类潜在写法还有 `styles.css:2873`（`.editable-model-row`）与 `3014`（`.advanced-rule-row`），
+同样只写了 `width/height`；**症状未复现**（要看所在容器有没有把内在尺寸算成紧的），先记着别顺手改。
+
 **验证**（全部实测，不是推断）：
-- `npm run typecheck` 两个 tsconfig 均 exit 0；`npm test` → **159 用例全过**
-  （原 148 + 新增 `channelKeyBatch.test.ts` 11 条）。
-- `vite build` 连构两次**逐字节一致**（`diff -rq web/console .tmp-dev-ui/console-build3` 为空）。
-- `web/console` 产物已重建并提交面同步：33 个 chunk 改名（**只改了 ChannelsPage 与 CSS，
+- `npm run typecheck` 两个 tsconfig 均 exit 0；`npm test` → **165 用例全过**
+  （原 148 + `channelKeyBatch.test.ts` 11 条 + `channelKeyDetectAffordance.test.ts` 6 条）。
+- `vite build` 连构两次**逐字节一致**（`diff -rq web/console .tmp-dev-ui/console-build4` 为空）。
+- `web/console` 产物已重建并提交面同步：33 个 chunk 改名（**只改了 ChannelsPage / ChannelKeysModal 与 CSS，
   但 CSS 文件名内嵌进入口 chunk → 入口 chunk 变 → 所有 import 它的 chunk 改 import 路径 → 级联改名**，
   应用逻辑零变化）+ `index.html` 的 1 处 M，**没有任何非重命名的增删**。
 - `go build -tags sonic ./...` exit 0；`go test -tags sonic -count=1 ./internal/...` → **37 包全 `ok`**。
-- **UI 用 DOM 量，不看截图**：`.tmp-dev-ui/verify_key_batch.py`，14 项断言全过 ——
-  含权重陷阱（`display` 实测 `flex`、两个按钮 `getBoundingClientRect().top` 同值）、
-  预览计数（`添加 4 把` / `将跳过重复 1 把、忽略无效 1 条`）、落表逐项（Key 与备注都对上、
-  已有行未被改写）、无横向溢出（`scrollWidth - clientWidth` ≤ 0）、以及**新增渠道弹窗里入口也在**。
+- **UI 用 DOM 量，不看截图**：
+  - `.tmp-dev-ui/verify_key_batch.py` 14 项断言全过 —— 含权重陷阱（`display` 实测 `flex`、
+    两个按钮 `getBoundingClientRect().top` 同值）、预览计数（`添加 4 把` / `将跳过重复 1 把、忽略无效 1 条`）、
+    落表逐项（Key 与备注都对上、已有行未被改写）、无横向溢出、**新增渠道弹窗里入口也在**
+    （这一步必须先 `page.goto` 整页重载 —— 编辑弹窗还挂在 DOM 上会拦截点击）。
+  - `.tmp-dev-ui/verify_key_detect.py` **22 项断言全过** —— 含「点第 2 张卡片的检测，请求体里
+    `key_index` 必须正好是 1、`key_id` 正好是 12」（这是「对单个 Key 检测」的实质，退化成批量就会挂）、
+    primary/secondary 的填充差异（**必须比 `backgroundImage`，`primary` 用的是 `linear-gradient`，
+    `backgroundColor` 两边都是透明**）、标签单行、图标 30px 且 `flex: 0 0 30px`、本行无缺口。
+  - `.tmp-dev-ui/verify_narrow.py` 窄屏（480px）6 项断言全过 —— 文字按钮 40px 等高不折行、图标 40px 且 flex 同步。
 
-**复现脚本**：`.tmp-dev-ui/verify_key_batch.py`（`APP_PASSWORD` 从环境变量读；
-日志拿不到明文 Key，所以脚本先手工加一行 `sk-existing-1` 再粘贴一批含重复项的文本）。
-截图 `key-batch-edit.png` / `key-batch-new.png`。
+**量「标签有没有折行」的正确工具是 `Range.getClientRects()`**（文本节点一行一个 rect，数个数），
+**不是 `Element.scrollWidth`** —— flex 子项的 `scrollWidth` 被盒子宽度夹住，实测每个按钮
+`scrollW == clientW`，标签折成两行它一点也看不出来。同理，**判断「是谁造成的」要用同页变体对比**
+（注入一段 `<style>` 再重量，只有 CSS 变、DOM 不变）：本轮正是靠它证明折行**在改动之前就存在**，
+且排除了「actions 的 flex 基准」与「footer 的 flex-wrap」两个错误猜想。
+
+**复现脚本**：`.tmp-dev-ui/verify_key_batch.py`、`verify_key_detect.py`、`verify_narrow.py`
+（`APP_PASSWORD` 从环境变量读；日志拿不到明文 Key，所以批量脚本先手工加一行 `sk-existing-1` 再粘贴含重复项的文本；
+检测脚本用 `page.route` 拦掉 `/key-health` 与 `/test`，既不碰库也不花模型费用）。
+诊断脚本 `probe_wrap3.py`（逐按钮 dump 计算样式 + 子节点/文本行盒）、`probe_fix.py`（同页变体对比候选修法）。
+截图 `key-batch-edit.png` / `key-batch-new.png` / `key-detect-modal.png` / `key-detect-card-crop.png` /
+`key-detect-narrow-480.png`。
 
 ## 2. 环境与验证（必读）
 

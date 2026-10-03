@@ -65,7 +65,7 @@ export default function ChannelKeysModal({ channelId, close, changed }: { channe
 
   const runChecks = async (targets: ChannelKeyHealthItem[]) => {
     if (locked.current || !model || !targets.length) return
-    if (targets.length > 1 && !window.confirm(`将使用 ${model} 逐个复检 ${targets.length} 个 Key，可能产生少量模型费用。继续吗？`)) return
+    if (targets.length > 1 && !window.confirm(`将使用 ${model} 逐个检测 ${targets.length} 个 Key，可能产生少量模型费用。继续吗？`)) return
     locked.current = true; stop.current = false
     setBusy(true); setError(''); setNotice(''); setProgress({ done: 0, total: targets.length })
     let done = 0, healthy = 0, unobserved = 0
@@ -86,12 +86,12 @@ export default function ChannelKeysModal({ channelId, close, changed }: { channe
         setProgress({ done, total: targets.length })
       }
       if (mounted.current) {
-        setNotice(`${stop.current ? '已停止后续复检。' : '复检结束。'}已检查 ${done} 个，正常 ${healthy} 个，需关注 ${done - healthy - unobserved} 个。${unobserved ? `另有 ${unobserved} 个因本地限制或配置问题未取得检测结果，保留原状态。` : ''}`)
+        setNotice(`${stop.current ? '已停止后续检测。' : '检测结束。'}已检查 ${done} 个，正常 ${healthy} 个，需关注 ${done - healthy - unobserved} 个。${unobserved ? `另有 ${unobserved} 个因本地限制或配置问题未取得检测结果，保留原状态。` : ''}`)
         await refresh()
         changed()
       }
     } catch (reason) {
-      if (mounted.current) setError(`复检已暂停：${siteErrorMessage(reason)}。已完成的结果已保留，请刷新后重试。`)
+      if (mounted.current) setError(`检测已暂停：${siteErrorMessage(reason)}。已完成的结果已保留，请刷新后重试。`)
     } finally {
       request.current = null; locked.current = false
       if (mounted.current) { setBusy(false); setChecking(null) }
@@ -125,15 +125,15 @@ export default function ChannelKeysModal({ channelId, close, changed }: { channe
 
   return <Modal title={`Key 健康管理${snapshot ? ` · ${snapshot.channel_name}` : ''}`} close={close} wide>
     <div className="key-health-panel" ref={bodyRef}>
-      <div className="key-health-intro"><span className="key-health-emblem"><ShieldCheck size={23} aria-hidden="true" /></span><div className="heading-with-hint"><strong>找到需要处理的 Key</strong><HelpTip label="Key 健康状态" text="正常调用会自动更新状态；未使用的 Key 可手动复检。检测结果与停用、冷却分别显示。" /></div><button type="button" className="icon-button icon-button--surface" aria-label="刷新 Key 状态" title="只读取状态，不发起模型调用" disabled={busy} onClick={() => void reload()}><RefreshCw size={16} /></button></div>
+      <div className="key-health-intro"><span className="key-health-emblem"><ShieldCheck size={23} aria-hidden="true" /></span><div className="heading-with-hint"><strong>找到需要处理的 Key</strong><HelpTip label="Key 健康状态" text="正常调用会自动更新状态；未使用的 Key 可手动检测。检测结果与停用、冷却分别显示。" /></div><button type="button" className="icon-button icon-button--surface" aria-label="刷新 Key 状态" title="只读取状态，不发起模型调用" disabled={busy} onClick={() => void reload()}><RefreshCw size={16} /></button></div>
       {error && <div className="key-health-message key-health-message--error" role="alert"><AlertCircle size={16} /><span>{error}</span></div>}
       {notice && <div className="key-health-message" role="status"><CheckCircle2 size={16} /><span>{notice}</span></div>}
       {loading ? <LoadingState label="正在读取 Key 状态" /> : !snapshot ? <ErrorState message="Key 状态暂时不可用" retry={() => void reload()} /> : <>
         <div className="key-health-summary" role="group" aria-label="按 Key 状态筛选">{filters.map((item) => <button type="button" key={item.id} aria-pressed={filter === item.id} className={`${filter === item.id ? 'is-active' : ''} ${item.id === 'attention' && item.count ? 'has-issues' : ''}`} onClick={() => setFilter(item.id)} disabled={busy}><span>{item.label}</span><strong>{item.count}</strong></button>)}</div>
         <div className="key-health-probe">
-          <div className="key-health-probe-controls"><label>复检模型<select aria-label="复检模型" value={model} disabled={busy} onChange={(event) => setModel(event.target.value)}>{!snapshot.models.length && <option value="">请先为渠道配置模型</option>}{snapshot.models.map((name) => <option value={name} key={name}>{name}</option>)}</select></label><label>请求协议<select aria-label="复检请求协议" value={protocol} disabled={busy} onChange={(event) => setProtocol(event.target.value)}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option><option value="codex">Codex</option></select></label><button type="button" className="primary-button" disabled={busy || !model || !targets.length} onClick={() => void runChecks(targets)}><Play size={14} />复检当前筛选 ({targets.length})</button></div>
-          <p><Clock3 size={13} aria-hidden="true" />会实际调用所选模型，可能产生费用。批量每次最多 20 个，逐个执行并跳过已停用 Key；已停用 Key 仍可单独复检。</p>
-          {checking !== null && <div className="key-health-progress" role="status" aria-live="polite"><RefreshCw size={14} className="spin" /><span>正在复检 · 已完成 {progress.done}/{progress.total}</span><button className="secondary-button" type="button" onClick={() => { stop.current = true; setNotice('将完成当前请求，然后停止后续复检。') }}><Square size={12} />停止后续</button></div>}
+          <div className="key-health-probe-controls"><label>检测模型<select aria-label="检测模型" value={model} disabled={busy} onChange={(event) => setModel(event.target.value)}>{!snapshot.models.length && <option value="">请先为渠道配置模型</option>}{snapshot.models.map((name) => <option value={name} key={name}>{name}</option>)}</select></label><label>请求协议<select aria-label="检测请求协议" value={protocol} disabled={busy} onChange={(event) => setProtocol(event.target.value)}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option><option value="codex">Codex</option></select></label><button type="button" className="primary-button" disabled={busy || !model || !targets.length} onClick={() => void runChecks(targets)}><Play size={14} />检测当前筛选 ({targets.length})</button></div>
+          <p><Clock3 size={13} aria-hidden="true" />会实际调用所选模型，可能产生费用。批量每次最多 20 个，逐个执行并跳过已停用 Key；已停用 Key 仍可单独检测。</p>
+          {checking !== null && <div className="key-health-progress" role="status" aria-live="polite"><RefreshCw size={14} className="spin" /><span>正在检测 · 已完成 {progress.done}/{progress.total}</span><button className="secondary-button" type="button" onClick={() => { stop.current = true; setNotice('将完成当前请求，然后停止后续检测。') }}><Square size={12} />停止后续</button></div>}
         </div>
         {visible.length === 0 ? <EmptyState label={keys.length ? '此筛选下没有 Key' : '此渠道尚未配置 Key，请在渠道编辑中添加'} /> : <div className="key-health-list">{visible.map((key) => {
           const status = keyHealthLabel(key)
@@ -142,11 +142,11 @@ export default function ChannelKeysModal({ channelId, close, changed }: { channe
           const multiplier = key.cost_multiplier ?? 1
           return <article className={`key-health-card${key.disabled ? ' is-disabled' : ''}`} key={key.id} aria-label={`Key #${key.key_index + 1}`}>
             <div className="key-health-card-main"><span className="key-health-key-icon"><KeyRound size={17} aria-hidden="true" /></span><div className="key-health-identity"><strong>Key #{key.key_index + 1}<code>{key.masked_key}</code></strong><span title={key.note}>{key.note || '未添加备注'}</span></div><div className="key-health-badges"><span className={`status-badge status-badge--${status.tone}`}>{status.label}</span><span className="status-badge status-badge--muted">{scopeLabel}</span><span className="status-badge status-badge--muted">倍率 ×{multiplier}</span>{key.disabled && <span className="status-badge status-badge--muted">已停用</span>}{cooling && <span className="status-badge status-badge--warning" title={`冷却至 ${new Date(key.cooldown_until * 1000).toLocaleString()}`}>冷却中</span>}</div></div>
-            <p className="key-health-reason">{key.health.reason || '尚无检测记录，不代表可用或失效。可点击复检，或等待实际请求。'}</p>
-            <footer><span className="key-health-time">{key.health.checked_at ? <>最近检测 <time dateTime={new Date(key.health.checked_at).toISOString()}>{new Date(key.health.checked_at).toLocaleString()}</time>{key.health.status_code > 0 && <small>状态码 {key.health.status_code}</small>}</> : '最近检测 —'}</span><div className="key-health-actions"><button className="secondary-button" type="button" disabled={busy || !model} aria-label={`复检 Key #${key.key_index + 1}`} onClick={() => void runChecks([key])}><RefreshCw size={13} className={checking === key.id ? 'spin' : ''} />复检</button><button className="secondary-button" type="button" disabled={busy} aria-label={`${key.disabled ? '启用' : '停用'} Key #${key.key_index + 1}`} onClick={() => void manage(key, false)}><Power size={13} />{key.disabled ? '启用' : '停用'}</button><button className="icon-button icon-button--surface danger-button" type="button" disabled={busy} title="删除此 Key" aria-label={`删除 Key #${key.key_index + 1}`} onClick={() => void manage(key, true)}><Trash2 size={15} /></button></div></footer>
+            <p className="key-health-reason">{key.health.reason || '尚无检测记录，不代表可用或失效。可点击检测，或等待实际请求。'}</p>
+            <footer><span className="key-health-time">{key.health.checked_at ? <>最近检测 <time dateTime={new Date(key.health.checked_at).toISOString()}>{new Date(key.health.checked_at).toLocaleString()}</time>{key.health.status_code > 0 && <small>状态码 {key.health.status_code}</small>}</> : '最近检测 —'}</span><div className="key-health-actions"><button className={key.health.checked_at ? 'secondary-button' : 'primary-button'} type="button" disabled={busy || !model} title={key.health.checked_at ? '重新检测这一把 Key（会实际调用模型）' : '这把 Key 还没有检测记录，点这里直接检测'} aria-label={`检测 Key #${key.key_index + 1}`} onClick={() => void runChecks([key])}><RefreshCw size={13} className={checking === key.id ? 'spin' : ''} />检测</button><button className="secondary-button" type="button" disabled={busy} aria-label={`${key.disabled ? '启用' : '停用'} Key #${key.key_index + 1}`} onClick={() => void manage(key, false)}><Power size={13} />{key.disabled ? '启用' : '停用'}</button><button className="icon-button icon-button--surface danger-button" type="button" disabled={busy} title="删除此 Key" aria-label={`删除 Key #${key.key_index + 1}`} onClick={() => void manage(key, true)}><Trash2 size={15} /></button></div></footer>
           </article>
         })}</div>}
-        <p className="key-health-footnote">仅代表最近一次请求结果，不查询精确余额，也不保证所有模型可用。限流、权限或网络问题不等于 Key 失效；冷却结束不会自动变为正常，复检成功后才更新。</p>
+        <p className="key-health-footnote">仅代表最近一次请求结果，不查询精确余额，也不保证所有模型可用。限流、权限或网络问题不等于 Key 失效；冷却结束不会自动变为正常，检测成功后才更新。</p>
       </>}
     </div>
   </Modal>

@@ -5177,8 +5177,21 @@ body { font-size: 14px; line-height: 1.5; }
 .key-health-time { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--text-muted); font-size: 11px; }
 .key-health-time small { margin-left: 4px; font-size: inherit; }
 .key-health-actions { display: flex; align-items: center; gap: 6px; }
-.key-health-actions .secondary-button { min-height: 30px; padding: 4px 8px; font-size: 11px; }
-.key-health-actions .icon-button { width: 30px; height: 30px; }
+/* 紧凑尺寸必须同时覆盖 primary：未检测过的 Key 那把「检测」按钮是 primary-button
+   （primary 默认 min-height 36px、secondary 34px），只写 secondary 会让同一行里
+   两个按钮差 6px 高、基线对不齐。 */
+.key-health-actions .secondary-button, .key-health-actions .primary-button { min-height: 30px; padding: 4px 8px; font-size: 11px; white-space: nowrap; }
+/* 还要把边框也拉平：primary 是 border:0、secondary 是 border:1px solid，同一条紧凑
+   规则下两者仍差 2px（实测 42 vs 44）。给 primary 补一条透明边框即可等高。 */
+.key-health-actions .primary-button { border: 1px solid transparent; }
+/* 图标按钮必须连 flex 一起改，不能只写 width/height。
+   .icon-button 基类是 `flex: 0 0 34px`（styles.css:781），在**行**里主尺寸由 flex-basis
+   决定，所以只写 width:30px 时它实际还是 34px 宽。后果不是「图标大了 4px」这么轻：
+   本行的内在尺寸按 60+6+60+6+30=162 算，实际子项要 166，4px 的缺口被分摊到两个
+   文字按钮上各缩 2px；而文字 flex 项的 min-width:auto 让 CJK 可以在任意字间断行，
+   于是「检测」「停用」各自掉成一行一个字，按钮 44px 高、两行，看着像没对齐。
+   量法：Range.getClientRects() 数文本行盒（Element.scrollWidth 被盒子夹住，量不出来）。 */
+.key-health-actions .icon-button { width: 30px; height: 30px; flex: 0 0 30px; }
 .key-health-footnote { margin: 14px 1px 0; color: var(--text-muted); font-size: 11px; line-height: 1.8; }
 .key-health-message { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 12px; padding: 10px; border-radius: 6px; color: var(--green-text); background: var(--green-soft); font-size: 12px; line-height: 1.7; }
 .key-health-message svg { flex-shrink: 0; margin-top: 2px; }
@@ -5187,8 +5200,8 @@ body { font-size: 14px; line-height: 1.5; }
 .key-health-panel :focus-visible, .channel-key-health-link:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
 @media (max-width: 600px) {
   .key-health-panel { padding: 13px; }
-  .key-health-actions .secondary-button { min-height: 40px; padding-inline: 12px; }
-  .key-health-actions .icon-button { width: 40px; height: 40px; }
+  .key-health-actions .secondary-button, .key-health-actions .primary-button { min-height: 40px; padding-inline: 12px; }
+  .key-health-actions .icon-button { width: 40px; height: 40px; flex: 0 0 40px; }
   .key-health-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
   .key-health-summary button { min-height: 50px; }
   .key-health-probe-controls { grid-template-columns: minmax(0, 1fr) 105px; }
