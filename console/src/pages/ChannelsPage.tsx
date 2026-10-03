@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Copy, FileUp, FlaskConical, Layers3, Pencil, Plus, Power, RefreshCw, Route, Search, Settings2, Sparkles, Trash2 } from 'lucide-react'
+import { ClipboardPaste, Copy, FileUp, FlaskConical, Layers3, Pencil, Plus, Power, RefreshCw, Route, Search, Settings2, Sparkles, Trash2 } from 'lucide-react'
 import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, fetchOAuthUsage, getAuthTokens, getChannelEditor, getChannelRouteDiagnostics, getChannels, getSiteChannelBindings, getSiteInventory, importOAuthCredentials, peekChannels, restoreChannelSiteSync, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
 import type { AuthToken, Channel, ChannelBodyRuleAction, ChannelEditorSnapshot, ChannelHeaderRuleAction, ChannelModel, ChannelMutation, ChannelRequestRules, ChannelRouteDiagnostic, ChannelURL, OAuthUsageSummary, RouteDiagnosticResponse, Site, SiteAccount, SiteChannelBinding } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
 import { Modal, siteErrorMessage, StatusBadge } from './siteShared'
 import ChannelKeysModal from './ChannelKeysModal'
+import { parseChannelKeyBatch } from './channelKeyBatch'
 import HelpTip from '../components/HelpTip'
 import SourceMenu from '../components/SourceMenu'
 
@@ -641,6 +642,23 @@ function KeyRowsEditor({ rows, models, defaultMultiplier, onChange }: { rows: Ke
   const update = (index: number, patch: Partial<KeyDraft>) => onChange(rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row))
   const remove = (index: number) => onChange(rows.filter((_, rowIndex) => rowIndex !== index))
   const add = () => onChange([...rows, blankKeyDraft(defaultMultiplier)])
+  // 批量粘贴：新增渠道和编辑已有渠道走的是同一个组件，所以两处同时具备。
+  // 解析与去重在 channelKeyBatch.ts 里，有独立单测。
+  const [batchOpen, setBatchOpen] = useState(false)
+  const [batchText, setBatchText] = useState('')
+  const [batchNotice, setBatchNotice] = useState('')
+  const batchPreview = useMemo(() => parseChannelKeyBatch(batchText, rows.map((row) => row.api_key)), [batchText, rows])
+  const applyBatch = () => {
+    const { entries, duplicate, invalid } = parseChannelKeyBatch(batchText, rows.map((row) => row.api_key))
+    if (!entries.length) {
+      setBatchNotice(duplicate || invalid ? `没有新增：重复 ${duplicate} 把、无效 ${invalid} 条。` : '没有识别到 Key。')
+      return
+    }
+    onChange([...rows, ...entries.map((entry) => ({ ...blankKeyDraft(defaultMultiplier), api_key: entry.api_key, note: entry.note }))])
+    setBatchText('')
+    const skipped = [duplicate ? `跳过重复 ${duplicate} 把` : '', invalid ? `忽略无效 ${invalid} 条` : ''].filter(Boolean)
+    setBatchNotice(`已添加 ${entries.length} 把${skipped.length ? `，${skipped.join('，')}` : ''}。`)
+  }
   const setScopeMode = (index: number, row: KeyDraft, mode: KeyScopeMode) => {
     if (mode === 'all') { update(index, { allowed_models: [], model_scope_empty: false }); return }
     if (mode === 'paused') { update(index, { model_scope_empty: true }); return }
@@ -655,8 +673,17 @@ function KeyRowsEditor({ rows, models, defaultMultiplier, onChange }: { rows: Ke
   }
 
   return <section className="key-editor-section">
-    <header className="key-editor-header"><div><strong>渠道 API Keys</strong><span>{rows.length ? `${rows.length} 把 Key · 可单独限制模型和成本` : '还没有添加 Key'}</span></div><button className="text-button" type="button" onClick={add}><Plus size={14} />添加 Key</button></header>
+    <header className="key-editor-header"><div><strong>渠道 API Keys</strong><span>{rows.length ? `${rows.length} 把 Key · 可单独限制模型和成本` : '还没有添加 Key'}</span></div><div className="key-editor-header-actions"><button className="text-button" type="button" aria-expanded={batchOpen} onClick={() => { setBatchOpen((open) => !open); setBatchNotice('') }}><ClipboardPaste size={14} />批量粘贴</button><button className="text-button" type="button" onClick={add}><Plus size={14} />添加 Key</button></div></header>
     <div className="key-editor-help">模型范围留空表示允许该渠道的全部模型；每把 Key 独立计费，新 Key 默认继承渠道默认倍率，0 表示免费。</div>
+    {batchOpen && <div className="key-batch-panel">
+      <label className="key-batch-field"><span>粘贴 Key 列表</span><textarea rows={4} value={batchText} onChange={(event) => { setBatchText(event.target.value); setBatchNotice('') }} placeholder={'每行一个，例如：\nsk-aaa\nsk-bbb | 主账号\nsk-ccc, sk-ddd | 备用'} aria-label="批量粘贴 API Key" /></label>
+      <div className="key-batch-actions">
+        <span className="key-batch-hint">每行一个；一行多把用逗号或分号分隔；Key 后面用 | 写备注。与已有 Key 重复的会自动跳过。</span>
+        <div className="key-batch-buttons"><button className="secondary-button" type="button" onClick={() => { setBatchOpen(false); setBatchText(''); setBatchNotice('') }}>收起</button><button className="primary-button" type="button" disabled={!batchPreview.entries.length} onClick={applyBatch}><Plus size={14} />添加 {batchPreview.entries.length} 把</button></div>
+      </div>
+      {!batchNotice && (batchPreview.duplicate > 0 || batchPreview.invalid > 0) && <p className="key-batch-skip">将跳过重复 {batchPreview.duplicate} 把、忽略无效 {batchPreview.invalid} 条。</p>}
+      {batchNotice && <p className="key-batch-notice" role="status">{batchNotice}</p>}
+    </div>}
     {rows.length ? <div className="key-editor-list">{rows.map((row, index) => {
       const restricted = row.allowed_models.length > 0
       const paused = row.model_scope_empty

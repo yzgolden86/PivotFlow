@@ -15,6 +15,8 @@
   最后在 §1.21.5 把修法从「自定义 CSS 片段」落地进了 `console/src/styles.css`**（含 `web/console` 产物重建）。
   **§1.22 是它的续集**：hao哥 真机关掉了硬件加速（`Rasterization: Software only`），
   面积优化救不了「每帧一次整屏 CPU 高斯」，于是给三块整屏磨砂层加了 `data-wallpaper` 闸门。
+  **§1.23 换了条线**：渠道 Key 的批量粘贴录入（新增 + 编辑同一个组件），
+  外加一条待择定项 —— 「健康管理里对单个 Key 检测」其实**早就有了**，已把三种可能意图交回 hao哥。
 - 签到这条线的提交（由远及近）：
 
 | Commit | 主题 |
@@ -1578,6 +1580,59 @@ hao哥 反馈「不是要在代码层面在修改吗」—— 前面几轮交付
 `pseudo_layer_check.py`（品红法确认伪元素层是否真的渲染 + 打印祖先层叠上下文）、
 `gpu_check.py`（`SystemInfo.getInfo` 读渲染后端）、`layertree_probe.py`（合成原因）。
 结果：`sr-hunt-a40.json`、`deco-fixed.json`、`blurcost-*.png`、`magenta-*.png`。
+
+### 1.23 【已做一半】渠道 Key 的批量录入（本次）；「单个 Key 检测」待 hao哥 择定
+
+hao哥 的三点诉求：① 添加新渠道时能批量添加 Key；② 修改已有渠道时也能批量添加 Key；
+③ 健康管理里支持对**单个** Key 检测，而不是只有复检。
+
+**①② 已落地**（`console/src/pages/ChannelsPage.tsx` 的 `KeyRowsEditor` + 新纯模块
+`console/src/pages/channelKeyBatch.ts`）。**新增与编辑走的是同一个组件**，所以一处改动两处同时生效 ——
+不必再找第二个入口。原来只有「添加 Key」按钮（点一次加一行、逐把粘贴），几十把 Key 要点几十次。
+
+- 入口：Key 列表标题右侧新增「批量粘贴」，展开一块 textarea。
+- 语法：每行一条；`Key | 备注`；一行多把用 `,` `;` `，` `；` 分隔并共用同行备注；
+  `#` 开头的整行是注释；首尾成对引号会被剥掉（从 JSON / 表格复制常带）。
+  **`|` 固定是备注分隔符**，所以 `sk-a|sk-b` 是「一把 Key + 备注 sk-b」，不是两把。
+- 去重与非法项**不报错只计数**：粘贴时「一半是已存在的 Key」是常态，一报错用户就得自己回头比对。
+  计数在确认前就有预览（琥珀色提示条），确认后变绿色结果条。
+- 落表用的还是 `blankKeyDraft(defaultMultiplier)` —— 新 Key 继承渠道默认倍率、模型范围为「全部」，
+  和手工点「添加 Key」完全一致，**没有第二条建行路径**。
+
+**③ 核实结果与现状不符，已暂停等择定。** 代码里「Key 健康管理」弹窗（`ChannelKeysModal.tsx`）
+**每个 Key 早就有一个独立的「复检」按钮**（`runChecks([key])`），自 `v0.3.0` 起就在；
+后端 `POST /admin/channels/:id/test` 也支持 `key_index` + `key_id` 精确定向，
+`admin_testing.go:670-673` 甚至专门写了注释说明「指定了 key_index 就严格用该 Key，不静默回退」，
+并回传 `tested_key_index`。也就是说**单把 Key 的检测在功能上已经完整**。
+三种可能：`(a)` hao哥 没注意到那个按钮（想改名/更显眼）；`(b)` 想要的是**不花模型费用**的
+轻量检测（现在「复检」会真调模型，`admin_testing.go:588` 会校验 `cfg.SupportsModel`，
+**没有模型可选的渠道根本测不了**）；`(c)` 想在**渠道编辑界面**里直接测，不用先保存再去健康管理。
+`(b)` 需要新增后端接口（前端拿不到明文 Key —— `HandleChannelKeyHealth` 刻意只回 `masked_key`，
+这是设计约束，不要为了图省事把明文 Key 发到前端），`(c)` 是纯前端。**已把三个选项交给 hao哥 择定。**
+
+**踩到的权重坑（写 CSS 时最该记住的一条）**：`styles.css:2919` 有
+`.key-editor-header > div { display: grid; gap: 3px; }`，它是 **(0,1,1)**（一个类 + 一个类型）。
+我新加的按钮组如果只写 `.key-editor-header-actions { display: flex }` 就是 **(0,1,0)**，
+**会被它接管**：flex 行变成 grid 列，两个按钮上下叠起来。源码 diff 里完全看不出来。
+修法是把新类也写成子选择器 `.key-editor-header > .key-editor-header-actions`（(0,2,0)）。
+**凡是往「父级已有 `> div` / `> *` / `:first-child` 规则」的容器里加包裹层，新类都必须跟着写成子选择器。**
+
+**验证**（全部实测，不是推断）：
+- `npm run typecheck` 两个 tsconfig 均 exit 0；`npm test` → **159 用例全过**
+  （原 148 + 新增 `channelKeyBatch.test.ts` 11 条）。
+- `vite build` 连构两次**逐字节一致**（`diff -rq web/console .tmp-dev-ui/console-build3` 为空）。
+- `web/console` 产物已重建并提交面同步：33 个 chunk 改名（**只改了 ChannelsPage 与 CSS，
+  但 CSS 文件名内嵌进入口 chunk → 入口 chunk 变 → 所有 import 它的 chunk 改 import 路径 → 级联改名**，
+  应用逻辑零变化）+ `index.html` 的 1 处 M，**没有任何非重命名的增删**。
+- `go build -tags sonic ./...` exit 0；`go test -tags sonic -count=1 ./internal/...` → **37 包全 `ok`**。
+- **UI 用 DOM 量，不看截图**：`.tmp-dev-ui/verify_key_batch.py`，14 项断言全过 ——
+  含权重陷阱（`display` 实测 `flex`、两个按钮 `getBoundingClientRect().top` 同值）、
+  预览计数（`添加 4 把` / `将跳过重复 1 把、忽略无效 1 条`）、落表逐项（Key 与备注都对上、
+  已有行未被改写）、无横向溢出（`scrollWidth - clientWidth` ≤ 0）、以及**新增渠道弹窗里入口也在**。
+
+**复现脚本**：`.tmp-dev-ui/verify_key_batch.py`（`APP_PASSWORD` 从环境变量读；
+日志拿不到明文 Key，所以脚本先手工加一行 `sk-existing-1` 再粘贴一批含重复项的文本）。
+截图 `key-batch-edit.png` / `key-batch-new.png`。
 
 ## 2. 环境与验证（必读）
 

@@ -2949,6 +2949,19 @@ input[type="password"]::-ms-clear { display: none; width: 0; height: 0; }
 .key-editor-empty strong { font-size: 12px; }
 .key-editor-empty small { color: var(--text-muted); font-size: 11px; }
 
+/* 批量粘贴 Key。注意 .key-editor-header > div 是 (0,1,1)，这里的按钮组必须写成
+   子选择器 (0,2,0) 才压得住它自带的 display:grid/gap:3px，否则两个按钮会上下叠成一列。 */
+.key-editor-header > .key-editor-header-actions { display: flex; align-items: center; gap: 4px; }
+.key-batch-panel { display: grid; gap: 9px; padding: 11px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--blue) 26%, var(--border)); border-radius: 9px; }
+.key-batch-field { display: grid; min-width: 0; gap: 6px; color: var(--text-secondary); font-size: 11px; font-weight: 700; }
+.key-batch-field textarea { width: 100%; min-width: 0; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.6; }
+.key-batch-actions { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.key-batch-hint { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 16px; }
+/* 跳过/忽略计数要显眼：粘贴几十把 Key 时，「有几把没进去」比「怎么用」更重要。 */
+.key-batch-skip { margin: 0; padding: 7px 9px; color: var(--amber-text); background: var(--amber-soft); border: 1px solid color-mix(in srgb, var(--amber) 24%, var(--border)); border-radius: 7px; font-size: 11px; line-height: 16px; }
+.key-batch-buttons { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.key-batch-notice { margin: 0; padding: 7px 9px; color: var(--green-text); background: var(--green-soft); border: 1px solid color-mix(in srgb, var(--green) 24%, var(--border)); border-radius: 7px; font-size: 11px; line-height: 16px; }
+
 .advanced-request-settings {
   overflow: hidden;
   background: color-mix(in srgb, var(--surface-muted) 78%, var(--surface));
