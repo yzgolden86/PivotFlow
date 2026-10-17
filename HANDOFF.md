@@ -22,7 +22,9 @@
   **§1.24 接着 §1.22 那条线**：把 `.app-shell` 装饰背景的杠杆落到代码 —— 只关掉**点阵层**
   （`--app-bg-dots: none`，一层「几乎看不见的织理」却铺满页高），p90 **33.3 → 16.7ms**、观感在噪声量级；
   并**纠正**上一轮把 `LayerTree` 那层 `1419×5315` 当成装饰的错归因（它是页面自身的滚动内容层）。
-  **发版（稳定版 `v0.4.5`）按 hao哥 指示暂缓**，等他把手头这条线看完。
+  以上已随 **`v0.4.5` 发布**（tag 已推）。**§1.25 是另一条线**：站点偶发「browser verification
+  is required」= **阿里云 WAF 速率触发**（不是账号问题），已修三项 —— 刷新先直连（2→1 次）、
+  token-only 变体、文案说清真实原因。
 - 签到这条线的提交（由远及近）：
 
 | Commit | 主题 |
@@ -1748,6 +1750,70 @@ hao哥 的三点诉求：① 添加新渠道时能批量添加 Key；② 修改�
 `deco-pseudo`：`isolation: isolate`，**不是** `transform`/`filter`，后者会给 `fixed` 后代造包含块）、
 `deco_attrib.py`（合成层归因，抓出上面那个错归因的）、`verify_dots_off.py`（落地后 7 项断言）。
 结果：`deco-v3.json`、`verify-dots-off.json`；截图 `deco-compare-4up.png`（1:1 未缩放裁切）。
+
+### 1.25 「browser verification is required」= 阿里云 WAF 速率触发，不是账号问题（已定位 + 已修 1/2/3）
+
+**现象**：agentrouter.org / ps.air-outer.com（同一站的国际 / 国内镜像）有 5 个账号，2 个能刷新余额，
+3 个长期报「该站点需要打开浏览器完成验证…browser verification is required」；
+hao哥 用浏览器直接访问并不触发验证，而且过一会儿**自己就好了**。
+
+**实测结论**：站点在**阿里云 WAF** 后面（正常响应带 `Set-Cookie: acw_tc=…; Max-Age=1800`
+与 `X-Oneapi-Request-Id`，是 NewAPI 部署）。`ps.air-outer.com` 直连 `8.214.161.192` 正常；
+`agentrouter.org` 在本环境被 **DNS 污染**到 `31.13.95.35`（Facebook 段），直连超时、沙箱代理 CONNECT 502，
+**只能测国内镜像**。
+
+| 观察 | 结果 |
+| --- | --- |
+| 连续 30 次 `GET /api/user/self`（有效 token + uid） | **前 4 次 JSON，第 5~30 次全是 HTML** |
+| 挑战页特征 | `text/html`、16125 B、`<meta name="aliyun_waf_aa">` / `aliyun_waf_bb` + `/* v2.0.1 */` JS |
+| 是否自愈 | **粘性**：几分钟后仍全是挑战页；要等 WAF 窗口过期才恢复 |
+| 错 token / 错 uid / 不带认证 | **全部 `application/json` 401**，从不返回 HTML |
+
+**所以 `browser_required` 只可能来自「真的拿到了 HTML」**，与凭证错误无关。
+
+**为什么正好「2 个成功、3 个失败」**：`NewAPI.RefreshAccount` 每次打 **2 次** `/api/user/self`
+（`ResolveManagementCredentials` 里的 verify + 主体那次）。5 个账号 ≈ **10 次**请求，
+而阈值约 **4 次** → 前 2 个账号（4 次）成功，**从第 3 个起全部撞挑战页**。
+「过一会儿又好了」= WAF 窗口过期。
+
+**PivotFlow 侧的三个放大因素**（均已核实）：
+1. **全仓没有 cookie jar**（`cookiejar|Jar|CookieJar` 零命中）→ WAF 下发的 `acw_tc` 被丢弃，
+   每个请求都像新客户端，更容易被挑战。
+2. `ResolveManagementCredentials` 遇 `CodeBrowserRequired` **立即 return**：不重试，也不回退到下一个
+   凭证变体。而 `managementCredentialVariants` 在**有 Cookie 时只返回该变体** → 账号若存了过期 Cookie
+   会**永久卡死**且无法回退到 token。
+3. `UserID` 已知时那次 verify 是**冗余**的（主体请求本来就会校验并带回 `id`）。
+
+**文案是错的**：「打开浏览器完成验证」做不到 —— PivotFlow 跑在 **VPS** 上，你在自己电脑过挑战
+不会把 cookie 给到 VPS 的请求；`acw_sc__v2` 还是 JS 算出来、按客户端绑定的。
+
+**不做的事**：不逆 JS 算 `acw_sc__v2`（那是规避第三方站点的防护）。合法做法只有：
+降速、退避重试、复用 WAF 自己下发的 cookie、修掉凭证变体死锁。
+
+### 1.25.1 已落地的三项（hao哥 2026-10-17 择定「1+2+3」，4/5 暂不做）
+
+| # | 改动 | 位置 | 效果 |
+| --- | --- | --- | --- |
+| 1 | 余额刷新**先直接打** `/api/user/self`，只在 `expired` / `user_id_required`（或**带 cookie 时**的 `browser_required`）才走 `ResolveManagementCredentials` | `newapi.go` 的 `RefreshAccount` + 新 `accountSelf` / `credentialResolutionMayHelp` | 5 个账号 **10 次 → 5 次**请求；WAF 窗口内不再「问两次同一个问题」 |
+| 2 | 凭证变体补一条 **token-only**（token 与 cookie 同时存在时），且 `browser_required` **不再无条件 return** | `managementCredentialVariants` + 循环里的 `browserRetried` | 修掉「存了过期 Cookie 就永久卡死」；挑战页**最多多花 1 次**请求 |
+| 3 | 文案改成「上游站点返回了浏览器验证页（WAF 人机校验）…等几分钟重试即可」；传输层消息改成 `upstream returned an HTML page instead of JSON` | `console/src/pages/siteShared.tsx`、`newapi.go`、`openai_compatible.go` | 不再指挥操作员去做一件做不到的事 |
+
+**一个容易漏的坑**：`mergeResolvedCredentials` 会把 verify 没回显的字段**从原凭证补回来** ——
+包括 `Cookie`。token-only 变体赢了之后，它会把那把**刚被否掉的死 cookie 塞回去**，等于白改。
+所以新增 `mergeVerifiedCredentials`：变体本身没有 cookie 而原凭证有时，合并后**显式清空**。
+
+**门禁**：`go test -tags sonic ./internal/...` 全绿（新增 `newapi_credential_recovery_test.go` 4 条）、
+`npm test` **167/167**（新增 `siteErrorMessage.test.ts` 2 条）、`golangci-lint` 0 issues。
+**4 条 Go 守卫 + 2 条文案断言都做了变异验证**（把改动打回去，对应断言必须红）：恢复「先 resolve」→
+请求数变 2；去掉 token-only 变体 → 变体数变 1；去掉 merge 的清空 → 死 cookie 又回来了；
+challenge 也走 resolve → 请求数变 2；文案退回旧句 → 两条文案断言都红。
+脚本：`.tmp-dev-ui/mutate_guards.py`、`.tmp-dev-ui/mutate_copy_guard.py`。
+
+**仍然没修的两项**（4/5，未择定）：`browser_required` 的退避重试、每 host 一个 cookie jar。
+如果 hao哥 之后还撞 WAF，先做 4（重试代价是单次刷新最多多等 ~5s），5 的改动面最大。
+
+**复现**：`curl --noproxy '*' -H "Authorization: Bearer <token>" -H "New-API-User: <uid>"
+https://ps.air-outer.com/api/user/self` 连发 5 次以上即可看到 HTML 挑战页。
 
 ## 2. 环境与验证（必读）
 

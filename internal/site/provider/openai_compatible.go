@@ -58,7 +58,7 @@ func (p *OpenAICompatible) ListModels(ctx context.Context, req AccountRequest) (
 		return nil, err
 	}
 	if looksLikeChallenge(contentType, raw) {
-		return nil, &Error{Code: CodeBrowserRequired, StatusCode: status, Message: "browser verification is required"}
+		return nil, &Error{Code: CodeBrowserRequired, StatusCode: status, Message: "upstream returned an HTML page instead of JSON"}
 	}
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return nil, &Error{Code: CodeExpired, StatusCode: status, Message: "provider API key was rejected"}

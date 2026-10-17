@@ -169,19 +169,35 @@ func (p *NewAPI) ResolveManagementCredentials(ctx context.Context, req AccountRe
 	variants := managementCredentialVariants(credentials)
 	var firstErr error
 	needsUserID := false
+	browserRetried := false
 	for _, candidate := range variants {
 		resolved, err := verify(candidate)
 		if err == nil {
-			return mergeResolvedCredentials(credentials, resolved), nil
+			return mergeVerifiedCredentials(credentials, resolved), nil
 		}
 		if firstErr == nil {
 			firstErr = err
 		}
-		if ErrorCode(err) == CodeUserIDRequired {
+		code := ErrorCode(err)
+		if code == CodeUserIDRequired {
 			needsUserID = true
 		}
-		if code := ErrorCode(err); code == CodeBrowserRequired || code == CodeRateLimited || code == CodeTimeout {
+		if code == CodeRateLimited || code == CodeTimeout {
+			// Host-wide conditions: another variant would only add load to an
+			// upstream that is already asking us to back off.
 			return Credentials{}, err
+		}
+		if code == CodeBrowserRequired {
+			// An HTML answer is either a host-wide WAF challenge, where no
+			// variant can help, or an HTML login page served because the stored
+			// cookie has expired, where the token alone still works. The response
+			// does not tell the two apart, so spend at most one extra request on
+			// the cookie-free variant and stop.
+			if browserRetried || strings.TrimSpace(candidate.Cookie) == "" {
+				return Credentials{}, err
+			}
+			browserRetried = true
+			continue
 		}
 	}
 	if credentials.UserID > 0 {
@@ -212,7 +228,7 @@ func (p *NewAPI) ResolveManagementCredentials(ctx context.Context, req AccountRe
 			candidate := variant
 			candidate.UserID = id
 			if resolved, err := verify(candidate); err == nil {
-				return mergeResolvedCredentials(credentials, resolved), nil
+				return mergeVerifiedCredentials(credentials, resolved), nil
 			}
 		}
 	}
@@ -221,7 +237,21 @@ func (p *NewAPI) ResolveManagementCredentials(ctx context.Context, req AccountRe
 
 func managementCredentialVariants(credentials Credentials) []Credentials {
 	variants := []Credentials{credentials}
-	if strings.TrimSpace(credentials.Cookie) != "" || strings.TrimSpace(credentials.AccessToken) == "" {
+	cookie := strings.TrimSpace(credentials.Cookie)
+	token := strings.TrimSpace(credentials.AccessToken)
+	if cookie != "" && token != "" {
+		// A credential carrying both a session cookie and a management token
+		// needs the token-only form too. Upstream prefers the cookie, so once it
+		// expires every request carries a dead credential and answers 401 or an
+		// HTML login page; without this variant nothing ever presents the token
+		// on its own and the account is locked out until someone re-pastes it.
+		// The working form is tried first, so this costs nothing when the cookie
+		// is still valid.
+		tokenOnly := credentials
+		tokenOnly.Cookie = ""
+		return append(variants, tokenOnly)
+	}
+	if cookie != "" || token == "" {
 		return variants
 	}
 	raw := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(credentials.AccessToken), "Bearer "))
@@ -266,6 +296,22 @@ func mergeResolvedCredentials(original, resolved Credentials) Credentials {
 		resolved.Username = original.Username
 	}
 	return resolved
+}
+
+// mergeVerifiedCredentials merges a variant that the upstream just accepted.
+//
+// mergeResolvedCredentials restores every field the verify call did not echo
+// back, which is right for values such as the API key. The cookie is the
+// exception: a variant that wins with no cookie won *because* it dropped the
+// stored one, so restoring it would hand the caller the exact state that had
+// just failed and put the account back in the deadlock this fallback exists to
+// break.
+func mergeVerifiedCredentials(original, resolved Credentials) Credentials {
+	merged := mergeResolvedCredentials(original, resolved)
+	if strings.TrimSpace(resolved.Cookie) == "" && strings.TrimSpace(original.Cookie) != "" {
+		merged.Cookie = ""
+	}
+	return merged
 }
 
 func managementUserIDProbeCandidates() []int64 {
@@ -454,17 +500,24 @@ func (p *NewAPI) RefreshAccount(ctx context.Context, req RefreshAccountRequest) 
 	if req.Credentials.AccessToken == "" && req.Credentials.Cookie == "" {
 		return AccountSnapshot{}, &Error{Code: CodeUnsupported, Message: "balance refresh requires a session token"}
 	}
-	credentials, err := p.ResolveManagementCredentials(ctx, req)
+	// /api/user/self authorises and answers in one round trip, so a credential
+	// that is already good must cost exactly one request. Resolving the variant
+	// list and the upstream user ID is a request of its own and is only worth
+	// spending when the direct answer says the credential is what failed; an
+	// upstream that rate-limits or challenges us must not be asked twice for the
+	// same answer, because that is what turns a brief WAF window into a stuck
+	// account.
+	payload, err := p.accountSelf(ctx, req)
+	if err != nil && credentialResolutionMayHelp(req.Credentials, err) {
+		credentials, resolveErr := p.ResolveManagementCredentials(ctx, req)
+		if resolveErr != nil {
+			return AccountSnapshot{}, resolveErr
+		}
+		req.Credentials = credentials
+		payload, err = p.accountSelf(ctx, req)
+	}
 	if err != nil {
 		return AccountSnapshot{}, err
-	}
-	req.Credentials = credentials
-	var payload envelope
-	if err := p.doJSON(ctx, req, http.MethodGet, "/api/user/self", nil, &payload); err != nil {
-		return AccountSnapshot{}, err
-	}
-	if !payload.Success {
-		return AccountSnapshot{}, responseError(payload, http.StatusOK)
 	}
 	username, _ := stringValue(payload.Data, "username")
 	if username == "" {
@@ -477,6 +530,40 @@ func (p *NewAPI) RefreshAccount(ctx context.Context, req RefreshAccountRequest) 
 		balance = &value
 	}
 	return AccountSnapshot{Username: username, Balance: balance, Currency: "USD", Status: model.SiteAccountStatusHealthy}, nil
+}
+
+// accountSelf is the one management request that both authorises the credential
+// and returns the snapshot, so no separate verification round trip is needed.
+func (p *NewAPI) accountSelf(ctx context.Context, req AccountRequest) (envelope, error) {
+	var payload envelope
+	if err := p.doJSON(ctx, req, http.MethodGet, "/api/user/self", nil, &payload); err != nil {
+		return envelope{}, err
+	}
+	if !payload.Success {
+		return envelope{}, responseError(payload, http.StatusOK)
+	}
+	return payload, nil
+}
+
+// credentialResolutionMayHelp reports whether re-deriving the credential
+// variants and the upstream user ID could turn this failure into a success.
+//
+// Anything else is the upstream's answer to the request itself: a rate limit, a
+// timeout, a missing endpoint. Repeating that request with another variant only
+// adds load to a site that is already pushing back, and on a WAF-fronted site it
+// extends the window in which every request is challenged.
+func credentialResolutionMayHelp(credentials Credentials, err error) bool {
+	switch ErrorCode(err) {
+	case CodeExpired, CodeUserIDRequired:
+		return true
+	case CodeBrowserRequired:
+		// An HTML answer has two causes. A host-wide WAF challenge cannot be
+		// fixed by another variant. An HTML login page served because the stored
+		// session cookie has expired can be: the access token on its own still
+		// works, and the variant list now carries that form.
+		return strings.TrimSpace(credentials.Cookie) != ""
+	}
+	return false
 }
 
 func (p *NewAPI) ListModels(ctx context.Context, req AccountRequest) ([]ModelSnapshot, error) {
@@ -703,7 +790,7 @@ func (p *NewAPI) doJSONWithResponseHeaders(ctx context.Context, req AccountReque
 		return nil, &Error{Code: CodeInvalidResponse, Message: "provider response exceeds size limit"}
 	}
 	if looksLikeChallenge(resp.Header.Get("Content-Type"), raw) {
-		return nil, &Error{Code: CodeBrowserRequired, StatusCode: resp.StatusCode, Message: "browser verification is required"}
+		return nil, &Error{Code: CodeBrowserRequired, StatusCode: resp.StatusCode, Message: "upstream returned an HTML page instead of JSON"}
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		message := responseMessage(raw)
