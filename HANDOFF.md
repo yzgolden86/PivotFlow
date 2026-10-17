@@ -1829,6 +1829,22 @@ golangci-lint run ./...
 CGO_ENABLED=0 go build -tags sonic -trimpath -ldflags=... -o pivotflow .
 ```
 
+### 从沙箱推不了远端 —— push / tag 必须由 hao哥 执行
+
+2026-10-17 逐项实测（不是推断）：remote 是 HTTPS；`~/.ssh` 只有 `known_hosts`；
+`credential.helper=helper-selector` 但**无 GCM 存储、无 `~/.git-credentials`、无 `.netrc`**；
+进程环境与**用户级**环境变量里都没有 `GH_TOKEN`/`GITHUB_TOKEN`/`GITHUB_PAT`；`gh` 未登录。两个失败点：
+
+1. **git 的系统级 `.gitconfig`**（`C:/WINDOWS/system32/config/systemprofile/.gitconfig`）把
+   `http.proxy` / `https.proxy` 指到 `127.0.0.1:7890`（本沙箱没有这个端口）→ 不加
+   `GIT_TERMINAL_PROMPT=0` 时 `git push` **静默挂 40s 后被 timeout 杀掉**，看起来像「卡住」。
+2. 换成沙箱自己的代理（`http://127.0.0.1:63001`，curl 访问 github.com 是 200）→
+   `fatal: unable to access ...: CONNECT tunnel failed, response 502`。
+
+即使网络通了也会停在 `could not read Username`。**所以：本地 commit + 本地跑 `make verify-web`
+（可复现、跑完树仍干净），push 与 tag 交给 hao哥。** 读远端状态可以走 GitHub API（curl 通）：
+`/repos/yzgolden86/PivotFlow/git/ref/heads/main`、`.../git/ref/tags/v0.4.6`（404 = tag 名可用）。
+
 ### `scripts/console_ui_smoke.py`：门禁已修好，**含性能预算在内全过**
 
 想在真实浏览器里验证 `web/console` 产物时用这个脚本。它此前跑不起来，两处早已与源码脱节，已在 `286e99d` 修正：
