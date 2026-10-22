@@ -2,6 +2,8 @@ module github.com/yzgolden86/PivotFlow
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require (
 	github.com/bytedance/sonic v1.15.2
 	github.com/gin-gonic/gin v1.12.0
