@@ -240,11 +240,24 @@ func (s *Server) siteCostForLog(actualModel, requestModel string, cfg *model.Con
 	if billingModel == "" {
 		billingModel = strings.TrimSpace(requestModel)
 	}
-	cost, ok := s.siteSourcedCost(billingModel, cfg.ID, res)
+	return s.siteCostForBillingModel(billingModel, cfg.ID, res)
+}
+
+func (s *Server) siteCostForBillingModel(billingModel string, channelID int64, res *fwResult) *float64 {
+	cost, ok := s.siteSourcedCost(billingModel, channelID, res)
 	if !ok {
 		return nil
 	}
 	return &cost
+}
+
+// costSourceForSiteCost labels an amount that has already been resolved. A
+// non-nil site cost carries the upstream charge; everything else is local.
+func costSourceForSiteCost(siteCost *float64) string {
+	if siteCost != nil {
+		return costSourceSite
+	}
+	return costSourceLocal
 }
 
 func (s *Server) updateTokenStatsForProxy(
@@ -261,8 +274,16 @@ func (s *Server) updateTokenStatsForProxy(
 		requestModel = reqCtx.originalModel
 		requestPath = reqCtx.requestPath
 	}
+	statusCode := 0
+	if res != nil {
+		statusCode = res.Status
+	}
 	billingModel := resolveProxyBillingModel(requestPath, actualModel, requestModel)
-	s.updateTokenStatsAsync(reqCtx.tokenHash, requestCostMultiplier(reqCtx, cfg), isSuccess, duration, reqCtx.isStreaming, res, billingModel)
+	// Resolve the charge once and pass the amount itself to token accounting.
+	// Looking up only the source would let the token path keep the local list
+	// price while the log stores the site charge.
+	siteCost := s.siteCostForLog(actualModel, requestModel, cfg, statusCode, res)
+	s.updateTokenStatsAsync(reqCtx.tokenHash, requestCostMultiplier(reqCtx, cfg), siteCost, isSuccess, duration, reqCtx.isStreaming, res, billingModel)
 }
 
 // handleNetworkError 处理网络错误
@@ -350,8 +371,9 @@ type tokenStatsUpdate struct {
 	completionTokens    int64
 	cacheReadTokens     int64
 	cacheCreationTokens int64
-	costUSD             float64 // 标准成本
-	costMultiplier      float64 // 渠道倍率（0=免费，<0 视为 1）
+	costUSD             float64  // 标准成本
+	costMultiplier      float64  // 渠道倍率（0=免费，<0 视为 1）
+	siteCost            *float64 // 非 nil 时已按站点价目表实扣
 }
 
 func (s *Server) tokenStatsWorker() {
@@ -387,13 +409,9 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 	updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// 计算倍率后成本，用于内存限额与 auth_tokens.effective_cost_usd。
-	multiplier := upd.costMultiplier
-	if multiplier < 0 {
-		multiplier = 1
-	}
-	// multiplier == 0 时成本为 0（免费渠道）
-	effectiveCostUSD := upd.costUSD * multiplier
+	// 有效费用用于内存限额与 auth_tokens.effective_cost_usd。
+	// 站点实扣金额已包含上游价目表与用户组倍率，不能再乘本地渠道倍率。
+	effectiveCostUSD := effectiveCost(upd.costUSD, upd.costMultiplier, costSourceForSiteCost(upd.siteCost))
 
 	// 内存缓存是费用限额的实时权威来源。DB 落盘失败不能让限额 fail-open。
 	if upd.isSuccess && upd.costUSD > 0 && s.authService != nil {
@@ -414,12 +432,13 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 // 参数:
 //   - tokenHash: Token哈希值
 //   - costMultiplier: 渠道成本倍率（0=免费，<0 视为 1），影响 AddCostToCache 的累加口径
+//   - siteCost: 站点实扣费用；非 nil 时优先使用，缺失时回退本地估算
 //   - isSuccess: 请求是否成功
 //   - duration: 请求耗时
 //   - isStreaming: 是否流式请求
 //   - res: 转发结果（成功时用于提取token数量，失败时传nil）
 //   - actualModel: 实际模型名称（用于计费）
-func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64, isSuccess bool, duration float64, isStreaming bool, res *fwResult, actualModel string) {
+func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64, siteCost *float64, isSuccess bool, duration float64, isStreaming bool, res *fwResult, actualModel string) {
 	if tokenHash == "" || s.tokenStatsCh == nil {
 		return
 	}
@@ -436,7 +455,11 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 		completionTokens = int64(res.OutputTokens)
 		cacheReadTokens = int64(res.CacheReadInputTokens)
 		cacheCreationTokens = int64(res.CacheCreationInputTokens)
-		costUSD = computeRequestCost(actualModel, res.ServiceTier, res)
+		if siteCost != nil {
+			costUSD = *siteCost + res.ToolCostUSD
+		} else {
+			costUSD = computeRequestCost(actualModel, res.ServiceTier, res) + res.ToolCostUSD
+		}
 
 		// 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
 		if costUSD == 0.0 && (res.InputTokens > 0 || res.OutputTokens > 0) {
@@ -458,6 +481,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 		cacheCreationTokens: cacheCreationTokens,
 		costUSD:             costUSD,
 		costMultiplier:      costMultiplier,
+		siteCost:            siteCost,
 	}
 
 	// ✅ shutdown期间仍需保证在途请求的计费/用量落库：

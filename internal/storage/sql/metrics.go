@@ -34,9 +34,9 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
 			SUM(COALESCE(cost, 0.0)) as total_cost,
-			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) as effective_cost,
-			MIN(CASE WHEN status_code != 499 THEN COALESCE(cost_multiplier, 1) ELSE NULL END) as actual_cost_multiplier_min,
-			MAX(CASE WHEN status_code != 499 THEN COALESCE(cost_multiplier, 1) ELSE NULL END) as actual_cost_multiplier_max
+			SUM(` + effectiveCostSQL("") + `) as effective_cost,
+			MIN(CASE WHEN status_code != 499 THEN ` + effectiveCostMultiplierSQL("") + ` ELSE NULL END) as actual_cost_multiplier_min,
+			MAX(CASE WHEN status_code != 499 THEN ` + effectiveCostMultiplierSQL("") + ` ELSE NULL END) as actual_cost_multiplier_max
 		FROM logs`
 
 	startMs := startTime.UnixMilli()
@@ -629,7 +629,7 @@ func (s *SQLStore) GetClientProtocolStats(ctx context.Context, startTime, endTim
 			SUM(COALESCE(cache_read_input_tokens, 0)) AS total_cache_read_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) AS total_cache_creation_tokens,
 			SUM(COALESCE(cost, 0.0)) AS total_cost,
-			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) AS effective_cost
+			SUM(` + effectiveCostSQL("") + `) AS effective_cost
 		FROM logs`
 
 	qb := NewQueryBuilder(baseQuery).
@@ -989,7 +989,7 @@ func (s *SQLStore) GetTodayChannelCosts(ctx context.Context, todayStart time.Tim
 	todayStartMs := todayStart.UnixMilli()
 
 	query := `
-		SELECT channel_id, COALESCE(SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)), 0) as total_cost
+		SELECT channel_id, COALESCE(SUM(` + effectiveCostSQL("") + `), 0) as total_cost
 		FROM logs
 		WHERE time >= ? AND channel_id > 0 AND log_source = ?
 		GROUP BY channel_id`

@@ -183,8 +183,11 @@ export async function apiMutation<T>(path: string, body?: unknown, method = 'POS
   return payload.data
 }
 
-export function getDashboard(range: DashboardRange, signal?: AbortSignal): Promise<DashboardSnapshot> {
-  return apiRequest<DashboardSnapshot>(`/admin/dashboard?range=${range}`, signal)
+export function getDashboard(filters: StatsFilters, signal?: AbortSignal): Promise<DashboardSnapshot> {
+  const params = new URLSearchParams({ range: filters.range })
+  if (filters.channel_name) params.set('channel_name', filters.channel_name)
+  if (filters.model) params.set('model', filters.model)
+  return apiRequest<DashboardSnapshot>(`/admin/dashboard?${params}`, signal)
 }
 
 export function checkForUpdates(): Promise<VersionInfo> {

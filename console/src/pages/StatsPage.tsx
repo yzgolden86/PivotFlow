@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, BarChart3, CircleDollarSign, Gauge, List, PieChart, RefreshCw, WalletCards, Zap } from 'lucide-react'
-import { getStats, getStatsFilterOptions } from '../api'
-import type { DashboardRange, SiteBalanceHistoryPoint, StatsEntry, StatsFilterOptions, StatsSnapshot } from '../types'
+import { Activity, BarChart3, ChevronDown, CircleDollarSign, Clock3, Gauge, LineChart, List, PieChart, RefreshCw, WalletCards, Zap } from 'lucide-react'
+import { getDashboard, getStats, getStatsFilterOptions } from '../api'
+import type { DashboardRange, DashboardSnapshot, MetricPoint, SiteBalanceHistoryPoint, StatsEntry, StatsFilterOptions, StatsSnapshot } from '../types'
 import { donutSlicePath, donutSlices } from './donutGeometry'
 import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, PageHeader, successTone } from './shared'
 
 export default function StatsPage() {
   const [snapshot, setSnapshot] = useState<StatsSnapshot | null>(null)
+  const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null)
   const [options, setOptions] = useState<StatsFilterOptions>({ channel_names: [], models: [] })
   const [range, setRange] = useState<DashboardRange>('today')
   const [channel, setChannel] = useState('')
   const [model, setModel] = useState('')
+  const [chartMode, setChartMode] = useState<TrendChartMode>('curve')
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const loadSequence = useRef(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -22,43 +25,63 @@ export default function StatsPage() {
     const sequence = ++loadSequence.current
     setLoading(true); setError('')
     try {
-      const [data, filterOptions] = await Promise.all([
+      const [data, filterOptions, dashboardData] = await Promise.all([
         getStats({ range, channel_name: channel, model }, signal),
         getStatsFilterOptions(range, signal),
+        getDashboard({ range, channel_name: channel, model }, signal),
       ])
       if (sequence !== loadSequence.current) return
       setSnapshot(data)
       setOptions(filterOptions)
+      setDashboard(dashboardData)
     }
-    catch (reason) { if (!signal?.aborted && sequence === loadSequence.current) setError(reason instanceof Error ? reason.message : '统计加载失败') }
+    catch (reason) { if (!signal?.aborted && sequence === loadSequence.current) setError(reason instanceof Error ? reason.message : '数据面板加载失败') }
     finally { if (!signal?.aborted && sequence === loadSequence.current) setLoading(false) }
   }, [channel, model, range])
 
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
   const entries = snapshot?.stats || []
   const totals = useMemo(() => sumStats(entries), [entries])
+  const totalTokens = (dashboard?.totals.input_tokens || 0) + (dashboard?.totals.output_tokens || 0)
 
   return (
-    <div className="workspace-page">
+    <div className="workspace-page data-dashboard-page">
       <PageHeader
-      icon={BarChart3}
-      title="用量统计"
-      tone="coral"
-        actions={<button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新统计"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>}
+        icon={BarChart3}
+        title="数据面板"
+        tone="coral"
+        actions={<>
+          <div className="range-control" role="radiogroup" aria-label="数据面板时间范围">
+            {([['today', '今日'], ['this_week', '本周'], ['this_month', '本月']] as const).map(([value, label]) => <button className={range === value ? 'is-active' : ''} type="button" role="radio" aria-checked={range === value} onClick={() => { setChannel(''); setModel(''); setRange(value) }} key={value}>{label}</button>)}
+          </div>
+          <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新数据面板"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
+        </>}
       />
 
       <div className="filter-bar">
-        <select value={range} onChange={(event) => { setChannel(''); setModel(''); setRange(event.target.value as DashboardRange) }} aria-label="统计时间范围"><option value="today">今日</option><option value="this_week">本周</option><option value="this_month">本月</option></select>
-        <select value={channel} onChange={(event) => setChannel(event.target.value)} aria-label="统计渠道"><option value="">全部渠道</option>{options.channel_names.map((item) => <option key={item}>{item}</option>)}</select>
-        <select value={model} onChange={(event) => setModel(event.target.value)} aria-label="统计模型"><option value="">全部模型</option>{options.models.map((item) => <option key={item}>{item}</option>)}</select>
+        <select value={channel} onChange={(event) => setChannel(event.target.value)} aria-label="数据面板渠道"><option value="">全部渠道</option>{options.channel_names.map((item) => <option key={item}>{item}</option>)}</select>
+        <select value={model} onChange={(event) => setModel(event.target.value)} aria-label="数据面板模型"><option value="">全部模型</option>{options.models.map((item) => <option key={item}>{item}</option>)}</select>
+        {(channel || model) && <button className="icon-button icon-button--surface" type="button" onClick={() => { setChannel(''); setModel('') }} aria-label="清除数据面板筛选" title="清除筛选"><RefreshCw size={15} /></button>}
       </div>
 
-      {snapshot && <section className="stat-kpis">
+      {snapshot && dashboard && <section className="stat-kpis">
         <MiniKPI icon={Zap} label="请求总量" value={formatNumber(totals.total)} meta={`${formatNumber(totals.success)} 成功`} />
         <MiniKPI icon={Gauge} label="成功率" value={totals.total ? `${(totals.success / totals.total * 100).toFixed(1)}%` : '—'} meta={`${formatNumber(totals.error)} 失败`} />
-        <MiniKPI icon={Activity} label="峰值 RPM" value={formatNumber(snapshot.rpm_stats?.peak_rpm, 1)} meta={`平均 ${formatNumber(snapshot.rpm_stats?.avg_rpm, 1)}`} />
-        <MiniKPI icon={CircleDollarSign} label="有效费用" value={formatMoney(totals.cost)} meta={`${formatNumber(totals.tokens)} tokens`} />
+        <MiniKPI icon={Activity} label="Token 总量" value={formatNumber(totalTokens)} meta={`${formatNumber(dashboard.totals.cache_read_tokens)} 缓存命中`} />
+        <MiniKPI icon={CircleDollarSign} label="有效费用" value={formatMoney(totals.cost)} meta={`标准成本 ${formatMoney(totals.standardCost)}`} />
       </section>}
+
+      {dashboard ? <section className="trend-workbench data-dashboard-trend">
+        <header>
+          <div><LineChart size={18} /><h2>用量走势</h2></div>
+          <div className="trend-chart-toggle" role="group" aria-label="趋势图形式">
+            <button type="button" className={chartMode === 'curve' ? 'is-active' : ''} onClick={() => setChartMode('curve')} aria-pressed={chartMode === 'curve'} title="曲线视图"><LineChart size={15} /><span>曲线图</span></button>
+            <button type="button" className={chartMode === 'bars' ? 'is-active' : ''} onClick={() => setChartMode('bars')} aria-pressed={chartMode === 'bars'} title="柱状视图"><BarChart3 size={15} /><span>柱状图</span></button>
+          </div>
+        </header>
+        <CombinedTrendChart points={dashboard.trend} mode={chartMode} />
+        <div className="data-dashboard-sampling"><Clock3 size={13} /><span>采样间隔 {formatInterval(averageTrendInterval(dashboard.trend))} · {dashboard.trend.length} 个时间点</span></div>
+      </section> : null}
 
       {!loading && !error && entries.length > 0 ? <StatsDistribution entries={entries} /> : null}
 
@@ -67,16 +90,21 @@ export default function StatsPage() {
         <div><strong>余额变化等待数据</strong><span>成功刷新账号余额后，从第二天开始可对比每日变化。</span></div>
       </section> : null}
 
-      {loading ? <LoadingState label="正在计算用量统计" /> : error ? <ErrorState message={error} retry={() => void load()} /> : entries.length === 0 ? <EmptyState label="当前范围暂无统计数据" /> : (
-        <div className="records-panel stats-records">
-          <div className="record-head stats-grid"><span>渠道 / 模型</span><span>健康</span><span>成功 / 失败</span><span>首字 / 总耗时</span><span>RPM</span><span>Token</span><span>费用</span></div>
-          {entries.map((entry, index) => <StatsRow entry={entry} key={`${entry.channel_id}-${entry.model}-${index}`} />)}
-        </div>
+      {loading ? <LoadingState label="正在计算数据面板" /> : error ? <ErrorState message={error} retry={() => void load()} /> : entries.length === 0 ? <EmptyState label="当前范围暂无统计数据" /> : (
+        <section className={`stats-records-wrap${detailsOpen ? ' is-open' : ''}`}>
+          <button className="stats-records-toggle" type="button" aria-expanded={detailsOpen} onClick={() => setDetailsOpen((open) => !open)}>
+            <span><List size={16} /><strong>渠道 / 模型明细</strong><em>{entries.length} 项</em></span>
+            <span>成功率、延迟、RPM 与费用<ChevronDown size={16} /></span>
+          </button>
+          {detailsOpen && <div className="records-panel stats-records">
+            <div className="record-head stats-grid"><span>渠道 / 模型</span><span>健康</span><span>成功 / 失败</span><span>首字 / 总耗时</span><span>RPM</span><span>Token</span><span>费用</span></div>
+            {entries.map((entry, index) => <StatsRow entry={entry} key={`${entry.channel_id}-${entry.model}-${index}`} />)}
+          </div>}
+        </section>
       )}
     </div>
   )
 }
-
 function MiniKPI({ icon: Icon, label, value, meta }: { icon: typeof Zap; label: string; value: string; meta: string }) {
   return <article><span><Icon size={17} /></span><div><small>{label}</small><strong>{value}</strong><em>{meta}</em></div></article>
 }
@@ -171,6 +199,102 @@ function DistributionPie({ items, mode }: { items: DistributionItem[]; mode: Dis
         <em>{(slice.share * 100).toFixed(1)}%</em>
       </li>)}
     </ul>
+  </div>
+}
+
+type TrendChartMode = 'curve' | 'bars'
+type TrendMetric = 'requests' | 'tokens' | 'cost'
+
+function CombinedTrendChart({ points, mode }: { points: MetricPoint[]; mode: TrendChartMode }) {
+  const [hovered, setHovered] = useState<number | null>(null)
+  const series = useMemo(() => points.map((point) => ({
+    point,
+    requests: (point.success || 0) + (point.error || 0),
+    tokens: (point.input_tokens || 0) + (point.output_tokens || 0),
+    cost: point.effective_cost || 0,
+  })), [points])
+  const maxima = useMemo(() => ({
+    requests: Math.max(...series.map((entry) => entry.requests), 1),
+    tokens: Math.max(...series.map((entry) => entry.tokens), 1),
+    cost: Math.max(...series.map((entry) => entry.cost), 1),
+  }), [series])
+  // 曲线视图只做轻度平滑，悬浮提示和柱状图仍使用原始值，不改变事实。
+  const smoothed = useMemo(() => ({
+    requests: smoothSeries(series.map((entry) => entry.requests)),
+    tokens: smoothSeries(series.map((entry) => entry.tokens)),
+    cost: smoothSeries(series.map((entry) => entry.cost)),
+  }), [series])
+  const curvePaths = useMemo(() => ({
+    requests: smoothCurvePath(smoothed.requests, maxima.requests),
+    tokens: smoothCurvePath(smoothed.tokens, maxima.tokens),
+    cost: smoothCurvePath(smoothed.cost, maxima.cost),
+  }), [maxima, smoothed])
+  if (!points.length) return <div className="content-state content-state--empty">当前范围暂无趋势数据</div>
+  const hoveredEntry = hovered == null ? null : series[hovered]
+  const tooltipLeft = Math.min(88, Math.max(12, ((hovered ?? 0) + .5) / series.length * 100))
+  return <div className="combined-trend-chart">
+    <div className="combined-trend-legend" aria-label="趋势指标图例">
+      <span><i className="combined-trend-dot combined-trend-dot--requests" />请求量 <b>峰值 {formatMetric(maxima.requests, 'requests')}</b></span>
+      <span><i className="combined-trend-dot combined-trend-dot--tokens" />Token <b>峰值 {formatMetric(maxima.tokens, 'tokens')}</b></span>
+      <span><i className="combined-trend-dot combined-trend-dot--cost" />费用 <b>峰值 {formatMetric(maxima.cost, 'cost')}</b></span>
+    </div>
+    <div className={`combined-trend-plot${mode === 'curve' ? ' combined-trend-plot--curve' : ''}`} role="img" aria-label="请求量、Token 与费用组合趋势图">
+      <div className="combined-trend-grid" aria-hidden="true">
+        {[100, 75, 50, 25, 0].map((level) => <span key={level} style={{ bottom: `${level}%` }} />)}
+      </div>
+      {mode === 'curve' ? <>
+        <svg className="combined-trend-svg" viewBox="0 0 1000 320" preserveAspectRatio="none" aria-hidden="true">
+          <path className="combined-trend-curve combined-trend-curve--requests" d={curvePaths.requests} />
+          <path className="combined-trend-curve combined-trend-curve--tokens" d={curvePaths.tokens} />
+          <path className="combined-trend-curve combined-trend-curve--cost" d={curvePaths.cost} />
+          {hovered != null && ([
+            ['requests', smoothed.requests[hovered], maxima.requests],
+            ['tokens', smoothed.tokens[hovered], maxima.tokens],
+            ['cost', smoothed.cost[hovered], maxima.cost],
+          ] as const).map(([metric, value, max]) => <circle
+            key={metric}
+            className={`combined-trend-point combined-trend-point--${metric}`}
+            cx={curveX(hovered, series.length)}
+            cy={curveY(value, max)}
+            r={5}
+          />)}
+        </svg>
+        <div className="combined-trend-hover-columns">
+          {series.map((entry, index) => <div
+            className={`combined-trend-hover-column${hovered === index ? ' is-active' : ''}`}
+            key={`${entry.point.ts}-${index}`}
+            tabIndex={0}
+            aria-label={`${formatPointTime(entry.point.ts)}，请求量 ${formatMetric(entry.requests, 'requests')} 次，Token ${formatMetric(entry.tokens, 'tokens')}，费用 ${formatMetric(entry.cost, 'cost')}`}
+            onMouseEnter={() => setHovered(index)}
+            onMouseLeave={() => setHovered(null)}
+            onFocus={() => setHovered(index)}
+            onBlur={() => setHovered(null)}
+          />)}
+        </div>
+      </> : <div className="combined-trend-buckets">
+        {series.map((entry, index) => <div
+          className={`combined-trend-bucket${hovered === index ? ' is-active' : ''}`}
+          key={`${entry.point.ts}-${index}`}
+          tabIndex={0}
+          aria-label={`${formatPointTime(entry.point.ts)}，请求量 ${formatMetric(entry.requests, 'requests')} 次，Token ${formatMetric(entry.tokens, 'tokens')}，费用 ${formatMetric(entry.cost, 'cost')}`}
+          onMouseEnter={() => setHovered(index)}
+          onMouseLeave={() => setHovered(null)}
+          onFocus={() => setHovered(index)}
+          onBlur={() => setHovered(null)}
+        >
+          <span className="combined-trend-bar combined-trend-bar--requests" style={{ height: `${barHeight(entry.requests, maxima.requests)}%` }} />
+          <span className="combined-trend-bar combined-trend-bar--tokens" style={{ height: `${barHeight(entry.tokens, maxima.tokens)}%` }} />
+          <span className="combined-trend-bar combined-trend-bar--cost" style={{ height: `${barHeight(entry.cost, maxima.cost)}%` }} />
+        </div>)}
+      </div>}
+      {hoveredEntry && <div className="combined-trend-tooltip" style={{ left: `${tooltipLeft}%` }}>
+        <strong>{formatPointTime(hoveredEntry.point.ts)}</strong>
+        <span><i className="combined-trend-dot combined-trend-dot--requests" />请求量<b>{formatMetric(hoveredEntry.requests, 'requests')} 次</b></span>
+        <span><i className="combined-trend-dot combined-trend-dot--tokens" />Token<b>{formatMetric(hoveredEntry.tokens, 'tokens')}</b></span>
+        <span><i className="combined-trend-dot combined-trend-dot--cost" />费用<b>{formatMetric(hoveredEntry.cost, 'cost')}</b></span>
+      </div>}
+    </div>
+    <div className="combined-trend-axis"><span>{formatPointTime(points[0].ts)}</span><span>{formatPointTime(points[points.length - 1].ts)}</span></div>
   </div>
 }
 
@@ -337,4 +461,65 @@ function HealthMeter({ rate, hasData }: { rate: number; hasData: boolean }) {
   </span>
 }
 
-function sumStats(entries: StatsEntry[]) { return entries.reduce((sum, item) => ({ total: sum.total + item.total, success: sum.success + item.success, error: sum.error + item.error, tokens: sum.tokens + (item.total_input_tokens || 0) + (item.total_output_tokens || 0), cost: sum.cost + (item.effective_cost ?? item.total_cost ?? 0) }), { total: 0, success: 0, error: 0, tokens: 0, cost: 0 }) }
+function sumStats(entries: StatsEntry[]) {
+  return entries.reduce((sum, item) => ({
+    total: sum.total + item.total,
+    success: sum.success + item.success,
+    error: sum.error + item.error,
+    tokens: sum.tokens + (item.total_input_tokens || 0) + (item.total_output_tokens || 0),
+    cost: sum.cost + (item.effective_cost ?? item.total_cost ?? 0),
+    standardCost: sum.standardCost + (item.total_cost || 0),
+  }), { total: 0, success: 0, error: 0, tokens: 0, cost: 0, standardCost: 0 })
+}
+
+
+function formatMetric(value: number, metric: TrendMetric): string { return metric === 'cost' ? formatMoney(value) : formatNumber(value) }
+function barHeight(value: number, max: number): number { return value <= 0 ? 1 : Math.max(4, value / max * 100) }
+function curveX(index: number, count: number): number { return count <= 1 ? 500 : 30 + (index / (count - 1)) * 940 }
+function curveY(value: number, max: number): number { return 284 - Math.min(1, Math.max(0, value / max)) * 238 }
+function smoothCurvePath(values: number[], max: number): string {
+  if (!values.length) return ''
+  const points = values.map((value, index) => ({ x: curveX(index, values.length), y: curveY(value, max) }))
+  if (points.length === 1) return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)} L ${(points[0].x + 1).toFixed(2)} ${points[0].y.toFixed(2)}`
+  const tension = 1 / 6
+  return points.slice(1).reduce((path, point, index) => {
+    const previous = points[index]
+    const before = points[index - 1] ?? previous
+    const after = points[index + 2] ?? point
+    const controlX1 = previous.x + (point.x - before.x) * tension
+    const controlY1 = clampPlotY(previous.y + (point.y - before.y) * tension)
+    const controlX2 = point.x - (after.x - previous.x) * tension
+    const controlY2 = clampPlotY(point.y - (after.y - previous.y) * tension)
+    return `${path} C ${controlX1.toFixed(2)} ${controlY1.toFixed(2)}, ${controlX2.toFixed(2)} ${controlY2.toFixed(2)}, ${point.x.toFixed(2)} ${point.y.toFixed(2)}`
+  }, `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`)
+}
+function clampPlotY(value: number): number { return Math.min(306, Math.max(8, value)) }
+const CURVE_SMOOTH_PASSES = 3
+function smoothSeries(values: number[], passes = CURVE_SMOOTH_PASSES): number[] {
+  let result = values.slice()
+  for (let pass = 0; pass < passes; pass += 1) result = smoothOnce(result)
+  return result
+}
+function smoothOnce(values: number[]): number[] {
+  if (values.length < 4) return values.slice()
+  const kernel = [1, 2, 3, 2, 1]
+  return values.map((value, index) => {
+    let sum = 0
+    let weight = 0
+    for (let offset = 0; offset < kernel.length; offset += 1) {
+      const source = index + offset - 2
+      sum += (source >= 0 && source < values.length ? values[source] : value) * kernel[offset]
+      weight += kernel[offset]
+    }
+    return sum / weight
+  })
+}
+function formatPointTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(date) }
+function averageTrendInterval(points: MetricPoint[]): number {
+  if (points.length < 2) return 0
+  const timestamps = points.map((point) => new Date(point.ts).getTime()).filter((value) => Number.isFinite(value))
+  if (timestamps.length < 2) return 0
+  const gaps = timestamps.slice(1).map((value, index) => value - timestamps[index]).filter((value) => value > 0)
+  return gaps.length ? gaps.reduce((sum, value) => sum + value, 0) / gaps.length / 1000 : 0
+}
+function formatInterval(seconds: number): string { if (!seconds) return '—'; if (seconds >= 3600) return `${Math.round(seconds / 3600)} 小时`; if (seconds >= 60) return `${Math.round(seconds / 60)} 分钟`; return `${Math.round(seconds)} 秒` }

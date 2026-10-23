@@ -181,7 +181,7 @@ func legacyConsoleRedirect(reqPath string) (string, bool) {
 		"channels.html":   "/web/console/#/channels",
 		"logs.html":       "/web/console/#/logs",
 		"stats.html":      "/web/console/#/stats",
-		"trend.html":      "/web/console/#/trend",
+		"trend.html":      "/web/console/#/stats",
 		"tokens.html":     "/web/console/#/tokens",
 		"sites.html":      "/web/console/#/sites",
 		"settings.html":   "/web/console/#/system",

@@ -185,6 +185,44 @@ class AnalyticsFixtures(LayoutFixtures):
         if path == "/admin/stats/filter-options":
             self.respond(route, {"channel_names": [item["channel_name"] for item in STATS["stats"]], "models": [item["model"] for item in STATS["stats"]]})
             return
+        if path == "/admin/dashboard":
+            total_cost = sum(item["total_cost"] for item in STATS["stats"])
+            effective_cost = sum(item["effective_cost"] for item in STATS["stats"])
+            self.respond(route, {
+                "range": "today",
+                "starts_at": 0,
+                "ends_at": 0,
+                "generated_at": 0,
+                "totals": {
+                    "requests": sum(item["total"] for item in STATS["stats"]),
+                    "success": sum(item["success"] for item in STATS["stats"]),
+                    "errors": sum(item["error"] for item in STATS["stats"]),
+                    "input_tokens": sum(item["total_input_tokens"] for item in STATS["stats"]),
+                    "output_tokens": sum(item["total_output_tokens"] for item in STATS["stats"]),
+                    "cache_read_tokens": 0,
+                    "cache_creation_tokens": 0,
+                    "cost": total_cost,
+                    "effective_cost": effective_cost,
+                },
+                "balances": [],
+                "model_usage": [],
+                "site_usage": [],
+                "client_usage": [],
+                "trend": [
+                    {"ts": f"2026-09-15T{hour:02d}:00:00+08:00", "success": 4 + hour % 3, "error": hour % 2,
+                     "effective_cost": round(0.01 + hour * .002, 4), "input_tokens": 12000 + hour * 300,
+                     "output_tokens": 2400 + hour * 80}
+                    for hour in range(24)
+                ],
+                "unread_notices": 0,
+                "site_count": 3,
+                "enabled_sites": 3,
+                "account_count": 3,
+                "healthy_accounts": 3,
+                "channel_count": 3,
+                "enabled_channels": 3,
+            })
+            return
         super().route(route)
 
 
@@ -262,7 +300,7 @@ def main():
 
             context, page, errors = open_page(browser, base, "stats")
             try:
-                expect(page.get_by_role("heading", name="用量统计", exact=True)).to_be_visible()
+                expect(page.get_by_role("heading", name="数据面板", exact=True)).to_be_visible()
                 # 渠道用量 / 模型用量默认饼图，条形列表是切换视图。
                 expect(page.locator(".stats-distribution-pie").first).to_be_visible()
                 assert page.locator(".stats-distribution-pie").count() == 2
@@ -322,6 +360,10 @@ def main():
                 assert highlight["background"] in ("rgba(0, 0, 0, 0)", "transparent"), highlight
                 assert highlight["guideWidth"] <= 20, highlight
                 assert highlight["guideOpacity"] == "1", highlight
+                # 明细默认折叠，避免与上方分布图重复；展开后再检查表头和行。
+                expect(page.locator(".stats-records")).to_have_count(0)
+                page.locator(".stats-records-toggle").click()
+                expect(page.locator(".stats-records-toggle")).to_have_attribute("aria-expanded", "true")
                 expect(page.locator(".stats-records .record-row").first).to_be_visible()
                 assert not errors, errors
                 page.screenshot(path=str(args.out / "stats.png"), full_page=True, animations="disabled")
@@ -342,9 +384,9 @@ def main():
             finally:
                 context.close()
 
-            context, page, errors = open_page(browser, base, "trend")
+            context, page, errors = open_page(browser, base, "stats")
             try:
-                expect(page.get_by_role("heading", name="消费趋势", exact=True)).to_be_visible()
+                expect(page.get_by_role("heading", name="数据面板", exact=True)).to_be_visible()
                 expect(page.locator(".combined-trend-chart").first).to_be_visible()
                 expect(page.locator(".combined-trend-legend > span").first).to_be_visible()
                 expect(page.locator(".combined-trend-curve").first).to_be_visible()
@@ -395,8 +437,7 @@ def main():
                 expect(tooltip).to_contain_text("请求量")
                 expect(tooltip).to_contain_text("Token")
                 expect(tooltip).to_contain_text("费用")
-                expect(page.locator(".trend-breakdown-list > div").first).to_be_visible()
-                assert_no_overflow(page, ".combined-trend-legend > span, .combined-trend-axis span, .trend-breakdown-list strong, .trend-breakdown-list em")
+                assert_no_overflow(page, ".combined-trend-legend > span, .combined-trend-axis span, .data-dashboard-sampling")
                 assert not errors, errors
                 page.screenshot(path=str(args.out / "trend-hover.png"), full_page=True, animations="disabled")
                 captures.append(str((args.out / "trend-hover.png").resolve()))

@@ -50,7 +50,7 @@ export default function DashboardPage() {
     else setLoading(true)
     setError('')
     try {
-      const data = await getDashboard(selectedRange, signal)
+      const data = await getDashboard({ range: selectedRange }, signal)
       setSnapshot(data)
     } catch (reason) {
       if (!signal?.aborted) {
@@ -134,7 +134,7 @@ export default function DashboardPage() {
           label="消耗额度"
           value={formatMoney(snapshot.totals.effective_cost, costDigits)}
           meta={`标准成本 ${formatMoney(snapshot.totals.cost, costDigits)}`}
-          href="#/trend"
+          href="#/stats"
         />
         <MetricCard
           icon={Zap}

@@ -215,6 +215,40 @@ func normalizeSQLArgs(args []any) []any {
 	return args
 }
 
+// effectiveCostSQL returns the SQL expression for the amount that should be
+// aggregated into dashboards and limits.
+//
+// A site-priced row already contains the upstream's own group ratio in
+// logs.cost. Applying the local channel multiplier again multiplies the relay
+// price a second time, which is how a sub-dollar upstream charge turned into a
+// four-digit dashboard figure. Local estimates keep the old behaviour.
+func effectiveCostSQL(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return fmt.Sprintf(
+		"COALESCE(%[1]scost, 0.0) * %[2]s",
+		prefix,
+		effectiveCostMultiplierSQL(alias),
+	)
+}
+
+// effectiveCostMultiplierSQL mirrors the multiplier actually applied by
+// effectiveCostSQL. Site-priced rows carry their own upstream ratio inside
+// cost, so their effective local multiplier is 1 even when the channel config
+// has a much larger accounting multiplier.
+func effectiveCostMultiplierSQL(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return fmt.Sprintf(
+		"CASE WHEN COALESCE(%[1]scost_source, '') = 'site_pricing' THEN 1 WHEN COALESCE(%[1]scost_multiplier, 1) < 0 THEN 1 ELSE COALESCE(%[1]scost_multiplier, 1) END",
+		prefix,
+	)
+}
+
 // normalizeCostMultiplier 规范化成本倍率：负数退化为 1；0 表示免费渠道，保持不变
 func normalizeCostMultiplier(m float64) float64 {
 	if m < 0 {

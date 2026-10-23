@@ -39,7 +39,6 @@ PAGE_CHUNK_ROUTES = {
     "CheckinsPage": "#/checkins",
     "AnnouncementsPage": "#/announcements",
     "TokensPage": "#/tokens",
-    "TrendPage": "#/trend",
     "SystemSettingsPageV2": "#/system",
 }
 
@@ -111,7 +110,6 @@ def main():
     advanced_path = os.path.join(artifact_dir, "console-advanced.png")
     settings_mobile_path = os.path.join(artifact_dir, "console-settings-mobile.png")
     tokens_path = os.path.join(artifact_dir, "console-tokens.png")
-    trend_path = os.path.join(artifact_dir, "console-trend.png")
     fingerprints_path = os.path.join(artifact_dir, "console-fingerprints.png")
     system_path = os.path.join(artifact_dir, "console-system.png")
     search_path = os.path.join(artifact_dir, "console-global-search.png")
@@ -201,8 +199,7 @@ def main():
             ("公告中心", "公告中心", "#/announcements", announcements_path),
             ("渠道分发", "渠道分发", "#/channels", channels_path),
             ("请求日志", "请求日志", "#/logs", logs_path),
-            ("用量统计", "用量统计", "#/stats", stats_path),
-            ("消费趋势", "消费趋势", "#/trend", trend_path),
+            ("数据面板", "数据面板", "#/stats", stats_path),
             ("模型测试", "模型测试", "#/models", model_test_path),
             ("令牌管理", "令牌管理", "#/tokens", tokens_path),
             ("系统设置", "系统设置", "#/system", system_path),

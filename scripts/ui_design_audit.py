@@ -67,7 +67,6 @@ ROUTES = [
     ("logs", "/logs"),
     ("stats", "/stats"),
     ("models", "/models"),
-    ("trend", "/trend"),
     ("announcements", "/announcements"),
     ("settings", "/system"),
 ]

@@ -32,6 +32,7 @@ func TestLogCostStatus(t *testing.T) {
 		{name: "unpriced model", entry: &model.LogEntry{StatusCode: http.StatusOK, Model: "unknown-model-for-status", InputTokens: 10, CostMultiplier: 1}, want: "unpriced_model"},
 		{name: "free model", entry: &model.LogEntry{StatusCode: http.StatusOK, Model: "qwen3.6-plus:free", InputTokens: 10, CostMultiplier: 1}, want: "free_model"},
 		{name: "local free", entry: &model.LogEntry{StatusCode: http.StatusOK, CostMultiplier: 0}, want: "local_free"},
+		{name: "site priced despite free local multiplier", entry: &model.LogEntry{StatusCode: http.StatusOK, Cost: 0.56, CostMultiplier: 0, CostSource: costSourceSite}, want: "estimated"},
 		{name: "failed request", entry: &model.LogEntry{StatusCode: http.StatusBadGateway, Cost: 0.25, CostMultiplier: 1}, want: ""},
 	}
 	for _, tc := range tests {

@@ -190,7 +190,10 @@ function LogRow({ entry }: { entry: LogEntry }) {
   const [copied, setCopied] = useState(false)
   const success = entry.status_code >= 200 && entry.status_code < 300
   const statusText = `${entry.status_code || 'ERR'} · ${success ? '成功' : '错误'}`
-  const effectiveCost = entry.cost * (entry.cost_multiplier >= 0 ? entry.cost_multiplier : 1)
+  // 站点价目表的 cost 已是上游实扣，渠道倍率只用于本地估算，不能再乘一次。
+  const effectiveCost = entry.cost_source === 'site_pricing'
+    ? entry.cost
+    : entry.cost * (entry.cost_multiplier >= 0 ? entry.cost_multiplier : 1)
   const hasChannel = entry.channel_id > 0
   const channelName = entry.channel_name || (hasChannel ? `渠道 #${entry.channel_id}` : '路由汇总')
   const usedTokenLabel = logAuthTokenLabel(entry)

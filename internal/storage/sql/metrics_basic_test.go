@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -900,5 +901,106 @@ func TestGetStats_ReportsActualCostMultiplierRange(t *testing.T) {
 	}
 	if *stats[0].ActualCostMultiplierMin != 0.8 || *stats[0].ActualCostMultiplierMax != 1.2 {
 		t.Fatalf("actual multiplier range=(%v,%v), want (0.8,1.2)", *stats[0].ActualCostMultiplierMin, *stats[0].ActualCostMultiplierMax)
+	}
+}
+
+func TestGetStats_SitePricingDoesNotApplyChannelMultiplier(t *testing.T) {
+	store := newTestStore(t, "metrics_site_pricing.db")
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name: "site-priced-relay", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
+		CostMultiplier: 3000, ModelEntries: []model.ModelEntry{{Model: "deepseek-v4.1-flash-1017"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	now := time.Now()
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{
+			Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "deepseek-v4.1-flash-1017",
+			StatusCode: 200, Cost: 0.56, CostMultiplier: 3000, CostSource: "site_pricing",
+			LogSource: model.LogSourceProxy,
+		},
+		{
+			Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "deepseek-v4.1-flash-1017",
+			StatusCode: 200, Cost: 0.01, CostMultiplier: 2, CostSource: "local_estimate",
+			LogSource: model.LogSourceProxy,
+		},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	start := now.Add(-time.Minute)
+	end := now.Add(time.Minute)
+	stats, err := store.GetStats(ctx, start, end, &model.LogFilter{LogSource: model.LogSourceProxy}, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+	if len(stats) != 1 || stats[0].EffectiveCost == nil || stats[0].TotalCost == nil {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+	if math.Abs(*stats[0].EffectiveCost-0.58) > 1e-9 || math.Abs(*stats[0].TotalCost-0.57) > 1e-9 {
+		t.Fatalf("costs=(standard %.4f, effective %.4f), want (0.57, 0.58)", *stats[0].TotalCost, *stats[0].EffectiveCost)
+	}
+	if stats[0].ActualCostMultiplierMin == nil || stats[0].ActualCostMultiplierMax == nil ||
+		*stats[0].ActualCostMultiplierMin != 1 || *stats[0].ActualCostMultiplierMax != 2 {
+		t.Fatalf("actual multiplier range=(%v,%v), want (1,2)", stats[0].ActualCostMultiplierMin, stats[0].ActualCostMultiplierMax)
+	}
+
+	points, err := store.AggregateRangeWithFilter(ctx, start, end, time.Minute, &model.LogFilter{LogSource: model.LogSourceProxy})
+	if err != nil {
+		t.Fatalf("AggregateRangeWithFilter failed: %v", err)
+	}
+	var effectiveCost float64
+	for _, point := range points {
+		if point.EffectiveCost != nil {
+			effectiveCost += *point.EffectiveCost
+		}
+	}
+	if math.Abs(effectiveCost-0.58) > 1e-9 {
+		t.Fatalf("trend effective cost=%.4f, want 0.58", effectiveCost)
+	}
+
+	costs, err := store.GetTodayChannelCosts(ctx, start)
+	if err != nil {
+		t.Fatalf("GetTodayChannelCosts failed: %v", err)
+	}
+	if math.Abs(costs[cfg.ID]-0.58) > 1e-9 {
+		t.Fatalf("daily channel cost=%.4f, want 0.58", costs[cfg.ID])
+	}
+}
+
+func TestGetStats_NegativeMultiplierFallsBackToStandardCost(t *testing.T) {
+	store := newTestStore(t, "metrics_negative_multiplier.db")
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name: "negative-multiplier", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
+		CostMultiplier: 1, ModelEntries: []model.ModelEntry{{Model: "gpt-5.4"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	now := time.Now()
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{{
+		Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-5.4",
+		StatusCode: 200, Cost: 1, CostMultiplier: -3, CostSource: "local_estimate",
+		LogSource: model.LogSourceProxy,
+	}}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx, now.Add(-time.Minute), now.Add(time.Minute), nil, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+	if len(stats) != 1 || stats[0].EffectiveCost == nil {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+	if math.Abs(*stats[0].EffectiveCost-1) > 1e-9 {
+		t.Fatalf("effective cost=%.4f, want 1", *stats[0].EffectiveCost)
+	}
+	if stats[0].ActualCostMultiplierMin == nil || stats[0].ActualCostMultiplierMax == nil ||
+		*stats[0].ActualCostMultiplierMin != 1 || *stats[0].ActualCostMultiplierMax != 1 {
+		t.Fatalf("actual multiplier range=(%v,%v), want (1,1)", stats[0].ActualCostMultiplierMin, stats[0].ActualCostMultiplierMax)
 	}
 }

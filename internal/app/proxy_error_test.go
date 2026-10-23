@@ -113,6 +113,9 @@ func (s *failingTokenStatsStore) UpdateTokenStats(
 	return s.err
 }
 
+func floatPtr(value float64) *float64 {
+	return &value
+}
 func TestApplyTokenStatsUpdateAddsCostToCacheWhenStoreFails(t *testing.T) {
 	const tokenHash = "limited-token"
 
@@ -140,6 +143,30 @@ func TestApplyTokenStatsUpdateAddsCostToCacheWhenStoreFails(t *testing.T) {
 	}
 	if limit != 1000 || exceeded {
 		t.Fatalf("limit/exceeded=(%d,%v), want (1000,false)", limit, exceeded)
+	}
+}
+
+func TestApplyTokenStatsUpdateDoesNotDoubleApplySitePricing(t *testing.T) {
+	const tokenHash = "site-priced-token"
+
+	auth := newTestAuthService(t)
+	auth.authTokenCostLimits[tokenHash] = tokenCostLimit{
+		usedMicroUSD:  0,
+		limitMicroUSD: 1_000_000,
+	}
+	srv := &Server{store: &failingTokenStatsStore{err: errors.New("database down")}, authService: auth}
+
+	srv.applyTokenStatsUpdate(tokenStatsUpdate{
+		tokenHash:      tokenHash,
+		isSuccess:      true,
+		costUSD:        0.56,
+		costMultiplier: 3000,
+		siteCost:       floatPtr(0.56),
+	})
+
+	used, _, _ := auth.IsCostLimitExceeded(tokenHash)
+	if want := util.USDToMicroUSD(0.56); used != want {
+		t.Fatalf("used=%d, want %d; site-priced cost must not be multiplied again", used, want)
 	}
 }
 

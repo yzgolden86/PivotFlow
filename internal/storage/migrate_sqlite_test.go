@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -1276,7 +1277,9 @@ func TestMigrateSQLite_BackfillsAuthTokenEffectiveCostFromLegacyLogs(t *testing.
 			cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
 			cache_5m_input_tokens INTEGER NOT NULL DEFAULT 0,
 			cache_1h_input_tokens INTEGER NOT NULL DEFAULT 0,
-			cost REAL NOT NULL DEFAULT 0.0
+			cost REAL NOT NULL DEFAULT 0.0,
+			cost_multiplier REAL NOT NULL DEFAULT 1.0,
+			cost_source TEXT NOT NULL DEFAULT ''
 		)
 	`); err != nil {
 		t.Fatalf("create legacy logs: %v", err)
@@ -1288,9 +1291,10 @@ func TestMigrateSQLite_BackfillsAuthTokenEffectiveCostFromLegacyLogs(t *testing.
 		t.Fatalf("insert auth token: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO logs (time, status_code, message, auth_token_id, cost)
-		VALUES (60000, 200, 'ok', 1, 1.5),
-		       (120000, 500, 'fail', 1, 9.0)
+		INSERT INTO logs (time, status_code, message, auth_token_id, cost, cost_multiplier, cost_source)
+		VALUES (60000, 200, 'ok', 1, 0.56, 3000, 'site_pricing'),
+		       (90000, 200, 'ok', 1, 0.01, 2, 'local_estimate'),
+		       (120000, 500, 'fail', 1, 9.0, 1, 'local_estimate')
 	`); err != nil {
 		t.Fatalf("insert legacy logs: %v", err)
 	}
@@ -1325,13 +1329,17 @@ func TestMigrateSQLite_BackfillsAuthTokenEffectiveCostFromLegacyLogs(t *testing.
 	}
 
 	var effectiveCost float64
+	var costUsedMicroUSD int64
 	if err := db.QueryRowContext(ctx, `
-		SELECT effective_cost_usd FROM auth_tokens WHERE id = 1
-	`).Scan(&effectiveCost); err != nil {
+		SELECT effective_cost_usd, cost_used_microusd FROM auth_tokens WHERE id = 1
+	`).Scan(&effectiveCost, &costUsedMicroUSD); err != nil {
 		t.Fatalf("query effective_cost_usd: %v", err)
 	}
-	if effectiveCost != 1.5 {
-		t.Fatalf("effective_cost_usd=%f, want 1.5", effectiveCost)
+	if math.Abs(effectiveCost-0.58) > 1e-9 {
+		t.Fatalf("effective_cost_usd=%f, want 0.58", effectiveCost)
+	}
+	if costUsedMicroUSD != 580000 {
+		t.Fatalf("cost_used_microusd=%d, want 580000", costUsedMicroUSD)
 	}
 }
 

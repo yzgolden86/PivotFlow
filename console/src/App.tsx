@@ -18,7 +18,6 @@ import {
   ScrollText,
   Settings,
   Sun,
-  TrendingUp,
   Users,
   X,
 } from 'lucide-react'
@@ -40,7 +39,6 @@ const loadAccountsPage = () => import('./pages/AccountsPageV2')
 const loadCheckinsPage = () => import('./pages/CheckinsPage')
 const loadAnnouncementsPage = () => import('./pages/AnnouncementsPage')
 const loadTokensPage = () => import('./pages/TokensPage')
-const loadTrendPage = () => import('./pages/TrendPage')
 const loadSystemSettingsPage = () => import('./pages/SystemSettingsPageV2')
 
 const DashboardPage = lazy(loadDashboardPage)
@@ -53,7 +51,6 @@ const AccountsPage = lazy(loadAccountsPage)
 const CheckinsPage = lazy(loadCheckinsPage)
 const AnnouncementsPage = lazy(loadAnnouncementsPage)
 const TokensPage = lazy(loadTokensPage)
-const TrendPage = lazy(loadTrendPage)
 const SystemSettingsPage = lazy(loadSystemSettingsPage)
 
 const pageLoaders: Record<string, () => Promise<unknown>> = {
@@ -67,7 +64,6 @@ const pageLoaders: Record<string, () => Promise<unknown>> = {
   '/checkins': loadCheckinsPage,
   '/announcements': loadAnnouncementsPage,
   '/tokens': loadTokensPage,
-  '/trend': loadTrendPage,
   '/system': loadSystemSettingsPage,
 }
 
@@ -111,8 +107,7 @@ const navigation: NavGroup[] = [
     label: '统计',
     entries: [
       { label: '请求日志', href: '/logs', icon: ScrollText },
-      { label: '用量统计', href: '/stats', icon: BarChart3 },
-      { label: '消费趋势', href: '/trend', icon: TrendingUp },
+      { label: '数据面板', href: '/stats', icon: BarChart3 },
     ],
   },
   {
@@ -370,7 +365,7 @@ function App() {
               <Route path="/settings" element={<Navigate to="/system" replace />} />
               <Route path="/system" element={<SystemSettingsPage />} />
               <Route path="/tokens" element={<TokensPage />} />
-              <Route path="/trend" element={<TrendPage />} />
+              <Route path="/trend" element={<Navigate to="/stats" replace />} />
               <Route path="/fingerprints" element={<Navigate to="/models" replace />} />
               <Route path="/sites" element={<SitesPage />} />
               <Route path="/accounts" element={<AccountsPage />} />

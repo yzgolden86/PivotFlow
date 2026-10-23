@@ -1012,12 +1012,14 @@ func ensureAuthTokensEffectiveCost(ctx context.Context, db *sql.DB, dialect Dial
 	}
 
 	// 从 logs 回填历史数据（一次性）
-	const marker = "auth_tokens_effective_cost_backfill"
+	const marker = "auth_tokens_effective_cost_backfill_site_pricing_v3"
 	if hasMigration(ctx, db, marker, dialect) {
 		return nil
 	}
 
-	// 用 logs 表的 SUM(cost * cost_multiplier) 回填，按 token 聚合
+	// 按 token 聚合历史日志。site_pricing 行的 cost 已是上游实扣，不能再次
+	// 乘渠道倍率；只有本地估算才应用倍率。v3 同时重算 cost_used_microusd：
+	// 旧版本只修正了 effective_cost_usd，限额累计仍可能保留四位数误差。
 	// 防御性检查：logs 表可能尚未创建（迁移顺序依赖）
 	hasLogs := false
 	switch dialect {
@@ -1045,18 +1047,30 @@ func ensureAuthTokensEffectiveCost(ctx context.Context, db *sql.DB, dialect Dial
 	}
 
 	if hasLogs {
+		effectiveCostExpr := `COALESCE((
+			SELECT SUM(CASE
+				WHEN COALESCE(l.cost_source, '') = 'site_pricing' THEN COALESCE(l.cost, 0.0)
+				ELSE COALESCE(l.cost, 0.0) * CASE WHEN COALESCE(l.cost_multiplier, 1) < 0 THEN 1 ELSE COALESCE(l.cost_multiplier, 1) END
+			END)
+			FROM logs l
+			WHERE l.auth_token_id = auth_tokens.id
+			  AND l.status_code >= 200 AND l.status_code < 300
+		), 0.0)`
+		microUSDExpr := `CAST(ROUND(` + effectiveCostExpr + ` * 1000000) AS BIGINT)`
+		switch dialect {
+		case DialectMySQL:
+			microUSDExpr = `CAST(ROUND(` + effectiveCostExpr + ` * 1000000) AS SIGNED)`
+		case DialectSQLite:
+			microUSDExpr = `CAST(ROUND(` + effectiveCostExpr + ` * 1000000) AS INTEGER)`
+		}
 		_, err := db.ExecContext(ctx, `
-			UPDATE auth_tokens SET effective_cost_usd = COALESCE((
-				SELECT SUM(COALESCE(l.cost, 0.0) * COALESCE(l.cost_multiplier, 1))
-				FROM logs l
-				WHERE l.auth_token_id = auth_tokens.id
-				  AND l.status_code >= 200 AND l.status_code < 300
-			), 0.0)
+			UPDATE auth_tokens SET
+				effective_cost_usd = `+effectiveCostExpr+`,
+				cost_used_microusd = `+microUSDExpr+`
 		`)
 		if err != nil {
 			return fmt.Errorf("backfill effective_cost_usd: %w", err)
 		}
 	}
-
 	return recordMigration(ctx, db, marker, dialect)
 }

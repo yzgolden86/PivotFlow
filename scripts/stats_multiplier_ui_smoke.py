@@ -131,6 +131,39 @@ class StatsFixtures(ConsoleFixtures):
                 "models": [item["model"] for item in STATS],
             })
             return
+        if path == "/admin/dashboard":
+            total_cost = sum(item["total_cost"] for item in STATS)
+            effective_cost = sum(item["effective_cost"] for item in STATS)
+            self.respond(route, {
+                "range": "today",
+                "starts_at": 0,
+                "ends_at": 0,
+                "generated_at": 0,
+                "totals": {
+                    "requests": sum(item["total"] for item in STATS),
+                    "success": sum(item["success"] for item in STATS),
+                    "errors": sum(item["error"] for item in STATS),
+                    "input_tokens": sum(item["total_input_tokens"] for item in STATS),
+                    "output_tokens": sum(item["total_output_tokens"] for item in STATS),
+                    "cache_read_tokens": 0,
+                    "cache_creation_tokens": 0,
+                    "cost": total_cost,
+                    "effective_cost": effective_cost,
+                },
+                "balances": [],
+                "model_usage": [],
+                "site_usage": [],
+                "client_usage": [],
+                "trend": [],
+                "unread_notices": 0,
+                "site_count": 0,
+                "enabled_sites": 0,
+                "account_count": 0,
+                "healthy_accounts": 0,
+                "channel_count": 0,
+                "enabled_channels": 0,
+            })
+            return
         super().route(route)
 
 
@@ -163,7 +196,10 @@ def check_page(browser, base, out, *, name, width, mobile):
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
         page.goto(f"{base}/web/console/#/stats", wait_until="networkidle")
-        expect(page.get_by_role("heading", name="用量统计", exact=True)).to_be_visible()
+        expect(page.get_by_role("heading", name="数据面板", exact=True)).to_be_visible()
+        expect(page.locator(".stats-records")).to_have_count(0)
+        page.locator(".stats-records-toggle").click()
+        expect(page.locator(".stats-records-toggle")).to_have_attribute("aria-expanded", "true")
         expect(page.locator(".stats-records .record-row")).to_have_count(4)
         labels = page.locator(".stats-records .record-row > div:last-child span")
         expect(labels).to_have_text([

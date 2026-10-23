@@ -21,7 +21,9 @@ func (s *Server) HandleAdminDashboard(c *gin.Context) {
 		params.Range = "today"
 	}
 	startTime, endTime := params.GetTimeRange()
-	filter := &model.LogFilter{LogSource: model.LogSourceProxy}
+	filter := BuildLogFilter(c)
+	filter.LogSource = model.LogSourceProxy
+	filterPtr := &filter
 	ctx := c.Request.Context()
 
 	var (
@@ -44,10 +46,10 @@ func (s *Server) HandleAdminDashboard(c *gin.Context) {
 		wg          sync.WaitGroup
 	)
 
-	wg.Go(func() { stats, statsErr = s.statsCache.GetStatsLite(ctx, startTime, endTime, filter) })
-	wg.Go(func() { clients, clientsErr = s.statsCache.GetClientProtocolStats(ctx, startTime, endTime, filter) })
+	wg.Go(func() { stats, statsErr = s.statsCache.GetStatsLite(ctx, startTime, endTime, filterPtr) })
+	wg.Go(func() { clients, clientsErr = s.statsCache.GetClientProtocolStats(ctx, startTime, endTime, filterPtr) })
 	wg.Go(func() {
-		trend, trendErr = s.store.AggregateRangeWithFilter(ctx, startTime, endTime, dashboardBucket(params.Range), filter)
+		trend, trendErr = s.store.AggregateRangeWithFilter(ctx, startTime, endTime, dashboardBucket(params.Range), filterPtr)
 		for i := range trend {
 			trend[i].Channels = nil
 		}
