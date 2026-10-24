@@ -97,6 +97,154 @@ func TestFetchPricingParsesRatiosAndGroups(t *testing.T) {
 	almost(t, vipOutput, 75, "vip output USD/M")
 }
 
+func TestDetermineBillingModelMatchesChannelScopedNameUniquely(t *testing.T) {
+	pricing := SitePricing{Models: []ModelPrice{
+		{Model: "channel1/DeepSeek-V4.1-Flash-1017"},
+		{Model: "other-model"},
+	}}
+
+	for _, requested := range []string{
+		"channel1/DeepSeek-V4.1-Flash-1017",
+		"DeepSeek-V4.1-Flash-1017",
+		"deepseek-v4.1-flash-1017",
+	} {
+		got, ok := pricing.DetermineBillingModel(requested)
+		if !ok || got != "channel1/DeepSeek-V4.1-Flash-1017" {
+			t.Errorf("DetermineBillingModel(%q) = %q, %v", requested, got, ok)
+		}
+	}
+
+	pricing.Models = append(pricing.Models, ModelPrice{Model: "channel2/DeepSeek-V4.1-Flash-1017"})
+	if got, ok := pricing.DetermineBillingModel("DeepSeek-V4.1-Flash-1017"); ok {
+		t.Errorf("ambiguous channel basename matched %q", got)
+	}
+}
+
+func TestFetchPricingUsesBillingExpressionBaseTerms(t *testing.T) {
+	body := `{"success":true,"group_ratio":{"default":1,"pro":1.5},"data":[{
+	  "model_name":"channel1/DeepSeek-V4.1-Flash-1017",
+	  "quota_type":0,"model_ratio":37.5,"completion_ratio":1,
+	  "billing_mode":"tiered_expr",
+	  "billing_expr":"(((((p <= 50)))) && (((((c <= 100))) && ((c > 0))))) ? (tier(\"explore\", fixed(1))) : (tier(\"base\", p * 1.5 + c * 5.5 + cr * 0.6 + cc * 0 + cc1h * 0))",
+	  "enable_groups":["pro"]
+	}]}`
+	server := pricingTestServer(t, body, http.StatusOK)
+
+	pricing, err := newPricingProvider().FetchPricing(context.Background(), pricingRequest(server.URL))
+	if err != nil {
+		t.Fatalf("FetchPricing: %v", err)
+	}
+	price, ok := findModel(pricing, "channel1/DeepSeek-V4.1-Flash-1017")
+	if !ok {
+		t.Fatal("model missing")
+	}
+	if price.BillingTerms == nil {
+		t.Fatal("BillingTerms nil, want parsed base terms")
+	}
+	almost(t, price.BillingTerms.Input, 1.5, "input term")
+	almost(t, price.BillingTerms.Output, 5.5, "output term")
+	almost(t, price.BillingTerms.CacheRead, 0.6, "cache read term")
+	almost(t, price.BillingTerms.CacheWrite5m, 0, "cache write term")
+
+	input, output, cacheRead, cacheWrite := price.USDPerMillion(pricing.RatioFor("pro"))
+	almost(t, input, 2.25, "grouped input USD/M")
+	almost(t, output, 8.25, "grouped output USD/M")
+	almost(t, cacheRead, 0.9, "grouped cache read USD/M")
+	almost(t, cacheWrite, 0, "grouped cache write USD/M")
+}
+
+func TestParseBillingTermsRejectsUnsupportedExpressions(t *testing.T) {
+	for _, expression := range []string{
+		"",
+		`tier("base", p * 1.5 + c / 2)`,
+		`tier("base", max(p, 2) * 1.5)`,
+		`tier("other", p * 1.5)`,
+	} {
+		if terms := parseBillingTerms(expression); terms != nil {
+			t.Errorf("parseBillingTerms(%q)=%+v, want nil", expression, terms)
+		}
+	}
+}
+
+func TestParseBillingTermsSupportsCacheWriteBucketsAndNestedCoefficients(t *testing.T) {
+	terms := parseBillingTerms(`tier("base", (p * 1.5 * 2) + c * 5.5 + cr * .6 + cc * 1.25 + cc1h * 2)`)
+	if terms == nil {
+		t.Fatal("parseBillingTerms returned nil")
+	}
+	almost(t, terms.Input, 3, "input term")
+	almost(t, terms.Output, 5.5, "output term")
+	almost(t, terms.CacheRead, .6, "cache-read term")
+	almost(t, terms.CacheWrite5m, 1.25, "5m cache-write term")
+	almost(t, terms.CacheWrite1h, 2, "1h cache-write term")
+}
+
+func TestBillingTermsOmittedCacheVariablesFallBackToInputPrice(t *testing.T) {
+	terms := parseBillingTerms(`tier("base", p * 1.5 + c * 5.5)`)
+	if terms == nil {
+		t.Fatal("parseBillingTerms returned nil")
+	}
+	if terms.CacheReadSet || terms.CacheWrite5mSet || terms.CacheWrite1hSet {
+		t.Fatalf("omitted cache variables marked present: %+v", terms)
+	}
+
+	price := ModelPrice{Model: "m", BillingTerms: terms}
+	input, output, cacheRead, cacheWrite5m, cacheWrite1h := price.USDPerMillionAll(2)
+	almost(t, input, 3, "input falls back to p")
+	almost(t, output, 11, "output")
+	almost(t, cacheRead, 3, "omitted cache read stays in p")
+	almost(t, cacheWrite5m, 3, "omitted cache write stays in p")
+	almost(t, cacheWrite1h, 3*6/3.75, "omitted 1h write keeps the New API TTL multiplier")
+}
+
+func TestBillingTermsExplicitZeroCachePriceIsNotOmitted(t *testing.T) {
+	terms := parseBillingTerms(`tier("base", p * 1.5 + c * 5.5 + cr * 0.6 + cc * 0 + cc1h * 0)`)
+	if terms == nil {
+		t.Fatal("parseBillingTerms returned nil")
+	}
+	if !terms.CacheReadSet || !terms.CacheWrite5mSet || !terms.CacheWrite1hSet {
+		t.Fatalf("explicit cache variables not marked present: %+v", terms)
+	}
+
+	price := ModelPrice{Model: "m", BillingTerms: terms}
+	_, _, cacheRead, cacheWrite5m, cacheWrite1h := price.USDPerMillionAll(1)
+	almost(t, cacheRead, .6, "explicit cache read")
+	almost(t, cacheWrite5m, 0, "explicit free 5m cache write")
+	almost(t, cacheWrite1h, 0, "explicit free 1h cache write")
+}
+
+func TestBillingTermsDoNotOverridePerCallPricing(t *testing.T) {
+	price := ModelPrice{
+		Model: "image", QuotaType: 1, PerCallPrice: 0.5,
+		BillingTerms: &BillingTerms{Input: 10, Output: 20},
+	}
+	input, output, cacheRead, cacheWrite := price.USDPerMillion(1)
+	almost(t, input, 0, "per-call input")
+	almost(t, output, 0, "per-call output")
+	almost(t, cacheRead, 0, "per-call cache read")
+	almost(t, cacheWrite, 0, "per-call cache write")
+	almost(t, price.PerCallUSD(1), 0.5, "per-call price")
+}
+
+func TestFetchPricingMarksUnsupportedBillingExpression(t *testing.T) {
+	body := `{"success":true,"data":[{
+	  "model_name":"unsupported","quota_type":0,"model_ratio":37.5,
+	  "billing_expr":"tier(\"base\", p / 2 + c * 3)"
+	}],"group_ratio":{"default":1}}`
+	server := pricingTestServer(t, body, http.StatusOK)
+
+	pricing, err := newPricingProvider().FetchPricing(context.Background(), pricingRequest(server.URL))
+	if err != nil {
+		t.Fatalf("FetchPricing: %v", err)
+	}
+	price, ok := findModel(pricing, "unsupported")
+	if !ok {
+		t.Fatal("model missing")
+	}
+	if price.BillingTerms != nil || !price.BillingExprUnsupported {
+		t.Fatalf("unsupported expression terms=%+v flag=%v", price.BillingTerms, price.BillingExprUnsupported)
+	}
+}
+
 // Missing cache ratios must default to 1, not to zero: a zero would make cached
 // tokens look free and understate the cost.
 func TestFetchPricingDefaultsMissingRatiosToOne(t *testing.T) {

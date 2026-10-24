@@ -332,9 +332,36 @@ type ModelPrice struct {
 	CompletionRatio    float64
 	CacheRatio         float64
 	CacheCreationRatio float64
+	// BillingTerms holds the per-million-token coefficients from a site's
+	// billing expression when it publishes one. Nil means the legacy ratio
+	// fields above are authoritative.
+	BillingTerms *BillingTerms
+	// BillingExprUnsupported is true when the site published a billing
+	// expression that this client cannot evaluate. In that case the display
+	// model_ratio must not be trusted as the charge; callers fall back to local
+	// estimation instead of recording a confidently wrong site-priced amount.
+	BillingExprUnsupported bool
 	// Groups lists the site groups this model is available to. A price only
 	// applies to a request whose token belongs to one of these groups.
 	Groups []string
+}
+
+// BillingTerms is a site-declared linear token expression in USD per million
+// tokens: input*p + output*c + cacheRead*cr + cacheWrite5m*cc +
+// cacheWrite1h*cc1h. Some New API forks publish a model_ratio for display that
+// is unrelated to the expression they actually charge.
+type BillingTerms struct {
+	Input        float64
+	Output       float64
+	CacheRead    float64
+	CacheWrite5m float64
+	CacheWrite1h float64
+	// The Set flags distinguish an omitted variable from an explicit zero
+	// coefficient. New API folds an omitted cache variable back into prompt
+	// pricing, while "cc * 0" intentionally makes that bucket free.
+	CacheReadSet    bool
+	CacheWrite5mSet bool
+	CacheWrite1hSet bool
 }
 
 // SitePricing is a whole site's price table plus its per-group multipliers.

@@ -33,11 +33,41 @@ func (p *NewAPI) Detect(ctx context.Context, baseURL string) (DetectionResult, e
 		return DetectionResult{}, err
 	}
 	name, _ := stringValue(payload.Data, "system_name")
-	matched := payload.Success && name != ""
+	matched := payload.Success && (name != "" || looksLikeNewAPIStatus(payload.Data))
 	// Detection already paid for /api/status, which is also where the check-in
 	// capability is published, so hand it back instead of making callers ask again.
 	method := checkinMethodFromStatus(payload)
 	return DetectionResult{Matched: matched, ProviderID: p.ID(), SystemName: name, Capabilities: p.Capabilities(), CheckinMethod: &method}, nil
+}
+
+// looksLikeNewAPIStatus recognizes forks that omit system_name (or blank it)
+// while still publishing the New API status envelope. The combination is
+// deliberately specific: server_address, quota_per_unit, and at least one
+// feature field that the New API family uses. A plain /api/status response
+// with only success/data must not be classified as a management provider.
+func looksLikeNewAPIStatus(data any) bool {
+	values, ok := data.(map[string]any)
+	if !ok {
+		return false
+	}
+	serverAddress, hasServerAddress := stringValue(data, "server_address")
+	quotaPerUnit, hasQuotaPerUnit := numberValue(data, "quota_per_unit")
+	if !hasServerAddress || strings.TrimSpace(serverAddress) == "" || !hasQuotaPerUnit || quotaPerUnit <= 0 {
+		return false
+	}
+	for _, key := range []string{
+		"checkin_enabled",
+		"announcements_enabled",
+		"data_export_default_time",
+		"custom_currency_symbol",
+		"quota_display_type",
+		"usd_exchange_rate",
+	} {
+		if _, ok := values[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // checkinMethodFromStatus reads the check-in capability out of an /api/status

@@ -115,6 +115,75 @@ func TestComputeSiteCostFallsBackToCombinedCacheWrite(t *testing.T) {
 	nearly(t, combinedCost, 100_000*4.0/1e6, "cache write at ratio 2 => $4/M")
 }
 
+func TestComputeSiteCostUsesDeclaredBillingTerms(t *testing.T) {
+	cp := channelPricing{
+		pricing: provider.SitePricing{
+			Models: []provider.ModelPrice{{
+				Model:     "channel1/DeepSeek-V4.1-Flash-1017",
+				QuotaType: 0,
+				// A fork can expose a display-only model_ratio that is unrelated
+				// to what its billing expression actually charges.
+				ModelRatio: 37.5,
+				BillingTerms: &provider.BillingTerms{
+					Input: 1.5, Output: 5.5,
+					CacheRead: .6, CacheReadSet: true,
+					CacheWrite5m: 0, CacheWrite5mSet: true,
+					CacheWrite1h: 0, CacheWrite1hSet: true,
+				},
+			}},
+			GroupRatio: map[string]float64{"default": 1, "pro": 1.5},
+		},
+		group: "pro",
+	}
+	res := &fwResult{
+		InputTokens:          1808,
+		OutputTokens:         615,
+		CacheReadInputTokens: 106752,
+	}
+
+	got, ok := computeSiteCost(cp, "channel1/DeepSeek-V4.1-Flash-1017", res)
+	if !ok {
+		t.Fatal("expected the site billing expression to apply")
+	}
+
+	// Upstream charged $0.105218 for this request. The expression is in USD per
+	// million tokens before the pro group multiplier.
+	want := (1808*1.5 + 615*5.5 + 106752*.6) * 1.5 / 1e6
+	nearly(t, got, want, "billing expression cost")
+	nearly(t, got, .10521855, "upstream-equivalent cost")
+}
+
+func TestComputeSiteCostSeparatesCacheWriteTTLs(t *testing.T) {
+	cp := channelPricing{
+		pricing: provider.SitePricing{
+			Models: []provider.ModelPrice{{
+				Model: "m",
+				BillingTerms: &provider.BillingTerms{
+					Input: 1, Output: 2,
+					CacheRead: .5, CacheReadSet: true,
+					CacheWrite5m: 1.25, CacheWrite5mSet: true,
+					CacheWrite1h: 2, CacheWrite1hSet: true,
+				},
+			}},
+			GroupRatio: map[string]float64{"default": 1},
+		},
+		group: "default",
+	}
+	res := &fwResult{
+		InputTokens:          1_000_000,
+		OutputTokens:         1_000_000,
+		CacheReadInputTokens: 1_000_000,
+		Cache5mInputTokens:   1_000_000,
+		Cache1hInputTokens:   1_000_000,
+	}
+
+	got, ok := computeSiteCost(cp, "m", res)
+	if !ok {
+		t.Fatal("expected the billing expression to apply")
+	}
+	nearly(t, got, 1+2+.5+1.25+2, "cost with separate cache-write TTL prices")
+}
+
 // The group multiplier scales everything; this is the 倍率 the user was hitting.
 func TestComputeSiteCostAppliesGroupRatio(t *testing.T) {
 	price := provider.ModelPrice{
@@ -164,6 +233,18 @@ func TestComputeSiteCostPerCallIgnoresTokens(t *testing.T) {
 	nearly(t, hugeCost, 0.04, "per-call cost is token-independent")
 }
 
+func TestComputeSiteCostPerCallIgnoresUnsupportedExpression(t *testing.T) {
+	price := provider.ModelPrice{
+		Model: "image-model", QuotaType: 1, PerCallPrice: .04,
+		BillingExprUnsupported: true,
+	}
+	cost, ok := computeSiteCost(tokenPricing("default", price), "image-model", &fwResult{})
+	if !ok {
+		t.Fatal("a per-call model must use its published model_price")
+	}
+	nearly(t, cost, .04, "per-call price despite unsupported token expression")
+}
+
 func TestComputeSiteCostPerCallAppliesGroupRatio(t *testing.T) {
 	price := provider.ModelPrice{Model: "m", QuotaType: 1, PerCallPrice: 0.08}
 	cost, _ := computeSiteCost(tokenPricing("vip", price), "m", &fwResult{})
@@ -204,6 +285,69 @@ func TestSitePriceForIsCaseInsensitiveFallback(t *testing.T) {
 	pricing.Models = append(pricing.Models, provider.ModelPrice{Model: "glm-5.2", ModelRatio: 99})
 	preferred, _ := sitePriceFor(pricing, "glm-5.2")
 	nearly(t, preferred.ModelRatio, 99, "exact match preferred over fold")
+}
+
+func TestComputeSiteCostInfersUniqueModelGroupWhenBindingIsEmpty(t *testing.T) {
+	cp := channelPricing{
+		pricing: provider.SitePricing{
+			Models: []provider.ModelPrice{{
+				Model: "model-pro", Groups: []string{"pro"},
+				BillingTerms: &provider.BillingTerms{
+					Input: 1, Output: 2,
+					CacheRead: 0, CacheReadSet: true,
+					CacheWrite5m: 0, CacheWrite5mSet: true,
+					CacheWrite1h: 0, CacheWrite1hSet: true,
+				},
+			}},
+			GroupRatio: map[string]float64{"default": 1, "pro": 1.5},
+		},
+		group: "",
+	}
+	got, ok := computeSiteCost(cp, "model-pro", &fwResult{InputTokens: 1_000_000})
+	if !ok {
+		t.Fatal("expected site pricing to apply")
+	}
+	nearly(t, got, 1.5, "unique enabled group's ratio")
+
+	cp.pricing.Models[0].Groups = []string{"pro", "max"}
+	cp.pricing.GroupRatio["max"] = 2
+	got, _ = computeSiteCost(cp, "model-pro", &fwResult{InputTokens: 1_000_000})
+	nearly(t, got, 1, "ambiguous groups fall back to default")
+}
+
+func TestComputeSiteCostRefusesUnsupportedBillingExpression(t *testing.T) {
+	cp := tokenPricing("default", provider.ModelPrice{
+		Model: "m", ModelRatio: 37.5,
+		BillingExprUnsupported: true,
+	})
+	if _, ok := computeSiteCost(cp, "m", &fwResult{InputTokens: 1_000_000}); ok {
+		t.Error("an unsupported billing expression must fall back, not use display model_ratio")
+	}
+}
+
+func TestSitePriceForMatchesUniqueChannelScopedName(t *testing.T) {
+	pricing := provider.SitePricing{Models: []provider.ModelPrice{
+		{Model: "channel1/DeepSeek-V4.1-Flash-1017", BillingTerms: &provider.BillingTerms{Input: 1.5}},
+		{Model: "other-model", BillingTerms: &provider.BillingTerms{Input: 9}},
+	}}
+
+	for _, requested := range []string{
+		"channel1/DeepSeek-V4.1-Flash-1017",
+		"DeepSeek-V4.1-Flash-1017",
+		"deepseek-v4.1-flash-1017",
+	} {
+		price, ok := sitePriceFor(pricing, requested)
+		if !ok || price.Model != "channel1/DeepSeek-V4.1-Flash-1017" {
+			t.Errorf("sitePriceFor(%q) = %+v, %v", requested, price, ok)
+		}
+	}
+
+	pricing.Models = append(pricing.Models,
+		provider.ModelPrice{Model: "channel2/DeepSeek-V4.1-Flash-1017", BillingTerms: &provider.BillingTerms{Input: 3}},
+	)
+	if _, ok := sitePriceFor(pricing, "DeepSeek-V4.1-Flash-1017"); ok {
+		t.Error("an ambiguous channel-scoped basename must not pick a price")
+	}
 }
 
 // Negative token counts (corrupt upstream usage) must not produce a credit.

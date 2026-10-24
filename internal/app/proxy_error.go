@@ -240,6 +240,19 @@ func (s *Server) siteCostForLog(actualModel, requestModel string, cfg *model.Con
 	if billingModel == "" {
 		billingModel = strings.TrimSpace(requestModel)
 	}
+	// A New API fork can scope the price row to a channel name while the
+	// upstream response carries the bare model. Resolve that mapping only when
+	// it is unambiguous, otherwise use the requested model as-is and let the
+	// normal local-estimate fallback handle it.
+	if s != nil && s.sitePricing != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		if cp, ok := s.resolveChannelPricing(ctx, cfg.ID); ok {
+			if mapped, exists := cp.pricing.DetermineBillingModel(billingModel); exists {
+				billingModel = mapped
+			}
+		}
+		cancel()
+	}
 	return s.siteCostForBillingModel(billingModel, cfg.ID, res)
 }
 

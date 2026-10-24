@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/yzgolden86/PivotFlow/internal/model"
 )
 
 func TestDecodeProviderJSONAcceptsBOMAndXSSIPrefix(t *testing.T) {
@@ -26,6 +28,54 @@ func TestDecodeProviderJSONAcceptsBOMAndXSSIPrefix(t *testing.T) {
 	}
 }
 
+func TestNewAPIDirectStatusDetection(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      string
+		wantMatch   bool
+		wantCheckin string
+	}{
+		{
+			name:        "fork without system name",
+			status:      `{"success":true,"data":{"server_address":"https://hyxware.com","quota_per_unit":500000,"checkin_enabled":true,"quota_display_type":"USD","custom_currency_symbol":"$","version":"0.0.1-dev"}}`,
+			wantMatch:   true,
+			wantCheckin: CheckinMethodAvailable,
+		},
+		{
+			name:        "generic status envelope",
+			status:      `{"success":true,"data":{"server_address":"https://example.com","quota_per_unit":500000}}`,
+			wantMatch:   false,
+			wantCheckin: CheckinMethodUnknown,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/status" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.status))
+			}))
+			defer server.Close()
+
+			result, err := NewNewAPI(ClientFactory{AllowPrivate: true}).Detect(context.Background(), server.URL)
+			if err != nil {
+				t.Fatalf("detect failed: %v", err)
+			}
+			if result.Matched != tt.wantMatch {
+				t.Fatalf("result=%+v, want match=%v", result, tt.wantMatch)
+			}
+			if tt.wantMatch && result.ProviderID != model.SitePlatformNewAPIFamily {
+				t.Fatalf("provider=%q, want %q", result.ProviderID, model.SitePlatformNewAPIFamily)
+			}
+			if result.CheckinMethod == nil || result.CheckinMethod.Status != tt.wantCheckin {
+				t.Fatalf("checkin method=%+v, want %q", result.CheckinMethod, tt.wantCheckin)
+			}
+		})
+	}
+}
 func TestNewAPIRefreshModelsCheckinAndNotice(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

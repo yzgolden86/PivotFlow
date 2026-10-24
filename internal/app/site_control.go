@@ -536,6 +536,14 @@ func (s *siteControlService) createAccount(ctx context.Context, siteID int64, re
 				site = updated
 				s.pricingSourceChanged(site.ID)
 			}
+		} else if strings.TrimSpace(site.Platform) == "" || strings.EqualFold(site.Platform, model.SitePlatformUnknown) {
+			if detectErr != nil {
+				return nil, detectErr
+			}
+			return nil, &provider.Error{
+				Code:    provider.CodeUnsupported,
+				Message: "site provider is not registered; automatic detection did not identify a supported management API",
+			}
 		}
 	}
 	credType, prepared, err := s.prepareAccountCredential(ctx, site, req.CredentialType, req.Credential)

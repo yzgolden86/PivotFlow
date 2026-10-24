@@ -455,9 +455,9 @@ func (s *Server) siteSourcedCost(modelName string, channelID int64, res *fwResul
 // Returns false when this site does not price the model, so the caller falls
 // back to the local vendor-list estimate instead of recording a wrong number.
 //
-// Cache accounting mirrors the upstream: cache reads use cache_ratio, and cache
-// writes (5m and 1h buckets) use cache_creation_ratio. New API does not
-// distinguish the two write TTLs, so both are charged at the same ratio.
+// Cache accounting mirrors the upstream: cache reads use their own term, while
+// the 5-minute and 1-hour write buckets are priced independently. Legacy ratio
+// pricing has one cache-creation ratio, so USDPerMillionAll maps it to both.
 func computeSiteCost(cp channelPricing, modelName string, res *fwResult) (float64, bool) {
 	if res == nil {
 		return 0, false
@@ -466,14 +466,19 @@ func computeSiteCost(cp channelPricing, modelName string, res *fwResult) (float6
 	if !ok {
 		return 0, false
 	}
-	groupRatio := cp.pricing.RatioFor(cp.group)
+	groupRatio := siteGroupRatioFor(cp.pricing, price, cp.group)
 
-	// Per-call models ignore token counts entirely.
+	// Per-call models use model_price as their complete charge. Only a
+	// per-token expression that could not be evaluated must refuse the row;
+	// otherwise its display model_ratio is known to be unrelated to billing.
 	if price.QuotaType == 1 {
 		return price.PerCallUSD(groupRatio), true
 	}
+	if price.BillingExprUnsupported {
+		return 0, false
+	}
 
-	inputPerM, outputPerM, cacheReadPerM, cacheWritePerM := price.USDPerMillion(groupRatio)
+	inputPerM, outputPerM, cacheReadPerM, cacheWrite5mPerM, cacheWrite1hPerM := price.USDPerMillionAll(groupRatio)
 	const perMillion = 1_000_000.0
 
 	// Cached reads are billed at their own ratio, so they must not also be
@@ -483,25 +488,66 @@ func computeSiteCost(cp channelPricing, modelName string, res *fwResult) (float6
 		billableInput = 0
 	}
 	// Prefer the split buckets, but fall back to the combined field: some
-	// upstreams report only the total, and missing it would undercount cache
-	// writes to zero.
-	cacheWriteTokens := res.Cache5mInputTokens + res.Cache1hInputTokens
-	if cacheWriteTokens == 0 {
-		cacheWriteTokens = res.CacheCreationInputTokens
+	// upstreams report only the total and do not identify its TTL. In that case
+	// attribute it to the 5-minute bucket, matching the parser's normalization.
+	cacheWrite5mTokens := res.Cache5mInputTokens
+	cacheWrite1hTokens := res.Cache1hInputTokens
+	if cacheWrite5mTokens+cacheWrite1hTokens == 0 {
+		cacheWrite5mTokens = res.CacheCreationInputTokens
 	}
 
 	total := float64(billableInput)*inputPerM/perMillion +
 		float64(res.OutputTokens)*outputPerM/perMillion +
 		float64(res.CacheReadInputTokens)*cacheReadPerM/perMillion +
-		float64(cacheWriteTokens)*cacheWritePerM/perMillion
+		float64(cacheWrite5mTokens)*cacheWrite5mPerM/perMillion +
+		float64(cacheWrite1hTokens)*cacheWrite1hPerM/perMillion
 	if total < 0 {
 		return 0, false
 	}
 	return total, true
 }
 
+// siteGroupRatioFor resolves the upstream group multiplier for one price row.
+// Binding data wins when it is usable. Projections created before groups were
+// persisted can still carry an empty/default group, so a model enabled in
+// exactly one priced group is a safe inference; multiple candidates are not.
+func siteGroupRatioFor(pricing provider.SitePricing, price provider.ModelPrice, group string) float64 {
+	group = strings.TrimSpace(group)
+	if group != "" && group != "default" {
+		if ratio, ok := pricing.GroupRatio[group]; ok && ratio > 0 {
+			return ratio
+		}
+	}
+
+	var inferred string
+	candidates := 0
+	for _, enabledGroup := range price.Groups {
+		enabledGroup = strings.TrimSpace(enabledGroup)
+		if enabledGroup == "" || enabledGroup == "default" {
+			continue
+		}
+		if ratio, ok := pricing.GroupRatio[enabledGroup]; !ok || ratio <= 0 {
+			continue
+		}
+		if candidates == 0 || enabledGroup != inferred {
+			candidates++
+		}
+		inferred = enabledGroup
+	}
+	if candidates == 1 {
+		return pricing.GroupRatio[inferred]
+	}
+	return pricing.RatioFor(group)
+}
+
 // sitePriceFor finds the price row for a model, tolerating case differences the
 // way the rest of the routing layer does.
+//
+// New API forks often expose a channel-scoped display name (for example
+// "channel1/DeepSeek-V4.1-Flash-1017") while the request may carry only the
+// model suffix. A basename match is accepted only when it identifies exactly
+// one price row; ambiguous names fall back to local estimation rather than
+// silently picking another channel's price.
 func sitePriceFor(pricing provider.SitePricing, modelName string) (provider.ModelPrice, bool) {
 	modelName = strings.TrimSpace(modelName)
 	if modelName == "" {
@@ -517,5 +563,32 @@ func sitePriceFor(pricing provider.SitePricing, modelName string) (provider.Mode
 			return price, true
 		}
 	}
+
+	wantedBase := sitePriceBaseName(modelName)
+	if wantedBase == "" {
+		return provider.ModelPrice{}, false
+	}
+	var match provider.ModelPrice
+	matches := 0
+	for _, price := range pricing.Models {
+		if !strings.EqualFold(sitePriceBaseName(price.Model), wantedBase) {
+			continue
+		}
+		if matches == 0 || price.Model != match.Model {
+			matches++
+		}
+		match = price
+	}
+	if matches == 1 {
+		return match, true
+	}
 	return provider.ModelPrice{}, false
+}
+
+func sitePriceBaseName(modelName string) string {
+	modelName = strings.TrimSpace(modelName)
+	if index := strings.LastIndex(modelName, "/"); index >= 0 {
+		modelName = strings.TrimSpace(modelName[index+1:])
+	}
+	return modelName
 }
