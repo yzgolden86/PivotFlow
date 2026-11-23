@@ -2,6 +2,7 @@ package sql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -31,12 +32,6 @@ func (s *SQLStore) ClearSiteAccountSuspendMark(ctx context.Context, accountID in
 // Both directions run in one transaction: a half-applied cascade would leave
 // channels routing traffic to a site the user believes is off.
 func (s *SQLStore) CascadeSiteSuspend(ctx context.Context, siteID int64, enable bool) (int, int, error) {
-	tx, err := s.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, 0, fmt.Errorf("begin cascade transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
 	nowUnix := timeToUnix(time.Now())
 
 	// Channels are reached through site_channel_bindings; the channels table has
@@ -74,22 +69,24 @@ func (s *SQLStore) CascadeSiteSuspend(ctx context.Context, siteID int64, enable 
 			WHERE site_id = ? AND enabled = 1`
 	}
 
-	// Channels first: while disabling, this stops traffic before the accounts
-	// that own them disappear from the enabled set.
-	channelResult, err := tx.ExecContext(ctx, s.q(channelSQL), nowUnix, siteID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("cascade channels: %w", err)
-	}
-	channelRows, _ := channelResult.RowsAffected()
+	var channelRows, accountRows int64
+	if err := s.withTx(ctx, func(tx *sql.Tx) error {
+		// Channels first: while disabling, this stops traffic before the
+		// accounts that own them disappear from the enabled set.
+		channelResult, err := tx.ExecContext(ctx, s.q(channelSQL), nowUnix, siteID)
+		if err != nil {
+			return fmt.Errorf("cascade channels: %w", err)
+		}
+		channelRows, _ = channelResult.RowsAffected()
 
-	accountResult, err := tx.ExecContext(ctx, s.q(accountSQL), nowUnix, siteID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("cascade accounts: %w", err)
-	}
-	accountRows, _ := accountResult.RowsAffected()
-
-	if err := tx.Commit(); err != nil {
-		return 0, 0, fmt.Errorf("commit cascade: %w", err)
+		accountResult, err := tx.ExecContext(ctx, s.q(accountSQL), nowUnix, siteID)
+		if err != nil {
+			return fmt.Errorf("cascade accounts: %w", err)
+		}
+		accountRows, _ = accountResult.RowsAffected()
+		return nil
+	}); err != nil {
+		return 0, 0, err
 	}
 	return int(accountRows), int(channelRows), nil
 }

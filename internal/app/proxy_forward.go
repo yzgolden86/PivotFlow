@@ -888,6 +888,7 @@ func (s *Server) handleSuccessResponse(
 			}, reqCtx.Duration().Seconds(), err
 		}
 		if transform {
+			observer.bypassRequestCache("protocol_transform")
 			return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, string(detectedProtocol), readStats)
 		}
 	}
@@ -903,6 +904,7 @@ func (s *Server) handleSuccessResponse(
 	if !reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
 		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth) {
+		observer.bypassRequestCache("protocol_transform")
 		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats)
 	}
 
@@ -1296,6 +1298,7 @@ func attachFirstByteDetector(
 			if reqCtx.isStreaming && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				return
 			}
+			markTraceFirstByte(reqCtx.ctx)
 			if reqCtx.isStreaming {
 				reqCtx.stopFirstByteTimer()
 			}
@@ -1323,6 +1326,7 @@ func markFirstStreamResponse(reqCtx *requestContext, readStats *streamReadStats,
 	}
 
 	reqCtx.stopFirstByteTimer()
+	markTraceFirstByte(reqCtx.ctx)
 	readStats.firstByteSec = reqCtx.Duration().Seconds()
 	if readStats.firstByteSec == 0 {
 		readStats.firstByteSec = time.Nanosecond.Seconds()
@@ -1671,11 +1675,22 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 	reqCtx.codexOAuthNonStream = !plan.Streaming &&
 		isCodexOAuthResponsesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath)
+	if observer != nil && observer.OnRequestCacheBypass != nil {
+		if reason := requestCacheChannelReason(cfg); reason != "" {
+			observer.bypassRequestCache(reason)
+		} else if plan.NeedsTransform || plan.ClientProtocol != plan.UpstreamProtocol {
+			observer.bypassRequestCache("protocol_transform")
+		}
+	}
 
 	// 2. 构建上游请求
+	beforeFinalBody := reqCtx.transformPlan.TranslatedBody
 	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, reqCtx.transformPlan.TranslatedBody, hdr, rawQuery, reqCtx.transformPlan.UpstreamPath, baseURL)
 	if err != nil {
 		return nil, 0, err
+	}
+	if !bytes.Equal(beforeFinalBody, reqCtx.transformPlan.TranslatedBody) {
+		observer.bypassRequestCache("protocol_transform")
 	}
 	httpReq := req
 	replayBody := bytes.Clone(reqCtx.transformPlan.TranslatedBody)
@@ -1709,6 +1724,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			},
 		)
 		if err != nil && isCodexWebsocketHandshakeFallbackError(err) {
+			retryTraceFromContext(ctx, http.StatusBadGateway, "capability", "websocket_handshake_fallback")
 			log.Printf("[INFO] 渠道 %d WebSocket 握手协商失败 (%v)，同 Key/URL 回退 HTTP", cfg.ID, err)
 			sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
 			req = cloneRequestWithBody(httpReq.WithContext(reqCtx.ctx), sentBody)
@@ -1720,6 +1736,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			// A concrete HTTP response here is a rejected WebSocket handshake. The
 			// selected channel may still support the ordinary Responses HTTP endpoint.
 			_ = resp.Body.Close()
+			retryTraceFromContext(ctx, resp.StatusCode, "capability", "websocket_handshake_fallback")
 			log.Printf("[INFO] 渠道 %d WebSocket 握手返回 %d，同 Key/URL 回退 HTTP", cfg.ID, resp.StatusCode)
 			sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
 			req = cloneRequestWithBody(httpReq.WithContext(reqCtx.ctx), sentBody)
@@ -1732,6 +1749,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		resp, err = s.doUpstreamRequest(cfg, req)
 	}
 	if autoStreamUsage && native == nil && err == nil && openAIStreamUsageOptionRejected(resp) {
+		retryTraceFromContext(ctx, resp.StatusCode, "capability", "stream_options_unsupported")
 		// Some legacy OpenAI-compatible endpoints reject stream_options outright.
 		// The response has not been exposed to the client yet, so retrying the same
 		// request once without the observability option is safe.
@@ -1843,6 +1861,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	var reconnectFallbackErr *codexWebsocketHTTPFallbackError
 	if err != nil && usedNativeWebsocket && res != nil && !res.ResponseCommitted &&
 		errors.As(err, &reconnectFallbackErr) {
+		retryTraceFromContext(ctx, http.StatusBadGateway, "error", "websocket_reconnect_fallback")
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
@@ -2017,12 +2036,17 @@ func (s *Server) forwardAttempt(
 	baseURL string, // 显式传入的URL（多URL场景）
 	w http.ResponseWriter,
 	deferChannelCooldown bool, // 多URL场景下，非最后一个URL不应触发渠道级冷却
-) (*proxyResult, cooldown.Decision, error) {
+) (result *proxyResult, decision cooldown.Decision, attemptErr error) {
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
 	reqCtx.baseURL = baseURL
 	reqCtx.upstreamProtocol = upstreamProtocol
 	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, upstreamProtocol)
+	reqCtx.trace.begin(cfg, keyIndex, baseURL, actualModel, string(upstreamProtocol))
+	ctx = reqCtx.trace.attemptContext(ctx)
+	var res *fwResult
+	defer func() { reqCtx.trace.finishAttempt(result, decision, res, attemptErr) }()
+	reqCtx.debugData = nil
 	requestPath := replaceModelInPath(reqCtx.requestPath, reqCtx.originalModel, actualModel)
 
 	// 转发请求（传递实际的API Key字符串和观测回调）
@@ -2083,6 +2107,7 @@ func (s *Server) forwardAttempt(
 			break
 		}
 		retryStrategies = append(retryStrategies, retryStrategy)
+		reqCtx.trace.retry(res.Status, "capability", "request_compatibility")
 		retryPlan := plan
 		retryPlan.TranslatedBody = retryBody
 		s.activeRequests.Retry(reqCtx.activeReqID)
@@ -2712,6 +2737,7 @@ func (s *Server) attemptKeyAcrossURLs(
 		}
 
 		reqCtx.activeReqID = s.activeRequests.BeginAttempt(reqCtx.activeReqID, activeRequestAttempt{
+			RequestID:        reqCtx.trace.id(),
 			StartTime:        time.Now(),
 			Model:            reqCtx.originalModel,
 			ClientIP:         reqCtx.clientIP,
@@ -2748,6 +2774,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			}
 		}
 		if len(protocolCandidates) == 0 {
+			reqCtx.trace.skipped(cfg, keyIndex, urlEntry.url, "no_compatible_protocol", http.StatusNotFound)
 			urlLastFailure = &proxyResult{
 				status:                    http.StatusNotFound,
 				body:                      []byte(`{"error":"upstream endpoint unsupported"}`),
@@ -2776,6 +2803,7 @@ func (s *Server) attemptKeyAcrossURLs(
 				break
 			}
 			if protocolIdx < len(protocolCandidates)-1 {
+				reqCtx.trace.amendDecision("compatibility", nil)
 				s.activeRequests.Retry(reqCtx.activeReqID)
 				continue
 			}
@@ -2806,6 +2834,7 @@ func (s *Server) attemptKeyAcrossURLs(
 		// 但超时故障（598/599）是 URL 相关的网络问题，在多 URL 场景下应尝试下一个 URL。
 		if nextAction.Effect == cooldown.EffectCoolModel {
 			if urlsCount > 1 && result != nil && util.IsModelScopedStreamFailure(result.status) {
+				reqCtx.trace.amendDecision("next_url", nil)
 				// 超时故障：冷却 URL 并继续下一个
 				if selector != nil {
 					selector.CooldownURL(cfg.ID, urlEntry.url)
@@ -2828,6 +2857,7 @@ func (s *Server) attemptKeyAcrossURLs(
 				if result.deferredCooldown != nil {
 					nextAction = s.applyCooldownDecision(ctx, cfg, *result.deferredCooldown)
 					result.nextAction = nextAction
+					reqCtx.trace.amendDecision("", &nextAction)
 					result.deferredCooldown = nil
 				}
 				break
@@ -2836,6 +2866,7 @@ func (s *Server) attemptKeyAcrossURLs(
 				selector.CooldownURL(cfg.ID, urlEntry.url)
 			}
 
+			reqCtx.trace.amendDecision("next_url", nil)
 			continue // 下一个URL
 		}
 		// 单URL：保持原有行为
@@ -3010,6 +3041,7 @@ func (s *Server) tryCodexOAuthChannel(
 			result = lastFailure
 		}
 		if attempt == 0 && result != nil && result.status == http.StatusUnauthorized {
+			reqCtx.trace.amendDecision("refresh_token", nil)
 			s.activeRequests.Retry(reqCtx.activeReqID)
 			continue
 		}
@@ -3071,6 +3103,7 @@ func (s *Server) tryAntigravityOAuthChannel(
 			result = lastFailure
 		}
 		if attempt == 0 && result != nil && result.status == http.StatusUnauthorized {
+			reqCtx.trace.amendDecision("refresh_token", nil)
 			s.activeRequests.Retry(reqCtx.activeReqID)
 			continue
 		}

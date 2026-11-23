@@ -1,0 +1,1249 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"mime"
+	"mime/multipart"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"ccLoad/internal/config"
+	"ccLoad/internal/cooldown"
+	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
+
+	"github.com/bytedance/sonic"
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/sjson"
+)
+
+var errUnknownClientProtocol = errors.New("unknown client protocol for path")
+
+// errBodyTooLarge 与 errBodyReadTimeout 是两种完全不同的失败：前者是请求体超过
+// 配置的大小上限（立即拒绝），后者是客户端在读取超时内没把请求体传完。二者的处置
+// 手段不同（调大小上限 vs 调读取超时），错误文案必须区分，否则会被误判。
+var errBodyTooLarge = errors.New("request body exceeds the configured size limit (settings: max_body_bytes / max_image_body_bytes)")
+var errBodyReadTimeout = errors.New("timed out reading the request body before the client finished uploading (setting: http_read_timeout_seconds)")
+
+// ErrAllKeysUnavailable 表示所有渠道密钥都不可用
+var ErrAllKeysUnavailable = errors.New("all channel keys unavailable")
+
+// ErrAllKeysExhausted 表示所有密钥都已耗尽
+var ErrAllKeysExhausted = errors.New("all keys exhausted")
+
+// ErrNoAPIKeyForModel means this channel has keys, but none may serve the requested model.
+// It must not be promoted to a channel cooldown: another model can still use the channel.
+var ErrNoAPIKeyForModel = errors.New("no API key available for model")
+
+// ErrChannelRPMExceeded 表示渠道RPM限制已达到
+var ErrChannelRPMExceeded = errors.New("channel rpm limit exceeded")
+
+// ErrChannelConcurrencyExceeded 表示渠道并发限制已达到
+var ErrChannelConcurrencyExceeded = errors.New("channel concurrency limit exceeded")
+
+// ============================================================================
+// 并发控制
+// ============================================================================
+
+// acquireConcurrencySlot 获取并发槽位，返回release函数和状态
+// ok=false 表示客户端已取消请求
+func (s *Server) acquireConcurrencySlot(c *gin.Context) (release func(), ok bool) {
+	release, err := s.acquireConcurrencySlotForContext(c.Request.Context())
+	if err == nil {
+		return release, true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeLocalProxyError(c, http.StatusGatewayTimeout, "request timeout while waiting for slot")
+		return nil, false
+	}
+	writeLocalProxyError(c, StatusClientClosedRequest, "request cancelled while waiting for slot")
+	return nil, false
+}
+
+func (s *Server) acquireConcurrencySlotForContext(ctx context.Context) (func(), error) {
+	select {
+	case s.concurrencySem <- struct{}{}:
+		return func() { <-s.concurrencySem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// ============================================================================
+// 请求解析
+// ============================================================================
+
+type incomingRequest struct {
+	// originalModel 是去掉思考后缀的基名，用于选路、鉴权与冷却；命中多模态
+	// 回退后会替换成回退模型，因此日志必须在替换前单独保留客户端模型。
+	originalModel string
+	// requestedModel 是客户端字面写的模型名，可能带思考后缀。
+	requestedModel string
+	body           []byte
+	isStreaming    bool
+	hasModel       bool
+}
+
+func (r incomingRequest) authorizationModel() string {
+	if !r.hasModel {
+		return ""
+	}
+	return r.originalModel
+}
+
+// isRequestReadTimeout 判断读取失败是否来自读取截止时间（HTTP Server ReadTimeout），
+// 而不是客户端断开或其它 I/O 故障。
+func isRequestReadTimeout(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+/**
+ * @brief 读取并解析代理请求，单请求大小限制与共享内存预算分别校验。
+ * @param c 下游请求上下文。
+ * @param bodyLimits 普通和 Images 路径的解码后大小上限。
+ * @param memory 当前 handler 持有并负责释放的正文内存预留。
+ * @return 已解析的请求；错误时返回零值。
+ * @return 大小超限、预算耗尽、读取超时、未知编码或正文格式错误。
+ */
+func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits, memory *requestBodyMemoryReservation) (incomingRequest, error) {
+	requestPath := c.Request.URL.Path
+	requestMethod := c.Request.Method
+
+	// 读取请求体（带上限，防止大包打爆内存）。压缩请求体先按 Content-Encoding 解码，
+	// 上限约束解码后的字节，解压炸弹与明文超限同样返回 errBodyTooLarge。
+	maxBody := bodyLimits.maxForPath(requestPath)
+	contentEncoding := strings.Join(c.Request.Header.Values("Content-Encoding"), ",")
+	encodings, workspace, err := parseContentEncodings(contentEncoding)
+	if err != nil {
+		_ = c.Request.Body.Close()
+		return incomingRequest{}, err
+	}
+	if err := memory.reserve(workspace); err != nil {
+		stopRejectedRequestUpload(c)
+		_ = c.Request.Body.Close()
+		return incomingRequest{}, err
+	}
+	defer memory.release(workspace)
+	body, err := decodeContentEncodingBody(c.Request.Body, encodings)
+	var all []byte
+	if err == nil {
+		contentLength := c.Request.ContentLength
+		if len(encodings) != 0 {
+			contentLength = -1
+		}
+		all, err = memory.read(c.Request.Context(), body, maxBody, contentLength)
+		if errors.Is(err, errRequestBodyMemoryBudget) {
+			stopRejectedRequestUpload(c)
+		}
+		_ = body.Close()
+	}
+	if err != nil {
+		if isRequestReadTimeout(err) {
+			return incomingRequest{}, fmt.Errorf("%w: %v", errBodyReadTimeout, err)
+		}
+		if errors.Is(err, errBodyTooLarge) || errors.Is(err, errRequestBodyMemoryBudget) {
+			return incomingRequest{}, err
+		}
+		return incomingRequest{}, fmt.Errorf("failed to read body: %w", err)
+	}
+	if strings.TrimSpace(contentEncoding) != "" {
+		// 后续只转发明文：残留的编码头会让上游按压缩数据解析，也会让出站压缩
+		// （Codex OAuth zstd、Anthropic 第一方 gzip）误以为调用方已自带编码而跳过。
+		c.Request.Header.Del("Content-Encoding")
+		c.Request.Header.Del("Content-Length")
+		c.Request.ContentLength = int64(len(all))
+	}
+	contentType := c.Request.Header.Get("Content-Type")
+	mediaType, mediaParams, _ := mime.ParseMediaType(contentType)
+	if shouldValidateStrictJSONBody(contentType, all) {
+		// 失败路径才走标准库解码，为的是把出错偏移量带给客户端；
+		// json.Unmarshal 同样拒绝顶层值之后的尾随数据。
+		if !sonic.Valid(all) {
+			err := json.Unmarshal(all, new(json.RawMessage))
+			if err == nil {
+				err = errors.New("expected exactly one JSON value")
+			}
+			return incomingRequest{}, fmt.Errorf("invalid JSON body: %w", err)
+		}
+	}
+	declaredMediaType := strings.ToLower(strings.TrimSpace(contentType))
+	if separator := strings.IndexByte(declaredMediaType, ';'); separator >= 0 {
+		declaredMediaType = strings.TrimSpace(declaredMediaType[:separator])
+	}
+	if mediaType == "multipart/form-data" || declaredMediaType == "multipart/form-data" {
+		boundary := strings.TrimSpace(mediaParams["boundary"])
+		if boundary == "" {
+			return incomingRequest{}, errors.New("invalid multipart body: boundary is missing")
+		}
+		reader := multipart.NewReader(bytes.NewReader(all), boundary)
+		for {
+			part, partErr := reader.NextPart()
+			if errors.Is(partErr, io.EOF) {
+				break
+			}
+			if partErr != nil {
+				return incomingRequest{}, fmt.Errorf("invalid multipart body: %w", partErr)
+			}
+			if _, partErr = io.Copy(io.Discard, part); partErr != nil {
+				_ = part.Close()
+				return incomingRequest{}, fmt.Errorf("invalid multipart body: %w", partErr)
+			}
+			if partErr = part.Close(); partErr != nil {
+				return incomingRequest{}, fmt.Errorf("invalid multipart body: %w", partErr)
+			}
+		}
+	}
+
+	var reqModel struct {
+		Model string `json:"model"`
+	}
+	_ = sonic.Unmarshal(all, &reqModel)
+
+	// multipart/form-data 支持：当 JSON 解析无 model 时，尝试从 multipart 表单字段提取
+	if reqModel.Model == "" && mediaType == "multipart/form-data" {
+		if boundary := mediaParams["boundary"]; boundary != "" {
+			reqModel.Model = extractModelFromMultipart(all, boundary)
+		}
+	}
+
+	// 智能检测流式请求
+	isStreaming := isStreamingRequest(requestPath, all)
+	if mediaType == "multipart/form-data" && protocol.DetectRequestFamily(requestPath) == protocol.RequestFamilyImages {
+		isStreaming, _ = strconv.ParseBool(extractMultipartField(all, mediaParams["boundary"], "stream"))
+	}
+
+	// 多源模型名称获取：优先请求体，其次URL路径
+	originalModel := reqModel.Model
+	if originalModel == "" {
+		originalModel = extractModelFromPath(requestPath)
+	}
+	hasModel := originalModel != ""
+	requestFamily := protocol.DetectRequestFamily(requestPath)
+	if reqModel.Model != "" &&
+		(requestFamily == protocol.RequestFamilyMessages || requestFamily == protocol.RequestFamilyCountTokens) {
+		if normalized := trimClaudeCodeLongContextSuffix(originalModel); normalized != originalModel {
+			if all, err = sjson.SetBytes(all, "model", normalized); err != nil {
+				return incomingRequest{}, fmt.Errorf("normalize model: %w", err)
+			}
+			originalModel = normalized
+		}
+	}
+
+	// GET 请求保留既有通配选路语义；Codex alpha/search 的业务模型保持为空。
+	if originalModel == "" {
+		switch {
+		case requestFamily == protocol.RequestFamilyAlphaSearch:
+		case requestMethod == http.MethodGet:
+			originalModel = "*"
+		default:
+			return incomingRequest{}, fmt.Errorf("invalid JSON or missing model")
+		}
+	}
+	return incomingRequest{
+		originalModel:  model.RoutingModelName(originalModel),
+		requestedModel: originalModel,
+		body:           all,
+		isStreaming:    isStreaming,
+		hasModel:       hasModel,
+	}, nil
+}
+
+const claudeCodeLongContextSuffix = "[1m]"
+
+// trimClaudeCodeLongContextSuffix 去掉泄漏的 [1m]（含重复形式）。Claude Code 把它当客户端
+// 上下文选择器，通常发请求前自行去掉；泄漏时带后缀选路必然落空（对齐 sub2api）。
+func trimClaudeCodeLongContextSuffix(modelName string) string {
+	for len(modelName) > len(claudeCodeLongContextSuffix) &&
+		strings.EqualFold(modelName[len(modelName)-len(claudeCodeLongContextSuffix):], claudeCodeLongContextSuffix) {
+		modelName = modelName[:len(modelName)-len(claudeCodeLongContextSuffix)]
+	}
+	return modelName
+}
+
+// requestBodyLimits 是单个 Server 的不可变请求体上限。
+type requestBodyLimits struct {
+	standard int64
+	images   int64
+}
+
+func normalizeMaxBodyBytes(maxBodyBytes int64) int64 {
+	if maxBodyBytes <= 0 {
+		return config.DefaultMaxBodyBytes
+	}
+	return maxBodyBytes
+}
+
+func newRequestBodyLimits(maxBody, maxImageBody int) requestBodyLimits {
+	if maxBody <= 0 {
+		maxBody = config.DefaultMaxBodyBytes
+	}
+	if maxImageBody <= 0 {
+		maxImageBody = config.DefaultMaxImageBodyBytes
+	}
+	return requestBodyLimits{standard: int64(maxBody), images: int64(maxImageBody)}
+}
+
+func (l requestBodyLimits) maxForPath(requestPath string) int64 {
+	if l.standard <= 0 {
+		l.standard = config.DefaultMaxBodyBytes
+	}
+	if l.images <= 0 {
+		l.images = config.DefaultMaxImageBodyBytes
+	}
+	if strings.HasPrefix(requestPath, "/v1/images/") {
+		return l.images
+	}
+	return l.standard
+}
+
+// extractModelFromMultipart 从 multipart/form-data 原始字节中提取 model 字段
+func extractModelFromMultipart(body []byte, boundary string) string {
+	return extractMultipartField(body, boundary, "model")
+}
+
+func extractMultipartField(body []byte, boundary, field string) string {
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := reader.NextPart()
+		if err != nil {
+			break
+		}
+		if part.FormName() == field && part.FileName() == "" {
+			val, err := io.ReadAll(io.LimitReader(part, 256))
+			_ = part.Close()
+			if err == nil {
+				return strings.TrimSpace(string(val))
+			}
+			break
+		}
+		_ = part.Close()
+	}
+	return ""
+}
+
+// ============================================================================
+// 路由选择
+// ============================================================================
+
+// selectRouteCandidates 根据请求选择路由候选
+// 从proxy.go提取，遵循SRP原则
+func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, originalModel string, clientProtocol string) ([]*model.Config, error) {
+	requestMethod := c.Request.Method
+	requestFamily := protocol.DetectRequestFamily(c.Request.URL.Path)
+
+	// 智能路由选择：根据请求类型选择不同的路由策略
+	if requestMethod == http.MethodGet && clientProtocol == util.ProtocolGemini {
+		// Gemini 模型列表请求仍可路由到任意启用渠道。
+		return s.selectCandidatesByClientProtocol(ctx, util.ProtocolGemini)
+	}
+
+	if clientProtocol == "" {
+		return nil, errUnknownClientProtocol
+	}
+	if clientProtocol == util.ProtocolSystemOne {
+		if requestMethod != http.MethodPost {
+			return nil, errUnknownClientProtocol
+		}
+		return s.selectSystemOneCandidates(ctx, originalModel)
+	}
+	if requestFamily == protocol.RequestFamilyAlphaSearch {
+		return s.selectAlphaSearchCandidates(ctx, originalModel)
+	}
+
+	_, effectivePath := clientRequestMetadata(c)
+	if isOrdinaryGenerationRequest(requestMethod, effectivePath, protocol.Protocol(clientProtocol)) {
+		return s.resolveGenerationCandidates(ctx, generationRouteInput{
+			Model: originalModel, ClientProtocol: clientProtocol,
+			TokenHash: channelRestrictionTokenFromContext(ctx),
+		})
+	}
+	return s.selectCandidatesByModelAndClientProtocol(ctx, originalModel, clientProtocol)
+}
+
+// Only Anthropic's first-party origin has a measured native count_tokens wire.
+// A channel with mixed targets is left to the local estimator so URL fallback
+// cannot silently send this auxiliary request to a third-party gateway.
+func (s *Server) officialAnthropicCountTokensCandidates(cands []*model.Config) []*model.Config {
+	selected := make([]*model.Config, 0, len(cands))
+	for _, cfg := range cands {
+		runtimeCfg := s.withOAuthBaseURLOverride(cfg)
+		if len(runtimeCfg.URLs) == 0 {
+			continue
+		}
+		allOfficial := true
+		for _, entry := range runtimeCfg.URLs {
+			parsed, err := url.Parse(model.StripExactUpstreamURLMarker(entry.URL))
+			if err != nil || !entry.SupportsProtocol(string(protocol.Anthropic)) || !isOfficialAnthropicURL(parsed) {
+				allOfficial = false
+				break
+			}
+		}
+		if allOfficial {
+			selected = append(selected, cfg)
+		}
+	}
+	return selected
+}
+
+// handleLocalCountTokens 用本地估算应答 count_tokens，并按 count_tokens 来源记一条无渠道日志。
+func (s *Server) handleLocalCountTokens(c *gin.Context, body []byte, entry *model.LogEntry) {
+	status, payload, inputTokens := localCountTokens(body)
+	respBody, _ := sonic.Marshal(payload)
+	c.Data(status, "application/json; charset=utf-8", respBody)
+
+	entry.LogSource = model.LogSourceCountTokens
+	entry.StatusCode = status
+	entry.InputTokens = inputTokens
+	entry.Duration = time.Since(entry.Time.Time).Seconds()
+	if s.configService.GetBool("debug_log_enabled", false) {
+		entry.DebugData = &model.DebugLogEntry{
+			CreatedAt:   time.Now().Unix(),
+			ReqMethod:   c.Request.Method,
+			ReqURL:      c.Request.URL.String(),
+			ReqHeaders:  encodeDebugHeaders(c.Request.Header),
+			ReqBody:     body,
+			RespStatus:  status,
+			RespHeaders: encodeDebugHeaders(c.Writer.Header()),
+			RespBody:    respBody,
+		}
+	}
+	s.AddLogAsync(entry)
+}
+
+// ============================================================================
+// 主请求处理器
+// ============================================================================
+
+// handleSpecialRoutes 处理不需要上游渠道的特殊路由。
+// 返回 true 表示已处理，调用方应直接返回
+func (s *Server) handleSpecialRoutes(c *gin.Context) bool {
+	path := c.Request.URL.Path
+	method := c.Request.Method
+
+	switch {
+	case method == http.MethodGet && path == "/v1/models":
+		s.handleListOpenAIModels(c)
+		return true
+	case method == http.MethodGet && path == "/v1beta/models":
+		s.handleListGeminiModels(c)
+		return true
+	}
+	return false
+}
+
+// HandleProxyRequest 通用透明代理处理器
+func (s *Server) HandleProxyRequest(c *gin.Context) {
+	// Responses GET is reserved for the downstream WebSocket handshake. A plain
+	// GET must stop here instead of entering the generic proxy, where it has no
+	// JSON model and is otherwise routed as "*" to every eligible channel.
+	if c.Request.Method == http.MethodGet && isResponsesWebsocketPath(c.Request.URL.Path) {
+		s.HandleResponsesWebsocket(c)
+		return
+	}
+	httpMetrics := s.httpRuntime.begin()
+	defer func() {
+		httpMetrics.finish(c.Writer.Status(), c.Writer.Size())
+	}()
+
+	startTime := time.Now()
+
+	// 并发控制
+	release, ok := s.acquireConcurrencySlot(c)
+	if !ok {
+		return
+	}
+	defer release()
+
+	if !s.admitHTTPTokenRPM(c) {
+		return
+	}
+
+	// 特殊路由优先处理
+	if s.handleSpecialRoutes(c) {
+		return
+	}
+
+	requestMethod := c.Request.Method
+
+	memory := requestBodyMemoryReservation{budget: &s.requestBodyMemory}
+	defer memory.close()
+	incoming, err := parseIncomingRequest(c, s.bodyLimits, &memory)
+	if err != nil {
+		switch {
+		case errors.Is(err, errBodyTooLarge):
+			writeLocalProxyError(c, http.StatusRequestEntityTooLarge, err.Error())
+		case errors.Is(err, errBodyReadTimeout):
+			// 408 而不是 400：请求本身没问题，是客户端没在读取超时内传完。
+			writeLocalProxyError(c, http.StatusRequestTimeout, err.Error())
+		case errors.Is(err, errRequestBodyMemoryBudget):
+			c.Header("Retry-After", "1")
+			writeLocalProxyError(c, http.StatusServiceUnavailable, err.Error())
+		case errors.Is(err, errUnsupportedContentEncoding):
+			writeLocalProxyError(c, http.StatusUnsupportedMediaType, err.Error())
+		default:
+			writeLocalProxyError(c, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+	all := incoming.body
+	// 后续改写都经 sjson 生成新切片，incoming.body 保持客户端原文。
+	originalReasoningBody := incoming.body
+	isStreaming := incoming.isStreaming
+	httpMetrics.observeRequest(isStreaming, len(all))
+
+	clientProtocol, effectiveRequestPath := clientRequestMetadata(c)
+	if err := validateClientBodyMatchesProtocol(clientProtocol, all); err != nil {
+		writeLocalProxyError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	requestFamily := protocol.DetectRequestFamily(effectiveRequestPath)
+	reasoningModel := incoming.requestedModel // 多模态回退改写前的客户端模型名
+	countTokensRequest := requestFamily == protocol.RequestFamilyCountTokens
+	if requestFamily == protocol.RequestFamilyAlphaSearch {
+		all = sanitizeCodexAlphaSearchBody(all)
+	}
+
+	// 多模态回退：多模态请求自动切到配置的回退模型。改写必须发生在
+	// applyThinkingSuffix 与 Token 白名单之前——渠道候选过滤（SQL 按模型 JOIN）、
+	// 模型冷却过滤、Key 白名单全部按模型名做决策，事后换模型只会换来
+	// 渠道未声明的模型 + 404 + 逐渠道失败。改 incoming 字段后下游全部自动跟随。
+	clientModel := incoming.originalModel
+	if isOrdinaryGenerationRequest(requestMethod, effectiveRequestPath, clientProtocol) {
+		incoming.requestedModel = s.generationRoutingModel(generationRouteInput{
+			Model: incoming.requestedModel, ClientProtocol: string(clientProtocol),
+			Multimodal: requestHasNonTextContent(clientProtocol, all),
+		})
+		incoming.originalModel = model.RoutingModelName(incoming.requestedModel)
+	} else if fallback := s.multimodalFallbackModel(incoming.originalModel, requestHasNonTextContent(clientProtocol, all)); fallback != "" {
+		incoming.originalModel = model.RoutingModelName(fallback)
+		incoming.requestedModel = fallback
+	}
+	originalModel := incoming.originalModel
+
+	// 先把后缀写成客户端协议字段；选定渠道后会再按实际上游模型能力收敛等级。
+	all = applyThinkingSuffix(all, clientProtocol, incoming.requestedModel)
+	thinkingEffort := thinkingEffortFromRequest(incoming.requestedModel, all)
+
+	tokenHashStr := ""
+	if v, ok := c.Get("token_hash"); ok {
+		tokenHashStr, _ = v.(string)
+	}
+	tokenID, _ := c.Get("token_id")
+	tokenIDInt64, _ := tokenID.(int64)
+	localCountTokensLog := func(reason string) *model.LogEntry {
+		return &model.LogEntry{
+			Time:           model.JSONTime{Time: startTime},
+			Model:          clientModel,
+			AuthTokenID:    tokenIDInt64,
+			ClientProtocol: string(clientProtocol),
+			ClientIP:       c.ClientIP(),
+			Message:        "local: " + reason,
+		}
+	}
+
+	// count_tokens is an auxiliary, non-billable endpoint: an exhausted budget
+	// still gets an estimate. A model outside the token's whitelist must not
+	// reach a first-party account either, so it gets the local estimate too.
+	if countTokensRequest {
+		if !s.tokenModelAllowed(tokenHashStr, incoming.authorizationModel()) {
+			// This exit precedes the shared masking below; mask here too so the local
+			// estimate and its debug record match the other count_tokens fallbacks.
+			masked, errMask := maskPrivacyBody(s.privacySession(c), all, c.Request.Header.Get("Content-Type"))
+			if errMask != nil {
+				s.privacyStats.blocked.Add(1)
+				writeLocalProxyError(c, http.StatusBadRequest, errPrivacyMasking.Error())
+				return
+			}
+			s.handleLocalCountTokens(c, masked, localCountTokensLog("model restricted"))
+			return
+		}
+	} else if !s.enforceTokenLimits(c, tokenHashStr, incoming.authorizationModel()) {
+		return
+	}
+
+	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
+	ctx := c.Request.Context()
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	ctx = withChannelRestrictionToken(ctx, tokenHashStr)
+
+	var executionSession *responsesExecutionSession
+	var routingSession *responsesExecutionSession
+	var executionSessionRequestBody []byte
+	var nativeRequestBody []byte
+	if clientProtocol == protocol.Codex && isStreaming && requestMethod == http.MethodPost &&
+		requestFamily == protocol.RequestFamilyResponses {
+		sessionID := responsesExecutionSessionID(c.Request.Header)
+		// Ordinary HTTP requests only need process-local state when the client supplied
+		// the explicit Session-Id contract. Cache routing hints are not conversation IDs.
+		if tokenHashStr != "" && sessionID != "" {
+			var releaseSession func()
+			var errSession error
+			executionSession, releaseSession, errSession = s.responsesExecutionSessions.acquire(tokenHashStr, sessionID)
+			if errSession != nil {
+				writeLocalProxyError(c, http.StatusTooManyRequests, errSession.Error())
+				return
+			}
+			defer releaseSession()
+			if errAcquire := executionSession.acquireTurn(ctx); errAcquire != nil {
+				writeLocalProxyError(c, http.StatusRequestTimeout, errAcquire.Error())
+				return
+			}
+			defer executionSession.releaseTurn()
+			routingSession = executionSession
+			replayBody, incrementalBody, localContinuation, errNormalize :=
+				executionSession.transcript.normalizeHTTPRequests(all)
+			if errNormalize != nil {
+				writeLocalProxyError(c, http.StatusBadRequest, errNormalize.Error())
+				return
+			}
+			if !localContinuation {
+				executionSession = nil
+			} else {
+				executionSessionRequestBody = replayBody
+				// HTTP may continue an already established upstream websocket, but it must
+				// never create one. Without an attached socket, preserve HTTP wire semantics.
+				if _, connected := executionSession.upstream.targetSnapshot(); connected {
+					all = replayBody
+					nativeRequestBody = incrementalBody
+				}
+			}
+		}
+	}
+
+	var reqCtx *proxyRequestContext
+	privacySession := s.privacySession(c)
+	if privacySession != nil {
+		all, err = maskPrivacyBody(privacySession, all, c.Request.Header.Get("Content-Type"))
+		if err == nil && len(nativeRequestBody) > 0 {
+			nativeRequestBody, err = privacySession.MaskJSON(nativeRequestBody)
+		}
+		// originalReasoningBody only feeds local turn classification and never
+		// leaves the process, so it is not masked.
+		if err != nil {
+			s.privacyStats.blocked.Add(1)
+			writeLocalProxyError(c, http.StatusBadRequest, "privacy masking failed; request was not sent")
+			return
+		}
+		output := newPrivacyResponseWriter(c.Writer, privacySession)
+		c.Writer = &privacyGinWriter{ResponseWriter: c.Writer, output: output}
+		defer func() {
+			if finishErr := output.Finish(); finishErr != nil {
+				log.Print("[WARN] privacy response restoration failed")
+			}
+			var requestID int64
+			if reqCtx != nil {
+				requestID = reqCtx.activeReqID
+			}
+			s.privacyStats.finish(output, requestID)
+		}()
+	}
+
+	ctx = withPrivacySession(ctx, privacySession)
+	cands, err := s.selectRouteCandidates(ctx, c, originalModel, string(clientProtocol))
+	if err == nil && requestMethod == http.MethodPost && requestFamily != protocol.RequestFamilyAlphaSearch {
+		cands = s.appendAntigravityCreditsCandidates(ctx, cands, originalModel, string(clientProtocol), all)
+	}
+	if err != nil {
+		if errors.Is(err, errGenerationModelDenied) {
+			writeLocalProxyError(c, http.StatusForbidden, fmt.Sprintf("model '%s' is not allowed for this token", originalModel))
+			return
+		}
+		if errors.Is(err, errUnknownClientProtocol) {
+			writeLocalProxyError(c, http.StatusNotFound, "unsupported path")
+			return
+		}
+		writeLocalProxyError(c, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if countTokensRequest {
+		cands = s.officialAnthropicCountTokensCandidates(cands)
+		if len(cands) == 0 {
+			s.handleLocalCountTokens(c, all, localCountTokensLog("no official channel"))
+			return
+		}
+	}
+
+	if len(cands) == 0 {
+		if requestFamily == protocol.RequestFamilyAlphaSearch {
+			writeEmptyAlphaSearchResponse(c.Writer)
+			return
+		}
+		if channelRestrictionDeniedFromContext(ctx) {
+			writeLocalProxyError(c, http.StatusForbidden, "no allowed upstream channel for this token")
+			return
+		}
+		status, message := http.StatusServiceUnavailable, "no available upstream (all cooled or none)"
+		// 模型根本没配置时返回 404：Claude Code 对 5xx 会退避重试多次才报错。
+		if clientProtocol == protocol.Anthropic && !s.modelConfigured(ctx, originalModel) {
+			status, message = http.StatusNotFound, fmt.Sprintf("model: %s", originalModel)
+		}
+		s.AddLogAsync(&model.LogEntry{
+			Time:           model.JSONTime{Time: time.Now()},
+			Model:          clientModel,
+			LogSource:      model.LogSourceProxy,
+			AuthTokenID:    tokenIDInt64,
+			ClientProtocol: string(clientProtocol),
+			StatusCode:     status,
+			Message:        message,
+			IsStreaming:    isStreaming,
+			ClientIP:       c.ClientIP(),
+			ThinkingEffort: thinkingEffort,
+		})
+		writeLocalProxyError(c, status, message)
+		return
+	}
+
+	if tokenHashStr != "" {
+		filtered, restricted := s.authService.FilterAllowedChannels(tokenHashStr, cands)
+		if restricted {
+			cands = filtered
+			if len(cands) == 0 {
+				writeLocalProxyError(c, http.StatusForbidden, "no allowed upstream channel for this token")
+				return
+			}
+		}
+	}
+
+	// 客户端通过 x-ccload-channel-id / x-ccload-channel Header 指定渠道
+	reqChannelFilter := extractRequestedChannelFilter(c.Request)
+	if reqChannelFilter.hasFilter {
+		cands, _ = filterByRequestedChannel(cands, reqChannelFilter)
+		if len(cands) == 0 {
+			writeLocalProxyError(c, http.StatusNotFound, requestedChannelUnavailableMessage)
+			return
+		}
+	}
+	var sessionAffinityKey string
+	var sessionAffinity sessionAffinityTarget
+	var hasSessionAffinity bool
+	switch {
+	case clientProtocol == protocol.Anthropic && requestFamily == protocol.RequestFamilyMessages:
+		sessionAffinityKey = anthropicSessionAffinityKey(tokenHashStr, c.Request.Header, all)
+		sessionAffinity, hasSessionAffinity = s.sessionAffinity.lookup(sessionAffinityKey, time.Now())
+	case clientProtocol == protocol.Codex && requestFamily == protocol.RequestFamilyResponses:
+		sessionAffinityKey, sessionAffinity, hasSessionAffinity = s.lookupCodexSessionAffinity(tokenHashStr, c.Request.Header, time.Now())
+	}
+	if hasSessionAffinity {
+		cands = s.preferSessionAffinityChannel(cands, sessionAffinity.channelID)
+	}
+	// 执行会话已钉住的渠道（在用的上游 WS 或 RetryOtherKeys 首选渠道）优先于会话粘性。
+	if routingSession != nil {
+		if channelID, ok := routingSession.routeChannelSnapshot(); ok {
+			cands = prioritizePinnedChannel(cands, channelID)
+		}
+	}
+
+	reqCtx = &proxyRequestContext{
+		clientModel:    clientModel,
+		originalModel:  originalModel,
+		requestedModel: incoming.requestedModel,
+		clientProtocol: clientProtocol,
+		codexClient:    isCodexMultiAgentClient(codexMultiAgentUserAgent(c.Request.Header)),
+		requestMethod:  requestMethod,
+		requestPath:    effectiveRequestPath,
+		rawQuery:       c.Request.URL.RawQuery,
+		body:           all,
+		translatedBody: all,
+		header:         c.Request.Header,
+		isStreaming:    isStreaming,
+		tokenHash:      tokenHashStr,
+		tokenID:        tokenIDInt64,
+		clientIP:       c.ClientIP(),
+		startTime:      startTime,
+		thinkingEffort: thinkingEffort,
+
+		sessionAffinityKey: sessionAffinityKey,
+		sessionAffinity:    sessionAffinity,
+	}
+	if routingSession != nil {
+		reqCtx.routingSession = routingSession
+	}
+	reqCtx.responsesReplayBody = executionSessionRequestBody
+	if privacySession != nil && len(reqCtx.responsesReplayBody) > 0 {
+		reqCtx.responsesReplayBody, err = privacySession.MaskJSON(reqCtx.responsesReplayBody)
+		if err != nil {
+			s.privacyStats.blocked.Add(1)
+			writeLocalProxyError(c, http.StatusBadRequest, "privacy masking failed; request was not sent")
+			return
+		}
+	}
+	if executionSession != nil && nativeRequestBody != nil {
+		reqCtx.nativeCodexWS = executionSession.upstream
+		reqCtx.nativeCodexBody = nativeRequestBody
+	}
+	if requestMethod == http.MethodPost && reasoningTurnEndpoint(effectiveRequestPath) && s.reasoningTarget(reqCtx) {
+		reasoningExplicit := hasExplicitThinkingSuffix(reasoningModel)
+		transcript := all
+		if len(executionSessionRequestBody) > 0 {
+			transcript = reqCtx.responsesReplayBody
+		} else if !reasoningExplicit {
+			if local := s.localReasoningTranscript(reqCtx); local != nil {
+				transcript = local
+			}
+		}
+		s.prepareReasoningTurn(ctx, reqCtx, transcript, originalReasoningBody, reasoningExplicit)
+		ctx = withReasoningRequest(ctx, reqCtx)
+	}
+	reqCtx.observer = &ForwardObserver{
+		OnBytesRead: func(n int64) {
+			s.activeRequests.AddBytes(reqCtx.activeReqID, n)
+		},
+		OnFirstByteRead: func(firstByteTime time.Duration) {
+			s.activeRequests.SetClientFirstByteTime(reqCtx.activeReqID, firstByteTime)
+		},
+		OnUpstreamWebsocket: func(upstreamWebsocket bool) {
+			s.activeRequests.SetUpstreamWebsocket(reqCtx.activeReqID, upstreamWebsocket)
+		},
+		OnDebugCapture: func(dc *debugCapture) {
+			s.activeRequests.SetDebugCapture(reqCtx.activeReqID, dc)
+		},
+		OnThinkingEffort: func(sent, client string) {
+			s.activeRequests.SetThinkingEffort(reqCtx.activeReqID, sent, client)
+		},
+	}
+	defer func() {
+		if reqCtx.activeReqID > 0 {
+			s.activeRequests.Remove(reqCtx.activeReqID)
+		}
+	}()
+
+	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
+	if succeeded {
+		if executionSession != nil && lastResult != nil && lastResult.hasResponsesTurn {
+			if privacySession != nil && len(lastResult.responsesTurn.completedOutput) > 0 {
+				if restored, restoreErr := privacySession.RestoreJSON(lastResult.responsesTurn.completedOutput); restoreErr == nil {
+					lastResult.responsesTurn.completedOutput = restored
+				}
+			}
+			s.responsesExecutionSessions.commit(executionSession, executionSessionRequestBody, lastResult.responsesTurn)
+		}
+		return
+	}
+	if countTokensRequest && (lastResult == nil || !lastResult.isClientCanceled) {
+		s.handleLocalCountTokens(c, all, localCountTokensLog("upstream failed"))
+		return
+	}
+	s.annotatePoolCooldownRetryAfter(ctx, reqCtx, lastResult)
+
+	channelIDs := make(map[int64]struct{}, len(cands))
+	for _, cfg := range cands {
+		channelIDs[cfg.ID] = struct{}{}
+	}
+	s.writeFinalProxyResponse(c, reqCtx, isStreaming, lastResult, len(channelIDs))
+}
+
+func determineFinalClientStatus(lastResult *proxyResult) int {
+	if lastResult == nil || lastResult.status == 0 {
+		return http.StatusServiceUnavailable
+	}
+
+	status := lastResult.status
+
+	// 499处理：区分客户端取消 vs 上游返回的499
+	if status == util.StatusClientClosedRequest {
+		if lastResult.isClientCanceled {
+			return status // 真正的客户端取消，透传499
+		}
+		return http.StatusBadGateway // 上游499，映射为502
+	}
+
+	// 仅映射内部状态码（596-599），其他全部透传
+	return util.ClientStatusFor(status)
+}
+
+func (s *Server) clientFacingFinalStatus(codexClient bool, lastResult *proxyResult) int {
+	status := determineFinalClientStatus(lastResult)
+	if s.codexMap429To503 && codexClient && status == http.StatusTooManyRequests {
+		return http.StatusServiceUnavailable
+	}
+	return status
+}
+
+func shouldStopTryingChannels(result *proxyResult) bool {
+	if result == nil {
+		return true
+	}
+	// 客户端取消：立即停止
+	if result.isClientCanceled {
+		return true
+	}
+	return result.nextAction == cooldown.ActionReturnClient
+}
+
+// tokenModelAllowed 报告令牌模型白名单是否放行该模型；无令牌或无模型时不受限。
+func (s *Server) tokenModelAllowed(tokenHash, modelName string) bool {
+	return tokenHash == "" || modelName == "" || s.authService.IsModelAllowed(tokenHash, modelName)
+}
+
+// enforceTokenLimits 检查 token 的模型限制与费用限额。
+// 违规时已写响应并返回 false，调用方应直接 return。
+func (s *Server) enforceTokenLimits(c *gin.Context, tokenHash, originalModel string) bool {
+	// 检查令牌模型限制（2026-01新增）
+	if !s.tokenModelAllowed(tokenHash, originalModel) {
+		writeLocalProxyError(c, http.StatusForbidden, fmt.Sprintf("model '%s' is not allowed for this token", originalModel))
+		return false
+	}
+
+	// 检查令牌费用限额（2026-01新增）
+	// 设计决策：在请求开始时检查，费用在请求完成后记账。
+	// 超额窗口：预检（IsCostLimitExceeded/RLock）与记账（AddCostToCache/Lock）之间是
+	// check-then-act。设了 max_concurrency 时最多超额并发上限个请求；未设上限时 N 个并发
+	// 请求可同时通过预检后全部超额——费用最终都会记账，限额是“滞后 N 个请求才封顶”，非永久绕过。
+	// 原因：费用只有在请求完成后才能精确计算（token数量由上游返回），此处只能做预检查。
+	// 严格“先扣费后请求”需复杂的预估+退款机制，不值得（YAGNI）。
+	if tokenHash != "" {
+		usedMicro, limitMicro, window, exceeded := s.authService.costLimitState(tokenHash)
+		if exceeded {
+			used := util.MicroUSDToUSD(usedMicro)
+			limit := util.MicroUSDToUSD(limitMicro)
+			prefix := "Cost"
+			switch window {
+			case "daily":
+				prefix = "Daily cost"
+			case "monthly":
+				prefix = "Monthly cost"
+			case "total":
+				prefix = "Total cost"
+			}
+			message := fmt.Sprintf("%s limit exceeded: $%.2f used of $%.2f limit", prefix, used, limit)
+			// 额度要等窗口滚动或管理员调整才会恢复，客户端退避重试毫无意义。
+			c.Header("x-should-retry", "false")
+			if clientProtocol, _ := clientRequestMetadata(c); clientProtocol == protocol.Anthropic {
+				body := anthropicErrorBody(http.StatusTooManyRequests, message)
+				body["error"].(gin.H)["code"] = "cost_limit_exceeded"
+				c.JSON(http.StatusTooManyRequests, body)
+				return false
+			}
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error": gin.H{
+					"message": message,
+					"type":    "insufficient_quota",
+					"code":    "cost_limit_exceeded",
+				},
+			})
+			return false
+		}
+	}
+
+	return true
+}
+
+// runProxyAttemptLoop 按优先级遍历候选渠道。
+// 返回最后一次结果（可能 nil），调用方据此决定是否兜底响应。
+// succeeded 时内部已写响应，调用方应停止后续 writeFinal 步骤。
+func (s *Server) runProxyAttemptLoop(
+	ctx context.Context,
+	cands []*model.Config,
+	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
+) (lastResult *proxyResult, succeeded bool) {
+	return s.runProxyAttemptLoopWithFailureBoundary(ctx, cands, reqCtx, w, nil)
+}
+
+/**
+ * @brief 保留公共候选遍历，ZAI 等待状态由专属接入维护。
+ * @param ctx 控制候选尝试及取消的请求上下文。
+ * @param cands 本轮候选渠道，排序不修改传入切片。
+ * @param reqCtx 本轮共享请求状态，会随尝试更新。
+ * @param w 客户端响应写入器。
+ * @param stopAfterFailure 当前失败后是否停止遍历的回调；nil 时沿用正常规则。
+ * @return 本轮成功结果或最近应保留的失败结果；尚无结果时为 nil。
+ * @return 是否已完成成功响应。
+ * @note 可能发送响应、记录尝试日志并应用冷却。
+ */
+func (s *Server) runProxyAttemptPass(
+	ctx context.Context,
+	cands []*model.Config,
+	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
+	stopAfterFailure func(current, next *model.Config, result *proxyResult) bool,
+) (lastResult *proxyResult, succeeded bool) {
+	sawAlphaSearchUnsupported := false
+	// Session affinity may reorder candidates; paid attempts must still come last.
+	ordered := make([]*model.Config, 0, len(cands))
+	for _, cfg := range cands {
+		if !cfg.AntigravityCredits {
+			ordered = append(ordered, cfg)
+		}
+	}
+	for _, cfg := range cands {
+		if cfg.AntigravityCredits {
+			ordered = append(ordered, cfg)
+		}
+	}
+	cands = ordered
+	operatorSkipped := make(map[int64]bool)
+	for index, cfg := range cands {
+		if operatorSkipped[cfg.ID] {
+			continue
+		}
+		if cfg.AntigravityCredits {
+			current, loadErr := s.store.GetConfig(ctx, cfg.ID)
+			if loadErr != nil || !current.Enabled || !current.UsesAntigravityOAuth() || !s.configSupportsModelWithFuzzyMatch(current, reqCtx.originalModel) {
+				continue
+			}
+			cfg = current.Clone()
+			cfg.AntigravityCredits = true
+			cfg.CooldownFallback = false
+			if len(s.applicableModelRows(cfg, reqCtx.originalModel, time.Now())) == 0 {
+				continue
+			}
+			eligible, filterErr := s.filterCooldownChannelsStrict(ctx, []*model.Config{cfg}, reqCtx.originalModel, string(reqCtx.clientProtocol))
+			if filterErr != nil || len(eligible) == 0 {
+				continue
+			}
+		}
+		result, err := s.tryChannelWithZAIStartRouting(ctx, cfg, reqCtx, w)
+		if errors.Is(err, errNoAvailableModelRow) {
+			continue
+		}
+		if err != nil && errors.Is(err, ErrNoAPIKeyForModel) {
+			log.Printf("[INFO] 渠道 %s (ID=%d) 没有可用于模型 %s 的 Key，跳过该渠道", cfg.Name, cfg.ID, reqCtx.originalModel)
+			continue
+		}
+
+		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
+		// 使用 cooldownManager.HandleError 统一处理（DRY原则）
+		if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
+			// 统一走 applyCooldownDecision：断开取消链+按决策执行缓存失效
+			if !reqCtx.countTokens() {
+				s.applyCooldownDecision(ctx, cfg, httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, 503, nil, nil))
+			}
+			continue
+		}
+
+		// [WARN] 所有Key验证失败，尝试下一个渠道
+		if err != nil && errors.Is(err, ErrAllKeysExhausted) {
+			log.Printf("[WARN] 渠道 %s (ID=%d) 所有Key验证失败，跳过该渠道", cfg.Name, cfg.ID)
+			continue
+		}
+
+		if err != nil && errors.Is(err, ErrChannelRPMExceeded) {
+			log.Printf("[INFO] 渠道 %s (ID=%d) 已达到RPM限制，跳过该渠道", cfg.Name, cfg.ID)
+			continue
+		}
+
+		if err != nil && errors.Is(err, ErrChannelConcurrencyExceeded) {
+			log.Printf("[INFO] 渠道 %s (ID=%d) 已达到并发限制，跳过该渠道", cfg.Name, cfg.ID)
+			continue
+		}
+
+		if result != nil {
+			if result.protocolCapabilityMissing && protocol.DetectRequestFamily(reqCtx.requestPath) == protocol.RequestFamilyAlphaSearch {
+				sawAlphaSearchUnsupported = true
+			}
+			if result.succeeded {
+				return result, true
+			}
+
+			if lastResult == nil || !result.protocolCandidateSkipped {
+				lastResult = selectZAIStartResult(lastResult, result)
+			}
+			if result.operatorAborted {
+				operatorSkipped[cfg.ID] = true
+			}
+
+			// 客户端已取消：别再浪费资源“重试”了。
+			if result.isClientCanceled {
+				break
+			}
+
+			if shouldStopTryingChannels(result) {
+				break
+			}
+
+			if stopAfterFailure != nil && index+1 < len(cands) &&
+				stopAfterFailure(cfg, cands[index+1], result) {
+				break
+			}
+		}
+	}
+	if sawAlphaSearchUnsupported &&
+		protocol.DetectRequestFamily(reqCtx.requestPath) == protocol.RequestFamilyAlphaSearch &&
+		(lastResult == nil || (!lastResult.isClientCanceled && lastResult.nextAction != cooldown.ActionReturnClient)) {
+		writeEmptyAlphaSearchResponse(w)
+		return &proxyResult{status: http.StatusOK, succeeded: true, nextAction: cooldown.ActionReturnClient}, true
+	}
+
+	return lastResult, false
+}
+
+// pendingSameChannelCooldowns 收集同渠道重试期间暂缓落库的冷却输入。
+type pendingSameChannelCooldowns struct {
+	inputs []cooldown.ErrorInput
+}
+
+type pendingSameChannelCooldownsKey struct{}
+
+func pendingSameChannelCooldownsFrom(ctx context.Context) *pendingSameChannelCooldowns {
+	pending, _ := ctx.Value(pendingSameChannelCooldownsKey{}).(*pendingSameChannelCooldowns)
+	return pending
+}
+
+// sameChannelRetryableFailure 报告故障是否值得在同渠道原地重试：
+// 模型/渠道级的网络错误或 5xx（596 额度耗尽除外）。Key 级与客户端错误照常处理。
+func sameChannelRetryableFailure(action cooldown.Action, in cooldown.ErrorInput) bool {
+	if action != cooldown.ActionRetryModel && action != cooldown.ActionRetryChannel {
+		return false
+	}
+	return in.IsNetworkError || (in.StatusCode >= 500 && in.StatusCode != util.StatusQuotaExceeded)
+}
+
+type sameChannelFailureKey struct {
+	channelID int64
+	model     string
+}
+
+// sameChannelFailureCounter 跨请求记录渠道+模型的连续可重试故障次数（内存态，零值可用）。
+// 已提交响应的中途断流无法原地重试，只能靠客户端重发；未超过 same_channel_retries 时不冷却，
+// 让重发还能回到该渠道。任一成功清零。
+type sameChannelFailureCounter struct {
+	mu       sync.Mutex
+	failures map[sameChannelFailureKey]int
+}
+
+func (c *sameChannelFailureCounter) add(key sameChannelFailureKey, n int) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.failures == nil {
+		c.failures = make(map[sameChannelFailureKey]int)
+	}
+	c.failures[key] += n
+	return c.failures[key]
+}
+
+func (c *sameChannelFailureCounter) reset(key sameChannelFailureKey) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.failures, key)
+}
+
+// tryChannelWithSameChannelRetries 在渠道配置了 same_channel_retries 时，对未提交响应的
+// 可重试故障原地重试同一渠道。中间失败的冷却不落库，避免偶发故障把指数退避连翻几轮；
+// 放弃该渠道时按跨请求连续失败次数决定：超过 same_channel_retries 才提交最后一次尝试的冷却，成功则丢弃。
+func (s *Server) tryChannelWithSameChannelRetries(
+	ctx context.Context,
+	cfg *model.Config,
+	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
+) (*proxyResult, error) {
+	if cfg.SameChannelRetries <= 0 {
+		return s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
+	}
+	var zaiFailure zaiRetryFailure
+	for attempt := 0; ; attempt++ {
+		pending := &pendingSameChannelCooldowns{}
+		result, err := s.tryChannelWithKeys(context.WithValue(ctx, pendingSameChannelCooldownsKey{}, pending), cfg, reqCtx, w)
+		localAfterFailure := zaiFailure.reconcile(cfg, &result, pending, &attempt)
+		if !localAfterFailure && attempt < cfg.SameChannelRetries && err == nil && len(pending.inputs) > 0 && ctx.Err() == nil &&
+			result != nil && !result.succeeded && !result.isClientCanceled && !result.operatorAborted {
+			log.Printf("[RETRY] 渠道 %s (ID=%d) 同渠道重试 %d/%d (status=%d)",
+				cfg.Name, cfg.ID, attempt+1, cfg.SameChannelRetries, result.status)
+			continue
+		}
+		if len(pending.inputs) == 0 {
+			return result, err
+		}
+		last := pending.inputs[len(pending.inputs)-1]
+		key := sameChannelFailureKey{channelID: cfg.ID, model: last.Model}
+		if failures := s.sameChannelFailures.add(key, attempt+1); failures <= cfg.SameChannelRetries {
+			log.Printf("[COOLDOWN] 渠道 %s (ID=%d) 连续失败 %d/%d 次，暂不冷却 (status=%d)",
+				cfg.Name, cfg.ID, failures, cfg.SameChannelRetries, last.StatusCode)
+			return result, err
+		}
+		for _, in := range pending.inputs {
+			s.applyCooldownDecision(ctx, cfg, in)
+		}
+		return result, err
+	}
+}
+
+func writeEmptyAlphaSearchResponse(w http.ResponseWriter) {
+	header := make(http.Header, 2)
+	header.Set("Content-Type", "application/json; charset=utf-8")
+	header.Set("X-CCLoad-Search-Fallback", "empty")
+	writeResponseWithHeaders(w, http.StatusOK, header, []byte(`{"encrypted_output":null,"output":"","results":[]}`))
+}
+
+// writeFinalProxyResponse 所有渠道失败时写最终响应：
+// 计算 finalStatus、决定 skipLog、透传 body 或 JSON 错误。
+func (s *Server) writeFinalProxyResponse(
+	c *gin.Context,
+	reqCtx *proxyRequestContext,
+	isStreaming bool,
+	lastResult *proxyResult,
+	candidateCount int,
+) {
+	// 所有渠道都失败：返回“最后一次实际失败”的状态码（并映射内部状态码），避免一律伪装成503。
+	upstreamFinalStatus := determineFinalClientStatus(lastResult)
+	finalStatus := s.clientFacingFinalStatus(reqCtx.codexClient, lastResult)
+
+	msg := "exhausted backends"
+	if lastResult != nil && lastResult.isClientCanceled {
+		msg = "client closed request (context canceled)"
+	} else if lastResult != nil && lastResult.zaiLocalPlanKind != "" {
+		msg = "local ZAI Trial admission: " + lastResult.zaiLocalPlanKind
+	} else if lastResult != nil && lastResult.status == 499 && finalStatus != 499 {
+		// 上游返回 499 没有任何“客户端取消”的语义价值：对外统一视为网关错误。
+		msg = "upstream returned 499 (mapped)"
+	} else if upstreamFinalStatus != finalStatus {
+		msg = fmt.Sprintf("upstream status %d (mapped to %d for Codex)", upstreamFinalStatus, finalStatus)
+	} else if finalStatus != http.StatusServiceUnavailable {
+		msg = fmt.Sprintf("upstream status %d", finalStatus)
+	}
+
+	// 过滤不需要汇总日志的场景
+	// - 客户端取消（499）：已在 handleNetworkError 中记录渠道级日志
+	// - 客户端错误（400）：已在渠道级日志记录，汇总日志冗余
+	// - 候选池 ≤1：实际只尝试了 1 个渠道，渠道级日志已完整反映失败原因，汇总日志冗余
+	skipLog := lastResult != nil && (lastResult.isClientCanceled || finalStatus == http.StatusBadRequest)
+	skipLog = skipLog || (candidateCount <= 1 && (lastResult == nil || lastResult.zaiLocalPlanKind == ""))
+	if !skipLog {
+		s.AddLogAsync(&model.LogEntry{
+			Time:           model.JSONTime{Time: reqCtx.startTime},
+			Model:          reqCtx.requestLogModel(),
+			LogSource:      model.LogSourceProxy,
+			ClientProtocol: string(reqCtx.clientProtocol),
+			StatusCode:     upstreamFinalStatus,
+			Message:        msg,
+			Duration:       time.Since(reqCtx.startTime).Seconds(),
+			IsStreaming:    isStreaming,
+			ClientIP:       reqCtx.clientIP,
+		})
+	}
+
+	if lastResult != nil && lastResult.status != 0 {
+		body := lastResult.body
+		// 无响应头即网关本地失败（网络错误、凭证不可用等），不是上游原文，需按客户端协议成形。
+		if lastResult.header == nil && reqCtx.clientProtocol == protocol.Anthropic {
+			body = anthropicLocalFailureBody(finalStatus, body)
+		}
+		// 透明代理原则：透传所有上游响应（状态码+header+body）
+		writeResponseWithHeaders(c.Writer, finalStatus, lastResult.header, body)
+		return
+	}
+
+	disableResponseWriteTimeout(c.Writer, "最终响应")
+	writeLocalProxyError(c, finalStatus, "no upstream available")
+}

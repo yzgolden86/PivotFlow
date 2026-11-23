@@ -40,6 +40,14 @@ type StandardCostBreakdown struct {
 	ServiceTierMultiplier float64       `json:"service_tier_multiplier,omitempty"`
 }
 
+// StandardCostEstimate records the pricing evidence used by one calculation.
+// Priced distinguishes an unknown model from a genuinely zero-price result.
+type StandardCostEstimate struct {
+	Breakdown StandardCostBreakdown
+	Priced    bool
+	PerCall   bool
+}
+
 func newCostComponent(quantity int, pricePerMillion float64) CostComponent {
 	return CostComponent{
 		PricePerMillion: pricePerMillion,
@@ -240,6 +248,35 @@ func CalculateStandardCostBreakdown(
 	return scaleCostBreakdown(breakdown, multiplier)
 }
 
+// CalculateStandardCostEstimate resolves a single pricing snapshot and applies
+// exactly the same tier/cache/service-tier and fixed-cost rules as the ordinary
+// calculator. Consumers can freeze its evidence without a later catalogue read.
+func CalculateStandardCostEstimate(
+	model, serviceTier string,
+	inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int,
+) StandardCostEstimate {
+	pricing, ok := getPricing(model)
+	if !ok {
+		pricing, ok = fuzzyMatchModel(model)
+	}
+	if !ok {
+		return StandardCostEstimate{}
+	}
+	var breakdown StandardCostBreakdown
+	if serviceTier == "fast" && IsFastModeModel(model) {
+		breakdown = calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens)
+	} else {
+		breakdown = calculateCostBreakdownWithPricing(model, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens, pricing)
+		multiplier := OpenAIServiceTierMultiplier(model, serviceTier)
+		if multiplier != 1 {
+			breakdown.ServiceTierMultiplier = multiplier
+		}
+		breakdown = scaleCostBreakdown(breakdown, multiplier)
+	}
+	tokenCost := breakdown.Input.Cost + breakdown.Output.Cost + breakdown.CacheRead.Cost + breakdown.CacheWrite.Cost
+	return StandardCostEstimate{Breakdown: breakdown, Priced: true, PerCall: pricing.FixedCostPerRequest > 0 && tokenCost == 0}
+}
+
 func calculateCostBreakdownDetailed(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) StandardCostBreakdown {
 	// 防御性检查:拒绝负数token
 	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
@@ -255,6 +292,13 @@ func calculateCostBreakdownDetailed(model string, inputTokens, outputTokens, cac
 		if !ok {
 			return StandardCostBreakdown{} // 未知模型
 		}
+	}
+	return calculateCostBreakdownWithPricing(model, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens, pricing)
+}
+
+func calculateCostBreakdownWithPricing(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int, pricing ModelPricing) StandardCostBreakdown {
+	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
+		return StandardCostBreakdown{}
 	}
 
 	breakdown := StandardCostBreakdown{}

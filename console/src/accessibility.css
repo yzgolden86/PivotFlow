@@ -1,0 +1,90 @@
+/* 现有控制台的阅读/键盘层；颜色、字体、表面及运动偏好继续由主题控制。 */
+:is(input, select, textarea, summary):focus-visible,
+.system-settings-panel:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.console-modal {
+  max-height: min(88dvh, 760px);
+  scroll-padding-top: 76px;
+}
+
+.console-modal > header { gap: 12px; }
+.console-modal > header h2 { min-width: 0; overflow-wrap: anywhere; }
+.console-modal > header button { flex: 0 0 auto; }
+.console-modal .modal-error, .operation-notice { overflow-wrap: anywhere; }
+
+.resource-details-trigger {
+  display: inline-flex;
+  width: fit-content;
+  min-width: 44px;
+  min-height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
+  align-self: flex-start;
+  justify-content: flex-start;
+  margin-left: -4px;
+  padding: 3px 4px;
+  color: var(--green-text);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-control);
+  font-size: 12px;
+}
+.resource-details-trigger:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+.resource-details { display: grid; min-width: 0; margin: 0; padding: 6px 18px 16px; }
+.resource-detail-fact {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(100px, .3fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 8px 18px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.resource-detail-fact:last-child { border-bottom: 0; }
+.resource-details dt { color: var(--text-muted); }
+.resource-details dd { min-width: 0; margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.resource-details :is(code, a) { white-space: normal; overflow-wrap: anywhere; }
+.resource-details a { color: var(--green-text); text-underline-offset: 3px; }
+.resource-details small { display: block; color: var(--text-muted); font-size: 12px; }
+.resource-detail-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.resource-detail-list li { min-width: 0; }
+.system-settings-panel { min-width: 0; }
+
+.search-overlay { padding-top: min(11dvh, 100px); }
+.search-dialog { display: flex; max-height: calc(89dvh - 20px); flex-direction: column; }
+.search-dialog > header, .search-result-summary { flex: 0 0 auto; }
+.search-dialog .search-results { min-height: 0; flex: 1 1 auto; }
+.search-dialog input:focus-visible { outline-offset: -2px; }
+
+@media (max-width: 900px) {
+  .filter-bar { flex-wrap: wrap; }
+  .filter-bar .search-field { min-width: 0; }
+  .site-row, .channel-row { min-width: 0; grid-template-columns: minmax(0, 1fr); }
+  .site-row .row-actions, .channel-row .row-actions, .token-row .row-actions {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .site-row .row-actions .icon-button:nth-last-child(-n+2) { display: inline-flex; }
+  .site-address, .site-account-summary, .site-probe,
+  .channel-endpoints, .channel-routing, .channel-models, .channel-limits { display: none; }
+  .token-table-wrap { --token-columns: 34px minmax(0, 1fr); --token-min: 0; min-width: 0; }
+  .token-row > :not(.token-icon):not(.token-identity):not(.row-actions), .token-table-head { display: none; }
+  .token-list { min-width: 0; }
+}
+
+@media (max-width: 620px) {
+  .console-modal { max-height: 92dvh; }
+  .resource-details { padding-inline: 16px; }
+  .resource-detail-fact { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .search-overlay { padding: 16px 10px; }
+  .search-dialog { max-height: calc(100dvh - 32px); }
+}

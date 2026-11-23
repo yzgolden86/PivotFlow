@@ -207,6 +207,13 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 					s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
 				}
 				executionSession.releaseTurn()
+				if errors.Is(errTurn, errBillingUnavailable) {
+					if errWrite := writeResponsesWebsocketErrorPayload(conn, http.StatusServiceUnavailable,
+						"server_error", "billing_unavailable", "", errTurn.Error()); errWrite != nil {
+						return
+					}
+					continue
+				}
 				var retryErr *responsesWebsocketClientRetryError
 				if errors.As(errTurn, &retryErr) {
 					if errWrite := writeResponsesWebsocketClientRetryError(conn, retryErr); errWrite != nil {
@@ -361,22 +368,54 @@ func (s *Server) executeResponsesWebsocketTurn(
 	executionSession *responsesExecutionSession,
 	allowLocalPrewarm bool,
 ) (responsesWebsocketTurnResult, error) {
+	startTime := time.Now()
+	tokenIDValue, _ := c.Get("token_id")
+	tokenID, _ := tokenIDValue.(int64)
+	trace := newRequestTrace(startTime, tokenID, "websocket")
+	finalStatus := 0
+	defer func() {
+		status := finalStatus
+		if status == 0 {
+			status = http.StatusInternalServerError
+		}
+		canceled := status != http.StatusOK && errors.Is(ctx.Err(), context.Canceled)
+		s.persistRequestTrace(trace, status, canceled)
+	}()
+
 	nativeCodexWS := executionSession.upstream
 	modelName := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
+	trace.setRequest(modelName, string(protocol.Codex), true)
 	if modelName == "" {
+		finalStatus = http.StatusBadRequest
 		return responsesWebsocketTurnResult{}, errors.New("missing model in normalized websocket request")
 	}
 
+	waitStart := time.Now()
 	release, err := s.acquireConcurrencySlotForContext(ctx)
+	trace.setWait(time.Since(waitStart))
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			finalStatus = http.StatusGatewayTimeout
+		} else {
+			finalStatus = http.StatusServiceUnavailable
+		}
 		return responsesWebsocketTurnResult{}, err
 	}
 	defer release()
+	if s.billing != nil {
+		releaseBilling, err := s.billing.acquire()
+		if err != nil {
+			finalStatus = http.StatusServiceUnavailable
+			return responsesWebsocketTurnResult{}, err
+		}
+		defer releaseBilling()
+	}
 
 	tokenHash, _ := c.Get("token_hash")
 	tokenHashString, _ := tokenHash.(string)
 	releaseTokenSlot, activeTokenRequests, maxTokenRequests, acquired := s.authService.acquireTokenConcurrencySlot(tokenHashString)
 	if !acquired {
+		finalStatus = http.StatusTooManyRequests
 		return responsesWebsocketTurnResult{}, fmt.Errorf(
 			"token concurrency limit exceeded: %d active of %d limit",
 			activeTokenRequests,
@@ -386,17 +425,20 @@ func (s *Server) executeResponsesWebsocketTurn(
 	defer releaseTokenSlot()
 
 	if tokenHashString != "" && !s.authService.IsModelAllowed(tokenHashString, modelName) {
+		finalStatus = http.StatusForbidden
 		return responsesWebsocketTurnResult{}, fmt.Errorf("model %q is not allowed for this token", modelName)
 	}
 	if tokenHashString != "" {
 		_, _, exceeded := s.authService.IsCostLimitExceeded(tokenHashString)
 		if exceeded {
+			finalStatus = http.StatusTooManyRequests
 			return responsesWebsocketTurnResult{}, errors.New("token cost limit exceeded")
 		}
 	}
 
 	candidates, err := s.selectCandidatesByModelAndClientProtocol(ctx, modelName, string(protocol.Codex), stickyScopeKey(tokenHashString))
 	if err != nil {
+		finalStatus = http.StatusServiceUnavailable
 		return responsesWebsocketTurnResult{}, fmt.Errorf("select upstream candidates: %w", err)
 	}
 	if tokenHashString != "" {
@@ -405,6 +447,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		}
 	}
 	if len(candidates) == 0 {
+		finalStatus = http.StatusServiceUnavailable
 		return responsesWebsocketTurnResult{}, errors.New("no available upstream")
 	}
 	if channelID, ok := executionSession.routeChannelSnapshot(); ok {
@@ -412,12 +455,14 @@ func (s *Server) executeResponsesWebsocketTurn(
 	}
 	if allowLocalPrewarm && responsesWebsocketGenerateDisabled(requestBody) &&
 		!isNativeCodexWebsocketCandidate(candidates[0]) {
-		return writeResponsesWebsocketSyntheticPrewarm(conn, requestBody)
+		finalStatus = http.StatusOK
+		result, err := writeResponsesWebsocketSyntheticPrewarm(conn, requestBody)
+		if err != nil {
+			finalStatus = http.StatusInternalServerError
+		}
+		return result, err
 	}
 
-	startTime := time.Now()
-	tokenID, _ := c.Get("token_id")
-	tokenIDInt64, _ := tokenID.(int64)
 	thinkingEffort := extractThinkingEffortFromJSON(requestBody)
 
 	header := responsesWebsocketUpstreamHeaders(c.Request.Header)
@@ -433,9 +478,10 @@ func (s *Server) executeResponsesWebsocketTurn(
 		header:          header,
 		isStreaming:     true,
 		tokenHash:       tokenHashString,
-		tokenID:         tokenIDInt64,
+		tokenID:         tokenID,
 		clientIP:        c.ClientIP(),
 		startTime:       startTime,
+		trace:           trace,
 		thinkingEffort:  thinkingEffort,
 		routingSession:  executionSession,
 		nativeCodexWS:   nativeCodexWS,
@@ -477,14 +523,17 @@ func (s *Server) executeResponsesWebsocketTurn(
 		ctx, candidates, reqCtx, bridgeWriter, stopBeforeNativeWebsocket,
 	)
 	if bridgeWriter.closedForMessageTooBig {
+		finalStatus = responsesWebsocketTraceStatus(lastResult)
 		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
 	}
 	if clientReplay && !succeeded {
+		finalStatus = http.StatusBadGateway
 		return responsesWebsocketTurnResult{}, &responsesWebsocketClientRetryError{}
 	}
 	if succeeded {
 		if !bridgeWriter.completed {
 			if bridgeWriter.failed {
+				finalStatus = util.StatusSSEError
 				return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{
 					payload: bytes.Clone(bridgeWriter.failedPayload), forwarded: true,
 				}
@@ -501,14 +550,17 @@ func (s *Server) executeResponsesWebsocketTurn(
 					code:    responsesWebsocketInterruptedCode,
 					message: responsesWebsocketInterruptedMessage,
 				}
+				finalStatus = http.StatusBadGateway
 				return responsesWebsocketTurnResult{
 					completedOutput:    interruptedOutput,
 					pendingToolCallIDs: pendingToolCallIDs,
 					interrupted:        true,
 				}, retryErr
 			}
+			finalStatus = util.StatusStreamIncomplete
 			return responsesWebsocketTurnResult{}, errors.New("upstream stream closed before response.completed")
 		}
+		finalStatus = http.StatusOK
 		return responsesWebsocketTurnResult{
 			completedOutput:     bytes.Clone(bridgeWriter.completedOutput),
 			completedResponseID: bridgeWriter.completedResponseID,
@@ -516,6 +568,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		}, nil
 	}
 	status := determineFinalClientStatus(lastResult)
+	finalStatus = responsesWebsocketTraceStatus(lastResult)
 	if lastResult != nil && status == http.StatusRequestEntityTooLarge &&
 		isResponsesWebsocketMessageTooBigPayload(lastResult.body) {
 		if errClose := conn.WriteControl(
@@ -534,6 +587,26 @@ func (s *Server) executeResponsesWebsocketTurn(
 		return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d: %s", status, safeBodyToString(lastResult.body))
 	}
 	return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d", status)
+}
+
+func responsesWebsocketTraceStatus(result *proxyResult) int {
+	if result == nil {
+		return http.StatusServiceUnavailable
+	}
+	// Keep the internal stream classification in request history. The HTTP
+	// client-status mapper intentionally collapses 597/599 to 502.
+	switch result.status {
+	case util.StatusSSEError, util.StatusStreamIncomplete:
+		return result.status
+	default:
+		status := determineFinalClientStatus(result)
+		// This mapper is used only when the turn failed. A transport-level
+		// 2xx cannot turn that semantic failure into a successful summary.
+		if status >= http.StatusOK && status < http.StatusMultipleChoices {
+			return http.StatusBadGateway
+		}
+		return status
+	}
 }
 
 func responsesWebsocketGenerateDisabled(payload []byte) bool {

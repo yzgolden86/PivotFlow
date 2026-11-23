@@ -32,6 +32,7 @@ export default function SourceMenu({ open, onOpenChange, label, icon, items }: {
 
   return <div className="source-menu">
     <button ref={trigger} className="secondary-button" type="button" aria-haspopup="menu" aria-expanded={open}
+      onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); onOpenChange(true) } }}
       onClick={() => onOpenChange(!open)}>{icon}{label}</button>
     <AnchoredPopover open={open} onOpenChange={onOpenChange} anchorRef={trigger}
       className="source-menu-popover" role="menu">

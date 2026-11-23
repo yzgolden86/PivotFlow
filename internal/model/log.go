@@ -87,6 +87,8 @@ type LogEntry struct {
 	BaseURL              string   `json:"base_url,omitempty"`           // 请求使用的上游URL（多URL场景）
 	ServiceTier          string   `json:"service_tier,omitempty"`       // OpenAI service_tier；Codex priority 按模型计 Fast 倍率
 	ThinkingEffort       string   `json:"thinking_effort,omitempty"`
+	RequestID            string   `json:"request_id,omitempty"`
+	AttemptNumber        int      `json:"attempt_number,omitempty"`
 
 	// Token统计（2025-11新增，支持Claude API usage字段）
 	InputTokens              int     `json:"input_tokens"`
@@ -98,10 +100,14 @@ type LogEntry struct {
 	Cache1hInputTokens       int     `json:"cache_1h_input_tokens"`       // 1小时缓存写入Token数（新增2025-12）
 	Cost                     float64 `json:"cost"`                        // 请求成本（美元，标准成本）
 	CostMultiplier           float64 `json:"cost_multiplier"`             // 写日志时快照的渠道倍率，默认1
-	// CostSource 记录 Cost 的来源：site_pricing 表示上游计算（站点自身价目表），
-	// local_estimate 表示按厂商标价本地估算。空值按 local_estimate 处理（历史行）。
-	CostSource string `json:"cost_source,omitempty"`
-	RuleID     string `json:"rule_id,omitempty"` // 命中的冷却规则标识符（2026-09新增）
+	// Both sources are price-table estimates, not a reconciled upstream bill.
+	// Historical empty source retains the local multiplier accounting rule.
+	CostSource          string `json:"cost_source,omitempty"`
+	CostMetadataVersion int    `json:"cost_metadata_version"`
+	CostStatus          string `json:"cost_status,omitempty"`
+	CostBasis           string `json:"cost_basis,omitempty"`
+	CostDetailJSON      string `json:"-"`                 // Frozen safe numeric detail; projected through a typed DTO.
+	RuleID              string `json:"rule_id,omitempty"` // 命中的冷却规则标识符（2026-09新增）
 
 	// 瞬态字段：不持久化到 logs 表，仅用于传递 debug 数据到写入管道
 	DebugData *DebugLogEntry `json:"-"`
@@ -118,8 +124,13 @@ type LogFilter struct {
 	StatusCode       *int
 	StatusCodeMin    *int
 	UpstreamProtocol string // 实际上游协议过滤
+	ClientProtocol   string // 原始客户端协议，诊断历史按请求身份精确过滤
 	AuthTokenID      *int64 // API令牌ID过滤
+	RequestID        string
 	LogSource        string
+	CostSource       string
+	CostStatus       string
+	CostBasis        string
 }
 
 // ChannelURLLogStat 是基于持久化日志聚合出的 URL 启动快照。

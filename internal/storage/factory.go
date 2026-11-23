@@ -125,6 +125,7 @@ func NewStore() (Store, error) {
 	}
 
 	hybrid := NewHybridStore(sqlite, primary)
+	hybrid.SetStartupRecoveryStats(syncMgr.StartupRecoveryStats())
 	log.Printf("[INFO] 混合存储已启用（主库=%s, logs 恢复天数: %d）", primaryName, logDays)
 	return hybrid, nil
 }

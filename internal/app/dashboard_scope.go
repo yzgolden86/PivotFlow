@@ -21,6 +21,8 @@ type tokenLogChannelMetadata struct {
 }
 
 type tokenLogEntry struct {
+	RequestID                string                      `json:"request_id,omitempty"`
+	AttemptNumber            int                         `json:"attempt_number,omitempty"`
 	ID                       int64                       `json:"id"`
 	Time                     model.JSONTime              `json:"time"`
 	ChannelID                int64                       `json:"channel_id"`
@@ -48,12 +50,20 @@ type tokenLogEntry struct {
 	Cost                     float64                     `json:"cost"`
 	EffectiveCost            float64                     `json:"effective_cost"`
 	CostBreakdown            *util.StandardCostBreakdown `json:"cost_breakdown,omitempty"`
+	CostMetadataVersion      int                         `json:"cost_metadata_version"`
+	CostSource               string                      `json:"cost_source,omitempty"`
+	CostStatus               string                      `json:"cost_status"`
+	CostBasis                string                      `json:"cost_basis"`
+	CostDetails              *requestCostDetails         `json:"cost_details,omitempty"`
 }
 
 type dashboardLogEntry struct {
 	*model.LogEntry
 	CostBreakdown *util.StandardCostBreakdown `json:"cost_breakdown,omitempty"`
 	CostStatus    string                      `json:"cost_status,omitempty"`
+	CostBasis     string                      `json:"cost_basis"`
+	EffectiveCost float64                     `json:"effective_cost"`
+	CostDetails   *requestCostDetails         `json:"cost_details,omitempty"`
 }
 
 // logCostStatus explains how the request-log cost should be interpreted.
@@ -63,50 +73,14 @@ type dashboardLogEntry struct {
 // which of the two produced this row; this function only classifies why a cost
 // may be absent or zero.
 func logCostStatus(entry *model.LogEntry) string {
-	if entry == nil || entry.StatusCode < 200 || entry.StatusCode >= 300 {
-		return ""
-	}
-	if entry.Cost > 0 {
-		return "estimated"
-	}
-	if entry.CostMultiplier == 0 && entry.CostSource != costSourceSite {
-		return "local_free"
-	}
-	if entry.InputTokens == 0 && entry.OutputTokens == 0 &&
-		entry.CacheReadInputTokens == 0 && entry.CacheCreationInputTokens == 0 &&
-		entry.Cache5mInputTokens == 0 && entry.Cache1hInputTokens == 0 {
-		return "usage_missing"
-	}
-	// A site-priced row with zero cost genuinely costs nothing on that site;
-	// vendor-price coverage is irrelevant in that case.
-	if entry.CostSource != costSourceSite &&
-		!util.HasModelPricing(util.ResolveBillingModel(entry.ActualModel, entry.Model)) {
-		return "unpriced_model"
-	}
-	return "free_model"
+	return model.LogCostStatus(entry)
 }
 
 func buildLogCostBreakdown(entry *model.LogEntry) *util.StandardCostBreakdown {
-	if entry == nil || entry.Cost <= 0 {
-		return nil
+	if details := readLogCostDetails(entry); details != nil {
+		return details.Breakdown
 	}
-	billingModel := util.ResolveBillingModel(entry.ActualModel, entry.Model)
-	cache5mTokens := entry.Cache5mInputTokens
-	cache1hTokens := entry.Cache1hInputTokens
-	if cache5mTokens+cache1hTokens == 0 && entry.CacheCreationInputTokens > 0 {
-		// 旧日志只有缓存创建总量；历史计费语义等同 5m 缓存创建。
-		cache5mTokens = entry.CacheCreationInputTokens
-	}
-	breakdown := util.CalculateStandardCostBreakdown(
-		billingModel,
-		entry.ServiceTier,
-		entry.InputTokens,
-		entry.OutputTokens,
-		entry.CacheReadInputTokens,
-		cache5mTokens,
-		cache1hTokens,
-	)
-	return &breakdown
+	return nil
 }
 
 func projectDashboardLogs(logs []*model.LogEntry) []dashboardLogEntry {
@@ -115,10 +89,20 @@ func projectDashboardLogs(logs []*model.LogEntry) []dashboardLogEntry {
 		if entry == nil {
 			continue
 		}
+		copyEntry := *entry
+		if !model.IsValidCostAmount(copyEntry.Cost) {
+			copyEntry.Cost = 0
+		}
+		if !model.IsValidCostAmount(copyEntry.CostMultiplier) {
+			copyEntry.CostMultiplier = 1
+		}
 		projected = append(projected, dashboardLogEntry{
-			LogEntry:      entry,
+			LogEntry:      &copyEntry,
 			CostBreakdown: buildLogCostBreakdown(entry),
 			CostStatus:    logCostStatus(entry),
+			CostBasis:     model.LogCostBasis(entry),
+			EffectiveCost: safeEffectiveLogCost(entry),
+			CostDetails:   readLogCostDetails(entry),
 		})
 	}
 	return projected
@@ -140,6 +124,8 @@ func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannel
 			message = sanitizeTokenLogMessage(entry, channel.APIKeys)
 		}
 		projected = append(projected, tokenLogEntry{
+			RequestID:                entry.RequestID,
+			AttemptNumber:            entry.AttemptNumber,
 			ID:                       entry.ID,
 			Time:                     entry.Time,
 			ChannelID:                entry.ChannelID,
@@ -164,9 +150,14 @@ func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannel
 			CacheCreationInputTokens: entry.CacheCreationInputTokens,
 			Cache5mInputTokens:       entry.Cache5mInputTokens,
 			Cache1hInputTokens:       entry.Cache1hInputTokens,
-			Cost:                     entry.Cost,
-			EffectiveCost:            effectiveLogCost(entry),
+			Cost:                     safeLogCost(entry.Cost),
+			EffectiveCost:            safeEffectiveLogCost(entry),
 			CostBreakdown:            buildLogCostBreakdown(entry),
+			CostMetadataVersion:      entry.CostMetadataVersion,
+			CostSource:               entry.CostSource,
+			CostStatus:               logCostStatus(entry),
+			CostBasis:                model.LogCostBasis(entry),
+			CostDetails:              readLogCostDetails(entry),
 		})
 	}
 	return projected
@@ -175,7 +166,7 @@ func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannel
 // effectiveLogCost 返回这条日志最终应该计入统计的费用。
 //
 // CostSource=site_pricing 时，entry.Cost 已经是上游站点按自己的价目表和用户组
-// 算出的实扣金额；渠道倍率是 PivotFlow 的本地记账参数，不能再乘一次，否则
+// 算出的估算金额；渠道倍率是 PivotFlow 的本地记账参数，不能再乘一次，否则
 // 中转站自己的倍率会被重复放大。只有本地估算（历史空来源同义）才应用倍率。
 func effectiveLogCost(entry *model.LogEntry) float64 {
 	if entry == nil {
@@ -185,8 +176,8 @@ func effectiveLogCost(entry *model.LogEntry) float64 {
 }
 
 // effectiveCost is the single accounting rule for a standard cost plus the
-// local channel multiplier. A site-priced amount is already what the upstream
-// deducted, so it must not be multiplied again.
+// local channel multiplier. A site-price estimate already includes the site's
+// group multiplier, so it must not be multiplied again.
 func effectiveCost(cost, multiplier float64, costSource string) float64 {
 	if costSource == costSourceSite {
 		return cost
@@ -195,6 +186,21 @@ func effectiveCost(cost, multiplier float64, costSource string) float64 {
 		multiplier = 1
 	}
 	return cost * multiplier
+}
+
+func safeLogCost(cost float64) float64 {
+	if !model.IsValidCostAmount(cost) {
+		return 0
+	}
+	return cost
+}
+
+func safeEffectiveLogCost(entry *model.LogEntry) float64 {
+	switch model.LogCostStatus(entry) {
+	case model.CostStatusInvalid, model.CostStatusNotCharged:
+		return 0
+	}
+	return safeLogCost(effectiveLogCost(entry))
 }
 
 func sanitizeTokenLogMessage(entry *model.LogEntry, channelAPIKeys []string) string {

@@ -66,6 +66,7 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineChannelModelCooldownsTable,
 		schema.DefineChannelURLStatesTable,
 		schema.DefineAuthTokensTable,
+		schema.DefineTokenSettlementsTable,
 		schema.DefineSystemAccessTokensTable,
 		schema.DefineSystemSettingsTable,
 		schema.DefineWebSessionsTable,
@@ -83,6 +84,7 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineWebhookEventStatesTable,
 		schema.DefineBackupSettingsTable,
 		schema.DefineLogsTable,
+		schema.DefineRequestTracesTable,
 		schema.DefineDebugLogsTable,
 		schema.DefineModelFingerprintsTable,
 		schema.DefineFingerprintTestResultsTable,
@@ -135,6 +137,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 				return fmt.Errorf("migrate checkin_attempts balance columns: %w", err)
 			}
 		}
+		if tb.Name() == "request_traces" {
+			if err := ensureRequestCacheHistoryColumns(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate request_traces cache metadata: %w", err)
+			}
+		}
 		if tb.Name() == "sites" {
 			if err := ensureSitesUseSystemProxy(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate sites use_system_proxy: %w", err)
@@ -146,6 +153,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		if tb.Name() == "webhook_endpoints" {
 			if err := ensureWebhookNotificationColumns(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate webhook notification columns: %w", err)
+			}
+		}
+		if tb.Name() == "backup_settings" {
+			if err := ensureBackupVerificationColumns(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate backup verification observations: %w", err)
 			}
 		}
 
@@ -179,6 +191,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 				"VARCHAR(32) NOT NULL DEFAULT ''",
 				"TEXT NOT NULL DEFAULT ''"); err != nil {
 				return fmt.Errorf("migrate logs cost_source: %w", err)
+			}
+			if err := ensureLogsCostSemantics(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate logs cost semantics: %w", err)
 			}
 			if err := ensureLogsUpstreamWebsocket(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs upstream_websocket: %w", err)
@@ -655,6 +670,11 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"gemini_non_stream_timeout", "0", "duration", "Gemini非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
 		{"route_strategy", "balanced", "string", "渠道选择策略(balanced=同优先级内按权重均衡轮询；sticky=沿用上次成功的渠道，失败后才切换)", "balanced"},
 		{"model_alias_groups", "[]", "json", "全局统一模型名称映射(JSON数组，canonical为统一名称，aliases为上游名称)", "[]"},
+		{"request_cache_enabled", "false", "bool", "可选网关响应缓存；默认关闭，客户端还需显式选择", "false"},
+		{"request_cache_ttl_seconds", "60", "int", "响应缓存有效期(秒，5–3600)", "60"},
+		{"request_cache_max_entries", "256", "int", "响应缓存最大条目数(1–4096)", "256"},
+		{"request_cache_max_bytes", "33554432", "int", "缓存及在途捕获各自的正文容量(字节，1–128 MiB)", "33554432"},
+		{"request_cache_max_entry_bytes", "1048576", "int", "单条响应正文上限(字节，4 KiB–1 MiB)", "1048576"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
 		{"channel_check_interval_hours", "5", "float", "渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭)", "5"},
 		{"site_daily_checkin_time", "08:00", "string", "站点账号每日自动签到时间(HH:MM,按账号或站点时区)", "08:00"},

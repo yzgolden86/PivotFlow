@@ -116,6 +116,10 @@ func (p *OpenAICompatible) requestModels(ctx context.Context, req AccountRequest
 	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		var providerErr *Error
+		if errors.As(err, &providerErr) {
+			return 0, "", nil, providerErr
+		}
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
 			return 0, "", nil, &Error{Code: CodeTimeout, Message: "provider request timed out"}
 		}

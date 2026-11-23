@@ -215,8 +215,27 @@ func normalizeSQLArgs(args []any) []any {
 	return args
 }
 
-// effectiveCostSQL returns the SQL expression for the amount that should be
-// aggregated into dashboards and limits.
+func invalidCostStatusSQL(alias string) string {
+	return fmt.Sprintf("(%s = '%s')", costStatusSQL(alias), model.CostStatusInvalid)
+}
+
+// standardCostSQL returns the raw recorded amount for monetary aggregates.
+// Invalid rows retain their request/usage counts but contribute no charge.
+func standardCostSQL(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return fmt.Sprintf(
+		"CASE WHEN %s THEN 0.0 ELSE COALESCE(%scost, 0.0) END",
+		invalidCostStatusSQL(alias),
+		prefix,
+	)
+}
+
+// effectiveCostSQL returns the SQL expression for the effective amount that
+// should be aggregated into dashboards and limits. Invalid rows contribute no
+// charge, while successful request and usage counters remain untouched.
 //
 // A site-priced row already contains the upstream's own group ratio in
 // logs.cost. Applying the local channel multiplier again multiplies the relay
@@ -228,9 +247,10 @@ func effectiveCostSQL(alias string) string {
 		prefix = alias + "."
 	}
 	return fmt.Sprintf(
-		"COALESCE(%[1]scost, 0.0) * %[2]s",
+		"CASE WHEN %[3]s THEN 0.0 ELSE COALESCE(%[1]scost, 0.0) * %[2]s END",
 		prefix,
 		effectiveCostMultiplierSQL(alias),
+		invalidCostStatusSQL(alias),
 	)
 }
 
@@ -246,6 +266,14 @@ func effectiveCostMultiplierSQL(alias string) string {
 	return fmt.Sprintf(
 		"CASE WHEN COALESCE(%[1]scost_source, '') = 'site_pricing' THEN 1 WHEN COALESCE(%[1]scost_multiplier, 1) < 0 THEN 1 ELSE COALESCE(%[1]scost_multiplier, 1) END",
 		prefix,
+	)
+}
+
+func safeEffectiveCostMultiplierSQL(alias string) string {
+	return fmt.Sprintf(
+		"CASE WHEN %s THEN NULL ELSE %s END",
+		invalidCostStatusSQL(alias),
+		effectiveCostMultiplierSQL(alias),
 	)
 }
 

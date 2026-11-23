@@ -3,7 +3,6 @@ package app
 import (
 	"cmp"
 	"context"
-	"log"
 	"slices"
 	"time"
 
@@ -29,101 +28,18 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 	return s.filterCooldownChannelsInternal(ctx, channels, requestModel, requestProtocol, stickyScope, true)
 }
 
-// filterCooldownChannelsStrict 与 filterCooldownChannels 类似，但不会触发“全冷却兜底”选择。
-// 用于需要在“候选为空”时继续做下一步回退（例如模型模糊匹配）的场景。
-func (s *Server) filterCooldownChannelsStrict(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol, stickyScope string) ([]*modelpkg.Config, error) {
-	return s.filterCooldownChannelsInternal(ctx, channels, requestModel, requestProtocol, stickyScope, false)
-}
-
 func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol, stickyScope string, allowAllCooledFallback bool) ([]*modelpkg.Config, error) {
 	if len(channels) == 0 {
 		return channels, nil
 	}
-
-	now := time.Now()
-
-	// 轮询分组键必须在任何动态过滤之前算好：这是该模型下的全部候选渠道。
-	// 若改用过滤后的存活集合，任一渠道进入冷却都会让整组权重归零、退化成
-	// 「永远选 ID 最小的那个」，等价渠道之间就会出现饥饿。详见 rrScope 注释。
-	universe := rrUniverseKey(channels)
-
-	// 可用时段是静态路由约束，窗口外的渠道不得进入冷却兜底。
-	channels = filterAvailableChannelsAt(channels, now)
-	if len(channels) == 0 {
-		return nil, nil
+	view := s.loadRouteSelectionSnapshot(ctx, requestModel)
+	view.universe = rrUniverseKey(channels)
+	var probe bool
+	view.channels, probe = s.routeCandidatePool(view, channels, requestModel, requestProtocol, allowAllCooledFallback)
+	if probe {
+		view.poolMode = "cooldown_fallback"
 	}
-
-	// === 成本限额过滤（在冷却过滤之前）===
-	channels = s.filterCostLimitExceededChannels(channels)
-	if len(channels) == 0 {
-		log.Print("[INFO] 所有渠道均已达每日成本上限")
-		return nil, nil
-	}
-
-	// 批量查询冷却状态（优先走缓存层）
-	channelCooldowns, err := s.getAllChannelCooldowns(ctx)
-	if err != nil {
-		// 降级策略：无法获取冷却数据时，跳过冷却过滤；仍保留后续健康度/负载均衡逻辑，避免直接返回未排序列表。
-		log.Printf("[ERROR] 获取渠道冷却状态失败，跳过冷却过滤（降级模式）: %v", err)
-		channelCooldowns = make(map[int64]time.Time)
-	}
-
-	keyCooldowns, err := s.getAllKeyCooldowns(ctx)
-	if err != nil {
-		// 降级策略：同上。
-		log.Printf("[ERROR] 获取 Key 冷却状态失败，跳过冷却过滤（降级模式）: %v", err)
-		keyCooldowns = make(map[int64]map[int]time.Time)
-	}
-
-	modelCooldowns := make(map[int64]map[string]time.Time)
-	if requestModel != "" && requestModel != "*" {
-		modelCooldowns, err = s.getAllModelCooldowns(ctx)
-		if err != nil {
-			log.Printf("[ERROR] 获取模型冷却状态失败，跳过模型冷却过滤（降级模式）: %v", err)
-			modelCooldowns = make(map[int64]map[string]time.Time)
-		}
-	}
-
-	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
-	filtered := s.filterCooledChannels(channels, requestModel, requestProtocol, channelCooldowns, keyCooldowns, modelCooldowns, now)
-	if len(filtered) == 0 {
-		if !allowAllCooledFallback {
-			return nil, nil
-		}
-		// 全冷却兜底：开关控制（false=禁用，true=启用）
-		// 启用时：直接返回"最早恢复"的渠道，让上层继续走正常流程（不要再搞阈值这类花活）。
-		fallbackEnabled := true
-		if s.configService != nil {
-			fallbackEnabled = s.configService.GetBool("cooldown_fallback_enabled", true)
-		}
-		if !fallbackEnabled {
-			log.Printf("[INFO] 所有渠道冷却中，兜底已禁用（cooldown_fallback_enabled=false）")
-			return nil, nil
-		}
-
-		best, readyIn := s.pickBestChannelWhenAllCooled(channels, requestModel, requestProtocol, channelCooldowns, keyCooldowns, modelCooldowns, now)
-		if best != nil {
-			log.Printf("[INFO] 所有渠道冷却中，兜底使用渠道 %d（%.1fs 后就绪）", best.ID, readyIn.Seconds())
-			return []*modelpkg.Config{cooldownFallbackCandidate(best)}, nil
-		}
-		return nil, nil
-	}
-
-	// 启用健康度排序：对"已通过冷却过滤"的渠道按健康度排序
-	var ordered []*modelpkg.Config
-	if s.healthCache != nil && s.healthCache.Config().Enabled {
-		ordered = s.sortChannelsByHealth(filtered, keyCooldowns, now, universe)
-	} else {
-		// healthCache 关闭时：按优先级分组，使用平滑加权轮询
-		ordered = s.balanceSamePriorityChannels(filtered, keyCooldowns, now, universe)
-	}
-
-	// 粘性策略：把本调用范围上次成功的渠道提回首位（仅限同优先级层）。
-	// 放在排序之后，因为它只调整首选，不改变其余候选的回退顺序。
-	if requestModel != "" && requestModel != "*" && s.routeStrategy() == RouteStrategySticky {
-		ordered = applyStickyPreference(ordered, s.stickyRouter.preferred(stickyScope, requestModel, now))
-	}
-	return ordered, nil
+	return s.orderRouteSelection(view, requestModel, stickyScope), nil
 }
 
 func filterAvailableChannelsAt(channels []*modelpkg.Config, now time.Time) []*modelpkg.Config {
@@ -145,27 +61,15 @@ func cooldownFallbackCandidate(cfg *modelpkg.Config) *modelpkg.Config {
 	return clone
 }
 
-// pickBestChannelWhenAllCooled 全冷却时选择最佳渠道。
+// pickBestChannelFromSnapshot 全冷却时选择最佳渠道。
 // 返回最佳渠道和距离恢复的剩余时间。
 // 选择规则：最早恢复 > 有效优先级高 > 基础优先级高
-func (s *Server) pickBestChannelWhenAllCooled(
-	channels []*modelpkg.Config,
-	requestModel string,
-	requestProtocol string,
-	channelCooldowns map[int64]time.Time,
-	keyCooldowns map[int64]map[int]time.Time,
-	modelCooldowns map[int64]map[string]time.Time,
-	now time.Time,
-) (*modelpkg.Config, time.Duration) {
+func (s *Server) pickBestChannelFromSnapshot(channels []*modelpkg.Config, requestModel, requestProtocol string, view *routeSelectionSnapshot) (*modelpkg.Config, time.Duration) {
 	if len(channels) == 0 {
 		return nil, 0
 	}
-
-	healthEnabled := s.healthCache != nil && s.healthCache.Config().Enabled
-	healthCfg := modelpkg.HealthScoreConfig{}
-	if healthEnabled {
-		healthCfg = s.healthCache.Config()
-	}
+	now, channelCooldowns, keyCooldowns := view.now, view.cooldowns.channels, view.cooldowns.keys
+	healthEnabled, healthCfg := view.healthConfig.Enabled, view.healthConfig
 
 	// 计算渠道的恢复时间
 	getReadyAt := func(ch *modelpkg.Config) time.Time {
@@ -173,7 +77,7 @@ func (s *Server) pickBestChannelWhenAllCooled(
 		if until, ok := channelCooldowns[ch.ID]; ok && until.After(readyAt) {
 			readyAt = until
 		}
-		if until, ok := s.modelCooldownUntil(ch, requestModel, requestProtocol, modelCooldowns); ok && until.After(readyAt) {
+		if until, ok := s.modelCooldownUntilAt(ch, requestModel, requestProtocol, view.cooldowns.models, now, view.aliases); ok && until.After(readyAt) {
 			readyAt = until
 		}
 		// Key全冷却时，取最早解禁时间
@@ -210,7 +114,7 @@ func (s *Server) pickBestChannelWhenAllCooled(
 	if healthEnabled {
 		samples := make([]float64, 0, len(valid))
 		for _, ch := range valid {
-			st := s.healthCache.GetHealthStats(ch.ID)
+			st := routeHealthStats(view.healthStats, ch.ID)
 			if st.FirstByteSampleCount > 0 && st.AvgFirstByteSeconds > 0 {
 				samples = append(samples, st.AvgFirstByteSeconds)
 			}
@@ -219,7 +123,7 @@ func (s *Server) pickBestChannelWhenAllCooled(
 	}
 	getEffPriority := func(ch *modelpkg.Config) float64 {
 		if healthEnabled {
-			return s.calculateEffectivePriority(ch, s.healthCache.GetHealthStats(ch.ID), healthCfg, medianTTFB)
+			return s.calculateEffectivePriority(ch, routeHealthStats(view.healthStats, ch.ID), healthCfg, medianTTFB)
 		}
 		return float64(ch.Priority)
 	}
@@ -249,20 +153,15 @@ func (s *Server) pickBestChannelWhenAllCooled(
 	return best, readyIn
 }
 
-// filterCooledChannels 过滤冷却中的渠道
+// filterCooledChannelsAt 过滤冷却中的渠道
 // 渠道级冷却或所有Key都在冷却时，该渠道被过滤
 //
 // 原地压缩 channels：写入下标恒不大于读取下标，所以不会覆盖尚未读到的元素。
 // 调用方必须传入请求私有的 slice，且只能使用返回值；唯一例外是"返回空"——
 // 此时一次写入都没发生，入参仍然完整，全冷却兜底才能安全复用它。
-func (s *Server) filterCooledChannels(
-	channels []*modelpkg.Config,
-	requestModel string,
-	requestProtocol string,
-	channelCooldowns map[int64]time.Time,
-	keyCooldowns map[int64]map[int]time.Time,
-	modelCooldowns map[int64]map[string]time.Time,
-	now time.Time,
+func (s *Server) filterCooledChannelsAt(channels []*modelpkg.Config, requestModel, requestProtocol string,
+	channelCooldowns map[int64]time.Time, keyCooldowns map[int64]map[int]time.Time,
+	modelCooldowns map[int64]map[string]time.Time, now time.Time, aliases *modelAliasRegistry,
 ) []*modelpkg.Config {
 	filtered := channels[:0]
 	for _, cfg := range channels {
@@ -274,7 +173,7 @@ func (s *Server) filterCooledChannels(
 		}
 
 		// 2. 检查当前请求在该渠道映射到的实际模型是否冷却
-		if cooldownUntil, exists := s.modelCooldownUntil(cfg, requestModel, requestProtocol, modelCooldowns); exists && cooldownUntil.After(now) {
+		if cooldownUntil, exists := s.modelCooldownUntilAt(cfg, requestModel, requestProtocol, modelCooldowns, now, aliases); exists && cooldownUntil.After(now) {
 			continue
 		}
 
@@ -300,11 +199,8 @@ func (s *Server) filterCooledChannels(
 	return filtered
 }
 
-func (s *Server) modelCooldownUntil(
-	cfg *modelpkg.Config,
-	requestModel string,
-	requestProtocol string,
-	modelCooldowns map[int64]map[string]time.Time,
+func (s *Server) modelCooldownUntilAt(cfg *modelpkg.Config, requestModel, requestProtocol string,
+	modelCooldowns map[int64]map[string]time.Time, now time.Time, aliases *modelAliasRegistry,
 ) (time.Time, bool) {
 	if cfg == nil || requestModel == "" || requestModel == "*" {
 		return time.Time{}, false
@@ -313,7 +209,7 @@ func (s *Server) modelCooldownUntil(
 	if len(models) == 0 {
 		return time.Time{}, false
 	}
-	possibleModels := s.possibleActualModels(cfg, requestModel, requestProtocol)
+	possibleModels := possibleActualModelsWithAliases(cfg, requestModel, requestProtocol, aliases)
 	if len(possibleModels) == 0 {
 		return time.Time{}, false
 	}
@@ -321,7 +217,7 @@ func (s *Server) modelCooldownUntil(
 	var earliest time.Time
 	for _, actualModel := range possibleModels {
 		until, ok := models[actualModel]
-		if !ok || !until.After(time.Now()) {
+		if !ok || !until.After(now) {
 			return time.Time{}, false
 		}
 		if earliest.IsZero() || until.Before(earliest) {
@@ -332,13 +228,17 @@ func (s *Server) modelCooldownUntil(
 }
 
 func (s *Server) possibleActualModels(cfg *modelpkg.Config, requestModel, requestProtocol string) []string {
+	return possibleActualModelsWithAliases(cfg, requestModel, requestProtocol, s.modelAliases)
+}
+
+func possibleActualModelsWithAliases(cfg *modelpkg.Config, requestModel, requestProtocol string, aliases *modelAliasRegistry) []string {
 	client := protocol.Protocol(util.NormalizeProtocol(requestProtocol))
 	protocols := possibleUpstreamProtocols(cfg, client)
 
 	seen := make(map[string]struct{}, len(protocols))
 	models := make([]string, 0, len(protocols))
 	for _, upstreamProtocol := range protocols {
-		actualModel := s.resolveFinalUpstreamModel(cfg, requestModel, string(upstreamProtocol))
+		actualModel := resolveFinalUpstreamModelWithAliases(cfg, requestModel, string(upstreamProtocol), aliases)
 		if actualModel == "" {
 			continue
 		}

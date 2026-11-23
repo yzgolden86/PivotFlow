@@ -3,8 +3,11 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -29,6 +32,7 @@ import (
 type StatsCache struct {
 	store      storage.Store
 	cache      sync.Map     // key: cacheKey, value: *cachedStats
+	writeMu    sync.Mutex   // Serializes entry accounting and capacity checks.
 	entryCount atomic.Int64 // 当前缓存条目数（原子计数，避免锁）
 	stopCh     chan struct{}
 	stopWg     sync.WaitGroup
@@ -38,7 +42,7 @@ const maxCacheEntries = 1000 // 最大缓存条目数
 
 // cachedStats 缓存的统计数据
 type cachedStats struct {
-	data   any       // 实际数据（[]model.StatsEntry 或 *model.RPMStats）
+	data   any       // Statistics, RPM or the scoped cost summary.
 	expiry time.Time // 过期时间
 }
 
@@ -75,6 +79,12 @@ func (sc *StatsCache) cleanupWorker() {
 
 // cleanupExpired 清理所有过期条目
 func (sc *StatsCache) cleanupExpired() {
+	sc.writeMu.Lock()
+	defer sc.writeMu.Unlock()
+	sc.cleanupExpiredLocked()
+}
+
+func (sc *StatsCache) cleanupExpiredLocked() {
 	now := time.Now()
 	sc.cache.Range(func(key, value any) bool {
 		cs := value.(*cachedStats)
@@ -87,19 +97,23 @@ func (sc *StatsCache) cleanupExpired() {
 	})
 }
 
-// storeCache 存储缓存条目（带容量检查）
-//
-// 使用 LoadOrStore 保证原子性：要么是新插入（计数+1），要么是更新（计数不变）
+// storeCache keeps a fixed budget across all statistics, including cost filters.
+// When the budget is full, a read still returns its SQL result without caching.
 func (sc *StatsCache) storeCache(key string, value *cachedStats) {
-	if _, loaded := sc.cache.LoadOrStore(key, value); loaded {
-		// key 已存在，LoadOrStore 不会插入，手动更新值
+	sc.writeMu.Lock()
+	defer sc.writeMu.Unlock()
+	if _, loaded := sc.cache.Load(key); loaded {
 		sc.cache.Store(key, value)
 		return
 	}
-	// 新插入成功，增加计数
-	if sc.entryCount.Add(1) > maxCacheEntries {
-		sc.cleanupExpired()
+	if sc.entryCount.Load() >= maxCacheEntries {
+		sc.cleanupExpiredLocked()
+		if sc.entryCount.Load() >= maxCacheEntries {
+			return
+		}
 	}
+	sc.cache.Store(key, value)
+	sc.entryCount.Add(1)
 }
 
 // Close 关闭缓存（停止清理 goroutine）
@@ -116,7 +130,7 @@ func (sc *StatsCache) GetStats(ctx context.Context, startTime, endTime time.Time
 	if cached, ok := sc.cache.Load(key); ok {
 		cs := cached.(*cachedStats)
 		if time.Now().Before(cs.expiry) {
-			return cs.data.([]model.StatsEntry), nil
+			return cloneStatsEntries(cs.data.([]model.StatsEntry)), nil
 		}
 	}
 
@@ -128,12 +142,13 @@ func (sc *StatsCache) GetStats(ctx context.Context, startTime, endTime time.Time
 
 	// 写入缓存
 	ttl := calculateTTL(endTime)
+	cachedResult := cloneStatsEntries(result)
 	sc.storeCache(key, &cachedStats{
-		data:   result,
+		data:   cachedResult,
 		expiry: time.Now().Add(ttl),
 	})
 
-	return result, nil
+	return cloneStatsEntries(cachedResult), nil
 }
 
 // GetStatsLite 获取轻量统计数据（带缓存）
@@ -144,7 +159,7 @@ func (sc *StatsCache) GetStatsLite(ctx context.Context, startTime, endTime time.
 	if cached, ok := sc.cache.Load(key); ok {
 		cs := cached.(*cachedStats)
 		if time.Now().Before(cs.expiry) {
-			return cs.data.([]model.StatsEntry), nil
+			return cloneStatsEntries(cs.data.([]model.StatsEntry)), nil
 		}
 	}
 
@@ -156,12 +171,13 @@ func (sc *StatsCache) GetStatsLite(ctx context.Context, startTime, endTime time.
 
 	// 写入缓存
 	ttl := calculateTTL(endTime)
+	cachedResult := cloneStatsEntries(result)
 	sc.storeCache(key, &cachedStats{
-		data:   result,
+		data:   cachedResult,
 		expiry: time.Now().Add(ttl),
 	})
 
-	return result, nil
+	return cloneStatsEntries(cachedResult), nil
 }
 
 // GetClientProtocolStats 获取按客户端入口协议聚合的首页统计（带缓存）。
@@ -171,7 +187,7 @@ func (sc *StatsCache) GetClientProtocolStats(ctx context.Context, startTime, end
 	if cached, ok := sc.cache.Load(key); ok {
 		cs := cached.(*cachedStats)
 		if time.Now().Before(cs.expiry) {
-			return cs.data.([]model.ClientProtocolStats), nil
+			return slices.Clone(cs.data.([]model.ClientProtocolStats)), nil
 		}
 	}
 
@@ -181,10 +197,34 @@ func (sc *StatsCache) GetClientProtocolStats(ctx context.Context, startTime, end
 	}
 
 	sc.storeCache(key, &cachedStats{
-		data:   result,
+		data:   slices.Clone(result),
 		expiry: time.Now().Add(calculateTTL(endTime)),
 	})
 	return result, nil
+}
+
+// GetCostSummary caches one SQL aggregate under the complete request scope.
+// Copies isolate the cached value from handler and caller mutations.
+func (sc *StatsCache) GetCostSummary(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) (*model.CostSummary, error) {
+	key := buildCacheKey("cost_summary", startTime, endTime, filter)
+	if cached, ok := sc.cache.Load(key); ok {
+		cs := cached.(*cachedStats)
+		if time.Now().Before(cs.expiry) {
+			result := *cs.data.(*model.CostSummary)
+			return &result, nil
+		}
+	}
+	result, err := sc.store.GetCostSummary(ctx, startTime, endTime, filter)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, errors.New("cost summary unavailable")
+	}
+	cached := *result
+	sc.storeCache(key, &cachedStats{data: &cached, expiry: time.Now().Add(calculateTTL(endTime))})
+	response := cached
+	return &response, nil
 }
 
 // GetRPMStats 获取 RPM 统计（带缓存）
@@ -195,7 +235,7 @@ func (sc *StatsCache) GetRPMStats(ctx context.Context, startTime, endTime time.T
 	if cached, ok := sc.cache.Load(key); ok {
 		cs := cached.(*cachedStats)
 		if time.Now().Before(cs.expiry) {
-			return cs.data.(*model.RPMStats), nil
+			return cloneStatsScalar(cs.data.(*model.RPMStats)), nil
 		}
 	}
 
@@ -208,32 +248,57 @@ func (sc *StatsCache) GetRPMStats(ctx context.Context, startTime, endTime time.T
 	// 写入缓存
 	ttl := calculateTTL(endTime)
 	sc.storeCache(key, &cachedStats{
-		data:   result,
+		data:   cloneStatsScalar(result),
 		expiry: time.Now().Add(ttl),
 	})
 
 	return result, nil
 }
 
-// buildCacheKey 生成缓存键
-func buildCacheKey(typ string, startTime, endTime time.Time, filter *model.LogFilter) string {
-	// 使用时间戳（秒）+ filter 哈希作为键。实时范围的 endTime 会随 time.Now()
-	// 每秒变化，必须按 TTL 分桶，否则 30 秒缓存永远打不着。
-	filterHash := hashFilter(filter)
-	return fmt.Sprintf("%s:%d:%d:%s", typ, startTime.Unix(), cacheKeyEndUnix(endTime), filterHash)
+func cloneStatsScalar[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
 }
 
-func cacheKeyEndUnix(endTime time.Time) int64 {
-	ttl := calculateTTL(endTime)
-	if ttl <= 0 || ttl > 30*time.Second {
-		return endTime.Unix()
+func cloneStatsEntries(entries []model.StatsEntry) []model.StatsEntry {
+	result := slices.Clone(entries)
+	for i := range result {
+		entry := &result[i]
+		entry.ChannelID = cloneStatsScalar(entry.ChannelID)
+		entry.ChannelPriority = cloneStatsScalar(entry.ChannelPriority)
+		entry.CostMultiplier = cloneStatsScalar(entry.CostMultiplier)
+		entry.ActualCostMultiplierMin = cloneStatsScalar(entry.ActualCostMultiplierMin)
+		entry.ActualCostMultiplierMax = cloneStatsScalar(entry.ActualCostMultiplierMax)
+		entry.AvgFirstByteTimeSeconds = cloneStatsScalar(entry.AvgFirstByteTimeSeconds)
+		entry.AvgDurationSeconds = cloneStatsScalar(entry.AvgDurationSeconds)
+		entry.LastSuccessAt = cloneStatsScalar(entry.LastSuccessAt)
+		entry.LastSuccessID = cloneStatsScalar(entry.LastSuccessID)
+		entry.LastRequestAt = cloneStatsScalar(entry.LastRequestAt)
+		entry.LastRequestID = cloneStatsScalar(entry.LastRequestID)
+		entry.LastRequestStatus = cloneStatsScalar(entry.LastRequestStatus)
+		entry.PeakRPM = cloneStatsScalar(entry.PeakRPM)
+		entry.AvgRPM = cloneStatsScalar(entry.AvgRPM)
+		entry.RecentRPM = cloneStatsScalar(entry.RecentRPM)
+		entry.TotalInputTokens = cloneStatsScalar(entry.TotalInputTokens)
+		entry.TotalOutputTokens = cloneStatsScalar(entry.TotalOutputTokens)
+		entry.TotalCacheReadInputTokens = cloneStatsScalar(entry.TotalCacheReadInputTokens)
+		entry.TotalCacheCreationInputTokens = cloneStatsScalar(entry.TotalCacheCreationInputTokens)
+		entry.TotalCost = cloneStatsScalar(entry.TotalCost)
+		entry.EffectiveCost = cloneStatsScalar(entry.EffectiveCost)
+		entry.HealthTimeline = slices.Clone(entry.HealthTimeline)
 	}
+	return result
+}
 
-	bucketSeconds := int64(ttl / time.Second)
-	if bucketSeconds <= 0 {
-		return endTime.Unix()
-	}
-	return (endTime.Unix() / bucketSeconds) * bucketSeconds
+// buildCacheKey 生成缓存键
+func buildCacheKey(typ string, startTime, endTime time.Time, filter *model.LogFilter) string {
+	// Cache the exact millisecond SQL window. TTL controls freshness; it must
+	// not merge distinct fixed ranges merely because both end near time.Now().
+	filterHash := hashFilter(filter)
+	return fmt.Sprintf("%s:%d:%d:%s", typ, startTime.UnixMilli(), endTime.UnixMilli(), filterHash)
 }
 
 // hashFilter 对 filter 进行哈希
@@ -274,6 +339,21 @@ func hashFilter(filter *model.LogFilter) string {
 	if filter.LogSource != "" {
 		parts = append(parts, fmt.Sprintf("source:%s", filter.LogSource))
 	}
+	if filter.Search != "" {
+		parts = append(parts, fmt.Sprintf("search:%s", filter.Search))
+	}
+	if filter.RequestID != "" {
+		parts = append(parts, fmt.Sprintf("request_id:%s", filter.RequestID))
+	}
+	if filter.CostSource != "" {
+		parts = append(parts, fmt.Sprintf("cost_source:%s", filter.CostSource))
+	}
+	if filter.CostStatus != "" {
+		parts = append(parts, fmt.Sprintf("cost_status:%s", filter.CostStatus))
+	}
+	if filter.CostBasis != "" {
+		parts = append(parts, fmt.Sprintf("cost_basis:%s", filter.CostBasis))
+	}
 
 	// 排序确保顺序一致性
 	sort.Strings(parts)
@@ -281,6 +361,9 @@ func hashFilter(filter *model.LogFilter) string {
 	// 计算 SHA256 哈希
 	h := sha256.New()
 	for _, part := range parts {
+		// Length framing preserves field boundaries even when a user-supplied
+		// model or search string contains another field's textual prefix.
+		h.Write(binary.BigEndian.AppendUint64(nil, uint64(len(part))))
 		h.Write([]byte(part))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16] // 取前16字符即可

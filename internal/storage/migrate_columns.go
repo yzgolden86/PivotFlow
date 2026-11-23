@@ -13,6 +13,7 @@ import (
 // 安全设计：防止SQL注入，新增表时需在此处注册
 var sqliteMigratableTables = map[string]bool{
 	"logs":                     true,
+	"request_traces":           true,
 	"auth_tokens":              true,
 	"channel_models":           true,
 	"channel_model_cooldowns":  true,
@@ -27,6 +28,7 @@ var sqliteMigratableTables = map[string]bool{
 	"site_accounts":            true,
 	"site_channel_bindings":    true,
 	"webhook_endpoints":        true,
+	"backup_settings":          true,
 }
 
 type sqliteColumnDef struct {
@@ -140,6 +142,21 @@ func ensureColumn(ctx context.Context, db *sql.DB, dialect Dialect, table, col, 
 	}
 }
 
+func ensureBackupVerificationColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	for _, column := range []struct{ name, mysqlDef, sqliteDef string }{
+		{"last_verified_at", "BIGINT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"},
+		{"last_verified_bytes", "BIGINT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"},
+		{"last_verified_sha256", "VARCHAR(64) NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''"},
+		{"last_verified_type", "VARCHAR(32) NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''"},
+		{"last_verified_warning_count", "INT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := ensureColumn(ctx, db, dialect, "backup_settings", column.name, column.mysqlDef, column.sqliteDef); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func ensureModelCooldownDuration(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	if err := ensureColumn(
 		ctx,
@@ -176,6 +193,18 @@ func ensureCheckinAttemptBalanceColumns(ctx context.Context, db *sql.DB, dialect
 	}
 	for _, column := range columns {
 		if err := ensureColumn(ctx, db, dialect, "checkin_attempts", column.name, column.mysqlDef, column.sqliteDef); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureRequestCacheHistoryColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	for _, column := range []struct{ name, mysqlDef string }{
+		{"cache_status", "VARCHAR(16) NOT NULL DEFAULT ''"},
+		{"cache_reason", "VARCHAR(64) NOT NULL DEFAULT ''"},
+	} {
+		if err := ensureColumn(ctx, db, dialect, "request_traces", column.name, column.mysqlDef, "TEXT NOT NULL DEFAULT ''"); err != nil {
 			return err
 		}
 	}
@@ -298,12 +327,32 @@ func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) erro
 		if err := ensureLogsThinkingEffortMySQL(ctx, db); err != nil {
 			return err
 		}
-		return ensureLogsLogSourceMySQL(ctx, db)
+		if err := ensureLogsLogSourceMySQL(ctx, db); err != nil {
+			return err
+		}
+		return ensureLogsRequestHistoryColumns(ctx, db, dialect)
 	case DialectPostgres:
-		return ensureLogsColumnsPostgres(ctx, db)
+		if err := ensureLogsColumnsPostgres(ctx, db); err != nil {
+			return err
+		}
+		return ensureLogsRequestHistoryColumns(ctx, db, dialect)
 	default:
-		return ensureLogsColumnsSQLite(ctx, db)
+		if err := ensureLogsColumnsSQLite(ctx, db); err != nil {
+			return err
+		}
+		return ensureLogsRequestHistoryColumns(ctx, db, dialect)
 	}
+}
+
+func ensureLogsRequestHistoryColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if err := ensureColumn(ctx, db, dialect, "logs", "request_id",
+		"VARCHAR(64) NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return ensureColumn(ctx, db, dialect, "logs", "attempt_number",
+		"INT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
 }
 
 // ensureLogsColumnsPostgres PostgreSQL 增量迁移 logs 新字段（新库 DDL 已含全列；此路径服务旧库）
@@ -518,6 +567,27 @@ func ensureLogsCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) 
 	return ensureColumn(ctx, db, dialect, "logs", "cost_multiplier",
 		"DOUBLE NOT NULL DEFAULT 1",
 		"REAL NOT NULL DEFAULT 1")
+}
+
+// ensureLogsCostSemantics adds request-time explanation metadata without
+// backfilling legacy rows. Existing costs and sources remain untouched.
+func ensureLogsCostSemantics(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	columns := []struct {
+		name      string
+		mysqlDef  string
+		sqliteDef string
+	}{
+		{"cost_metadata_version", "INT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"},
+		{"cost_status", "VARCHAR(32) NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''"},
+		{"cost_basis", "VARCHAR(16) NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''"},
+		{"cost_detail_json", "TEXT NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		if err := ensureColumn(ctx, db, dialect, "logs", column.name, column.mysqlDef, column.sqliteDef); err != nil {
+			return fmt.Errorf("ensure logs.%s: %w", column.name, err)
+		}
+	}
+	return nil
 }
 
 // ensureLogsUpstreamWebsocket ensures logs record the transport actually used for the upstream request.

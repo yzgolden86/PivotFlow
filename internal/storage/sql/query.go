@@ -55,7 +55,11 @@ func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilde
 }
 
 // ApplyLogFilter 应用日志过滤器，消除重复的过滤逻辑
-func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
+func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter, driverNames ...string) *WhereBuilder {
+	driverName := "sqlite"
+	if len(driverNames) > 0 {
+		driverName = driverNames[0]
+	}
 	if filter == nil {
 		wb.AddCondition("log_source = ?", model.LogSourceProxy)
 		return wb
@@ -68,8 +72,11 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	if filter.UpstreamProtocol != "" {
 		wb.AddCondition("upstream_protocol = ?", filter.UpstreamProtocol)
 	}
+	if filter.ClientProtocol != "" {
+		wb.AddCondition(exactTextEqual(driverName, "client_protocol"), filter.ClientProtocol)
+	}
 	if filter.Model != "" {
-		wb.AddCondition("model = ?", filter.Model)
+		wb.AddCondition(exactTextEqual(driverName, "model"), filter.Model)
 	}
 	if filter.ModelLike != "" {
 		wb.AddCondition("model LIKE ?", "%"+filter.ModelLike+"%")
@@ -77,8 +84,8 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	if filter.Search != "" {
 		needle := "%" + filter.Search + "%"
 		wb.AddCondition(
-			"(model LIKE ? OR actual_model LIKE ? OR message LIKE ? OR base_url LIKE ?)",
-			needle, needle, needle, needle,
+			"(request_id LIKE ? OR model LIKE ? OR actual_model LIKE ? OR message LIKE ? OR base_url LIKE ?)",
+			needle, needle, needle, needle, needle,
 		)
 	}
 	if filter.StatusCode != nil {
@@ -90,6 +97,9 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	if filter.AuthTokenID != nil {
 		wb.AddCondition("auth_token_id = ?", *filter.AuthTokenID)
 	}
+	if filter.RequestID != "" {
+		wb.AddCondition("request_id = ?", filter.RequestID)
+	}
 	switch filter.LogSource {
 	case model.LogSourceAll:
 	case model.LogSourceDetection:
@@ -99,6 +109,7 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	default:
 		wb.AddCondition("log_source = ?", filter.LogSource)
 	}
+	wb.applyCostFilter(filter)
 	return wb
 }
 
@@ -257,8 +268,8 @@ func (qb *QueryBuilder) Where(condition string, args ...any) *QueryBuilder {
 }
 
 // ApplyFilter 应用过滤器
-func (qb *QueryBuilder) ApplyFilter(filter *model.LogFilter) *QueryBuilder {
-	qb.wb.ApplyLogFilter(filter)
+func (qb *QueryBuilder) ApplyFilter(filter *model.LogFilter, driverNames ...string) *QueryBuilder {
+	qb.wb.ApplyLogFilter(filter, driverNames...)
 	return qb
 }
 

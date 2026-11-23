@@ -15,7 +15,7 @@ import (
 
 // ConfigureCooldown 原子替换当前存储实例的冷却策略。
 func (s *SQLStore) ConfigureCooldown(settings util.CooldownSettings) {
-	s.cooldownPolicy.Store(util.NewCooldownPolicy(settings))
+	s.cooldownStore().cooldownPolicy.Store(util.NewCooldownPolicy(settings))
 }
 
 func (s *SQLStore) calculateBackoffDuration(
@@ -24,7 +24,7 @@ func (s *SQLStore) calculateBackoffDuration(
 	now time.Time,
 	statusCode *int,
 ) time.Duration {
-	if policy := s.cooldownPolicy.Load(); policy != nil {
+	if policy := s.cooldownStore().cooldownPolicy.Load(); policy != nil {
 		return policy.CalculateBackoffDuration(prevMs, until, now, statusCode)
 	}
 	return util.CalculateBackoffDuration(prevMs, until, now, statusCode)

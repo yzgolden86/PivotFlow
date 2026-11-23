@@ -159,6 +159,20 @@ type protocolCapabilityCache struct {
 	entries map[protocolCapabilityKey]protocolCapabilityEntry
 }
 
+// snapshotAt observes capability entries without deleting expired sentinels or
+// learning a protocol. Expired unsupported observations permit a future retry.
+func (c *protocolCapabilityCache) snapshotAt(now time.Time) map[protocolCapabilityKey]protocolCapabilityEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := make(map[protocolCapabilityKey]protocolCapabilityEntry, len(c.entries))
+	for key, entry := range c.entries {
+		if entry.upstream != protocolUnsupported || now.Before(entry.retryAfter) {
+			result[key] = entry
+		}
+	}
+	return result
+}
+
 // get 返回已学习的上游协议。成功条目不过期；known=false 表示未探测，或“不支持”
 // 条目已到重试时间；known=true 且 upstream==protocolUnsupported 表示暂时确认不支持。
 func (c *protocolCapabilityCache) get(key protocolCapabilityKey) (upstream protocol.Protocol, known bool) {

@@ -592,7 +592,7 @@ func TestHybridStore_ChannelReadsUsePrimaryState(t *testing.T) {
 	}
 }
 
-func TestHybridStoreCleanupLogsBeforeIgnoresSQLiteCacheFailure(t *testing.T) {
+func TestHybridStoreCleanupLogsBeforeReportsSQLiteCacheFailure(t *testing.T) {
 	mysql := createTestSQLiteStore(t)
 	sqlite := createTestSQLiteStore(t)
 	hybrid := NewHybridStore(sqlite, mysql)
@@ -614,8 +614,8 @@ func TestHybridStoreCleanupLogsBeforeIgnoresSQLiteCacheFailure(t *testing.T) {
 		t.Fatalf("close sqlite cache failed: %v", err)
 	}
 
-	if err := hybrid.CleanupLogsBefore(ctx, time.Now()); err != nil {
-		t.Fatalf("CleanupLogsBefore returned sqlite cache error: %v", err)
+	if err := hybrid.CleanupLogsBefore(ctx, time.Now()); err == nil {
+		t.Fatal("CleanupLogsBefore hid sqlite cache cleanup failure")
 	}
 
 	logs, err := mysql.ListLogs(ctx, time.Now().Add(-24*time.Hour), 10, 0, nil)

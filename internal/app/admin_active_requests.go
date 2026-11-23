@@ -3,6 +3,7 @@ package app
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,20 +17,9 @@ func (s *Server) HandleActiveRequests(c *gin.Context) {
 	RespondJSONWithCount(c, http.StatusOK, requests, len(requests))
 }
 
-// HandleRuntimeMetrics 返回进程内长连接资源。
+// HandleRuntimeMetrics 返回只读的进程内运行指标与后台健康状态。
 func (s *Server) HandleRuntimeMetrics(c *gin.Context) {
-	stats := responsesExecutionSessionStoreStats{}
-	if s.responsesExecutionSessions != nil {
-		stats = s.responsesExecutionSessions.stats()
-	}
-	if s.responsesWebsocketConnections != nil {
-		connections := s.responsesWebsocketConnections.stats()
-		stats.DownstreamConnections = connections.Active
-		stats.RejectedDownstreamConnections = connections.Rejected
-		stats.MaxDownstreamConnections = connections.Max
-		stats.MaxDownstreamConnectionsPerToken = connections.MaxPerSubject
-	}
-	RespondJSON(c, http.StatusOK, gin.H{"responses_websocket": stats})
+	RespondJSON(c, http.StatusOK, s.collectRuntimeMetrics(time.Now()))
 }
 
 // HandleGetActiveRequestDebugLog 返回运行中请求的调试日志快照。

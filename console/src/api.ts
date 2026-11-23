@@ -9,8 +9,11 @@ import type {
   ChannelModelsPreview,
   ChannelTestResult,
   RouteDiagnosticResponse,
+  ModelRouteInventory,
+  ModelRouteDiagnosticResponse,
   DashboardRange,
   DashboardSnapshot,
+  DashboardSummary,
   LogEntry,
   LogFilters,
   LogsBootstrap,
@@ -30,6 +33,10 @@ import type {
   SiteTask,
 	WebhookConfig,
   ActiveRequest,
+  RequestTrace,
+  RequestTraceFilters,
+  RequestTraceStats,
+  RequestCacheObservation,
   AuthToken,
   AuthTokenList,
   SystemAccessToken,
@@ -42,10 +49,14 @@ import type {
   SystemSettingMutationResult,
   BackupDocument,
   BackupImportResult,
+  BackupExportResult,
   BackupType,
   BackupWebDAVConfig,
   VersionInfo,
+  RuntimeMetrics,
 } from './types'
+import { parseRuntimeMetrics } from './pages/runtimeHealth.ts'
+import { parseRequestCacheObservation } from './pages/requestCache.ts'
 
 const TOKEN_KEY = 'pivotflow_token'
 const EXPIRY_KEY = 'pivotflow_token_expiry'
@@ -82,6 +93,19 @@ function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T
 function endpointMissing(reason: unknown): boolean {
   const message = reason instanceof Error ? reason.message.toLowerCase() : ''
   return message === 'not_found' || message.startsWith('not_found:') || message.includes('(404)')
+}
+
+export async function getRuntimeMetrics(signal?: AbortSignal): Promise<RuntimeMetrics> {
+  let value: unknown
+  try {
+    value = await apiRequest<unknown>('/admin/runtime-metrics', signal)
+  } catch (reason) {
+    if (endpointMissing(reason) || (reason instanceof Error && /HTTP 404\b/.test(reason.message))) {
+      throw new Error('当前后端未提供运行指标接口，请更新后端后重试')
+    }
+    throw reason
+  }
+  return parseRuntimeMetrics(value)
 }
 
 export function peekSiteInventory(): SiteInventory | undefined {
@@ -187,7 +211,14 @@ export function getDashboard(filters: StatsFilters, signal?: AbortSignal): Promi
   const params = new URLSearchParams({ range: filters.range })
   if (filters.channel_name) params.set('channel_name', filters.channel_name)
   if (filters.model) params.set('model', filters.model)
+  if (filters.cost_source) params.set('cost_source', filters.cost_source)
+  if (filters.cost_status) params.set('cost_status', filters.cost_status)
+  if (filters.cost_basis) params.set('cost_basis', filters.cost_basis)
   return apiRequest<DashboardSnapshot>(`/admin/dashboard?${params}`, signal)
+}
+
+export function getDashboardSummary(range: DashboardRange, signal?: AbortSignal): Promise<DashboardSummary> {
+  return apiRequest<DashboardSummary>(`/dashboard/summary?range=${range}`, signal)
 }
 
 export function checkForUpdates(): Promise<VersionInfo> {
@@ -284,6 +315,23 @@ export function getChannelRouteDiagnostics(channelId: number, model: string, cli
 	return apiRequest<RouteDiagnosticResponse>(`/admin/channels/${channelId}/route-diagnostics?${params}`, signal)
 }
 
+export async function getModelRouteInventory(filters: { search?: string; limit?: number; offset?: number; enabled_only?: boolean }, signal?: AbortSignal): Promise<ModelRouteInventory> {
+  const params = new URLSearchParams({ limit: String(filters.limit ?? 50), offset: String(filters.offset ?? 0) })
+  if (filters.search) params.set('search', filters.search)
+  if (filters.enabled_only !== undefined) params.set('enabled_only', String(filters.enabled_only))
+  const value = await apiRequest<ModelRouteInventory>(`/admin/routing/models?${params}`, signal)
+  if (value?.version !== 1) throw new Error('模型清单接口版本不兼容，请更新后端后重试')
+  return value
+}
+
+export async function getModelRouteDiagnostics(filters: { model: string; client_protocol: string; token_id?: string; limit?: number; offset?: number }, signal?: AbortSignal): Promise<ModelRouteDiagnosticResponse> {
+  const params = new URLSearchParams({ model: filters.model, client_protocol: filters.client_protocol, limit: String(filters.limit ?? 50), offset: String(filters.offset ?? 0) })
+  if (filters.token_id) params.set('token_id', filters.token_id)
+  const value = await apiRequest<ModelRouteDiagnosticResponse>(`/admin/routing/diagnostics?${params}`, signal)
+  if (value?.version !== 1) throw new Error('模型诊断接口版本不兼容，请更新后端后重试')
+  return value
+}
+
 export async function setChannelKeyEnabled(channelId: number, keyIndex: number, keyId: number, enabled: boolean): Promise<void> {
   await apiMutation(`/admin/channels/${channelId}/key-${enabled ? 'enable' : 'disable'}`, { key_index: keyIndex, key_id: keyId })
   invalidateChannels()
@@ -343,14 +391,59 @@ export async function getLogs(filters: LogFilters, signal?: AbortSignal): Promis
   if (filters.search) params.set('search', filters.search)
   if (filters.status_code) params.set('status_code', filters.status_code)
   if (filters.log_source) params.set('log_source', filters.log_source)
+  if (filters.cost_source) params.set('cost_source', filters.cost_source)
+  if (filters.cost_status) params.set('cost_status', filters.cost_status)
+  if (filters.cost_basis) params.set('cost_basis', filters.cost_basis)
   const payload = await requestEnvelope<LogEntry[]>(`/admin/logs?${params}`, { signal })
   return { data: payload.data, count: payload.count ?? payload.data.length }
+}
+
+function requestTraceParams(filters: Pick<RequestTraceFilters, 'range' | 'search' | 'outcome' | 'auth_token_id' | 'model' | 'client_protocol'>): URLSearchParams {
+  const params = new URLSearchParams({ range: filters.range })
+  if (filters.search) params.set('search', filters.search)
+  if (filters.outcome) params.set('outcome', filters.outcome)
+  if (filters.auth_token_id) params.set('auth_token_id', String(filters.auth_token_id))
+  if (filters.model) params.set('model', filters.model)
+  if (filters.client_protocol) params.set('client_protocol', filters.client_protocol)
+  return params
+}
+
+export async function getRequestTraces(filters: RequestTraceFilters, signal?: AbortSignal): Promise<PaginatedResult<RequestTrace>> {
+  const params = requestTraceParams(filters)
+  params.set('limit', String(filters.limit))
+  params.set('offset', String(filters.offset))
+  const payload = await requestEnvelope<RequestTrace[]>(`/admin/request-traces?${params}`, { signal })
+  return { data: payload.data, count: payload.count ?? payload.data.length }
+}
+
+export function getRequestTraceStats(
+  filters: Pick<RequestTraceFilters, 'range' | 'search' | 'outcome' | 'auth_token_id' | 'model' | 'client_protocol'>,
+  signal?: AbortSignal,
+): Promise<RequestTraceStats> {
+  return apiRequest<RequestTraceStats>(`/admin/request-traces/stats?${requestTraceParams(filters)}`, signal)
+}
+
+export function getRequestTrace(requestId: string, signal?: AbortSignal): Promise<RequestTrace> {
+  return apiRequest<RequestTrace>(`/admin/request-traces/${encodeURIComponent(requestId)}`, signal)
+}
+
+export async function getRequestCacheObservation(signal?: AbortSignal): Promise<RequestCacheObservation> {
+  const value = await apiRequest<unknown>('/admin/request-cache', signal)
+  return parseRequestCacheObservation(value)
+}
+
+export async function clearRequestCache(signal?: AbortSignal): Promise<RequestCacheObservation> {
+  const value = await apiMutation<unknown>('/admin/request-cache', undefined, 'DELETE', signal)
+  return parseRequestCacheObservation(value)
 }
 
 export function getStats(filters: StatsFilters, signal?: AbortSignal): Promise<StatsSnapshot> {
   const params = new URLSearchParams({ range: filters.range })
   if (filters.channel_name) params.set('channel_name', filters.channel_name)
   if (filters.model) params.set('model', filters.model)
+  if (filters.cost_source) params.set('cost_source', filters.cost_source)
+  if (filters.cost_status) params.set('cost_status', filters.cost_status)
+  if (filters.cost_basis) params.set('cost_basis', filters.cost_basis)
   return apiRequest<StatsSnapshot>(`/admin/stats?${params}`, signal)
 }
 
@@ -493,13 +586,27 @@ export async function deleteSiteAccount(accountId: number): Promise<{ id: number
   return result
 }
 
-export function startAccountTask(accountId: number, kind: 'checkin' | 'refresh' | 'model_refresh'): Promise<{ task_id: string }> {
+export function startAccountTask(accountId: number, kind: 'checkin' | 'refresh' | 'model_refresh', signal?: AbortSignal): Promise<{ task_id: string; merged?: boolean }> {
   const suffix = kind === 'model_refresh' ? 'models/refresh' : kind
-  return apiMutation(`/admin/site-accounts/${accountId}/${suffix}`)
+  return apiMutation(`/admin/site-accounts/${accountId}/${suffix}`, undefined, 'POST', signal)
 }
 
 export function getSiteTask(taskId: string, signal?: AbortSignal): Promise<SiteTask> {
   return apiRequest<SiteTask>(`/admin/site-tasks/${encodeURIComponent(taskId)}`, signal)
+}
+
+export function getActiveSiteTasks(signal?: AbortSignal): Promise<SiteTask[]> {
+  return apiRequest<SiteTask[]>('/admin/site-tasks', signal)
+}
+
+export function cancelSiteTask(taskId: string): Promise<{ cancelled: boolean; status: SiteTask['status'] }> {
+  return apiMutation(`/admin/site-tasks/${encodeURIComponent(taskId)}/cancel`, undefined, 'POST', AbortSignal.timeout(8_000))
+}
+
+export function invalidateSiteTaskData(kind: string): void {
+  invalidateSiteInventory()
+  if (kind === 'checkin') invalidateCheckinAttempts()
+  if (kind === 'model_refresh') invalidateChannels()
 }
 
 export async function getSiteModels(filters: {
@@ -537,6 +644,7 @@ export async function waitForSiteTask(taskId: string, signal?: AbortSignal, time
   const startedAt = Date.now()
   while (Date.now() - startedAt < timeoutMs) {
     const task = await getSiteTask(taskId, signal)
+    if (task.status === 'unknown') throw new Error('任务结果待确认，请核实原任务，避免重复操作')
     if (['success', 'partial', 'failed', 'cancelled'].includes(task.status)) return task
     await abortableDelay(500, signal)
   }
@@ -618,8 +726,8 @@ export async function getAnnouncements(filters: {
   throw lastError instanceof Error ? lastError : new Error(String(lastError || '公告请求失败'))
 }
 
-export function refreshAnnouncements(siteId = 0): Promise<{ task_id: string }> {
-  return apiMutation('/admin/announcements/refresh', { site_id: siteId })
+export function refreshAnnouncements(siteId = 0, signal?: AbortSignal): Promise<{ task_id: string; merged?: boolean }> {
+  return apiMutation('/admin/announcements/refresh', { site_id: siteId }, 'POST', signal)
 }
 
 export function markAnnouncementRead(id: number): Promise<{ id: number; read: boolean }> {
@@ -688,8 +796,8 @@ export function deleteAuthToken(tokenId: number): Promise<{ id: number }> {
   return apiMutation(`/admin/auth-tokens/${tokenId}`, undefined, 'DELETE')
 }
 
-export function revealAuthToken(tokenId: number): Promise<{ id: number; token: string; token_hint: string }> {
-  return apiRequest(`/admin/auth-tokens/${tokenId}/reveal`)
+export function revealAuthToken(tokenId: number, signal?: AbortSignal): Promise<{ id: number; token: string; token_hint: string }> {
+  return apiRequest(`/admin/auth-tokens/${tokenId}/reveal`, signal)
 }
 
 export function getSystemAccessTokens(signal?: AbortSignal): Promise<SystemAccessTokenList> {
@@ -749,7 +857,7 @@ export function updateBackupWebDAV(payload: {
   return apiMutation<BackupWebDAVConfig>('/admin/backup/webdav', payload, 'PUT')
 }
 
-export function uploadBackupToWebDAV(type: BackupType): Promise<{ status: string; file_url: string; last_sync_at: number }> {
+export function uploadBackupToWebDAV(type: BackupType): Promise<BackupExportResult> {
   return apiMutation('/admin/backup/webdav/export', { type })
 }
 

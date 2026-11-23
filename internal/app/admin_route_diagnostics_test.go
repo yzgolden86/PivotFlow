@@ -154,8 +154,20 @@ func TestBuildChannelRouteDiagnosticsCalculatesActualShareFromLogs(t *testing.T)
 		{Time: model.JSONTime{Time: now}, Model: "gpt-route", LogSource: model.LogSourceProxy, ChannelID: target.ID, StatusCode: 200},
 	}
 	for index, entry := range logs {
+		entry.ClientProtocol = "openai"
 		if err := store.AddLog(ctx, entry); err != nil {
 			t.Fatalf("add log %d: %v", index, err)
+		}
+	}
+	// An old row without request protocol, another protocol and a final
+	// summary without an upstream channel are outside this exact attempt scope.
+	for _, entry := range []*model.LogEntry{
+		{Time: model.JSONTime{Time: now}, Model: "gpt-route", LogSource: model.LogSourceProxy, ChannelID: target.ID, StatusCode: 200, AuthTokenID: token.ID},
+		{Time: model.JSONTime{Time: now}, Model: "gpt-route", ClientProtocol: "codex", LogSource: model.LogSourceProxy, ChannelID: target.ID, StatusCode: 200, AuthTokenID: token.ID},
+		{Time: model.JSONTime{Time: now}, Model: "gpt-route", ClientProtocol: "openai", LogSource: model.LogSourceProxy, StatusCode: 503, AuthTokenID: token.ID},
+	} {
+		if err := store.AddLog(ctx, entry); err != nil {
+			t.Fatal(err)
 		}
 	}
 
@@ -193,6 +205,11 @@ func TestBuildChannelRouteDiagnosticsReportsStickyChannel(t *testing.T) {
 		t.Fatalf("create token: %v", err)
 	}
 	server.routeStrategyMode = RouteStrategySticky
+	server.authService = newTestAuthService(t)
+	server.authService.store = store
+	if err := server.authService.ReloadAuthTokens(); err != nil {
+		t.Fatal(err)
+	}
 	server.stickyRouter = newStickyRouter()
 	server.stickyRouter.remember(stickyScopeKey(token.Token), "gpt-route", target.ID)
 

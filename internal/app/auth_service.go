@@ -47,6 +47,7 @@ type AuthService struct {
 	authTokenMaxConns   map[string]int                      // Token哈希 → 最大并发请求数（0=无限制）
 	authTokenActiveReqs map[string]int                      // Token哈希 → 当前进行中请求数
 	authTokensMux       sync.RWMutex                        // 并发保护（支持热更新）
+	authTokenReloadMu   sync.Mutex                          // 序列化读取与发布，避免迟到快照覆盖新权限
 
 	// 数据库依赖（用于热更新令牌）
 	store storage.Store
@@ -55,6 +56,9 @@ type AuthService struct {
 	// （canonical + 别名），由 Server 在 Init 时注入。白名单校验用它把
 	// 「组内任一名字在白名单」视为整组放行；为 nil 时退化为纯字符串匹配。
 	modelAliasCandidates func(name string) []string
+	// Immutable after Server construction; notified after permission publication,
+	// even if the subsequent Web-session revocation persistence fails.
+	onAuthTokensChanged func()
 
 	// 速率限制（防暴力破解）
 	loginRateLimiter       *util.LoginRateLimiter
@@ -679,10 +683,14 @@ func (s *AuthService) HandleLogout(c *gin.Context) {
 // 用于CRUD操作后立即生效，无需重启服务
 // [FIX] 2025-12: 同时加载过期时间，支持懒惰过期校验
 func (s *AuthService) ReloadAuthTokens() error {
+	s.authTokenReloadMu.Lock()
+	defer s.authTokenReloadMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tokens, err := s.store.ListActiveAuthTokens(ctx)
+	// Permissions must follow committed primary configuration even when the
+	// hybrid read replica failed to refresh after a configuration transaction.
+	tokens, err := storage.ConfigurationSource(s.store).ListActiveAuthTokens(ctx)
 	if err != nil {
 		return fmt.Errorf("reload auth tokens: %w", err)
 	}
@@ -765,6 +773,9 @@ func (s *AuthService) ReloadAuthTokens() error {
 	s.authTokenCostLimits = newTokenCostLimits
 	s.authTokenMaxConns = newTokenMaxConns
 	s.authTokensMux.Unlock()
+	if s.onAuthTokensChanged != nil {
+		s.onAuthTokensChanged()
+	}
 	if err := s.revokeWebSessions(revokedTokenIDs); err != nil {
 		return fmt.Errorf("revoke web sessions: %w", err)
 	}
@@ -823,6 +834,12 @@ func (s *AuthService) getAllowedModelSet(tokenHash string) (map[string]struct{},
 // modelAliasCandidates 由 Server 注入（见 model_aliases.go）：把候选展开成
 // 统一映射组后逐个名字求值，白名单写组内任一名字时整组可见。
 func (s *AuthService) FilterAllowedModels(tokenHash string, models []string) []string {
+	return s.filterAllowedModelsWithCandidates(tokenHash, models, s.modelAliasCandidates)
+}
+
+// A public model-list request can supply its frozen mapping so visibility and
+// permission filtering refer to one complete alias snapshot during a reload.
+func (s *AuthService) filterAllowedModelsWithCandidates(tokenHash string, models []string, candidates func(string) []string) []string {
 	allowedSet, hasRestriction := s.getAllowedModelSet(tokenHash)
 	if !hasRestriction || len(models) == 0 {
 		return models
@@ -830,7 +847,7 @@ func (s *AuthService) FilterAllowedModels(tokenHash string, models []string) []s
 
 	filtered := make([]string, 0, len(models))
 	for _, model := range models {
-		if s.allowedModelWithAliases(allowedSet, model) {
+		if allowedModelWithCandidates(allowedSet, model, candidates) {
 			filtered = append(filtered, model)
 		}
 	}
@@ -854,13 +871,17 @@ func (s *AuthService) IsModelAllowed(tokenHash, model string) bool {
 // 映射展开逐个候选匹配（registry.namesFor 保证 canonical 排在首位，
 // 未注入时只检查原名）。
 func (s *AuthService) allowedModelWithAliases(allowedSet map[string]struct{}, model string) bool {
+	return allowedModelWithCandidates(allowedSet, model, s.modelAliasCandidates)
+}
+
+func allowedModelWithCandidates(allowedSet map[string]struct{}, model string, candidates func(string) []string) bool {
 	if _, ok := allowedSet[strings.ToLower(model)]; ok {
 		return true
 	}
-	if s.modelAliasCandidates == nil {
+	if candidates == nil {
 		return false
 	}
-	for _, candidate := range s.modelAliasCandidates(model) {
+	for _, candidate := range candidates(model) {
 		if _, ok := allowedSet[strings.ToLower(candidate)]; ok {
 			return true
 		}

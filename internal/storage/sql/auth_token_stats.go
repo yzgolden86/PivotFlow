@@ -25,7 +25,7 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 			SUM(output_tokens) AS completion_tokens,
 			SUM(cache_read_input_tokens) AS cache_read_tokens,
 			SUM(cache_creation_input_tokens) AS cache_creation_tokens,
-			SUM(cost) AS total_cost,
+			SUM(` + standardCostSQL("") + `) AS total_cost,
 			SUM(` + effectiveCostSQL("") + `) AS effective_cost,
 			AVG(CASE WHEN is_streaming = 1 THEN first_byte_time ELSE NULL END) AS stream_avg_ttfb,
 			AVG(CASE WHEN is_streaming = 0 THEN duration ELSE NULL END) AS non_stream_avg_rt,

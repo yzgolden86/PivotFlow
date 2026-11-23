@@ -66,7 +66,7 @@ func (p *Veloera) RefreshAccount(ctx context.Context, req RefreshAccountRequest)
 		value := remaining / 1000000
 		balance = &value
 	}
-	return AccountSnapshot{Username: username, Balance: balance, Currency: "USD", Status: model.SiteAccountStatusHealthy}, nil
+	return AccountSnapshot{Username: username, UserID: profileUserID(payload.Data), Balance: balance, Currency: "USD", Status: model.SiteAccountStatusHealthy}, nil
 }
 
 func (p *Veloera) Login(ctx context.Context, req LoginRequest) (Credentials, error) {

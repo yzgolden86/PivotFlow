@@ -1,6 +1,7 @@
 package app
 
 import (
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -28,6 +29,7 @@ func (s *Server) HandleAdminDashboard(c *gin.Context) {
 
 	var (
 		stats       []model.StatsEntry
+		costSummary *model.CostSummary
 		clients     []model.ClientProtocolStats
 		trend       []model.MetricPoint
 		sites       []*model.Site
@@ -36,6 +38,7 @@ func (s *Server) HandleAdminDashboard(c *gin.Context) {
 		configs     []*model.Config
 		unread      int
 		statsErr    error
+		costErr     error
 		clientsErr  error
 		trendErr    error
 		sitesErr    error
@@ -47,6 +50,7 @@ func (s *Server) HandleAdminDashboard(c *gin.Context) {
 	)
 
 	wg.Go(func() { stats, statsErr = s.statsCache.GetStatsLite(ctx, startTime, endTime, filterPtr) })
+	wg.Go(func() { costSummary, costErr = s.statsCache.GetCostSummary(ctx, startTime, endTime, filterPtr) })
 	wg.Go(func() { clients, clientsErr = s.statsCache.GetClientProtocolStats(ctx, startTime, endTime, filterPtr) })
 	wg.Go(func() {
 		trend, trendErr = s.store.AggregateRangeWithFilter(ctx, startTime, endTime, dashboardBucket(params.Range), filterPtr)
@@ -63,6 +67,11 @@ func (s *Server) HandleAdminDashboard(c *gin.Context) {
 		_, unread, noticesErr = s.store.ListSiteAnnouncements(ctx, model.SiteAnnouncementFilter{Unread: &unreadOnly, Limit: 1})
 	})
 	wg.Wait()
+	if costErr != nil {
+		log.Printf("[ERROR] 读取费用汇总失败: %v", costErr)
+		RespondErrorMsg(c, http.StatusInternalServerError, "读取费用汇总失败")
+		return
+	}
 
 	for _, err := range []error{statsErr, clientsErr, trendErr, sitesErr, accountsErr, bindingsErr, configsErr, noticesErr} {
 		if err != nil {
@@ -73,6 +82,7 @@ func (s *Server) HandleAdminDashboard(c *gin.Context) {
 
 	snapshot := buildDashboardSnapshot(params.Range, startTime, endTime, stats, clients, trend, sites, accounts, bindings, configs)
 	snapshot.UnreadNotices = unread
+	snapshot.CostSummary = costSummary
 	RespondJSON(c, http.StatusOK, snapshot)
 }
 

@@ -27,13 +27,14 @@ func TestLogCostStatus(t *testing.T) {
 		entry *model.LogEntry
 		want  string
 	}{
-		{name: "estimated", entry: &model.LogEntry{StatusCode: http.StatusOK, Cost: 0.25, CostMultiplier: 1}, want: "estimated"},
-		{name: "usage missing", entry: &model.LogEntry{StatusCode: http.StatusOK, CostMultiplier: 1}, want: "usage_missing"},
-		{name: "unpriced model", entry: &model.LogEntry{StatusCode: http.StatusOK, Model: "unknown-model-for-status", InputTokens: 10, CostMultiplier: 1}, want: "unpriced_model"},
-		{name: "free model", entry: &model.LogEntry{StatusCode: http.StatusOK, Model: "qwen3.6-plus:free", InputTokens: 10, CostMultiplier: 1}, want: "free_model"},
-		{name: "local free", entry: &model.LogEntry{StatusCode: http.StatusOK, CostMultiplier: 0}, want: "local_free"},
-		{name: "site priced despite free local multiplier", entry: &model.LogEntry{StatusCode: http.StatusOK, Cost: 0.56, CostMultiplier: 0, CostSource: costSourceSite}, want: "estimated"},
-		{name: "failed request", entry: &model.LogEntry{StatusCode: http.StatusBadGateway, Cost: 0.25, CostMultiplier: 1}, want: ""},
+		{name: "estimated", entry: &model.LogEntry{StatusCode: http.StatusOK, Cost: 0.25, CostMultiplier: 1, CostMetadataVersion: 1, CostStatus: model.CostStatusEstimated}, want: model.CostStatusEstimated},
+		{name: "usage missing", entry: &model.LogEntry{StatusCode: http.StatusOK, CostMultiplier: 1, CostMetadataVersion: 1, CostStatus: model.CostStatusUsageMissing}, want: model.CostStatusUsageMissing},
+		{name: "unpriced model", entry: &model.LogEntry{StatusCode: http.StatusOK, Model: "unknown-model-for-status", InputTokens: 10, CostMultiplier: 1, CostMetadataVersion: 1, CostStatus: model.CostStatusUnpricedModel}, want: model.CostStatusUnpricedModel},
+		{name: "zero price", entry: &model.LogEntry{StatusCode: http.StatusOK, Model: "qwen3.6-plus:free", InputTokens: 10, CostMultiplier: 1, CostMetadataVersion: 1, CostStatus: model.CostStatusZeroPrice}, want: model.CostStatusZeroPrice},
+		{name: "local free", entry: &model.LogEntry{StatusCode: http.StatusOK, Cost: 0.25, CostMultiplier: 0, CostMetadataVersion: 1, CostStatus: model.CostStatusLocalFree}, want: model.CostStatusLocalFree},
+		{name: "site priced despite free local multiplier", entry: &model.LogEntry{StatusCode: http.StatusOK, Cost: 0.56, CostMultiplier: 0, CostSource: costSourceSite, CostMetadataVersion: 1, CostStatus: model.CostStatusEstimated}, want: model.CostStatusEstimated},
+		{name: "historical amount", entry: &model.LogEntry{StatusCode: http.StatusOK, Cost: 0.25, CostMultiplier: 1}, want: model.CostStatusHistoricalUnknown},
+		{name: "failed request", entry: &model.LogEntry{StatusCode: http.StatusBadGateway, Cost: 0.25, CostMultiplier: 1}, want: model.CostStatusNotCharged},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,6 +106,15 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 			AuthTokenID: 99,
 		},
 	} {
+		if entry.AuthTokenID == 42 {
+			applyRequestCostSnapshot(entry, resolveRequestCost("gpt-5.6", &fwResult{
+				ServiceTier:              entry.ServiceTier,
+				InputTokens:              entry.InputTokens,
+				OutputTokens:             entry.OutputTokens,
+				CacheReadInputTokens:     entry.CacheReadInputTokens,
+				CacheCreationInputTokens: entry.CacheCreationInputTokens,
+			}, entry.CostMultiplier, nil, nil))
+		}
 		if err := store.AddLog(ctx, entry); err != nil {
 			t.Fatalf("add log: %v", err)
 		}
@@ -133,6 +143,8 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	assertJSONString(t, entry, "upstream_protocol", "openai")
 	assertJSONString(t, entry, "log_source", model.LogSourceProxy)
 	assertJSONString(t, entry, "model", "gpt-5.6")
+	assertJSONString(t, entry, "cost_status", model.CostStatusLocalFree)
+	assertJSONNumber(t, entry, "cost_metadata_version", 1)
 	var upstreamWebsocket bool
 	if err := json.Unmarshal(entry["upstream_websocket"], &upstreamWebsocket); err != nil {
 		t.Fatalf("decode upstream_websocket: %v", err)

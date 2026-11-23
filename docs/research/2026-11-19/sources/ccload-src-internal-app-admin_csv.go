@@ -1,0 +1,1669 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"encoding/csv"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"ccLoad/internal/accioauth"
+	"ccLoad/internal/anthropicauth"
+	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
+	"ccLoad/internal/codexauth"
+	"ccLoad/internal/cooldown"
+	"ccLoad/internal/cursorauth"
+	"ccLoad/internal/loomyauth"
+	"ccLoad/internal/model"
+	"ccLoad/internal/qoderauth"
+	"ccLoad/internal/util"
+	"ccLoad/internal/vertexauth"
+	"ccLoad/internal/xaiauth"
+	"ccLoad/internal/zaiauth"
+
+	"github.com/bytedance/sonic"
+	"github.com/gin-gonic/gin"
+)
+
+// ==================== CSV导入导出 ====================
+// 从admin.go拆分CSV功能,遵循SRP原则
+
+// parseChannelIDsQuery 解析 ids=1,2,3 形式的渠道筛选参数。
+// 空参数返回 nil（不过滤）；含非法 ID 时直接报错，避免静默导出到错误的集合。
+func parseChannelIDsQuery(raw string) (map[int64]struct{}, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	ids := make(map[int64]struct{})
+	for part := range strings.SplitSeq(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("invalid channel id: %s", part)
+		}
+		ids[id] = struct{}{}
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("ids cannot be empty")
+	}
+	return ids, nil
+}
+
+// HandleExportChannelsCSV 导出渠道为CSV
+// GET /admin/channels/export
+// ids=1,2,3 只导出指定渠道；省略时按列表筛选条件导出。
+func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
+	selectedIDs, err := parseChannelIDsQuery(c.Query("ids"))
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	cfgs, err := s.store.ListConfigs(c.Request.Context())
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	cfgs = applyChannelListFilters(
+		cfgs,
+		c,
+		s.loadChannelCooldownSnapshot(c.Request.Context()),
+		time.Now(),
+	)
+	if selectedIDs != nil {
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			_, selected := selectedIDs[cfg.ID]
+			return selected
+		})
+	}
+
+	// 批量查询所有API Keys，消除 N+1
+	allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
+	if err != nil {
+		log.Printf("[WARN] 批量查询API Keys失败: %v", err)
+		allAPIKeys = make(map[int64][]*model.APIKey) // 降级:使用空map
+	}
+
+	buf := &bytes.Buffer{}
+	// 添加 UTF-8 BOM,兼容 Excel 等工具
+	buf.WriteString("\ufeff")
+
+	writer := csv.NewWriter(buf)
+	defer writer.Flush()
+
+	header := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_detected_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "api_key_model_scope_auto", "urls", "priority", "rpm_limit", "max_concurrency", "model_entries_json", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "oauth_quota_passthrough", "scheduled_check_interval_minutes", "scheduled_check_start_time", "same_channel_retries"}
+	if err := writer.Write(header); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	for _, cfg := range cfgs {
+		// 从预加载的map中获取API Keys,O(1)查找
+		apiKeys := allAPIKeys[cfg.ID]
+
+		// 格式化API Keys为逗号分隔字符串
+		apiKeyStrs := make([]string, 0, len(apiKeys))
+		for _, key := range apiKeys {
+			apiKeyStrs = append(apiKeyStrs, key.APIKey)
+		}
+		apiKeyStr := strings.Join(apiKeyStrs, ",")
+		apiKeyAllowedModels := make([][]string, len(apiKeys))
+		apiKeyDetectedModels := make([][]string, len(apiKeys))
+		apiKeyModelScopeEmpty := make([]bool, len(apiKeys))
+		apiKeyModelScopeAuto := make([]bool, len(apiKeys))
+		for i, key := range apiKeys {
+			apiKeyAllowedModels[i] = append([]string(nil), key.AllowedModels...)
+			apiKeyDetectedModels[i] = append([]string(nil), key.DetectedModels...)
+			apiKeyModelScopeEmpty[i] = key.ModelScopeEmpty
+			apiKeyModelScopeAuto[i] = key.ModelScopeAuto
+		}
+		apiKeyAllowedModelsJSON, err := sonic.Marshal(apiKeyAllowedModels)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize API key model scopes for channel %d: %w", cfg.ID, err))
+			return
+		}
+		apiKeyDetectedModelsJSON, err := sonic.Marshal(apiKeyDetectedModels)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize API key detected models for channel %d: %w", cfg.ID, err))
+			return
+		}
+		apiKeyModelScopeEmptyJSON, err := sonic.Marshal(apiKeyModelScopeEmpty)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize API key empty model scopes for channel %d: %w", cfg.ID, err))
+			return
+		}
+		apiKeyModelScopeAutoJSON, err := sonic.Marshal(apiKeyModelScopeAuto)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize API key model scope sources for channel %d: %w", cfg.ID, err))
+			return
+		}
+		apiKeyPriorities := make([]int, len(apiKeys))
+		for i, key := range apiKeys {
+			apiKeyPriorities[i] = key.Priority
+		}
+		apiKeyPrioritiesJSON, err := sonic.Marshal(apiKeyPriorities)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		apiKeyCostMultipliers := make([]float64, len(apiKeys))
+		for i, key := range apiKeys {
+			apiKeyCostMultipliers[i] = key.CostMultiplier
+		}
+		apiKeyCostMultipliersJSON, err := sonic.Marshal(apiKeyCostMultipliers)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize API key cost multipliers for channel %d: %w", cfg.ID, err))
+			return
+		}
+
+		// 获取Key策略(从第一个Key)
+		keyStrategy := model.KeyStrategySequential // 默认值
+		if len(apiKeys) > 0 && apiKeys[0].KeyStrategy != "" {
+			keyStrategy = apiKeys[0].KeyStrategy
+		}
+
+		modelEntries := cfg.ModelEntries
+		// ZAI 可暂时没有套餐模型，空目录导出为 []；其他渠道沿用原表示。
+		if cfg.UsesZAIOAuth() && modelEntries == nil {
+			modelEntries = []model.ModelEntry{}
+		}
+		modelEntriesJSON, err := json.Marshal(modelEntries)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize model entries for channel %d: %w", cfg.ID, err))
+			return
+		}
+		cooldownDetectionRulesJSON := ""
+		if cfg.CooldownDetectionRules != nil && !cfg.CooldownDetectionRules.IsEmpty() {
+			jsonBytes, err := sonic.Marshal(cfg.CooldownDetectionRules)
+			if err != nil {
+				RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize cooldown detection rules for channel %d: %w", cfg.ID, err))
+				return
+			}
+			cooldownDetectionRulesJSON = string(jsonBytes)
+		}
+		urlsJSON, err := sonic.Marshal(cfg.URLs)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize urls for channel %d: %w", cfg.ID, err))
+			return
+		}
+
+		// OAuth credentials and API-key channel management envelopes are both
+		// private credentials required for a faithful cross-instance migration.
+		// CSV export is an authenticated admin operation, so preserve the full
+		// payload instead of silently dropping the management account.
+		oauthCredential := cfg.OAuthCredential
+		managementCheckinEnabled, managementCheckinTime, err := exportChannelManagementCheckin(cfg)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize management checkin for channel %d: %w", cfg.ID, err))
+			return
+		}
+
+		record := []string{
+			strconv.FormatInt(cfg.ID, 10),
+			cfg.Name,
+			apiKeyStr,
+			string(apiKeyAllowedModelsJSON),
+			string(apiKeyDetectedModelsJSON),
+			string(apiKeyCostMultipliersJSON),
+			string(apiKeyPrioritiesJSON),
+			string(apiKeyModelScopeEmptyJSON),
+			string(apiKeyModelScopeAutoJSON),
+			string(urlsJSON),
+			strconv.Itoa(cfg.Priority),
+			strconv.Itoa(cfg.RPMLimit),
+			strconv.Itoa(cfg.MaxConcurrency),
+			string(modelEntriesJSON),
+			cfg.GetProtocolTransformMode(),
+			keyStrategy,
+			strconv.FormatBool(cfg.Enabled),
+			strconv.FormatBool(cfg.ScheduledCheckEnabled),
+			cfg.ScheduledCheckModel,
+			cooldownDetectionRulesJSON,
+			strconv.FormatBool(cfg.RetryOtherKeysOnFailure),
+			cfg.GetAuthType(),
+			oauthCredential,
+			managementCheckinEnabled,
+			managementCheckinTime,
+			strconv.FormatBool(cfg.Websockets),
+			strconv.FormatBool(cfg.OAuthQuotaPassthrough),
+			strconv.Itoa(cfg.ScheduledCheckIntervalMinutes),
+			cfg.ScheduledCheckStartTime,
+			strconv.Itoa(cfg.SameChannelRetries),
+		}
+		if err := writer.Write(record); err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+	}
+
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	filename := fmt.Sprintf("channels-%s.csv", time.Now().Format("20060102-150405"))
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	c.Header("Cache-Control", "no-cache")
+	c.String(http.StatusOK, buf.String())
+}
+
+/**
+ * @brief 通过 POST /admin/channels/import 校验并批量导入渠道 CSV。
+ * @param c 包含 file 表单文件的 HTTP 上下文；返回导入统计或验证、存储错误。
+ * @note 成功后失效渠道相关缓存；ZAI JWT 的落库与授权恢复串行发布。
+ */
+func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "缺少上传文件")
+		return
+	}
+
+	src, err := fileHeader.Open()
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	defer func() { _ = src.Close() }()
+
+	reader := csv.NewReader(src)
+	reader.TrimLeadingSpace = true
+
+	headerRow, err := reader.Read()
+	if err == io.EOF {
+		RespondErrorMsg(c, http.StatusBadRequest, "CSV内容为空")
+		return
+	}
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	columnIndex := buildCSVColumnIndex(headerRow)
+	required := []string{"name", "urls"}
+	for _, key := range required {
+		if _, ok := columnIndex[key]; !ok {
+			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("缺少必需列: %s", key))
+			return
+		}
+	}
+	_, hasModelEntriesJSON := columnIndex["model_entries_json"]
+	_, hasModels := columnIndex["models"]
+	_, hasRedirects := columnIndex["model_redirects"]
+	_, hasLegacyPricing := columnIndex["model_pricing"]
+	if hasModelEntriesJSON && (hasModels || hasRedirects || hasLegacyPricing) {
+		RespondErrorMsg(c, http.StatusBadRequest, "model_entries_json cannot be combined with legacy model columns")
+		return
+	}
+	if !hasModelEntriesJSON && !hasModels {
+		RespondErrorMsg(c, http.StatusBadRequest, "缺少必需列: models 或 model_entries_json")
+		return
+	}
+
+	_, hasScheduledCheckColumn := columnIndex["scheduled_check_enabled"]
+	_, hasScheduledCheckModelColumn := columnIndex["scheduled_check_model"]
+	_, hasCooldownDetectionRulesColumn := columnIndex["cooldown_detection_rules"]
+	_, hasRetryOtherKeysOnFailureColumn := columnIndex["retry_other_keys_on_failure"]
+	_, hasWebsocketsColumn := columnIndex["websockets"]
+	_, hasOAuthQuotaPassthroughColumn := columnIndex["oauth_quota_passthrough"]
+	_, hasAPIKeyAllowedModelsColumn := columnIndex["api_key_allowed_models"]
+	_, hasAPIKeyDetectedModelsColumn := columnIndex["api_key_detected_models"]
+	_, hasAPIKeyPrioritiesColumn := columnIndex["api_key_priorities"]
+	_, hasAPIKeyCostMultipliersColumn := columnIndex["api_key_cost_multipliers"]
+	_, hasAPIKeyModelScopeEmptyColumn := columnIndex["api_key_model_scope_empty"]
+	_, hasAPIKeyModelScopeAutoColumn := columnIndex["api_key_model_scope_auto"]
+	_, hasModelPricingColumn := columnIndex["model_pricing"]
+	existingScheduledCheckByName := make(map[string]bool)
+	existingScheduledCheckModelByName := make(map[string]string)
+	existingSchedulesByName := make(map[string]*model.Config)
+	_, hasInterval := columnIndex["scheduled_check_interval_minutes"]
+	_, hasStart := columnIndex["scheduled_check_start_time"]
+	_, hasSameChannelRetries := columnIndex["same_channel_retries"]
+	existingCooldownDetectionRulesByName := make(map[string]*model.CooldownDetectionRules)
+	existingRetryOtherKeysOnFailureByName := make(map[string]bool)
+	existingWebsocketsByName := make(map[string]bool)
+	existingOAuthQuotaPassthroughByName := make(map[string]bool)
+	existingAPIKeysByName := make(map[string][]*model.APIKey)
+	existingModelEntriesByName := make(map[string][]model.ModelEntry)
+	if !hasInterval || !hasStart || !hasSameChannelRetries || !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn || !hasWebsocketsColumn || !hasOAuthQuotaPassthroughColumn || !hasAPIKeyAllowedModelsColumn || !hasAPIKeyDetectedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyPrioritiesColumn || !hasAPIKeyModelScopeEmptyColumn || !hasAPIKeyModelScopeAutoColumn || !hasModelPricingColumn {
+		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		for _, cfg := range existingConfigs {
+			existingSchedulesByName[cfg.Name] = cfg
+			existingScheduledCheckByName[cfg.Name] = cfg.ScheduledCheckEnabled
+			existingScheduledCheckModelByName[cfg.Name] = cfg.ScheduledCheckModel
+			existingCooldownDetectionRulesByName[cfg.Name] = cfg.CooldownDetectionRules.Clone()
+			existingRetryOtherKeysOnFailureByName[cfg.Name] = cfg.RetryOtherKeysOnFailure
+			existingWebsocketsByName[cfg.Name] = cfg.Websockets
+			existingOAuthQuotaPassthroughByName[cfg.Name] = cfg.OAuthQuotaPassthrough
+			existingModelEntriesByName[cfg.Name] = cfg.ModelEntries
+		}
+		if !hasAPIKeyAllowedModelsColumn || !hasAPIKeyDetectedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyPrioritiesColumn || !hasAPIKeyModelScopeEmptyColumn || !hasAPIKeyModelScopeAutoColumn {
+			allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
+			if err != nil {
+				RespondError(c, http.StatusInternalServerError, err)
+				return
+			}
+			for _, cfg := range existingConfigs {
+				existingAPIKeysByName[cfg.Name] = allAPIKeys[cfg.ID]
+			}
+		}
+	}
+
+	summary := ChannelImportSummary{}
+	lineNo := 1
+
+	// 批量收集有效记录,最后一次性导入(减少数据库往返)
+	validChannels := make([]*model.ChannelWithKeys, 0, 100) // 预分配容量,减少扩容
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		lineNo++
+
+		if err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行读取失败: %v", lineNo, err))
+			summary.Skipped++
+			continue
+		}
+
+		channel, errMsg, skip := s.parseChannelImportRow(
+			record,
+			columnIndex,
+			lineNo,
+			hasScheduledCheckColumn,
+			hasScheduledCheckModelColumn,
+			hasCooldownDetectionRulesColumn,
+			hasRetryOtherKeysOnFailureColumn,
+			hasWebsocketsColumn,
+			hasOAuthQuotaPassthroughColumn,
+			hasAPIKeyAllowedModelsColumn,
+			hasAPIKeyCostMultipliersColumn,
+			hasAPIKeyPrioritiesColumn,
+			hasAPIKeyModelScopeEmptyColumn,
+			hasModelPricingColumn,
+			existingScheduledCheckByName,
+			existingScheduledCheckModelByName,
+			existingCooldownDetectionRulesByName,
+			existingRetryOtherKeysOnFailureByName,
+			existingWebsocketsByName,
+			existingOAuthQuotaPassthroughByName,
+			existingAPIKeysByName,
+			existingSchedulesByName,
+			existingModelEntriesByName,
+		)
+		if skip {
+			if errMsg != "" {
+				summary.Errors = append(summary.Errors, errMsg)
+			}
+			summary.Skipped++
+			continue
+		}
+
+		// 收集有效记录
+		validChannels = append(validChannels, channel)
+	}
+
+	// 批量导入所有有效记录(单事务 + 预编译语句)
+	if len(validChannels) > 0 {
+		if err := s.prepareCSVImportOAuthCredentials(c.Request.Context(), validChannels); err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("批量导入失败: %v", err))
+			RespondErrorWithData(c, http.StatusBadRequest, err.Error(), summary)
+			return
+		}
+		created, updated, err := s.persistCSVImport(c.Request.Context(), validChannels)
+		if err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("批量导入失败: %v", err))
+			RespondErrorWithData(c, http.StatusInternalServerError, err.Error(), summary)
+			return
+		}
+		summary.Created = created
+		summary.Updated = updated
+		for _, channel := range validChannels {
+			if channel == nil || channel.Config == nil || !channel.ChannelManagementCheckinSet {
+				continue
+			}
+			if err := s.applyImportedChannelManagementCheckin(c.Request.Context(), channel); err != nil {
+				summary.Errors = append(summary.Errors, fmt.Sprintf("渠道 %s 签到设置导入失败: %v", channel.Config.Name, err))
+			}
+		}
+
+		// 导入会更新渠道URL，立即清理 URLSelector 中失效URL状态，避免旧状态长期残留。
+		if s.urlSelector != nil {
+			seenIDs := make(map[int64]struct{}, len(validChannels))
+			for _, channel := range validChannels {
+				if channel == nil || channel.Config == nil || channel.Config.ID <= 0 {
+					continue
+				}
+				seenIDs[channel.Config.ID] = struct{}{}
+			}
+			for channelID := range seenIDs {
+				cfg, getErr := s.store.GetConfig(c.Request.Context(), channelID)
+				if getErr != nil || cfg == nil {
+					continue
+				}
+				s.urlSelector.PruneChannel(channelID, cfg.GetURLs())
+				// 同步清理数据库中已移除URL的禁用状态记录
+				s.cleanupOrphanedURLStates(c.Request.Context(), channelID, cfg.GetURLs())
+			}
+		}
+		importedIDs := make([]int64, 0, len(validChannels))
+		for _, channel := range validChannels {
+			if channel == nil || channel.Config == nil {
+				continue
+			}
+			importedIDs = append(importedIDs, channel.Config.ID)
+			if channel.Config.UsesOAuth() {
+				s.invalidateOAuthCredential(channel.Config.ID, channel.Config.GetAuthType())
+			}
+		}
+		// 导入可能覆盖已有渠道的 URL/协议配置，只重新探测被导入的渠道。
+		s.protocolCapabilities.clearChannels(importedIDs...)
+	}
+
+	summary.Processed = summary.Created + summary.Updated + summary.Skipped
+
+	if len(validChannels) > 0 {
+		s.InvalidateChannelListCache()
+		s.InvalidateAllAPIKeysCache()
+		s.invalidateCooldownCache()
+	}
+
+	RespondJSON(c, http.StatusOK, summary)
+}
+
+/**
+ * @brief 批量落库已验证的 CSV 渠道，ZAI 授权发布与普通登录使用同一写入顺序。
+ * @param ctx 导入上下文。
+ * @param channels 已验证的渠道及凭证，成功时存储会回填渠道 ID。
+ * @return 新建渠道数；失败为零。
+ * @return 更新渠道数；失败为零。
+ * @return ZAI 凭证解析或批量存储失败时返回错误。
+ * @note 仅含 ZAI JWT 的批次占用授权锁；事务失败不发布授权、不清理冷却。
+ */
+func (s *Server) persistCSVImport(ctx context.Context, channels []*model.ChannelWithKeys) (int, int, error) {
+	credentials := make(map[int]*zaiauth.Credential)
+	for i, channel := range channels {
+		if channel == nil || channel.Config == nil || !channel.Config.UsesZAIOAuth() {
+			continue
+		}
+		credential, err := zaiauth.ParseCredential([]byte(channel.Config.OAuthCredential))
+		if err != nil {
+			return 0, 0, err
+		}
+		if credential.JWTToken != "" {
+			credentials[i] = credential
+		}
+	}
+	if len(credentials) > 0 {
+		zaiChannelCreateMu.Lock()
+		defer zaiChannelCreateMu.Unlock()
+	}
+	created, updated, err := s.store.ImportChannelBatch(ctx, channels)
+	if err != nil {
+		return 0, 0, err
+	}
+	// 同名/同 ID 的后续行可覆盖前行，只发布事务最终保留的 JWT，按最终行顺序处理重复账号。
+	lastRows := make(map[int64]int)
+	for i, channel := range channels {
+		if channel != nil && channel.Config != nil {
+			lastRows[channel.Config.ID] = i
+		}
+	}
+	for i, channel := range channels {
+		if credential := credentials[i]; credential != nil && lastRows[channel.Config.ID] == i {
+			s.zaiStart.reauthorize(credential)
+		}
+	}
+	return created, updated, nil
+}
+
+func (s *Server) applyImportedChannelManagementCheckin(ctx context.Context, channel *model.ChannelWithKeys) error {
+	if channel == nil || channel.Config == nil {
+		return nil
+	}
+	for {
+		cfg, err := s.store.GetConfig(ctx, channel.Config.ID)
+		if err != nil {
+			return err
+		}
+		if cfg == nil || cfg.GetAuthType() != model.AuthTypeAPIKey {
+			return nil
+		}
+		if strings.TrimSpace(cfg.OAuthCredential) == "" {
+			if channel.ChannelManagementCheckinEnabled || channel.ChannelManagementCheckinTime != "" {
+				return errors.New("目标渠道没有可更新的管理账号")
+			}
+			return nil
+		}
+		envelope, err := model.ParseChannelManagementEnvelope(cfg.OAuthCredential)
+		if err != nil {
+			return fmt.Errorf("管理账号无效: %w", err)
+		}
+		envelope.Settings.DailyCheckinEnabled = channel.ChannelManagementCheckinEnabled
+		envelope.Settings.DailyCheckinTime = channel.ChannelManagementCheckinTime
+		if err := envelope.Validate(); err != nil {
+			return fmt.Errorf("签到设置无效: %w", err)
+		}
+		nextRaw, err := envelope.Marshal()
+		if err != nil {
+			return err
+		}
+		updated, err := s.store.CompareAndSwapChannelManagement(ctx, cfg.ID, cfg.OAuthCredential, nextRaw)
+		if err != nil {
+			return err
+		}
+		if updated {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+}
+
+// parseChannelImportRow 解析单行 CSV 记录为渠道配置。
+// 返回三态：
+//   - skip=true,  errMsg=="": 空行,调用方仅累加 Skipped
+//   - skip=true,  errMsg!="": 解析错误,调用方追加 errors 并 Skipped++
+//   - skip=false, channel!=nil: 解析成功,调用方追加 validChannels
+func (s *Server) parseChannelImportRow(
+	record []string,
+	columnIndex map[string]int,
+	lineNo int,
+	hasScheduledCheckColumn bool,
+	hasScheduledCheckModelColumn bool,
+	hasCooldownDetectionRulesColumn bool,
+	hasRetryOtherKeysOnFailureColumn bool,
+	hasWebsocketsColumn bool,
+	hasOAuthQuotaPassthroughColumn bool,
+	hasAPIKeyAllowedModelsColumn bool,
+	hasAPIKeyCostMultipliersColumn bool,
+	hasAPIKeyPrioritiesColumn bool,
+	hasAPIKeyModelScopeEmptyColumn bool,
+	hasModelPricingColumn bool,
+	existingScheduledCheckByName map[string]bool,
+	existingScheduledCheckModelByName map[string]string,
+	existingCooldownDetectionRulesByName map[string]*model.CooldownDetectionRules,
+	existingRetryOtherKeysOnFailureByName map[string]bool,
+	existingWebsocketsByName map[string]bool,
+	existingOAuthQuotaPassthroughByName map[string]bool,
+	existingAPIKeysByName map[string][]*model.APIKey,
+	existingSchedulesByName map[string]*model.Config,
+	existingModelEntriesByName map[string][]model.ModelEntry,
+) (channel *model.ChannelWithKeys, errMsg string, skip bool) {
+	if isCSVRecordEmpty(record) {
+		return nil, "", true
+	}
+
+	fetch := func(key string) string {
+		idx, ok := columnIndex[key]
+		if !ok || idx >= len(record) {
+			return ""
+		}
+		return strings.TrimSpace(record[idx])
+	}
+
+	name := fetch("name")
+	apiKey := fetch("api_key")
+	apiKeyAllowedModelsRaw := fetch("api_key_allowed_models")
+	apiKeyDetectedModelsRaw := fetch("api_key_detected_models")
+	apiKeyCostMultipliersRaw := fetch("api_key_cost_multipliers")
+	apiKeyPrioritiesRaw := fetch("api_key_priorities")
+	apiKeyModelScopeEmptyRaw := fetch("api_key_model_scope_empty")
+	apiKeyModelScopeAutoRaw := fetch("api_key_model_scope_auto")
+	rawAuthType := fetch("auth_type")
+	oauthCredential := fetch("oauth_credential")
+	rawManagementCheckinEnabled := fetch("management_daily_checkin_enabled")
+	managementCheckinTime := fetch("management_daily_checkin_time")
+	_, managementCheckinEnabledColumn := columnIndex["management_daily_checkin_enabled"]
+	_, managementCheckinTimeColumn := columnIndex["management_daily_checkin_time"]
+	managementCheckinSet := managementCheckinEnabledColumn || managementCheckinTimeColumn
+	urlsRaw := fetch("urls")
+	modelsRaw := fetch("models")
+	modelEntriesJSONRaw := fetch("model_entries_json")
+	modelRedirectsRaw := fetch("model_redirects")
+	modelPricingRaw := fetch("model_pricing")
+	rawProtocolTransformMode := fetch("protocol_transform_mode")
+	keyStrategy := fetch("key_strategy")
+
+	authType := model.NormalizeAuthType(rawAuthType)
+	if authType == "" {
+		return nil, fmt.Sprintf("第%d行认证类型无效: %s", lineNo, rawAuthType), true
+	}
+
+	var missing []string
+	if name == "" {
+		missing = append(missing, "name")
+	}
+	if model.UsesAPIKeyCredentials(authType) && apiKey == "" {
+		missing = append(missing, "api_key")
+	}
+	if !model.UsesAPIKeyCredentials(authType) && oauthCredential == "" {
+		missing = append(missing, "oauth_credential")
+	}
+	if urlsRaw == "" {
+		missing = append(missing, "urls")
+	}
+	_, hasModelEntriesJSON := columnIndex["model_entries_json"]
+	if hasModelEntriesJSON && modelEntriesJSONRaw == "" {
+		missing = append(missing, "model_entries_json")
+	} else if !hasModelEntriesJSON && modelsRaw == "" && authType != model.AuthTypeZAIOAuth {
+		missing = append(missing, "models")
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Sprintf("第%d行缺少必填字段: %s", lineNo, strings.Join(missing, ", ")), true
+	}
+	if authType == model.AuthTypeAPIKey && oauthCredential != "" {
+		envelope, err := model.ParseChannelManagementEnvelope(oauthCredential)
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行 API Key 渠道管理账号无效: %v", lineNo, err), true
+		}
+		oauthCredential, err = envelope.Marshal()
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行 API Key 渠道管理账号无效: %v", lineNo, err), true
+		}
+	}
+	if authType == model.AuthTypeSystemOne && oauthCredential != "" {
+		return nil, fmt.Sprintf("第%d行 System One 渠道不能包含 OAuth 凭证", lineNo), true
+	}
+	if !model.UsesAPIKeyCredentials(authType) && apiKey != "" {
+		return nil, fmt.Sprintf("第%d行 OAuth 渠道不能包含 API Key", lineNo), true
+	}
+	managementCheckinEnabled := false
+	if rawManagementCheckinEnabled != "" {
+		var ok bool
+		managementCheckinEnabled, ok = parseImportEnabled(rawManagementCheckinEnabled)
+		if !ok {
+			return nil, fmt.Sprintf("第%d行 management_daily_checkin_enabled 格式错误: %s", lineNo, rawManagementCheckinEnabled), true
+		}
+	}
+	if managementCheckinTime != "" {
+		parsed, err := time.Parse("15:04", managementCheckinTime)
+		if err != nil || parsed.Format("15:04") != managementCheckinTime {
+			return nil, fmt.Sprintf("第%d行 management_daily_checkin_time 格式错误: %s", lineNo, managementCheckinTime), true
+		}
+	}
+	if managementCheckinEnabled && managementCheckinTime == "" {
+		return nil, fmt.Sprintf("第%d行 management_daily_checkin_time 不能为空", lineNo), true
+	}
+	if authType != model.AuthTypeAPIKey && (rawManagementCheckinEnabled != "" || managementCheckinTime != "") {
+		return nil, fmt.Sprintf("第%d行 OAuth 渠道不能包含管理账号设置", lineNo), true
+	}
+	if !model.UsesAPIKeyCredentials(authType) {
+		var err error
+		oauthCredential, err = normalizeCSVImportOAuthCredential(authType, oauthCredential)
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行 OAuth 凭证无效: %v", lineNo, err), true
+		}
+	}
+
+	var urls model.ChannelURLs
+	if err := sonic.Unmarshal([]byte(urlsRaw), &urls); err != nil {
+		return nil, fmt.Sprintf("第%d行 urls JSON无效: %v", lineNo, err), true
+	}
+	urls, err := validateChannelURLConfigs(urls, authType)
+	if err != nil {
+		return nil, fmt.Sprintf("第%d行URL无效: %v", lineNo, err), true
+	}
+
+	protocolTransformMode := model.NormalizeProtocolTransformMode(rawProtocolTransformMode)
+	if protocolTransformMode == "" {
+		return nil, fmt.Sprintf("第%d行 protocol_transform_mode 无效: %s", lineNo, rawProtocolTransformMode), true
+	}
+
+	// 验证Key使用策略(可选字段,默认sequential)
+	if keyStrategy == "" {
+		keyStrategy = model.KeyStrategySequential // 默认值
+	} else if !model.IsValidKeyStrategy(keyStrategy) {
+		return nil, fmt.Sprintf("第%d行Key使用策略无效: %s(仅支持sequential/round_robin)", lineNo, keyStrategy), true
+	}
+	var models []string
+	if !hasModelEntriesJSON {
+		models = parseImportModels(modelsRaw)
+		if len(models) == 0 && authType != model.AuthTypeZAIOAuth {
+			return nil, fmt.Sprintf("第%d行模型格式无效", lineNo), true
+		}
+	}
+
+	// 解析模型重定向(可选字段)
+	var modelRedirects map[string]string
+	if modelRedirectsRaw != "" && modelRedirectsRaw != "{}" {
+		if err := sonic.Unmarshal([]byte(modelRedirectsRaw), &modelRedirects); err != nil {
+			return nil, fmt.Sprintf("第%d行模型重定向格式错误: %v", lineNo, err), true
+		}
+	}
+
+	priority := 0
+	if pRaw := fetch("priority"); pRaw != "" {
+		p, err := strconv.Atoi(pRaw)
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行优先级格式错误: %v", lineNo, err), true
+		}
+		priority = p
+	}
+
+	rpmLimit := 0
+	if rpmRaw := fetch("rpm_limit"); rpmRaw != "" {
+		parsed, err := strconv.Atoi(rpmRaw)
+		if err != nil || parsed < 0 {
+			return nil, fmt.Sprintf("第%d行RPM限制格式错误: %s", lineNo, rpmRaw), true
+		}
+		rpmLimit = parsed
+	}
+
+	maxConcurrency := 0
+	if raw := fetch("max_concurrency"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			return nil, fmt.Sprintf("第%d行并发限制格式错误: %s", lineNo, raw), true
+		}
+		maxConcurrency = parsed
+	}
+
+	enabled := true
+	if eRaw := fetch("enabled"); eRaw != "" {
+		if val, ok := parseImportEnabled(eRaw); ok {
+			enabled = val
+		} else {
+			return nil, fmt.Sprintf("第%d行启用状态格式错误: %s", lineNo, eRaw), true
+		}
+	}
+
+	scheduledCheckEnabled := existingScheduledCheckByName[name]
+	if raw := fetch("scheduled_check_enabled"); raw != "" {
+		if val, ok := parseImportEnabled(raw); ok {
+			scheduledCheckEnabled = val
+		} else {
+			return nil, fmt.Sprintf("第%d行定时检测开关格式错误: %s", lineNo, raw), true
+		}
+	} else if hasScheduledCheckColumn {
+		scheduledCheckEnabled = false
+	}
+
+	interval, start := model.DefaultScheduledCheckIntervalMinutes, model.DefaultScheduledCheckStartTime
+	if existing := existingSchedulesByName[name]; existing != nil {
+		interval, start = existing.ScheduledCheckIntervalMinutes, existing.ScheduledCheckStartTime
+	}
+	if _, present := columnIndex["scheduled_check_interval_minutes"]; present {
+		parsed, err := strconv.Atoi(fetch("scheduled_check_interval_minutes"))
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行 scheduled_check_interval_minutes 必须为 1–1440 的整数分钟", lineNo), true
+		}
+		interval = parsed
+	}
+	if _, present := columnIndex["scheduled_check_start_time"]; present {
+		start = fetch("scheduled_check_start_time")
+	}
+
+	sameChannelRetries := 0
+	if existing := existingSchedulesByName[name]; existing != nil {
+		sameChannelRetries = existing.SameChannelRetries
+	}
+	if _, present := columnIndex["same_channel_retries"]; present {
+		sameChannelRetries = 0
+		if raw := fetch("same_channel_retries"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 || parsed > model.MaxSameChannelRetries {
+				return nil, fmt.Sprintf("第%d行 same_channel_retries 必须为 0–%d 的整数: %s", lineNo, model.MaxSameChannelRetries, raw), true
+			}
+			sameChannelRetries = parsed
+		}
+	}
+	if err := model.ValidateScheduledCheckSchedule(interval, start); err != nil {
+		return nil, fmt.Sprintf("第%d行: %v", lineNo, err), true
+	}
+
+	rawScheduledCheckModel := fetch("scheduled_check_model")
+	scheduledCheckModel := existingScheduledCheckModelByName[name]
+	shouldValidateScheduledCheckModel := false
+	if rawScheduledCheckModel != "" {
+		scheduledCheckModel = rawScheduledCheckModel
+		shouldValidateScheduledCheckModel = true
+	} else if hasScheduledCheckModelColumn {
+		scheduledCheckModel = ""
+	}
+
+	cooldownDetectionRules := existingCooldownDetectionRulesByName[name].Clone()
+	if raw := fetch("cooldown_detection_rules"); raw != "" {
+		var parsed model.CooldownDetectionRules
+		if err := sonic.Unmarshal([]byte(raw), &parsed); err != nil {
+			return nil, fmt.Sprintf("第%d行 cooldown_detection_rules JSON无效: %v", lineNo, err), true
+		}
+		if err := cooldown.NormalizeCooldownDetectionRules(&parsed); err != nil {
+			return nil, fmt.Sprintf("第%d行 cooldown_detection_rules 无效: %v", lineNo, err), true
+		}
+		if parsed.IsEmpty() {
+			cooldownDetectionRules = nil
+		} else {
+			cooldownDetectionRules = &parsed
+		}
+	} else if hasCooldownDetectionRulesColumn {
+		cooldownDetectionRules = nil
+	}
+
+	retryOtherKeysOnFailure := existingRetryOtherKeysOnFailureByName[name]
+	if raw := fetch("retry_other_keys_on_failure"); raw != "" {
+		val, ok := parseImportEnabled(raw)
+		if !ok {
+			return nil, fmt.Sprintf("第%d行 retry_other_keys_on_failure 格式错误: %s", lineNo, raw), true
+		}
+		retryOtherKeysOnFailure = val
+	} else if hasRetryOtherKeysOnFailureColumn {
+		retryOtherKeysOnFailure = false
+	}
+
+	oauthQuotaPassthrough := existingOAuthQuotaPassthroughByName[name]
+	if raw := fetch("oauth_quota_passthrough"); raw != "" {
+		val, ok := parseImportEnabled(raw)
+		if !ok {
+			return nil, fmt.Sprintf("第%d行 oauth_quota_passthrough 格式错误: %s", lineNo, raw), true
+		}
+		oauthQuotaPassthrough = val
+	} else if hasOAuthQuotaPassthroughColumn {
+		oauthQuotaPassthrough = false
+	}
+	websockets := existingWebsocketsByName[name]
+	if raw := fetch("websockets"); raw != "" {
+		val, ok := parseImportEnabled(raw)
+		if !ok {
+			return nil, fmt.Sprintf("第%d行 websockets 格式错误: %s", lineNo, raw), true
+		}
+		websockets = val
+	} else if hasWebsocketsColumn {
+		websockets = false
+	}
+
+	// 构建模型条目（合并models和modelRedirects）
+	modelEntries := make([]model.ModelEntry, 0, len(models))
+	if hasModelEntriesJSON {
+		if err := json.Unmarshal([]byte(modelEntriesJSONRaw), &modelEntries); err != nil {
+			return nil, fmt.Sprintf("第%d行 model_entries_json 无效: %v", lineNo, err), true
+		}
+		// null 解码成功但不是模型数组；空数组只允许尚未发放套餐的 ZAI 账号。
+		if modelEntries == nil || (len(modelEntries) == 0 && authType != model.AuthTypeZAIOAuth) {
+			return nil, fmt.Sprintf("第%d行 model_entries_json 必须是非空模型数组", lineNo), true
+		}
+	} else {
+		for _, m := range models {
+			entry := model.ModelEntry{Model: m}
+			if redirect, ok := modelRedirects[m]; ok {
+				entry.RedirectModel = redirect
+			}
+			modelEntries = append(modelEntries, entry)
+		}
+		if hasModelPricingColumn {
+			if err := applyImportedModelPricing(modelEntries, modelPricingRaw); err != nil {
+				return nil, fmt.Sprintf("第%d行 model_pricing 无效: %v", lineNo, err), true
+			}
+		} else {
+			// 旧版 CSV 没有价格列：更新已有渠道时沿用同身份模型的渠道价格。
+			modelEntries = model.CarryModelPricing(existingModelEntriesByName[name], modelEntries)
+		}
+	}
+	if normalized, err := model.ValidateModelEntries(modelEntries); err != nil {
+		return nil, fmt.Sprintf("第%d行模型条目无效: %v", lineNo, err), true
+	} else {
+		modelEntries = normalized
+	}
+	if scheduledCheckModel != "" {
+		declared := false
+		for _, entry := range modelEntries {
+			if entry.Model == scheduledCheckModel {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			if shouldValidateScheduledCheckModel {
+				return nil, fmt.Sprintf("第%d行 scheduled_check_model 无效: %s", lineNo, scheduledCheckModel), true
+			}
+			scheduledCheckModel = ""
+		}
+	}
+
+	// 构建渠道配置
+	// CSV 中的 id 只在导出实例内有意义，跨库导入必须按渠道名称匹配。
+	cfg := &model.Config{
+		Name:                          name,
+		AuthType:                      authType,
+		OAuthCredential:               oauthCredential,
+		Websockets:                    websockets,
+		OAuthQuotaPassthrough:         oauthQuotaPassthrough,
+		URLs:                          urls,
+		Priority:                      priority,
+		RPMLimit:                      rpmLimit,
+		MaxConcurrency:                maxConcurrency,
+		ModelEntries:                  modelEntries,
+		ProtocolTransformMode:         protocolTransformMode,
+		Enabled:                       enabled,
+		ScheduledCheckEnabled:         scheduledCheckEnabled,
+		ScheduledCheckModel:           scheduledCheckModel,
+		ScheduledCheckIntervalMinutes: interval,
+		ScheduledCheckStartTime:       start,
+		CooldownDetectionRules:        cooldownDetectionRules,
+		RetryOtherKeysOnFailure:       retryOtherKeysOnFailure,
+		SameChannelRetries:            sameChannelRetries,
+	}
+
+	// 解析并构建API Keys
+	apiKeyList := util.ParseAPIKeys(apiKey)
+	apiKeyAllowedModels := make([][]string, len(apiKeyList))
+	apiKeyDetectedModels := make([][]string, len(apiKeyList))
+	apiKeyModelScopeEmpty := make([]bool, len(apiKeyList))
+	_, hasAPIKeyDetectedModelsColumn := columnIndex["api_key_detected_models"]
+	if !hasAPIKeyDetectedModelsColumn {
+		submitted := make([]ChannelAPIKeyRequest, len(apiKeyList))
+		for i, key := range apiKeyList {
+			submitted[i].APIKey = key
+		}
+		preserveOmittedAPIKeyMetadata(submitted, existingAPIKeysByName[name])
+		for i := range submitted {
+			apiKeyDetectedModels[i] = submitted[i].DetectedModels
+		}
+	} else if apiKeyDetectedModelsRaw != "" {
+		if err := sonic.Unmarshal([]byte(apiKeyDetectedModelsRaw), &apiKeyDetectedModels); err != nil {
+			return nil, fmt.Sprintf("第%d行 api_key_detected_models 无效: %v", lineNo, err), true
+		}
+		if len(apiKeyDetectedModels) != len(apiKeyList) {
+			return nil, fmt.Sprintf("第%d行 api_key_detected_models 数量必须与 api_key 一致", lineNo), true
+		}
+	}
+	if !hasAPIKeyAllowedModelsColumn {
+		submitted := make([]ChannelAPIKeyRequest, len(apiKeyList))
+		for i, key := range apiKeyList {
+			submitted[i].APIKey = key
+		}
+		preserveOmittedAPIKeyMetadata(submitted, existingAPIKeysByName[name])
+		for i := range submitted {
+			apiKeyAllowedModels[i] = submitted[i].AllowedModels
+			apiKeyModelScopeEmpty[i] = submitted[i].ModelScopeEmpty
+		}
+	} else if apiKeyAllowedModelsRaw != "" {
+		if err := sonic.Unmarshal([]byte(apiKeyAllowedModelsRaw), &apiKeyAllowedModels); err != nil {
+			return nil, fmt.Sprintf("第%d行 api_key_allowed_models 无效: %v", lineNo, err), true
+		}
+		if len(apiKeyAllowedModels) != len(apiKeyList) {
+			return nil, fmt.Sprintf("第%d行 api_key_allowed_models 数量必须与 api_key 一致", lineNo), true
+		}
+	}
+	if !hasAPIKeyModelScopeEmptyColumn {
+		existing := existingAPIKeysByName[name]
+		for i := range apiKeyModelScopeEmpty {
+			if i < len(existing) && existing[i] != nil && existing[i].APIKey == apiKeyList[i] {
+				apiKeyModelScopeEmpty[i] = existing[i].ModelScopeEmpty
+			}
+		}
+	} else if apiKeyModelScopeEmptyRaw != "" {
+		if err := sonic.Unmarshal([]byte(apiKeyModelScopeEmptyRaw), &apiKeyModelScopeEmpty); err != nil {
+			return nil, fmt.Sprintf("第%d行 api_key_model_scope_empty 无效: %v", lineNo, err), true
+		}
+		if len(apiKeyModelScopeEmpty) != len(apiKeyList) {
+			return nil, fmt.Sprintf("第%d行 api_key_model_scope_empty 数量必须与 api_key 一致", lineNo), true
+		}
+	}
+	apiKeyModelScopeAuto := make([]bool, len(apiKeyList))
+	_, hasAPIKeyModelScopeAutoColumn := columnIndex["api_key_model_scope_auto"]
+	if hasAPIKeyModelScopeAutoColumn && apiKeyModelScopeAutoRaw != "" {
+		if err := sonic.Unmarshal([]byte(apiKeyModelScopeAutoRaw), &apiKeyModelScopeAuto); err != nil {
+			return nil, fmt.Sprintf("第%d行 api_key_model_scope_auto 无效: %v", lineNo, err), true
+		}
+		if len(apiKeyModelScopeAuto) != len(apiKeyList) {
+			return nil, fmt.Sprintf("第%d行 api_key_model_scope_auto 数量必须与 api_key 一致", lineNo), true
+		}
+	}
+	apiKeyCostMultipliers := make([]float64, len(apiKeyList))
+	for i := range apiKeyCostMultipliers {
+		apiKeyCostMultipliers[i] = 1
+	}
+	if !hasAPIKeyCostMultipliersColumn {
+		existing := existingAPIKeysByName[name]
+		for i := range apiKeyCostMultipliers {
+			if i < len(existing) && existing[i] != nil && existing[i].APIKey == apiKeyList[i] {
+				apiKeyCostMultipliers[i] = existing[i].CostMultiplier
+			}
+		}
+	} else if apiKeyCostMultipliersRaw != "" {
+		if err := sonic.Unmarshal([]byte(apiKeyCostMultipliersRaw), &apiKeyCostMultipliers); err != nil {
+			return nil, fmt.Sprintf("第%d行 api_key_cost_multipliers 无效: %v", lineNo, err), true
+		}
+		if len(apiKeyCostMultipliers) != len(apiKeyList) {
+			return nil, fmt.Sprintf("第%d行 api_key_cost_multipliers 数量必须与 api_key 一致", lineNo), true
+		}
+		for i, multiplier := range apiKeyCostMultipliers {
+			if math.IsNaN(multiplier) || math.IsInf(multiplier, 0) || multiplier < 0 {
+				return nil, fmt.Sprintf("第%d行 api_key_cost_multipliers[%d] 无效: %v", lineNo, i, multiplier), true
+			}
+		}
+	}
+	apiKeyPriorities := make([]int, len(apiKeyList))
+	if !hasAPIKeyPrioritiesColumn {
+		existing := existingAPIKeysByName[name]
+		for i := range apiKeyPriorities {
+			if i < len(existing) && existing[i] != nil && existing[i].APIKey == apiKeyList[i] {
+				apiKeyPriorities[i] = existing[i].Priority
+			}
+		}
+	} else if apiKeyPrioritiesRaw != "" {
+		var submittedPriorities []*int
+		if err := sonic.Unmarshal([]byte(apiKeyPrioritiesRaw), &submittedPriorities); err != nil {
+			return nil, fmt.Sprintf("第%d行 api_key_priorities 无效: %v", lineNo, err), true
+		}
+		if len(submittedPriorities) != len(apiKeyList) {
+			return nil, fmt.Sprintf("第%d行 api_key_priorities 数量必须与 api_key 一致", lineNo), true
+		}
+		for i, priority := range submittedPriorities {
+			if priority == nil || *priority < -99999 || *priority > 9999999 {
+				return nil, fmt.Sprintf("第%d行 api_key_priorities[%d] 必须为 -99999～9999999 之间的整数", lineNo, i), true
+			}
+			apiKeyPriorities[i] = *priority
+		}
+	}
+	canonicalModels := make(map[string]string, len(modelEntries))
+	for _, entry := range modelEntries {
+		canonicalModels[strings.ToLower(model.RoutingModelName(entry.Model))] = model.RoutingModelName(entry.Model)
+	}
+	apiKeys := make([]model.APIKey, len(apiKeyList))
+	submittedScopes := make([]ChannelAPIKeyRequest, len(apiKeyList))
+	for i, key := range apiKeyList {
+		allowedModels, err := normalizeAPIKeyAllowedModels(apiKeyAllowedModels[i], canonicalModels)
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行 api_key_allowed_models[%d] 无效: %v", lineNo, i, err), true
+		}
+		encodedAllowedModels, err := sonic.Marshal(allowedModels)
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行 api_key_allowed_models[%d] 无效: %v", lineNo, i, err), true
+		}
+		if len(encodedAllowedModels) > maxAPIKeyAllowedModelsJSONLength {
+			return nil, fmt.Sprintf("第%d行 api_key_allowed_models[%d] 过长（最多 %d 字节）", lineNo, i, maxAPIKeyAllowedModelsJSONLength), true
+		}
+		detectedModels := normalizeDetectedModels(apiKeyDetectedModels[i])
+		encodedDetectedModels, err := sonic.Marshal(detectedModels)
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行 api_key_detected_models[%d] 无效: %v", lineNo, i, err), true
+		}
+		if len(encodedDetectedModels) > maxAPIKeyAllowedModelsJSONLength {
+			return nil, fmt.Sprintf("第%d行 api_key_detected_models[%d] 过长（最多 %d 字节）", lineNo, i, maxAPIKeyAllowedModelsJSONLength), true
+		}
+		if apiKeyModelScopeEmpty[i] && len(allowedModels) != 0 {
+			return nil, fmt.Sprintf("第%d行 api_key_model_scope_empty[%d] 要求 allowed_models 为空", lineNo, i), true
+		}
+		submittedScopes[i] = ChannelAPIKeyRequest{
+			APIKey: key, AllowedModels: allowedModels, DetectedModels: detectedModels,
+			ModelScopeEmpty: apiKeyModelScopeEmpty[i], ModelScopeAuto: apiKeyModelScopeAuto[i],
+			allowedModelsSet:  hasAPIKeyAllowedModelsColumn || hasAPIKeyModelScopeEmptyColumn,
+			detectedModelsSet: hasAPIKeyDetectedModelsColumn, modelScopeAutoSet: hasAPIKeyModelScopeAutoColumn,
+		}
+		apiKeys[i] = model.APIKey{
+			KeyIndex:        i,
+			APIKey:          key,
+			AllowedModels:   allowedModels,
+			DetectedModels:  detectedModels,
+			ModelScopeEmpty: apiKeyModelScopeEmpty[i],
+			Disabled:        apiKeyModelScopeEmpty[i],
+			KeyStrategy:     keyStrategy,
+			CostMultiplier:  apiKeyCostMultipliers[i],
+			Priority:        apiKeyPriorities[i],
+		}
+	}
+
+	preserveOmittedAPIKeyMetadata(submittedScopes, existingAPIKeysByName[name])
+	for i := range apiKeys {
+		apiKeys[i].ModelScopeAuto = submittedScopes[i].ModelScopeAuto
+	}
+
+	return &model.ChannelWithKeys{
+		Config:                          cfg,
+		APIKeys:                         apiKeys,
+		ChannelManagementCheckinSet:     managementCheckinSet,
+		ChannelManagementCheckinEnabled: managementCheckinEnabled,
+		ChannelManagementCheckinTime:    managementCheckinTime,
+	}, "", false
+}
+
+func exportChannelManagementCheckin(cfg *model.Config) (enabled, checkinTime string, err error) {
+	if cfg == nil || cfg.GetAuthType() != model.AuthTypeAPIKey || strings.TrimSpace(cfg.OAuthCredential) == "" {
+		return "", "", nil
+	}
+	envelope, err := model.ParseChannelManagementEnvelope(cfg.OAuthCredential)
+	if err != nil {
+		return "", "", err
+	}
+	return strconv.FormatBool(envelope.Settings.DailyCheckinEnabled), envelope.Settings.DailyCheckinTime, nil
+}
+
+/**
+ * @brief 校验并归一 CSV 导入的提供商私有凭证。
+ * @param authType 渠道认证类型。
+ * @param raw 待解析的私有凭证 JSON 文本。
+ * @return 规范 JSON；校验失败时为空字符串。
+ * @return 不支持的类型、无效凭证或序列化失败时返回错误；成功返回 nil。
+ * @note 仅校验格式并保留凭证内的业务状态；覆盖已有渠道前由公共导入流程验证凭证可用性。
+ */
+func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
+	switch authType {
+	case model.AuthTypeLoomySession:
+		credential, err := loomyauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeAccioOAuth:
+		credential, err := accioauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeQoderOAuth:
+		credential, err := qoderauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeCodeBuddyOAuth:
+		credential, err := codebuddyauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeCodexOAuth:
+		credential, err := codexauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeAntigravityOAuth:
+		credential, err := antigravityauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeXAIOAuth:
+		credential, err := xaiauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeAnthropicOAuth:
+		credential, err := anthropicauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeZAIOAuth:
+		credential, err := zaiauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeCursorOAuth:
+		credential, err := cursorauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeVertexOAuth:
+		credential, err := vertexauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	default:
+		return "", fmt.Errorf("unsupported auth_type %q", authType)
+	}
+}
+
+// prepareCSVImportOAuthCredentials validates every Vertex credential and every
+// credential that would overwrite an existing OAuth channel. Network I/O happens before
+// ImportChannelBatch opens its transaction; a failed or indeterminate probe
+// leaves the complete batch untouched.
+func (s *Server) prepareCSVImportOAuthCredentials(
+	ctx context.Context,
+	channels []*model.ChannelWithKeys,
+) error {
+	hasOAuth := false
+	for _, channel := range channels {
+		if channel != nil && channel.Config != nil && channel.Config.UsesOAuth() {
+			hasOAuth = true
+			break
+		}
+	}
+	if !hasOAuth {
+		return nil
+	}
+
+	existingConfigs, err := s.store.ListConfigs(ctx)
+	if err != nil {
+		return fmt.Errorf("query existing channels before OAuth validation: %w", err)
+	}
+	existingByName := make(map[string]*model.Config, len(existingConfigs))
+	for _, cfg := range existingConfigs {
+		if cfg != nil {
+			existingByName[cfg.Name] = cfg
+		}
+	}
+
+	for _, channel := range channels {
+		if channel == nil || channel.Config == nil || !channel.Config.UsesOAuth() {
+			continue
+		}
+		imported := channel.Config
+		existing := existingByName[imported.Name]
+		if existing == nil {
+			if !imported.UsesVertexOAuth() {
+				continue
+			}
+			existing = imported
+		} else if existing.GetAuthType() != imported.GetAuthType() {
+			continue
+		}
+		credential, err := s.validateCSVImportOAuthCredential(ctx, existing, imported)
+		if err != nil {
+			return fmt.Errorf("validate imported OAuth credential for channel %s: %w", imported.Name, err)
+		}
+		imported.OAuthCredential = credential
+	}
+	return nil
+}
+
+/**
+ * @brief 在 CSV 覆盖渠道前验证导入凭证可用性，避免失效凭证替换现有配置。
+ * @param ctx 导入请求上下文，取消时停止上游校验。
+ * @param existing 已有渠道，提供校验所需的代理策略与原凭证；首次验证 Vertex 时为导入配置。
+ * @param imported 待导入的渠道及已通过格式校验的凭证。
+ * @return 验证或刷新后的凭证 JSON；失败时为空字符串。
+ * @return 凭证无效、上游校验失败、提供商不支持或序列化失败时返回错误；成功返回 nil。
+ * @note 可能请求上游或刷新令牌，但不写本地渠道；调用方须在批量写入事务前完成校验。
+ */
+func (s *Server) validateCSVImportOAuthCredential(
+	ctx context.Context,
+	existing *model.Config,
+	imported *model.Config,
+) (string, error) {
+	client := s.getClientForChannel(existing)
+	switch imported.GetAuthType() {
+	case model.AuthTypeLoomySession:
+		credential, err := loomyauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		service, err := s.loomyClient(existing)
+		if err != nil {
+			return "", err
+		}
+		if _, err := service.FetchModels(ctx, credential.Session); err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeAccioOAuth:
+		credential, err := accioauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		current, err := accioauth.ParseCredential([]byte(existing.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		if !accioIdentityMatches(current, credential) {
+			return "", errors.New("accio imported account does not match existing channel")
+		}
+		service := *s.accioService
+		service.Client = client
+		credential, err = validateAccioImport(ctx, &service, credential)
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeQoderOAuth:
+		credential, err := qoderauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		current, err := qoderauth.ParseCredential([]byte(existing.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		if !qoderIdentityMatches(current, credential) {
+			return "", errors.New("qoder imported account does not match existing channel")
+		}
+		service := *s.qoderService
+		service.Client = client
+		credential, err = service.CompleteIdentity(ctx, credential)
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeCodeBuddyOAuth:
+		credential, err := codebuddyauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		current, err := codebuddyauth.ParseCredential([]byte(existing.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		if !codeBuddyIdentityMatches(current, credential) {
+			return "", errors.New("CodeBuddy imported account does not match existing channel")
+		}
+		if credential.RefreshToken != "" {
+			service := *s.codeBuddyService
+			service.Client = client
+			credential, err = service.Refresh(ctx, credential)
+			if err != nil {
+				return "", err
+			}
+		} else if credential.AccessToken != current.AccessToken {
+			return "", errors.New("cannot validate replacement CodeBuddy token without refresh_token")
+		}
+		return credential.JSON()
+	case model.AuthTypeCodexOAuth:
+		credential, err := codexauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		service := s.codexService
+		if service == nil {
+			service = codexauth.NewService(client)
+		} else {
+			clone := *service
+			clone.Client = client
+			service = &clone
+		}
+		completed, err := completeImportedCodexCredential(ctx, service, credential, s.store)
+		if err != nil {
+			return "", err
+		}
+		return completed.JSON()
+
+	case model.AuthTypeAntigravityOAuth:
+		credential, err := antigravityauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		service := s.antigravityService
+		if service == nil {
+			service = antigravityauth.NewService(client)
+		} else {
+			clone := *service
+			clone.Client = client
+			service = &clone
+		}
+		completed, err := service.CompleteCredential(ctx, credential)
+		if err != nil {
+			return "", err
+		}
+		return completed.JSON()
+
+	case model.AuthTypeXAIOAuth:
+		credential, err := xaiauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		baseURL := xaiauth.CLIBaseURL
+		if urls := imported.GetURLs(); len(urls) > 0 {
+			baseURL = urls[0]
+		}
+		completed, err := completeXAICredential(ctx, xaiauth.NewService(client), client, credential, baseURL)
+		if err != nil {
+			return "", err
+		}
+		return completed.JSON()
+
+	case model.AuthTypeAnthropicOAuth:
+		credential, err := anthropicauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		service := s.anthropicService
+		if service == nil {
+			service = anthropicauth.NewService(client)
+		} else {
+			clone := *service
+			clone.Client = client
+			service = &clone
+		}
+		refreshed := false
+		needsRefresh, err := credential.NeedsRefresh(time.Now(), anthropicauth.CredentialRefreshLead)
+		if err != nil {
+			return "", err
+		}
+		if needsRefresh {
+			credential, err = refreshCSVImportAnthropicCredential(ctx, service, credential)
+			if err != nil {
+				return "", err
+			}
+			refreshed = true
+		}
+		baseURL := anthropicauth.DefaultUpstreamURL
+		if urls := imported.GetURLs(); len(urls) > 0 {
+			baseURL = urls[0]
+		}
+		_, _, probeErr := requestAnthropicUsage(ctx, client, credential, baseURL)
+		if probeErr != nil && !refreshed && oauthUsageCredentialRejected(probeErr) {
+			credential, err = refreshCSVImportAnthropicCredential(ctx, service, credential)
+			if err != nil {
+				return "", err
+			}
+			_, _, probeErr = requestAnthropicUsage(ctx, client, credential, baseURL)
+		}
+		if probeErr != nil {
+			return "", probeErr
+		}
+		return credential.JSON()
+
+	case model.AuthTypeZAIOAuth:
+		return s.validateImportedZAICredential(ctx, existing, imported.OAuthCredential)
+
+	case model.AuthTypeCursorOAuth:
+		credential, err := cursorauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		service := s.cursorUsageService(existing)
+		if _, err := requestCursorUsage(ctx, service, credential.AccessToken); err != nil {
+			if credential.APIKey == "" {
+				return "", err
+			}
+			pair, exchangeErr := service.ExchangeAPIKey(ctx, credential.APIKey)
+			if exchangeErr != nil {
+				return "", exchangeErr
+			}
+			credential, exchangeErr = credential.MergeRefresh(&cursorauth.Credential{
+				AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken,
+				LastRefresh: time.Now().UTC().Format(time.RFC3339),
+			})
+			if exchangeErr != nil {
+				return "", exchangeErr
+			}
+			if _, probeErr := requestCursorUsage(ctx, service, credential.AccessToken); probeErr != nil {
+				return "", probeErr
+			}
+		}
+		return credential.JSON()
+
+	case model.AuthTypeVertexOAuth:
+		credential, err := vertexauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		if _, err := credential.MintAccessToken(ctx, client, time.Now()); err != nil {
+			return "", err
+		}
+		return credential.JSON()
+
+	default:
+		return "", fmt.Errorf("unsupported auth_type %q", imported.GetAuthType())
+	}
+}
+
+func refreshCSVImportAnthropicCredential(
+	ctx context.Context,
+	service *anthropicauth.Service,
+	credential *anthropicauth.Credential,
+) (*anthropicauth.Credential, error) {
+	refreshed, err := service.Refresh(ctx, credential.RefreshToken)
+	if err != nil {
+		return nil, err
+	}
+	return credential.MergeRefresh(refreshed)
+}
+
+func oauthUsageCredentialRejected(err error) bool {
+	var statusErr *oauthUsageHTTPStatusError
+	return errors.As(err, &statusErr) &&
+		(statusErr.statusCode == http.StatusUnauthorized || statusErr.statusCode == http.StatusForbidden)
+}
+
+// ==================== CSV辅助函数 ====================
+
+// buildCSVColumnIndex 构建CSV列索引映射
+func buildCSVColumnIndex(header []string) map[string]int {
+	index := make(map[string]int, len(header))
+	for i, col := range header {
+		norm := normalizeCSVHeader(col)
+		if norm == "" {
+			continue
+		}
+		index[norm] = i
+	}
+	return index
+}
+
+// applyImportedModelPricing 解析 model_pricing 列并写入对应模型条目；键必须是本行 models 中的模型。
+func applyImportedModelPricing(entries []model.ModelEntry, raw string) error {
+	if raw == "" || raw == "{}" {
+		return nil
+	}
+	var byModel map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &byModel); err != nil {
+		return fmt.Errorf("JSON 无效: %w", err)
+	}
+	indexByModel := make(map[string]int, len(entries))
+	for i, entry := range entries {
+		indexByModel[entry.Model] = i
+	}
+	for modelName, rawPricing := range byModel {
+		index, ok := indexByModel[modelName]
+		if !ok {
+			return fmt.Errorf("模型 %q 不在 models 中", modelName)
+		}
+		decoder := json.NewDecoder(bytes.NewReader(rawPricing))
+		decoder.DisallowUnknownFields()
+		var pricing util.CustomModelPrice
+		if err := decoder.Decode(&pricing); err != nil {
+			return fmt.Errorf("模型 %q: %w", modelName, err)
+		}
+		entry := entries[index]
+		entry.Pricing = &pricing
+		if err := entry.Validate(); err != nil {
+			return fmt.Errorf("模型 %q: %w", modelName, err)
+		}
+		entries[index] = entry
+	}
+	return nil
+}
+
+// normalizeCSVHeader 规范化CSV列名
+func normalizeCSVHeader(name string) string {
+	trimmed := strings.TrimSpace(name)
+	trimmed = strings.TrimPrefix(trimmed, "\ufeff")
+	lower := strings.ToLower(trimmed)
+	switch lower {
+	case "apikey", "api-key", "api key":
+		return "api_key"
+	case "model", "model_list", "model(s)":
+		return "models"
+	case "model_redirect", "model-redirects", "modelredirects", "redirects":
+		return "model_redirects"
+	case "key_strategy", "key-strategy", "keystrategy", "策略", "使用策略":
+		return "key_strategy"
+	case "rpm-limit", "rpmlimit", "rpm limit":
+		return "rpm_limit"
+	case "max-concurrency", "maxconcurrency", "max concurrency", "concurrency", "concurrency_limit", "concurrency-limit":
+		return "max_concurrency"
+	case "scheduled-check-enabled", "scheduledcheckenabled", "scheduled check enabled":
+		return "scheduled_check_enabled"
+	case "scheduled-check-model", "scheduledcheckmodel", "scheduled check model":
+		return "scheduled_check_model"
+	case "scheduled-check-interval-minutes", "scheduledcheckintervalminutes", "scheduled check interval minutes":
+		return "scheduled_check_interval_minutes"
+	case "scheduled-check-start-time", "scheduledcheckstarttime", "scheduled check start time":
+		return "scheduled_check_start_time"
+	case "management-daily-checkin-enabled", "managementdailycheckinenabled", "management daily checkin enabled":
+		return "management_daily_checkin_enabled"
+	case "management-daily-checkin-time", "managementdailycheckintime", "management daily checkin time":
+		return "management_daily_checkin_time"
+	case "status":
+		return "enabled"
+	default:
+		return lower
+	}
+}
+
+// isCSVRecordEmpty 检查CSV记录是否为空
+func isCSVRecordEmpty(record []string) bool {
+	for _, cell := range record {
+		if strings.TrimSpace(cell) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// parseImportModels 解析CSV中的模型列表
+func parseImportModels(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	splitter := func(r rune) bool {
+		switch r {
+		case ',', ';', '|', '\n', '\r', '\t':
+			return true
+		default:
+			return false
+		}
+	}
+	parts := strings.FieldsFunc(raw, splitter)
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		clean := strings.TrimSpace(p)
+		if clean == "" {
+			continue
+		}
+		if _, exists := seen[clean]; exists {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}
+
+// parseImportEnabled 解析CSV中的启用状态
+func parseImportEnabled(raw string) (bool, bool) {
+	return util.ParseBool(raw)
+}

@@ -7,46 +7,60 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/protocol"
 )
 
 // ============================================================================
 // Gemini API 特殊处理
 // ============================================================================
 
-func (s *Server) filterVisibleModelsForRequest(c *gin.Context, _ string, models []string) []string {
-	if s.authService != nil {
-		tokenHash, _ := c.Get("token_hash")
-		tokenHashStr, _ := tokenHash.(string)
-		if tokenHashStr != "" {
-			if restriction, hasRestriction := s.authService.getChannelRestriction(tokenHashStr); hasRestriction {
-				channels, err := s.GetEnabledChannelsByModel(c.Request.Context(), "*")
-				if err != nil {
-					return nil
-				}
-				modelSet := make(map[string]struct{})
-				for _, cfg := range channels {
-					if cfg == nil || !restriction.Allows(cfg.ID) {
-						continue
-					}
-					for _, modelName := range cfg.GetModels() {
-						modelSet[modelName] = struct{}{}
-					}
-				}
-				models = make([]string, 0, len(modelSet))
-				for modelName := range modelSet {
-					models = append(models, modelName)
-				}
+func (s *Server) filterVisibleModelsForRequest(c *gin.Context, clientProtocol string, channels []*model.Config) []string {
+	aliases := s.modelAliases.frozen()
+	tokenHash, _ := c.Get("token_hash")
+	tokenHashStr, _ := tokenHash.(string)
+	if s.authService != nil && tokenHashStr != "" && !s.authService.IsProtocolAllowed(tokenHashStr, clientProtocol) {
+		return nil
+	}
+	allowed := make(map[string]struct{})
+	client := protocol.Protocol(clientProtocol)
+	for _, cfg := range channels {
+		if cfg == nil {
+			continue
+		}
+		if s.authService != nil && tokenHashStr != "" {
+			if restriction, restricted := s.authService.getChannelRestriction(tokenHashStr); restricted && !restriction.Allows(cfg.ID) {
+				continue
 			}
-			// 先折叠到统一名称、再过令牌白名单：列表只展示 canonical 并去重；
-			// 白名单校验按映射组展开（见 AuthService.IsModelAllowed），组内
-			// 任一名字在白名单中即整组可见、整组可请求，列表与路由口径一致。
-			models = s.modelAliases.canonicalizeModelNames(models)
-			return s.authService.FilterAllowedModels(tokenHashStr, models)
+		}
+		// Use the same declaration/transform-family rules as the real proxy,
+		// without executing requests, cooling channels or mutating snapshots.
+		compatible := false
+		for _, entry := range cfg.URLs {
+			candidates, _ := protocolCandidatesForURL(entry, cfg.GetProtocolTransformMode(), client, channelTestRequestFamily(client), localUpstreamProtocolOrder(cfg.URLs))
+			if len(candidates) > 0 {
+				compatible = true
+				break
+			}
+		}
+		if compatible {
+			for _, name := range aliases.canonicalizeModelNames(cfg.GetModels()) {
+				allowed[name] = struct{}{}
+			}
 		}
 	}
-
-	// 无令牌上下文同样折叠：别名只是不再出现在列表里，手动输入仍可路由。
-	return s.modelAliases.canonicalizeModelNames(models)
+	visible := make([]string, 0, len(allowed))
+	for name := range allowed {
+		visible = append(visible, name)
+	}
+	if s.authService != nil && tokenHashStr != "" {
+		candidates := s.authService.modelAliasCandidates
+		if candidates != nil {
+			candidates = aliases.namesFor
+		}
+		return s.authService.filterAllowedModelsWithCandidates(tokenHashStr, visible, candidates)
+	}
+	return visible
 }
 
 // handleListGeminiModels 处理 GET /v1beta/models 请求，返回本地 Gemini 模型列表
@@ -54,12 +68,12 @@ func (s *Server) filterVisibleModelsForRequest(c *gin.Context, _ string, models 
 func (s *Server) handleListGeminiModels(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	models, err := s.getAllEnabledModels(ctx)
+	channels, err := s.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
 	}
-	models = s.filterVisibleModelsForRequest(c, "gemini", models)
+	models := s.filterVisibleModelsForRequest(c, "gemini", channels)
 	sort.Strings(models)
 
 	// 构造 Gemini API 响应格式
@@ -96,17 +110,38 @@ func detectModelsClientProtocol(c *gin.Context) string {
 	return "openai"
 }
 
+func requestedModelsClientProtocol(c *gin.Context) (string, bool) {
+	values, specified := c.Request.URL.Query()["protocol"]
+	if !specified {
+		return detectModelsClientProtocol(c), true
+	}
+	if len(values) != 1 || strings.ContainsAny(values[0], "\r\n\x00") {
+		return "", false
+	}
+	view := strings.ToLower(strings.TrimSpace(values[0]))
+	switch view {
+	case "openai", "codex", "anthropic":
+		return view, true
+	default:
+		return "", false
+	}
+}
+
 // handleListOpenAIModels 处理 GET /v1/models 请求，根据请求类型返回对应渠道的模型列表
 func (s *Server) handleListOpenAIModels(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	clientProtocol := detectModelsClientProtocol(c)
-	models, err := s.getAllEnabledModels(ctx)
+	clientProtocol, validView := requestedModelsClientProtocol(c)
+	if !validView {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "code": "invalid_protocol_view", "message": "protocol must be openai, codex or anthropic"}})
+		return
+	}
+	channels, err := s.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
 	}
-	models = s.filterVisibleModelsForRequest(c, clientProtocol, models)
+	models := s.filterVisibleModelsForRequest(c, clientProtocol, channels)
 	sort.Strings(models)
 
 	if clientProtocol == "anthropic" {

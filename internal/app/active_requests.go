@@ -19,6 +19,7 @@ const (
 
 // ActiveRequest 表示一个进行中的请求
 type ActiveRequest struct {
+	RequestID           string  `json:"request_id,omitempty"`
 	ID                  int64   `json:"id"`
 	Model               string  `json:"model"`
 	ClientIP            string  `json:"client_ip"`
@@ -40,6 +41,7 @@ type ActiveRequest struct {
 }
 
 type activeRequest struct {
+	RequestID        string
 	ID               int64
 	Model            string
 	ClientIP         string
@@ -63,6 +65,7 @@ type activeRequest struct {
 }
 
 type activeRequestAttempt struct {
+	RequestID        string
 	StartTime        time.Time
 	Model            string
 	ClientIP         string
@@ -106,6 +109,7 @@ func (m *activeRequestManager) BeginAttempt(id int64, attempt activeRequestAttem
 	}
 
 	req.Model = attempt.Model
+	req.RequestID = attempt.RequestID
 	req.ClientIP = attempt.ClientIP
 	req.StartTime = attempt.StartTime.UnixMilli()
 	req.Streaming = attempt.Streaming
@@ -235,6 +239,7 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 	result := make([]*ActiveRequest, 0, len(m.requests))
 	for _, req := range m.requests {
 		view := &ActiveRequest{
+			RequestID:         req.RequestID,
 			ID:                req.ID,
 			Model:             req.Model,
 			ClientIP:          req.ClientIP,

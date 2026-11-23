@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -8,6 +8,7 @@ import {
   Database,
   Gauge,
   RefreshCw,
+  RotateCcw,
   Route,
   Server,
   ShieldCheck,
@@ -16,6 +17,9 @@ import {
 } from 'lucide-react'
 import { getDashboard } from '../api'
 import type {
+  CostBasis,
+  CostSource,
+  CostStatus,
   DashboardBalance,
   DashboardRange,
   DashboardSnapshot,
@@ -23,7 +27,10 @@ import type {
   MetricPoint,
 } from '../types'
 import { donutSlicePath, donutSlices } from './donutGeometry'
+import RuntimeHealthSummary from './RuntimeHealthSummary'
 import { formatMoney, formatNumber, formatPercent, moneyDigits, OperationNotice, PageHeader } from './shared'
+import { analyzeCostSummary, COST_BASIS_FILTER_OPTIONS, COST_SOURCE_FILTER_OPTIONS, COST_STATUS_FILTER_OPTIONS } from '../costSemantics.ts'
+import CostSummaryPanel from './CostSummaryPanel'
 
 const rangeOptions: Array<{ value: DashboardRange; label: string }> = [
   { value: 'today', label: '今日' },
@@ -40,27 +47,47 @@ const toolTone: Record<string, string> = {
 
 export default function DashboardPage() {
   const [range, setRange] = useState<DashboardRange>('today')
+  const [costSource, setCostSource] = useState<CostSource | ''>('')
+  const [costStatus, setCostStatus] = useState<CostStatus | ''>('')
+  const [costBasis, setCostBasis] = useState<CostBasis | ''>('')
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
+  const loadSequence = useRef(0)
 
   const load = useCallback(async (selectedRange: DashboardRange, refresh = false, signal?: AbortSignal) => {
-    if (refresh) setRefreshing(true)
-    else setLoading(true)
+    const sequence = ++loadSequence.current
+    if (refresh) {
+      setRefreshing(true)
+    } else {
+      // A filter or range change starts a new cost scope. Drop the previous
+      // snapshot immediately so its KPI and distributions cannot remain under
+      // the new controls while the replacement request is in flight.
+      setLoading(true)
+      setSnapshot(null)
+    }
     setError('')
     try {
-      const data = await getDashboard({ range: selectedRange }, signal)
+      const data = await getDashboard({
+        range: selectedRange,
+        cost_source: costSource,
+        cost_status: costStatus,
+        cost_basis: costBasis,
+      }, signal)
+      if (signal?.aborted || sequence !== loadSequence.current) return
       setSnapshot(data)
     } catch (reason) {
-      if (!signal?.aborted) {
+      if (!signal?.aborted && sequence === loadSequence.current) {
         setError(reason instanceof Error ? reason.message : '概览加载失败')
       }
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (!signal?.aborted && sequence === loadSequence.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
-  }, [])
+  }, [costBasis, costSource, costStatus])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -68,8 +95,95 @@ export default function DashboardPage() {
     return () => controller.abort()
   }, [load, range])
 
-  if (loading && !snapshot) return <DashboardSkeleton />
-  if (error && !snapshot) return <DashboardError message={error} retry={() => void load(range)} />
+  const costFiltersActive = Boolean(costSource || costStatus || costBasis)
+  const overviewHeader = (
+    <PageHeader
+      icon={Gauge}
+      title="系统概览"
+      tone="green"
+      className="dashboard-header"
+      actions={<>
+        <div className="range-control" role="radiogroup" aria-label="统计时间范围">
+          {rangeOptions.map((option) => (
+            <button
+              className={range === option.value ? 'is-active' : ''}
+              type="button"
+              role="radio"
+              aria-checked={range === option.value}
+              key={option.value}
+              onClick={() => {
+                setCostSource('')
+                setCostStatus('')
+                setCostBasis('')
+                setRange(option.value)
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <button
+          className="icon-button icon-button--surface"
+          type="button"
+          onClick={() => void load(range, true)}
+          disabled={refreshing}
+          aria-label="刷新概览"
+          title="刷新概览"
+        >
+          <RefreshCw className={refreshing ? 'spin' : ''} size={17} />
+        </button>
+      </>}
+    />
+  )
+  const costFilterBar = (
+    <div className="filter-bar dashboard-cost-filter" role="group" aria-label="概览费用筛选">
+      <select
+        value={costSource}
+        onChange={(event) => setCostSource(event.target.value as CostSource | '')}
+        aria-label="概览费用估算来源"
+      >
+        {COST_SOURCE_FILTER_OPTIONS.map((item) => (
+          <option value={item.value} key={item.value || 'all'}>{item.label}</option>
+        ))}
+      </select>
+      <select
+        value={costStatus}
+        onChange={(event) => setCostStatus(event.target.value as CostStatus | '')}
+        aria-label="概览费用状态"
+      >
+        {COST_STATUS_FILTER_OPTIONS.map((item) => (
+          <option value={item.value} key={item.value || 'all'}>{item.label}</option>
+        ))}
+      </select>
+      <select
+        value={costBasis}
+        onChange={(event) => setCostBasis(event.target.value as CostBasis | '')}
+        aria-label="概览费用计费方式"
+      >
+        {COST_BASIS_FILTER_OPTIONS.map((item) => (
+          <option value={item.value} key={item.value || 'all'}>{item.label}</option>
+        ))}
+      </select>
+      {costFiltersActive && (
+        <button
+          className="icon-button icon-button--surface"
+          type="button"
+          onClick={() => {
+            setCostSource('')
+            setCostStatus('')
+            setCostBasis('')
+          }}
+          aria-label="清除概览费用筛选"
+          title="清除费用筛选"
+        >
+          <RotateCcw size={15} />
+        </button>
+      )}
+    </div>
+  )
+
+  if (loading && !snapshot) return <div className="dashboard-page">{overviewHeader}<RuntimeHealthSummary />{costFilterBar}<DashboardSkeleton /></div>
+  if (error && !snapshot) return <div className="dashboard-page">{overviewHeader}<RuntimeHealthSummary />{costFilterBar}<DashboardError message={error} retry={() => void load(range)} /></div>
   if (!snapshot) return null
 
   const successRate = snapshot.totals.requests
@@ -79,43 +193,30 @@ export default function DashboardPage() {
   // 工具卡是 2×2 摆在一起读的，四张卡必须共用一套金额精度。
   const tools = normalizedTools(snapshot.client_usage)
   const toolDigits = moneyDigits(tools.map((tool) => tool.effective_cost))
-  // 消耗额度卡的「主数值 + 标准成本」也是同一组。
-  const costDigits = moneyDigits([snapshot.totals.effective_cost, snapshot.totals.cost])
+  const costSummary = snapshot.cost_summary ?? null
+  const costMoney = [
+    costSummary?.recorded_cost_usd,
+    costSummary?.estimated_cost_usd,
+    costSummary?.partial_cost_usd,
+    costSummary?.historical_cost_usd,
+    snapshot.totals.effective_cost,
+    snapshot.totals.cost,
+  ]
+  const costDigits = moneyDigits(costMoney)
+  const costView = analyzeCostSummary(costSummary, costDigits)
+  const recordedCostText = costView.status === 'ready'
+    ? costView.amountText
+    : formatMoney(snapshot.totals.effective_cost, costDigits)
+  const costMeta = costView.status === 'ready' && costView.summary
+    ? `完整估算 ${costView.knownRequests}/${costView.summary.successful_requests} · 未对账`
+    : '费用依据未提供 · 旧汇总口径'
 
   return (
     <div className="dashboard-page">
-      <PageHeader
-      icon={Gauge}
-      title="系统概览"
-      tone="green"
-      className="dashboard-header"
-        actions={<>
-          <div className="range-control" role="radiogroup" aria-label="统计时间范围">
-            {rangeOptions.map((option) => (
-              <button
-                className={range === option.value ? 'is-active' : ''}
-                type="button"
-                role="radio"
-                aria-checked={range === option.value}
-                key={option.value}
-                onClick={() => setRange(option.value)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          <button
-            className="icon-button icon-button--surface"
-            type="button"
-            onClick={() => void load(range, true)}
-            disabled={refreshing}
-            aria-label="刷新概览"
-            title="刷新概览"
-          >
-            <RefreshCw className={refreshing ? 'spin' : ''} size={17} />
-          </button>
-        </>}
-      />
+      {overviewHeader}
+
+      <RuntimeHealthSummary />
+      {costFilterBar}
 
       {error && <OperationNotice tone="error">{error}</OperationNotice>}
 
@@ -131,9 +232,9 @@ export default function DashboardPage() {
         <MetricCard
           icon={CircleDollarSign}
           tone="green"
-          label="消耗额度"
-          value={formatMoney(snapshot.totals.effective_cost, costDigits)}
-          meta={`标准成本 ${formatMoney(snapshot.totals.cost, costDigits)}`}
+          label="已记录费用"
+          value={recordedCostText}
+          meta={costMeta}
           href="#/stats"
         />
         <MetricCard
@@ -151,9 +252,11 @@ export default function DashboardPage() {
           label="路由成功率"
           value={snapshot.totals.requests ? `${successRate.toFixed(1)}%` : <MetricEmpty />}
           meta={`${formatCompact(snapshot.totals.errors)} 次失败`}
-          href={`#/logs?range=${range}`}
+          href={`#/logs?view=history&range=${range}`}
         />
       </section>
+
+      <CostSummaryPanel summary={costSummary} />
 
       <section className="resource-strip" aria-label="资源状态">
         <ResourceStatus
@@ -188,24 +291,24 @@ export default function DashboardPage() {
 
       <section className="dashboard-grid dashboard-grid--primary">
         <div className="data-panel usage-panel">
-          <PanelHeader title="模型消耗分配" caption="按实际费用排序" icon={Cpu} />
-          <DistributionPanel items={snapshot.model_usage.slice(0, 7)} emptyLabel="暂无模型消耗" />
+          <PanelHeader title="模型已记录费用" caption="按已记录费用排序" icon={Cpu} />
+          <DistributionPanel items={snapshot.model_usage.slice(0, 7)} emptyLabel="暂无模型费用记录" />
         </div>
         <div className="data-panel trend-panel">
-          <PanelHeader title="消耗走势" caption={rangeLabel(range)} icon={ArrowUpRight} />
+          <PanelHeader title="已记录费用走势" caption={rangeLabel(range)} icon={ArrowUpRight} />
           <TrendBars points={snapshot.trend} />
         </div>
       </section>
 
       <section className="dashboard-grid dashboard-grid--secondary">
         <div className="data-panel site-panel">
-          <PanelHeader title="站点消耗分配" caption="投影渠道归属" icon={Server} />
-          <BarRanking items={snapshot.site_usage.slice(0, 6)} emptyLabel="暂无站点消耗" />
+          <PanelHeader title="站点已记录费用" caption="按投影渠道归属" icon={Server} />
+          <BarRanking items={snapshot.site_usage.slice(0, 6)} emptyLabel="暂无站点费用记录" />
         </div>
         <div className="tool-section">
           <div className="section-heading">
             <div>
-              <h2>工具消耗</h2>
+              <h2>工具已记录费用</h2>
             </div>
           </div>
           <div className="tool-grid">
@@ -369,12 +472,12 @@ function DistributionPanel({ items, emptyLabel }: { items: DashboardUsage[]; emp
     share: segment.share,
   }))
   return <div className="distribution-layout">
-    <div className="donut-chart" role="img" aria-label="模型消耗占比">
+    <div className="donut-chart" role="img" aria-label="模型已记录费用占比">
       <svg className="donut-chart-svg" viewBox="0 0 100 100" aria-hidden="true">
         <circle className="donut-chart-track" cx="50" cy="50" r="38" pathLength="100" />
         {segments.map(({ item, color, start, share }) => <path className="donut-chart-segment" d={donutSlicePath(start, share, 38)} stroke={color} key={item.key}><title>{`${item.label} · ${formatPercent(item.share)} · ${formatMoney(item.effective_cost, digits)}`}</title></path>)}
       </svg>
-      <div><strong>{formatMoney(items.reduce((sum, item) => sum + item.effective_cost, 0), digits)}</strong><span>模型消耗</span></div>
+      <div><strong>{formatMoney(items.reduce((sum, item) => sum + item.effective_cost, 0), digits)}</strong><span>已记录费用</span></div>
     </div>
     <div className="distribution-legend">{items.slice(0, 5).map((item, index) => <div key={item.key} title={`${item.label} · ${formatPercent(item.share)}`}><i style={{ background: colors[index] }} /><strong>{item.label}</strong><span>{formatPercent(item.share)}</span></div>)}</div>
   </div>
@@ -399,7 +502,7 @@ function TrendBars({ points }: { points: MetricPoint[] }) {
 
   if (!visible.length) return <EmptyData label="暂无趋势数据" />
   return (
-    <div className="trend-chart" role="img" aria-label={hasCost ? '费用消耗走势' : '请求量走势'}>
+    <div className="trend-chart" role="img" aria-label={hasCost ? '已记录费用走势' : '请求量走势'}>
       <div className="trend-axis">
         <span>{hasCost ? formatMoney(maximum, digits) : formatCompact(maximum)}</span>
         <span>{hasCost ? formatMoney(maximum / 2, digits) : formatCompact(maximum / 2)}</span>
@@ -415,14 +518,14 @@ function TrendBars({ points }: { points: MetricPoint[] }) {
               className={point.error > point.success && total > 0 ? 'trend-bar trend-bar--warning' : 'trend-bar'}
               key={`${point.ts}-${index}`}
               style={{ height: `${height}%` }}
-              title={`${formatPointTime(point.ts)} · ${hasCost ? `费用 ${formatMoney(value, digits)}` : `请求量 ${formatNumber(value)} 次`}`}
+              title={`${formatPointTime(point.ts)} · ${hasCost ? `已记录费用 ${formatMoney(value, digits)}` : `请求量 ${formatNumber(value)} 次`}`}
             />
           )
         })}
       </div>
       <div className="trend-caption">
         <span>{formatPointTime(visible[0]?.ts)}</span>
-        <span>{hasCost ? '有效费用' : '请求数量'}</span>
+        <span>{hasCost ? '已记录费用' : '请求数量'}</span>
         <span>{formatPointTime(visible.at(-1)?.ts)}</span>
       </div>
     </div>
@@ -479,7 +582,7 @@ function EmptyData({ label }: { label: string }) {
 
 function DashboardSkeleton() {
   return (
-    <div className="dashboard-page dashboard-skeleton" aria-label="正在加载概览">
+    <div className="dashboard-skeleton" aria-label="正在加载概览">
       <div className="skeleton skeleton--title" />
       <div className="kpi-grid">
         {[0, 1, 2, 3].map((item) => <div className="skeleton skeleton--metric" key={item} />)}

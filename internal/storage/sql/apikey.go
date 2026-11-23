@@ -201,71 +201,62 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 
 	nowUnix := timeToUnix(time.Now())
 
-	// 使用事务确保原子性
-	tx, err := s.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	// 使用事务确保原子性；在配置事务视图中会加入调用方已有的事务。
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		// 构建批量插入语句（每批最多100条，避免SQL语句过长）
+		const batchSize = 100
+		for i := 0; i < len(keys); i += batchSize {
+			end := i + batchSize
+			if end > len(keys) {
+				end = len(keys)
+			}
+			batch := keys[i:end]
 
-	// 构建批量插入语句（每批最多100条，避免SQL语句过长）
-	const batchSize = 100
-	for i := 0; i < len(keys); i += batchSize {
-		end := i + batchSize
-		if end > len(keys) {
-			end = len(keys)
+			// 构建 VALUES 部分
+			var sb strings.Builder
+			sb.WriteString(`INSERT INTO api_keys (channel_id, key_index, api_key, note, key_strategy,
+			                      cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at,
+			                      health_status, health_reason, health_status_code, health_checked_at,
+			                      allowed_models, model_scope_empty, cost_multiplier) VALUES `)
+
+			args := make([]any, 0, len(batch)*17)
+			for j, key := range batch {
+				if j > 0 {
+					sb.WriteString(",")
+				}
+				sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+
+				strategy := key.KeyStrategy
+				if strategy == "" {
+					strategy = model.KeyStrategySequential
+				}
+				storedAPIKey, err := s.sealSecret(key.APIKey)
+				if err != nil {
+					return fmt.Errorf("encrypt API key %d for channel %d: %w", key.KeyIndex, key.ChannelID, err)
+				}
+				allowedModels, err := marshalAPIKeyAllowedModels(key.AllowedModels)
+				if err != nil {
+					return fmt.Errorf("encode API key %d model scope: %w", key.KeyIndex, err)
+				}
+				costMultiplier := key.CostMultiplier
+				if !key.CostMultiplierSet && costMultiplier == 0 {
+					costMultiplier = 1
+				}
+				if costMultiplier < 0 || math.IsNaN(costMultiplier) || math.IsInf(costMultiplier, 0) {
+					costMultiplier = 1
+				}
+				args = append(args, key.ChannelID, key.KeyIndex, storedAPIKey, key.Note, strategy,
+					key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix,
+					key.Health.Status, key.Health.Reason, key.Health.StatusCode, key.Health.CheckedAt,
+					allowedModels, key.ModelScopeEmpty, costMultiplier)
+			}
+
+			if _, err := s.execTx(ctx, tx, sb.String(), args...); err != nil {
+				return fmt.Errorf("batch insert api keys: %w", err)
+			}
 		}
-		batch := keys[i:end]
-
-		// 构建 VALUES 部分
-		var sb strings.Builder
-		sb.WriteString(`INSERT INTO api_keys (channel_id, key_index, api_key, note, key_strategy,
-		                      cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at,
-		                      health_status, health_reason, health_status_code, health_checked_at,
-		                      allowed_models, model_scope_empty, cost_multiplier) VALUES `)
-
-		args := make([]any, 0, len(batch)*17)
-		for j, key := range batch {
-			if j > 0 {
-				sb.WriteString(",")
-			}
-			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-
-			strategy := key.KeyStrategy
-			if strategy == "" {
-				strategy = model.KeyStrategySequential
-			}
-			storedAPIKey, err := s.sealSecret(key.APIKey)
-			if err != nil {
-				return fmt.Errorf("encrypt API key %d for channel %d: %w", key.KeyIndex, key.ChannelID, err)
-			}
-			allowedModels, err := marshalAPIKeyAllowedModels(key.AllowedModels)
-			if err != nil {
-				return fmt.Errorf("encode API key %d model scope: %w", key.KeyIndex, err)
-			}
-			costMultiplier := key.CostMultiplier
-			if !key.CostMultiplierSet && costMultiplier == 0 {
-				costMultiplier = 1
-			}
-			if costMultiplier < 0 || math.IsNaN(costMultiplier) || math.IsInf(costMultiplier, 0) {
-				costMultiplier = 1
-			}
-			args = append(args, key.ChannelID, key.KeyIndex, storedAPIKey, key.Note, strategy,
-				key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix,
-				key.Health.Status, key.Health.Reason, key.Health.StatusCode, key.Health.CheckedAt,
-				allowedModels, key.ModelScopeEmpty, costMultiplier)
-		}
-
-		if _, err := s.execTx(ctx, tx, sb.String(), args...); err != nil {
-			return fmt.Errorf("batch insert api keys: %w", err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	return nil
+		return nil
+	})
 }
 
 // UpdateAPIKeysStrategy 批量更新渠道所有Key的策略（单条SQL，高效）
@@ -301,33 +292,25 @@ func (s *SQLStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, notes
 		return err
 	}
 
-	tx, err := s.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin update api key notes transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	stmt, err := s.prepareTx(ctx, tx, `
-		UPDATE api_keys
-		SET note = ?, updated_at = ?
-		WHERE channel_id = ? AND key_index = ?
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare update api key notes: %w", err)
-	}
-	defer func() { _ = stmt.Close() }()
-
-	updatedAtUnix := timeToUnix(time.Now())
-	for keyIndex, note := range notesByIndex {
-		if _, err := stmt.ExecContext(ctx, note, updatedAtUnix, channelID, keyIndex); err != nil {
-			return fmt.Errorf("update api key note index %d: %w", keyIndex, err)
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		stmt, err := s.prepareTx(ctx, tx, `
+			UPDATE api_keys
+			SET note = ?, updated_at = ?
+			WHERE channel_id = ? AND key_index = ?
+		`)
+		if err != nil {
+			return fmt.Errorf("prepare update api key notes: %w", err)
 		}
-	}
+		defer func() { _ = stmt.Close() }()
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit update api key notes: %w", err)
-	}
-	return nil
+		updatedAtUnix := timeToUnix(time.Now())
+		for keyIndex, note := range notesByIndex {
+			if _, err := stmt.ExecContext(ctx, note, updatedAtUnix, channelID, keyIndex); err != nil {
+				return fmt.Errorf("update api key note index %d: %w", keyIndex, err)
+			}
+		}
+		return nil
+	})
 }
 
 // UpdateAPIKeyMetadata updates model scope and cost multiplier for existing keys.
@@ -339,44 +322,36 @@ func (s *SQLStore) UpdateAPIKeyMetadata(ctx context.Context, channelID int64, me
 		return err
 	}
 
-	tx, err := s.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin update api key metadata transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	stmt, err := s.prepareTx(ctx, tx, `
-		UPDATE api_keys
-		SET allowed_models = ?, model_scope_empty = ?, cost_multiplier = ?, updated_at = ?
-		WHERE channel_id = ? AND key_index = ?
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare update api key metadata: %w", err)
-	}
-	defer func() { _ = stmt.Close() }()
-
-	updatedAtUnix := timeToUnix(time.Now())
-	for keyIndex, metadata := range metadataByIndex {
-		allowedModels, err := marshalAPIKeyAllowedModels(metadata.AllowedModels)
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		stmt, err := s.prepareTx(ctx, tx, `
+			UPDATE api_keys
+			SET allowed_models = ?, model_scope_empty = ?, cost_multiplier = ?, updated_at = ?
+			WHERE channel_id = ? AND key_index = ?
+		`)
 		if err != nil {
-			return fmt.Errorf("encode api key metadata index %d: %w", keyIndex, err)
+			return fmt.Errorf("prepare update api key metadata: %w", err)
 		}
-		costMultiplier := metadata.CostMultiplier
-		if !metadata.CostMultiplierSet && costMultiplier == 0 {
-			costMultiplier = 1
-		}
-		if costMultiplier < 0 || math.IsNaN(costMultiplier) || math.IsInf(costMultiplier, 0) {
-			costMultiplier = 1
-		}
-		if _, err := stmt.ExecContext(ctx, allowedModels, metadata.ModelScopeEmpty, costMultiplier, updatedAtUnix, channelID, keyIndex); err != nil {
-			return fmt.Errorf("update api key metadata index %d: %w", keyIndex, err)
-		}
-	}
+		defer func() { _ = stmt.Close() }()
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit update api key metadata: %w", err)
-	}
-	return nil
+		updatedAtUnix := timeToUnix(time.Now())
+		for keyIndex, metadata := range metadataByIndex {
+			allowedModels, err := marshalAPIKeyAllowedModels(metadata.AllowedModels)
+			if err != nil {
+				return fmt.Errorf("encode api key metadata index %d: %w", keyIndex, err)
+			}
+			costMultiplier := metadata.CostMultiplier
+			if !metadata.CostMultiplierSet && costMultiplier == 0 {
+				costMultiplier = 1
+			}
+			if costMultiplier < 0 || math.IsNaN(costMultiplier) || math.IsInf(costMultiplier, 0) {
+				costMultiplier = 1
+			}
+			if _, err := stmt.ExecContext(ctx, allowedModels, metadata.ModelScopeEmpty, costMultiplier, updatedAtUnix, channelID, keyIndex); err != nil {
+				return fmt.Errorf("update api key metadata index %d: %w", keyIndex, err)
+			}
+		}
+		return nil
+	})
 }
 
 // DeleteAPIKey 删除指定的 API Key

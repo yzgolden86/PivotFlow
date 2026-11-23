@@ -204,7 +204,11 @@ func (s *Server) logProxyResult(
 	if statusCode >= 400 && res != nil && len(res.Body) > 0 {
 		ruleID = s.evaluateCooldownRuleID(cfg, statusCode, res.Body)
 	}
-	s.AddLogAsync(buildLogEntry(logEntryParams{
+	var snapshot *requestCostSnapshot
+	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices && res != nil {
+		snapshot = s.costSnapshotForProxy(reqCtx, cfg, actualModel, res)
+	}
+	entry := buildLogEntry(logEntryParams{
 		RequestModel:     reqCtx.originalModel,
 		ActualModel:      actualModel,
 		RequestPath:      reqCtx.requestPath,
@@ -224,9 +228,12 @@ func (s *Server) logProxyResult(
 		DebugData:        reqCtx.debugData,
 		CostMultiplier:   requestCostMultiplier(reqCtx, cfg),
 		ThinkingEffort:   reqCtx.thinkingEffort,
-		SiteCost:         s.siteCostForLog(actualModel, reqCtx.originalModel, cfg, statusCode, res),
+		CostSnapshot:     snapshot,
 		RuleID:           ruleID,
-	}))
+	})
+	entry.RequestID = reqCtx.trace.id()
+	entry.AttemptNumber = reqCtx.trace.number()
+	s.AddLogAsync(entry)
 }
 
 // siteCostForLog prices a successful request with the owning site's own ratios.
@@ -240,32 +247,44 @@ func (s *Server) siteCostForLog(actualModel, requestModel string, cfg *model.Con
 	if billingModel == "" {
 		billingModel = strings.TrimSpace(requestModel)
 	}
-	// A New API fork can scope the price row to a channel name while the
-	// upstream response carries the bare model. Resolve that mapping only when
-	// it is unambiguous, otherwise use the requested model as-is and let the
-	// normal local-estimate fallback handle it.
-	if s != nil && s.sitePricing != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		if cp, ok := s.resolveChannelPricing(ctx, cfg.ID); ok {
-			if mapped, exists := cp.pricing.DetermineBillingModel(billingModel); exists {
-				billingModel = mapped
-			}
-		}
-		cancel()
-	}
 	return s.siteCostForBillingModel(billingModel, cfg.ID, res)
 }
 
 func (s *Server) siteCostForBillingModel(billingModel string, channelID int64, res *fwResult) *float64 {
-	cost, ok := s.siteSourcedCost(billingModel, channelID, res)
-	if !ok {
+	if res == nil {
 		return nil
 	}
-	return &cost
+	if !res.siteEstimateResolved {
+		estimate, ok := s.siteSourcedEstimate(billingModel, channelID, res)
+		if ok {
+			res.siteEstimate = &estimate
+		}
+		res.siteEstimateResolved = true
+	}
+	if res.siteEstimate == nil {
+		return nil
+	}
+	return &res.siteEstimate.cost
+}
+
+// costSnapshotForProxy is used after a completed attempt. The same result is
+// consumed sequentially by logging and token accounting, and the snapshot is
+// scoped to that attempt rather than a global model-price cache.
+func (s *Server) costSnapshotForProxy(reqCtx *proxyRequestContext, cfg *model.Config, actualModel string, res *fwResult) *requestCostSnapshot {
+	if res == nil || reqCtx == nil || cfg == nil {
+		return nil
+	}
+	if res.costSnapshot == nil {
+		billingModel := resolveProxyBillingModel(reqCtx.requestPath, actualModel, reqCtx.originalModel)
+		siteCost := s.siteCostForLog(actualModel, reqCtx.originalModel, cfg, res.Status, res)
+		snapshot := resolveRequestCost(billingModel, res, requestCostMultiplier(reqCtx, cfg), siteCost, res.siteEstimate)
+		res.costSnapshot = &snapshot
+	}
+	return res.costSnapshot
 }
 
 // costSourceForSiteCost labels an amount that has already been resolved. A
-// non-nil site cost carries the upstream charge; everything else is local.
+// non-nil site cost carries a site-price estimate; everything else is local.
 func costSourceForSiteCost(siteCost *float64) string {
 	if siteCost != nil {
 		return costSourceSite
@@ -386,7 +405,8 @@ type tokenStatsUpdate struct {
 	cacheCreationTokens int64
 	costUSD             float64  // 标准成本
 	costMultiplier      float64  // 渠道倍率（0=免费，<0 视为 1）
-	siteCost            *float64 // 非 nil 时已按站点价目表实扣
+	siteCost            *float64 // 非 nil 时按站点价目表估算，已包含上游组倍率。
+	costInvalid         bool
 }
 
 func (s *Server) tokenStatsWorker() {
@@ -423,7 +443,7 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 	defer cancel()
 
 	// 有效费用用于内存限额与 auth_tokens.effective_cost_usd。
-	// 站点实扣金额已包含上游价目表与用户组倍率，不能再乘本地渠道倍率。
+	// 站点估算金额已包含上游价目表与用户组倍率，不能再乘本地渠道倍率。
 	effectiveCostUSD := effectiveCost(upd.costUSD, upd.costMultiplier, costSourceForSiteCost(upd.siteCost))
 
 	// 内存缓存是费用限额的实时权威来源。DB 落盘失败不能让限额 fail-open。
@@ -431,34 +451,39 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(effectiveCostUSD))
 	}
 
+	finish := s.tokenStatsOperation.Begin()
 	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.isSuccess, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD, effectiveCostUSD); err != nil {
 		// Token 被删除是正常的并发场景（请求进行中 token 被删除），静默忽略
 		if strings.Contains(err.Error(), "token not found") {
+			finish(nil)
 			return
 		}
+		finish(err)
 		log.Printf("[ERROR] 更新令牌统计失败 hash=%s: %v", upd.tokenHash, err)
 		return
 	}
+	finish(nil)
 }
 
 // updateTokenStatsAsync 异步更新Token统计（DRY原则：消除重复代码）
 // 参数:
 //   - tokenHash: Token哈希值
 //   - costMultiplier: 渠道成本倍率（0=免费，<0 视为 1），影响 AddCostToCache 的累加口径
-//   - siteCost: 站点实扣费用；非 nil 时优先使用，缺失时回退本地估算
+//   - siteCost: 站点价目估算；非 nil 时优先使用，缺失时回退本地公开价估算
 //   - isSuccess: 请求是否成功
 //   - duration: 请求耗时
 //   - isStreaming: 是否流式请求
 //   - res: 转发结果（成功时用于提取token数量，失败时传nil）
 //   - actualModel: 实际模型名称（用于计费）
 func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64, siteCost *float64, isSuccess bool, duration float64, isStreaming bool, res *fwResult, actualModel string) {
-	if tokenHash == "" || s.tokenStatsCh == nil {
+	if tokenHash == "" {
 		return
 	}
 
 	var promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens int64
 	var costUSD float64
 	var firstByteTime float64
+	var costInvalid bool
 
 	if res != nil {
 		firstByteTime = res.FirstByteTime
@@ -468,10 +493,23 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 		completionTokens = int64(res.OutputTokens)
 		cacheReadTokens = int64(res.CacheReadInputTokens)
 		cacheCreationTokens = int64(res.CacheCreationInputTokens)
-		if siteCost != nil {
-			costUSD = *siteCost + res.ToolCostUSD
+		snapshot := res.costSnapshot
+		if snapshot == nil {
+			computed := resolveRequestCost(actualModel, res, costMultiplier, siteCost, res.siteEstimate)
+			snapshot = &computed
+			res.costSnapshot = snapshot
+		}
+		costUSD = snapshot.cost
+		costInvalid = snapshot.status == model.CostStatusInvalid
+		costMultiplier = snapshot.multiplier
+		if snapshot.source == costSourceSite {
+			if siteCost == nil {
+				// The frozen source decides accounting even if a compatibility
+				// caller no longer supplies the resolved site amount pointer.
+				siteCost = &snapshot.cost
+			}
 		} else {
-			costUSD = computeRequestCost(actualModel, res.ServiceTier, res) + res.ToolCostUSD
+			siteCost = nil
 		}
 
 		// 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
@@ -479,7 +517,6 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 			log.Printf("[WARN] 计费 cost=0 但有 token 消耗（可能定价缺失） model=%s in=%d out=%d cache_r=%d cache_5m=%d cache_1h=%d",
 				actualModel, res.InputTokens, res.OutputTokens, res.CacheReadInputTokens, res.Cache5mInputTokens, res.Cache1hInputTokens)
 		}
-		// 注意：费用缓存更新已移至 applyTokenStatsUpdate，并先于 DB 落盘以避免限额 fail-open。
 	}
 
 	upd := tokenStatsUpdate{
@@ -495,43 +532,39 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 		costUSD:             costUSD,
 		costMultiplier:      costMultiplier,
 		siteCost:            siteCost,
+		costInvalid:         costInvalid,
+	}
+	if isSuccess && s.billing != nil {
+		event := newTokenSettlement(upd)
+		if event.CostInvalid {
+			s.billing.invalidCosts.Add(1)
+		}
+		if s.authService != nil {
+			s.authService.AddCostToCache(tokenHash, util.USDToMicroUSD(event.EffectiveCostUSD))
+		}
+		s.billing.record(event)
+		return
 	}
 
 	// ✅ shutdown期间仍需保证在途请求的计费/用量落库：
 	// - 这时 worker 可能正在退出/队列可能不再被消费
 	// - 直接同步写入可避免“优雅关闭=静默丢账单”的时序窗口
-	if s.isShuttingDown.Load() {
+	if s.isShuttingDown.Load() || isSuccess {
 		s.applyTokenStatsUpdate(upd)
 		return
 	}
 
-	// 优先级策略：成功请求（计费关键）必须记录，失败请求可丢弃
-	if isSuccess {
-		// 计费数据：带超时的阻塞发送（避免计费数据丢失）
-		timer := time.NewTimer(100 * time.Millisecond)
-		defer timer.Stop()
-
-		select {
-		case s.tokenStatsCh <- upd:
-			// 成功发送
-		case <-timer.C:
-			// 超时后降级为非阻塞（避免卡住请求）
-			select {
-			case s.tokenStatsCh <- upd:
-			default:
-				count := s.tokenStatsDropCount.Add(1)
-				log.Printf("[ERROR] 计费统计队列持续饱和，成功请求统计被迫丢弃 (累计: %d)", count)
-			}
-		}
-	} else {
-		// 非计费数据：非阻塞发送，队列满时直接丢弃
-		select {
-		case s.tokenStatsCh <- upd:
-		default:
-			count := s.tokenStatsDropCount.Add(1)
-			if count%100 == 1 {
-				log.Printf("[WARN]  Token统计队列已满，失败请求统计被丢弃 (累计: %d)", count)
-			}
+	// Only non-billing failure statistics may be discarded under saturation.
+	if s.tokenStatsCh == nil {
+		return
+	}
+	select {
+	case s.tokenStatsCh <- upd:
+	default:
+		count := s.tokenStatsDropCount.Add(1)
+		s.tokenStatsLastDroppedAt.Store(time.Now().UnixMilli())
+		if count%100 == 1 {
+			log.Printf("[WARN] Token统计队列已满，失败请求统计被丢弃 (累计: %d)", count)
 		}
 	}
 }
@@ -621,7 +654,8 @@ func (s *Server) handleStreamingErrorNoRetry(
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, res.StreamDiagMsg)
 
 	// 触发冷却（保护后续请求）
-	_ = s.applyCooldownDecision(ctx, cfg, cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel))
+	decision := s.applyCooldownDecision(ctx, cfg, cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel))
+	decision.Retry = cooldown.RetryNone
 
 	// 返回"成功"：数据已发送给客户端，不触发重试
 	return &proxyResult{
@@ -629,8 +663,8 @@ func (s *Server) handleStreamingErrorNoRetry(
 		channelID:  &cfg.ID,
 		duration:   duration,
 		succeeded:  true, // 关键：标记为成功，避免触发重试逻辑
-		nextAction: cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone},
-	}, cooldown.Decision{Retry: cooldown.RetryNone, Effect: cooldown.EffectNone}
+		nextAction: decision,
+	}, decision
 }
 
 // handleProxyErrorResponse 处理代理错误响应（业务逻辑层）

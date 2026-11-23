@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Activity, FlaskConical, Gauge, Globe2, Route, Search, Settings, Users, X } from 'lucide-react'
 import { getChannels, getSiteInventory, getSiteModels } from '../api'
 import type { Channel, Site, SiteAccount, SiteAccountModel } from '../types'
+import useFocusLayer from './useFocusLayer'
 
 interface SearchEntry {
   id: string
@@ -13,6 +14,9 @@ interface SearchEntry {
   keywords?: string
 }
 
+type ResourceSource = 'inventory' | 'channels' | 'models'
+const resourceLabels: Record<ResourceSource, string> = { inventory: '站点和账号', channels: '渠道', models: '模型' }
+
 const staticEntries: SearchEntry[] = [
   { id: 'page-dashboard', label: '系统概览', detail: '余额、消耗、模型与客户端分布', href: '#/', kind: 'page', keywords: 'dashboard 首页 概览' },
   { id: 'page-sites', label: '站点管理', detail: '站点地址、平台与关联账号', href: '#/sites', kind: 'page' },
@@ -20,8 +24,10 @@ const staticEntries: SearchEntry[] = [
   { id: 'page-checkins', label: '签到中心', detail: '批量签到与结果历史', href: '#/checkins', kind: 'page' },
   { id: 'page-announcements', label: '公告中心', detail: '统一查看站点公告', href: '#/announcements', kind: 'page' },
   { id: 'page-channels', label: '渠道分发', detail: '路由候选、协议与冷却', href: '#/channels', kind: 'page' },
+  { id: 'page-connect', label: '客户端接入', detail: '接入引导、配置生成与真实网关验证', href: '#/connect', kind: 'page', keywords: '新手 onboarding Codex Claude Gemini SDK 配置' },
   { id: 'page-logs', label: '请求日志', detail: '路由结果、响应时延与费用', href: '#/logs', kind: 'page' },
   { id: 'page-stats', label: '数据面板', detail: '趋势、渠道与模型消耗总览', href: '#/stats', kind: 'page' },
+  { id: 'page-health', label: '运行健康', detail: '结算、写入、同步、清理与恢复状态', href: '#/health', kind: 'page', keywords: 'health 队列 积压 故障 恢复' },
   { id: 'page-models', label: '模型测试', detail: '站点模型清单、直测与渠道测试', href: '#/models', kind: 'page' },
 	{ id: 'page-settings', label: '系统设置', detail: '运行参数与通知', href: '#/system', kind: 'page' },
   { id: 'advanced-oauth', label: 'OAuth 凭证导入', detail: '在渠道页直接导入 Codex 与 Antigravity 凭证', href: '#/channels', kind: 'advanced', keywords: 'codex antigravity 用量' },
@@ -35,8 +41,25 @@ export default function GlobalSearch() {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
+  const [resourceErrors, setResourceErrors] = useState<Partial<Record<ResourceSource, string>>>({})
+  const [resourceLimits, setResourceLimits] = useState<Partial<Record<ResourceSource, { loaded: number; total: number }>>>({})
+  const [retry, setRetry] = useState(0)
+  const [activeId, setActiveId] = useState('')
   const [inventory, setInventory] = useState<{ sites: Site[]; accounts: SiteAccount[]; channels: Channel[]; models: SiteAccountModel[] }>({ sites: [], accounts: [], channels: [], models: [] })
-  const loaded = useRef(false)
+  const loaded = useRef(new Set<ResourceSource>())
+  const sequence = useRef(0)
+  const dialog = useRef<HTMLElement>(null)
+  const input = useRef<HTMLInputElement>(null)
+  const listId = useId()
+  const resultId = (entry: SearchEntry) => `${listId}-${encodeURIComponent(entry.id)}`
+  const close = useCallback(() => {
+    sequence.current++
+    loaded.current.clear()
+    setOpen(false)
+    setQuery('')
+    setActiveId('')
+  }, [])
+  useFocusLayer(dialog, { open, modal: true, close, initialFocus: () => input.current })
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -44,28 +67,48 @@ export default function GlobalSearch() {
         event.preventDefault()
         setOpen(true)
       }
-      if (event.key === 'Escape') setOpen(false)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
   useEffect(() => {
-    if (!open || loaded.current) return
-    loaded.current = true
-    setLoading(true)
+    if (!open) return
+    const generation = ++sequence.current
     const controller = new AbortController()
-    void Promise.all([
-      getSiteInventory(controller.signal),
-      getChannels({ limit: 1000, offset: 0 }, controller.signal),
-      getSiteModels({}, controller.signal),
-    ]).then(([siteInventory, channelResponse, modelResponse]) => {
-      setInventory({ sites: siteInventory.sites, accounts: siteInventory.accounts, channels: channelResponse.data, models: modelResponse.data })
-    }).catch(() => {
-      loaded.current = false
-    }).finally(() => setLoading(false))
-    return () => controller.abort()
-  }, [open])
+    const stale = () => controller.signal.aborted || generation !== sequence.current
+    const sources = (['inventory', 'channels', 'models'] as const).filter((source) => !loaded.current.has(source))
+    setLoading(sources.length > 0)
+    setResourceErrors((current) => Object.fromEntries(Object.entries(current).filter(([source]) => !sources.includes(source as ResourceSource))))
+    const success = (source: ResourceSource) => {
+      loaded.current.add(source)
+      setResourceErrors((current) => { const next = { ...current }; delete next[source]; return next })
+    }
+    const jobs = sources.map(async (source) => {
+      try {
+        if (source === 'inventory') {
+          const response = await getSiteInventory(controller.signal)
+          if (stale()) return
+          setInventory((current) => ({ ...current, sites: response.sites, accounts: response.accounts }))
+        } else if (source === 'channels') {
+          const response = await getChannels({ limit: 1000, offset: 0 }, controller.signal)
+          if (stale()) return
+          setInventory((current) => ({ ...current, channels: response.data }))
+          setResourceLimits((current) => ({ ...current, channels: { loaded: response.data.length, total: response.count } }))
+        } else {
+          const response = await getSiteModels({}, controller.signal)
+          if (stale()) return
+          setInventory((current) => ({ ...current, models: response.data }))
+          setResourceLimits((current) => ({ ...current, models: { loaded: response.data.length, total: response.count } }))
+        }
+        success(source)
+      } catch {
+        if (!stale()) setResourceErrors((current) => ({ ...current, [source]: `${resourceLabels[source]}资源读取失败` }))
+      }
+    })
+    void Promise.allSettled(jobs).then(() => { if (!stale()) setLoading(false) })
+    return () => { controller.abort(); if (sequence.current === generation) sequence.current++ }
+  }, [open, retry])
 
   const entries = useMemo(() => {
     const siteMap = new Map(inventory.sites.map((site) => [site.id, site]))
@@ -83,16 +126,25 @@ export default function GlobalSearch() {
     ]
   }, [inventory])
 
-  const visible = useMemo(() => {
+  const matches = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     const candidates = normalized ? entries.filter((entry) => `${entry.label} ${entry.detail} ${entry.keywords || ''}`.toLowerCase().includes(normalized)) : entries.filter((entry) => entry.kind === 'page')
-    return candidates.slice(0, 14)
+    return candidates
   }, [entries, query])
+  const visible = matches.slice(0, 14)
+  const active = visible.find((entry) => entry.id === activeId) ?? visible[0]
 
-  const close = () => { setOpen(false); setQuery('') }
+  useEffect(() => {
+    if (open && active) document.getElementById(`${listId}-${encodeURIComponent(active.id)}`)?.scrollIntoView({ block: 'nearest' })
+  }, [open, active?.id, listId])
+
+  const select = () => {
+    close()
+    requestAnimationFrame(() => document.getElementById('main-content')?.focus({ preventScroll: true }))
+  }
 
   return <>
-    <button className="global-search-trigger" type="button" onClick={() => setOpen(true)} aria-label="全局搜索" title="全局搜索"><Search size={16} /><span>全局搜索</span></button>
+    <button className="global-search-trigger" type="button" onClick={() => setOpen(true)} aria-label="全局搜索" title="全局搜索 · Ctrl/Cmd+K" aria-haspopup="dialog" aria-expanded={open}><Search size={16} /><span>全局搜索</span></button>
     {/* 必须 portal 到 body，不能留在 `.sidebar` 里。`<GlobalSearch />` 挂在 App.tsx 的
         `<aside className="sidebar">` 内部，而 `.sidebar` 有 `backdrop-filter: blur(24px)`
         —— 任何 `backdrop-filter` 不为 none 的元素都会成为后代 `position: fixed` 的包含块。
@@ -103,12 +155,28 @@ export default function GlobalSearch() {
         filter / backdrop-filter / animation 的浮层，一律 portal 到 body**。 */}
     {open && createPortal(
       <div className="search-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}>
-        <section className="search-dialog" role="dialog" aria-modal="true" aria-label="全局搜索">
-          <header><Search size={18} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索页面、站点、账号、渠道或模型" aria-label="全局搜索内容" /><button className="icon-button icon-button--surface" type="button" onClick={close} aria-label="关闭全局搜索"><X size={17} /></button></header>
+        <section ref={dialog} className="search-dialog" role="dialog" aria-modal="true" aria-label="全局搜索" tabIndex={-1}>
+          <header><Search size={18} /><input ref={input} value={query} onChange={(event) => { setQuery(event.target.value); setActiveId('') }} placeholder="搜索页面、站点、账号、渠道或模型" aria-label="全局搜索内容" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls={listId} aria-activedescendant={active ? resultId(active) : undefined}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return
+              if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && visible.length) {
+                event.preventDefault()
+                const index = active ? visible.indexOf(active) : -1
+                setActiveId(visible[(index + (event.key === 'ArrowDown' ? 1 : -1) + visible.length) % visible.length].id)
+              } else if (event.key === 'Enter' && active) {
+                event.preventDefault()
+                document.getElementById(resultId(active))?.click()
+              }
+            }} /><button className="icon-button icon-button--surface" type="button" onClick={close} aria-label="关闭全局搜索"><X size={17} /></button></header>
+          {Object.keys(resourceErrors).length > 0 && <div className="search-resource-error" role="status"><span>{Object.values(resourceErrors).join('；')}。已读取的资源和页面仍可搜索。</span><button className="text-button" type="button" onClick={() => setRetry((value) => value + 1)} disabled={loading}>重试资源</button></div>}
+          {Object.entries(resourceLimits).filter(([, limit]) => limit.loaded < limit.total).map(([source, limit]) => <p className="search-resource-limit" key={source}>{resourceLabels[source as ResourceSource]}清单已加载 {limit.loaded} / {limit.total} 条，可在<a href={source === 'models' ? '#/models' : '#/channels'} onClick={select}>对应页面</a>查看其余资源。</p>)}
           <div className="search-results">
             <div className="search-results-label"><span>{query.trim() ? '搜索结果' : '控制台页面'}</span>{loading && <span><Activity className="spin" size={12} />正在同步资源</span>}</div>
-            {!visible.length ? <div className="search-empty">没有找到匹配内容</div> : visible.map((entry) => <a href={entry.href} className="search-result" onClick={close} key={entry.id}><span className={`search-result-icon search-result-icon--${entry.kind}`}>{entryIcon(entry.kind)}</span><span><strong>{entry.label}</strong><small>{entry.detail}</small></span></a>)}
+            <div id={listId} role="listbox" aria-label="搜索候选" aria-busy={loading}>
+              {!visible.length ? <div className="search-empty">没有找到匹配内容</div> : visible.map((entry) => <a id={resultId(entry)} href={entry.href} className={`search-result${active?.id === entry.id ? ' search-result--active' : ''}`} role="option" aria-selected={active?.id === entry.id} tabIndex={-1} onPointerMove={() => setActiveId(entry.id)} onClick={select} key={entry.id}><span className={`search-result-icon search-result-icon--${entry.kind}`}>{entryIcon(entry.kind)}</span><span><strong>{entry.label}</strong><small>{entry.detail}</small></span></a>)}
+            </div>
           </div>
+          <footer className="search-result-summary" aria-live="polite"><span>{matches.length > 14 ? `找到 ${matches.length} 项，显示前 14 项；请细化搜索词。` : `${matches.length} 项候选`}</span><span>↑ ↓ 选择 · Enter 进入 · Esc 关闭</span></footer>
         </section>
       </div>,
       document.body,

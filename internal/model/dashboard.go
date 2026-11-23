@@ -8,6 +8,7 @@ type DashboardSnapshot struct {
 	EndsAt          int64                `json:"ends_at"`
 	GeneratedAt     int64                `json:"generated_at"`
 	Totals          DashboardTotals      `json:"totals"`
+	CostSummary     *CostSummary         `json:"cost_summary"`
 	Balances        []DashboardBalance   `json:"balances"`
 	ModelUsage      []DashboardUsage     `json:"model_usage"`
 	SiteUsage       []DashboardSiteUsage `json:"site_usage"`

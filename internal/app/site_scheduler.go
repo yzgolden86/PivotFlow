@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -141,44 +140,12 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 	wg.Wait()
 }
 
-func (s *siteControlService) runScheduledAnnouncementTask(ctx context.Context, sem chan struct{}, site *model.Site, localDay string) {
-	releaseGate, ok := s.acquireSiteGate(ctx, site.ID)
-	if !ok {
+func (s *siteControlService) runScheduledAnnouncementTask(ctx context.Context, _ chan struct{}, site *model.Site, localDay string) {
+	run, _, err := s.submitAnnouncementTask(ctx, site.ID, localDay)
+	if err != nil {
 		return
 	}
-	defer releaseGate()
-	select {
-	case sem <- struct{}{}:
-	case <-ctx.Done():
-		return
-	}
-	defer func() { <-sem }()
-	// The lease is what decides whether today's refresh already ran, so it has
-	// to be taken before the task is recorded. Doing it the other way round
-	// left a cancelled row on every tick for the rest of the day — see
-	// newSiteTask.
-	task := newSiteTask("announcement_refresh", site.ID, 0, 1)
-	leaseKey := fmt.Sprintf("site:%d:announcements:%s", site.ID, localDay)
-	now := time.Now().UnixMilli()
-	acquired, err := s.store.AcquireSiteTaskLease(ctx, leaseKey, task.ID, now, now+int64((26*time.Hour).Milliseconds()))
-	if err != nil || !acquired {
-		return
-	}
-	if !s.persistTask(ctx, task, leaseKey) {
-		return
-	}
-	taskCtx, stopLease := s.leaseContext(ctx, leaseKey, task.ID)
-	defer stopLease()
-	s.updateTask(taskCtx, task, model.SiteTaskStatusRunning, "", "")
-	if err := s.refreshAnnouncements(taskCtx, site.ID); err != nil {
-		if provider.ErrorCode(err) == provider.CodeUnsupported {
-			s.updateTask(taskCtx, task, model.SiteTaskStatusSuccess, "announcements", "该站点不提供公告接口")
-			return
-		}
-		s.updateTask(taskCtx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
-		return
-	}
-	s.updateTask(taskCtx, task, model.SiteTaskStatusSuccess, "announcements", "公告已刷新")
+	<-run.done
 }
 
 func dailyCheckinDue(localNow time.Time, scheduledMinute int) bool {
@@ -205,6 +172,9 @@ func checkinRetryDue(attempt *model.CheckinAttempt, now time.Time) (bool, string
 	}
 	if checkinSettled(attempt.Status) {
 		return false, "settled"
+	}
+	if attempt.Status == model.SiteTaskStatusCancelled {
+		return false, "cancelled"
 	}
 	interval, limit := siteCheckinRetryInterval, siteCheckinRetryLimit
 	if attempt.Status == provider.CheckinBrowserRequired {
@@ -236,38 +206,51 @@ func siteRefreshDue(account *model.SiteAccount, now time.Time) bool {
 	return now.UnixMilli()-account.LastRefreshAt >= (siteRefreshInterval + siteRefreshJitter(account.ID)).Milliseconds()
 }
 
-func (s *siteControlService) runScheduledAccountTask(ctx context.Context, sem chan struct{}, site *model.Site, account *model.SiteAccount, kind string) {
-	releaseGate, ok := s.acquireSiteGate(ctx, site.ID)
-	if !ok {
+func (s *siteControlService) runScheduledAccountTask(ctx context.Context, _ chan struct{}, _ *model.Site, account *model.SiteAccount, kind string) {
+	if kind != "checkin" {
+		if until, ok := s.cancelledRefreshUntil.Load(account.ID); ok {
+			if time.Now().Before(until.(time.Time)) {
+				return
+			}
+			s.cancelledRefreshUntil.Delete(account.ID)
+		}
+	}
+	run, _, err := s.submitAccountTask(ctx, account, kind, kind != "checkin", true)
+	if err != nil {
 		return
 	}
-	defer releaseGate()
-	select {
-	case sem <- struct{}{}:
-	case <-ctx.Done():
+	<-run.done
+}
+
+// A daily check-in cancelled in the queue has no provider attempt yet. Record
+// the decision without touching the upstream, so the next tick respects it.
+func (s *siteControlService) recordCancelledScheduledCheckin(account *model.SiteAccount) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	site, err := s.store.GetSite(ctx, account.SiteID)
+	if err != nil {
 		return
 	}
-	defer func() { <-sem }()
-	// Lease first, then record: a run that never starts is not a cancelled task,
-	// it is simply work that was already in flight under the same per-account
-	// key. Recording it anyway only added noise the operator could not act on.
-	task := newSiteTask(kind, site.ID, account.ID, 1)
-	leaseKey := fmt.Sprintf("site:%d:account:%d:%s", site.ID, account.ID, kind)
+	location := loadSiteLocation(account.Timezone, site.Timezone)
+	day := time.Now().In(location).Format("2006-01-02")
+	attempt, err := s.store.GetDailyCheckinAttempt(ctx, account.ID, day)
+	if err != nil || (attempt != nil && (checkinSettled(attempt.Status) || attempt.Status == model.SiteTaskStatusCancelled)) {
+		return
+	}
 	now := time.Now().UnixMilli()
-	acquired, err := s.store.AcquireSiteTaskLease(ctx, leaseKey, task.ID, now, now+siteTaskLeaseDuration.Milliseconds())
-	if err != nil || !acquired {
+	if attempt == nil {
+		run, createErr := s.store.CreateCheckinRun(ctx, &model.CheckinRun{Trigger: "schedule", LocalDay: day, Timezone: location.String(), Status: model.SiteTaskStatusCancelled, Total: 1, FinishedAt: now})
+		if createErr != nil {
+			return
+		}
+		// CreateCheckinRun deliberately inserts an unfinished run. Finalize this
+		// no-upstream cancellation so normal retention can collect it later.
+		if err := s.store.UpdateCheckinRun(ctx, run); err != nil {
+			return
+		}
+		_, _ = s.store.CreateCheckinAttempt(ctx, &model.CheckinAttempt{RunID: run.ID, SiteAccountID: account.ID, ProviderID: site.Platform, LocalDay: day, TriggerScope: "daily", Status: model.SiteTaskStatusCancelled, AttemptNo: 1, ErrorCode: "cancelled", StartedAt: now, FinishedAt: now})
 		return
 	}
-	if !s.persistTask(ctx, task, leaseKey) {
-		return
-	}
-	defer func() { _ = s.store.ReleaseSiteTaskLease(context.Background(), leaseKey, task.ID) }()
-	taskCtx, stopLease := s.leaseContext(ctx, leaseKey, task.ID)
-	defer stopLease()
-	s.updateTask(taskCtx, task, model.SiteTaskStatusRunning, "", "")
-	if kind == "checkin" {
-		s.checkinWithTrigger(taskCtx, task, account.ID, "schedule", "daily")
-		return
-	}
-	s.refreshAccountScheduled(taskCtx, task, account.ID, true)
+	attempt.Status, attempt.ErrorCode, attempt.FinishedAt = model.SiteTaskStatusCancelled, "cancelled", now
+	_ = s.store.UpdateCheckinAttempt(ctx, attempt)
 }

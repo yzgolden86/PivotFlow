@@ -10,6 +10,7 @@ import (
 
 	"github.com/yzgolden86/PivotFlow/internal/config"
 	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/monitoring"
 	"github.com/yzgolden86/PivotFlow/internal/storage"
 )
 
@@ -31,9 +32,29 @@ type LogService struct {
 	store storage.Store
 
 	// 日志队列和 Worker
-	logChan      chan *model.LogEntry
-	logWorkers   int
-	logDropCount atomic.Uint64
+	logChan            chan *model.LogEntry
+	logWorkers         int
+	logDropCount       atomic.Uint64
+	logLastDroppedAt   atomic.Int64
+	logBuffered        atomic.Int64
+	logWritten         atomic.Uint64
+	logWriteFailures   atomic.Uint64
+	logOperation       monitoring.OperationMonitor
+	traceChan          chan *model.RequestTrace
+	traceDropCount     atomic.Uint64
+	traceLastDroppedAt atomic.Int64
+	traceBuffered      atomic.Int64
+	traceWriteFailures atomic.Uint64
+	traceWritten       atomic.Uint64
+	traceOperation     monitoring.OperationMonitor
+
+	logCleanupOperation   monitoring.OperationMonitor
+	debugCleanupOperation monitoring.OperationMonitor
+	logCleanupNextAt      atomic.Int64
+	debugCleanupNextAt    atomic.Int64
+	debugCleanupMode      atomic.Int32
+	debugRetentionMinutes atomic.Int64
+	debugCleanupDeleted   atomic.Uint64
 
 	// 日志保留天数（启动时确定，修改后重启生效）
 	retentionDays int
@@ -57,6 +78,7 @@ func NewLogService(
 	return &LogService{
 		store:          store,
 		logChan:        make(chan *model.LogEntry, logBufferSize),
+		traceChan:      make(chan *model.RequestTrace, 256),
 		logWorkers:     logWorkers,
 		retentionDays:  retentionDays,
 		shutdownCh:     shutdownCh,
@@ -71,6 +93,7 @@ func NewLogService(
 
 // StartWorkers 启动日志 Worker
 func (s *LogService) StartWorkers() {
+	s.startRequestTraceWorker()
 	for i := 0; i < s.logWorkers; i++ {
 		s.wg.Add(1)
 		go s.logWorker()
@@ -97,8 +120,9 @@ func (s *LogService) logWorker() {
 						return
 					}
 					batch = append(batch, entry)
+					s.logBuffered.Add(1)
 					if len(batch) >= config.LogBatchSize {
-						s.flushLogs(batch)
+						s.flushBufferedLogs(batch)
 						batch = batch[:0]
 					}
 				default:
@@ -115,8 +139,9 @@ func (s *LogService) logWorker() {
 			}
 
 			batch = append(batch, entry)
+			s.logBuffered.Add(1)
 			if len(batch) >= config.LogBatchSize {
-				s.flushLogs(batch)
+				s.flushBufferedLogs(batch)
 				batch = batch[:0]
 				ticker.Reset(config.LogBatchTimeout)
 			}
@@ -152,9 +177,12 @@ retryLoop:
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		attempts = attempt
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		finish := s.logOperation.Begin()
 		err := s.store.BatchAddLogs(ctx, logs)
 		cancel()
+		finish(err)
 		if err == nil {
+			s.logWritten.Add(uint64(len(logs)))
 			if attempt > 1 {
 				log.Printf("[WARN] 日志批量写入重试成功 (attempt=%d/%d, batch_size=%d)", attempt, maxRetries, len(logs))
 			}
@@ -185,6 +213,7 @@ retryLoop:
 		}
 	}
 
+	s.logWriteFailures.Add(uint64(len(logs)))
 	log.Printf("[ERROR] 日志批量写入最终失败 (attempts=%d, batch_size=%d): %v", attempts, len(logs), lastErr)
 }
 
@@ -195,8 +224,13 @@ func (s *LogService) isShutdownInProgress() bool {
 // flushIfNeeded 辅助函数：当batch非空时执行flush
 func (s *LogService) flushIfNeeded(batch []*model.LogEntry) {
 	if len(batch) > 0 {
-		s.flushLogs(batch)
+		s.flushBufferedLogs(batch)
 	}
+}
+
+func (s *LogService) flushBufferedLogs(batch []*model.LogEntry) {
+	s.flushLogs(batch)
+	s.logBuffered.Add(-int64(len(batch)))
 }
 
 // ============================================================================
@@ -205,8 +239,11 @@ func (s *LogService) flushIfNeeded(batch []*model.LogEntry) {
 
 // AddLogAsync 异步添加日志
 func (s *LogService) AddLogAsync(entry *model.LogEntry) {
+	if entry == nil {
+		return
+	}
 	// shutdown时不再写入日志
-	if s.isShuttingDown.Load() {
+	if s.isShutdownInProgress() {
 		return
 	}
 
@@ -216,6 +253,7 @@ func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 	default:
 		// 队列满，丢弃日志（计数用于监控）
 		count := s.logDropCount.Add(1)
+		s.logLastDroppedAt.Store(time.Now().UnixMilli())
 		// [FIX] 降低采样频率，每10次丢弃打印一次（原来是100次）
 		// 设计原则：及早暴露问题，避免用户在黑暗中调试
 		if count%10 == 1 {
@@ -240,37 +278,48 @@ func (s *LogService) StartCleanupLoop() {
 // cleanupOldLogsLoop 日志清理后台协程（私有方法）
 func (s *LogService) cleanupOldLogsLoop() {
 	defer s.wg.Done()
+	ctx, cancel := s.cleanupLoopContext()
+	defer cancel()
 
 	logTicker := time.NewTicker(config.LogCleanupInterval)
 	defer logTicker.Stop()
+	if s.retentionDays > 0 {
+		s.logCleanupNextAt.Store(time.Now().Add(config.LogCleanupInterval).UnixMilli())
+	}
+	defer s.logCleanupNextAt.Store(0)
 
 	for {
 		select {
-		case <-logTicker.C:
+		case scheduledAt := <-logTicker.C:
 			if s.retentionDays > 0 {
-				// 使用带超时的context，避免日志清理阻塞关闭流程。
-				// [FIX] P0-4: WithTimeout 的 cancel 必须在每次循环内执行，不能在循环里 defer 到 goroutine 退出。
-				func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancel()
-
-					cutoff := time.Now().AddDate(0, 0, -s.retentionDays)
-					_ = s.store.CleanupLogsBefore(ctx, cutoff)
-				}()
+				s.logCleanupNextAt.Store(scheduledAt.Add(config.LogCleanupInterval).UnixMilli())
+				runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+				_ = s.cleanupOldLogs(runCtx) // The operation records and logs its result.
+				runCancel()
 			}
 
-		case <-s.shutdownCh:
+		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-// cleanupDebugLogsLoop 使用独立协程清理调试日志，避免阻塞普通日志维护任务。
-func (s *LogService) cleanupDebugLogsLoop() {
-	defer s.wg.Done()
+// cleanupOldLogs records the actual retention operation, including failures.
+func (s *LogService) cleanupOldLogs(ctx context.Context) error {
+	if s.retentionDays <= 0 {
+		return nil
+	}
+	finish := s.logCleanupOperation.Begin()
+	err := s.store.CleanupLogsBefore(ctx, time.Now().AddDate(0, 0, -s.retentionDays))
+	finish(err)
+	if err != nil && !monitoring.IsCancellation(err) {
+		log.Printf("[WARN] 日志及请求历史清理失败，下个周期重试: %v", err)
+	}
+	return err
+}
 
+func (s *LogService) cleanupLoopContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	go func() {
 		select {
 		case <-s.shutdownCh:
@@ -278,9 +327,20 @@ func (s *LogService) cleanupDebugLogsLoop() {
 		case <-ctx.Done():
 		}
 	}()
+	return ctx, cancel
+}
+
+// cleanupDebugLogsLoop 使用独立协程清理调试日志，避免阻塞普通日志维护任务。
+func (s *LogService) cleanupDebugLogsLoop() {
+	defer s.wg.Done()
+
+	ctx, cancel := s.cleanupLoopContext()
+	defer cancel()
+	defer s.debugCleanupNextAt.Store(0)
 
 	debugCleanupDone := s.cleanupDebugLogs(ctx)
-	for ctx.Err() == nil {
+	for !debugCleanupDone && ctx.Err() == nil {
+		s.debugCleanupNextAt.Store(time.Now().Add(config.DebugLogCleanupInterval).UnixMilli())
 		timer := time.NewTimer(config.DebugLogCleanupInterval)
 		select {
 		case <-timer.C:
@@ -294,47 +354,64 @@ func (s *LogService) cleanupDebugLogsLoop() {
 			return
 		}
 
-		if !debugCleanupDone {
-			debugCleanupDone = s.cleanupDebugLogs(ctx)
-		}
+		debugCleanupDone = s.cleanupDebugLogs(ctx)
 	}
 }
 
 // cleanupDebugLogs 执行一轮调试日志清理。返回 true 表示 Debug 已关闭且表已清空。
 func (s *LogService) cleanupDebugLogs(ctx context.Context) bool {
+	finish := s.debugCleanupOperation.Begin()
+	var cleanupErr error
+	defer func() { finish(cleanupErr) }()
 	setting, err := s.store.GetSetting(ctx, "debug_log_enabled")
 	if err != nil {
-		log.Printf("[WARN] 读取 Debug 日志开关失败: %v", err)
+		cleanupErr = err
+		if !monitoring.IsCancellation(err) {
+			log.Printf("[WARN] 读取 Debug 日志开关失败: %v", err)
+		}
 		return false
 	}
 	if setting == nil || setting.Value != "true" {
+		s.debugCleanupMode.Store(debugCleanupModeClearing)
 		if err := s.store.TruncateDebugLogs(ctx); err != nil {
-			log.Printf("[WARN] 清空调试日志失败: %v", err)
+			cleanupErr = err
+			if !monitoring.IsCancellation(err) {
+				log.Printf("[WARN] 清空调试日志失败: %v", err)
+			}
 			return false
 		}
+		s.debugCleanupMode.Store(debugCleanupModeDisabled)
 		log.Printf("[INFO] 调试日志未启用，已清空历史调试日志")
 		return true
 	}
+	s.debugCleanupMode.Store(debugCleanupModeRetention)
 
 	retentionMinutes := 5
 	if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err != nil {
-		log.Printf("[WARN] 读取 Debug 日志保留时间失败: %v", err)
+		cleanupErr = err
+		if !monitoring.IsCancellation(err) {
+			log.Printf("[WARN] 读取 Debug 日志保留时间失败: %v", err)
+		}
 		return false
 	} else if setting != nil {
 		if value, err := strconv.Atoi(setting.Value); err == nil && value > 0 {
 			retentionMinutes = value
 		}
 	}
+	s.debugRetentionMinutes.Store(int64(retentionMinutes))
 	cutoff := time.Now().Add(-time.Duration(retentionMinutes) * time.Minute)
 
 	for {
 		deleted, err := s.store.CleanupDebugLogsBatch(ctx, cutoff, debugLogCleanupBatchSize)
 		if err != nil {
-			if ctx.Err() != nil {
-				return false
+			cleanupErr = err
+			if !monitoring.IsCancellation(err) {
+				log.Printf("[WARN] 清理调试日志失败，本轮停止 (batch_size=%d): %v", debugLogCleanupBatchSize, err)
 			}
-			log.Printf("[WARN] 清理调试日志失败，本轮停止 (batch_size=%d): %v", debugLogCleanupBatchSize, err)
 			return false
+		}
+		if deleted > 0 {
+			s.debugCleanupDeleted.Add(uint64(deleted))
 		}
 		if deleted < int64(debugLogCleanupBatchSize) {
 			return false
@@ -343,6 +420,7 @@ func (s *LogService) cleanupDebugLogs(ctx context.Context) bool {
 		select {
 		case <-time.After(debugLogCleanupBatchYield):
 		case <-ctx.Done():
+			cleanupErr = ctx.Err()
 			return false
 		}
 	}

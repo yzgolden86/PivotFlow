@@ -450,6 +450,11 @@ func DefineBackupSettingsTable() *TableBuilder {
 		Column("auto_sync_enabled TINYINT NOT NULL DEFAULT 0").
 		Column("auto_sync_interval_hours INT NOT NULL DEFAULT 24").
 		Column("last_sync_at BIGINT NOT NULL DEFAULT 0").
+		Column("last_verified_at BIGINT NOT NULL DEFAULT 0").
+		Column("last_verified_bytes BIGINT NOT NULL DEFAULT 0").
+		Column("last_verified_sha256 VARCHAR(64) NOT NULL DEFAULT ''").
+		Column("last_verified_type VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("last_verified_warning_count INT NOT NULL DEFAULT 0").
 		Column("last_error TEXT NOT NULL").
 		Column("created_at BIGINT NOT NULL").
 		Column("updated_at BIGINT NOT NULL")
@@ -498,7 +503,15 @@ func DefineLogsTable() *TableBuilder {
 		Column("cost_multiplier DOUBLE NOT NULL DEFAULT 1").
 		// site_pricing = 上游计算（站点自身价目表）；local_estimate = 厂商标价本地估算。
 		Column("cost_source VARCHAR(32) NOT NULL DEFAULT ''").
+		// Versioned, request-time cost explanation. Legacy rows remain version 0
+		// with empty metadata and are never repriced during migration.
+		Column("cost_metadata_version INT NOT NULL DEFAULT 0").
+		Column("cost_status VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("cost_basis VARCHAR(16) NOT NULL DEFAULT ''").
+		Column("cost_detail_json TEXT NOT NULL DEFAULT ''").
 		Column("rule_id VARCHAR(64) NOT NULL DEFAULT ''"). // 命中的冷却规则标识符（2026-09新增）
+		Column("request_id VARCHAR(64) NOT NULL DEFAULT ''").
+		Column("attempt_number INT NOT NULL DEFAULT 0").
 		Index("idx_logs_time_model", "time, model").
 		Index("idx_logs_time_status", "time, status_code").
 		Index("idx_logs_time_channel_model", "time, channel_id, model").
@@ -509,7 +522,35 @@ func DefineLogsTable() *TableBuilder {
 		Index("idx_logs_time_auth_token", "time, auth_token_id").  // 按时间+令牌查询
 		Index("idx_logs_time_actual_model", "time, actual_model"). // 按时间+实际模型查询
 		Index("idx_logs_source_time", "log_source, time").
-		Index("idx_logs_source_minute", "log_source, minute_bucket")
+		Index("idx_logs_source_minute", "log_source, minute_bucket").
+		Index("idx_logs_request_id", "request_id")
+}
+
+// DefineRequestTracesTable stores one immutable finished request summary and
+// its bounded attempt timeline. Attempts remain JSON so the summary and detail
+// are committed atomically and list queries never join a second table.
+func DefineRequestTracesTable() *TableBuilder {
+	return NewTable("request_traces").
+		Column("request_id VARCHAR(64) PRIMARY KEY").
+		Column("started_at BIGINT NOT NULL").
+		Column("auth_token_id BIGINT NOT NULL DEFAULT 0").
+		Column("model VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("client_protocol VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("transport VARCHAR(16) NOT NULL DEFAULT ''").
+		Column("is_streaming TINYINT NOT NULL DEFAULT 0").
+		Column("final_status INT NOT NULL DEFAULT 0").
+		Column("outcome VARCHAR(16) NOT NULL DEFAULT ''").
+		Column("duration DOUBLE NOT NULL DEFAULT 0").
+		Column("wait_duration DOUBLE NOT NULL DEFAULT 0").
+		Column("attempt_count INT NOT NULL DEFAULT 0").
+		Column("upstream_attempt_count INT NOT NULL DEFAULT 0").
+		Column("upstream_success_count INT NOT NULL DEFAULT 0").
+		Column("truncated TINYINT NOT NULL DEFAULT 0").
+		Column("cache_status VARCHAR(16) NOT NULL DEFAULT ''").
+		Column("cache_reason VARCHAR(64) NOT NULL DEFAULT ''").
+		Column("attempts_json LONGTEXT NOT NULL").
+		Index("idx_request_traces_started_at", "started_at").
+		Index("idx_request_traces_token_started_at", "auth_token_id, started_at")
 }
 
 // DefineModelFingerprintsTable 定义model_fingerprints表结构（模型指纹基线）

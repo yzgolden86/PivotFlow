@@ -259,15 +259,18 @@ func (s *Server) HandleSystemAPIRouteDiagnostics(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
 		return
 	}
-	modelName := strings.TrimSpace(c.Query("model"))
-	if modelName == "" {
-		RespondErrorMsg(c, http.StatusBadRequest, "model is required")
+	modelName, clientProtocol, tokenID, err := parseModelRouteScope(c)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	clientProtocol := normalizeOptionalProtocol(c.DefaultQuery("client_protocol", "openai"))
+	if tokenID != 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "token_id not supported")
+		return
+	}
 	result, err := s.buildChannelRouteDiagnostics(c.Request.Context(), id, modelName, clientProtocol, 0)
 	if err != nil {
-		RespondError(c, http.StatusBadGateway, err)
+		respondModelRouteError(c, err)
 		return
 	}
 	RespondJSON(c, http.StatusOK, result)

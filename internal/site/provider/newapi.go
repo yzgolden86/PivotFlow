@@ -559,7 +559,7 @@ func (p *NewAPI) RefreshAccount(ctx context.Context, req RefreshAccountRequest) 
 		value := quota / 500000
 		balance = &value
 	}
-	return AccountSnapshot{Username: username, Balance: balance, Currency: "USD", Status: model.SiteAccountStatusHealthy}, nil
+	return AccountSnapshot{Username: username, UserID: profileUserID(payload.Data), Balance: balance, Currency: "USD", Status: model.SiteAccountStatusHealthy}, nil
 }
 
 // accountSelf is the one management request that both authorises the credential
@@ -806,6 +806,10 @@ func (p *NewAPI) doJSONWithResponseHeaders(ctx context.Context, req AccountReque
 	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		var providerErr *Error
+		if errors.As(err, &providerErr) {
+			return nil, providerErr
+		}
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
 			return nil, &Error{Code: CodeTimeout, Message: "provider request timed out"}
 		}

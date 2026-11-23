@@ -1,7 +1,8 @@
-import { useEffect } from 'react'
+import { useId, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import type { Site, SiteAccount } from '../types'
+import useFocusLayer from '../components/useFocusLayer'
 
 export function Modal({ title, children, close, wide = false }: {
   title: string
@@ -9,11 +10,9 @@ export function Modal({ title, children, close, wide = false }: {
   close: () => void
   wide?: boolean
 }) {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') close() }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [close])
+  const dialogRef = useRef<HTMLElement>(null)
+  const titleId = useId()
+  useFocusLayer(dialogRef, { modal: true, close })
   // 必须挂到 body，不能留在页面容器里。.workspace-page/.dashboard-page 都带
   // `animation: page-enter ... both`，而 page-enter 动的是 opacity——fill-mode
   // both 让这个 opacity 一直生效，元素因此成为层叠上下文，把 position:fixed 的
@@ -21,8 +20,8 @@ export function Modal({ title, children, close, wide = false }: {
   // 比不过外面 z-index:30 的侧边栏，窗口不够宽时弹窗左半边被侧边栏压住。
   return createPortal(
     <div className="modal-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}>
-      <section className={`console-modal${wide ? ' console-modal--wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
-        <header><h2>{title}</h2><button className="icon-button icon-button--surface" type="button" onClick={close} aria-label="关闭弹窗"><X size={17} /></button></header>
+      <section ref={dialogRef} className={`console-modal${wide ? ' console-modal--wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+        <header><h2 id={titleId}>{title}</h2><button className="icon-button icon-button--surface" type="button" onClick={close} aria-label="关闭弹窗"><X size={17} /></button></header>
         {children}
       </section>
     </div>,
@@ -94,6 +93,8 @@ export function siteErrorMessage(reason: unknown): string {
   const labels: Record<string, string> = {
 	credential_locked: '凭证加密密钥不可用，请检查数据目录是否可写或主密钥配置是否正确', browser_required: '上游站点返回了浏览器验证页（WAF 人机校验），本次请求未完成；通常是短时触发，等几分钟重试即可',
     provider_timeout: '站点请求超时', provider_rate_limited: '站点触发限流，请稍后再试', api_key_required: '投影需要 API Key',
+    site_task_queue_full: '维护任务队列已满，请稍后重试', server_shutting_down: '服务正在停止，请恢复连接后重试', cancelled: '任务已取消',
+    observation_interrupted: '无法确认任务执行结果，请核实原任务或上游状态，避免重复操作', site_task_lease_lost: '任务失去执行租约，请确认其他实例的运行状态',
 		models_required: '请先同步账号模型', routing_api_key_unavailable: '没有读取到可用的模型 API Key，请先在上游站点创建一个 Key 后再次同步', unsupported: '当前站点不支持此操作', conflict: '已有任务运行或投影存在冲突', expired: '系统访问令牌或登录会话已失效，请在账号管理中更新凭证',
 		user_id_required: '无法识别或验证上游用户 ID，请核对用户个人中心显示的数字 ID', credential_required: '请填写新的登录凭证', site_name_exists: '已有同名站点，请修改名称或检查未删除的数据',
 	request_failed: '上游请求失败', invalid_response: '上游返回了无法识别的数据', webdav_html_response: 'WebDAV 返回了网页而不是备份文件，请确认填写的是 WebDAV 服务地址，而不是网页登录地址',

@@ -11,6 +11,15 @@ export default defineConfig({
     target: 'es2022',
     cssCodeSplit: true,
     reportCompressedSize: true,
+    rollupOptions: {
+      output: {
+        // 共用图标合为一份资源，避免路由预载为每个图标产生小请求。
+        // 保留页面的动态 import 和既有预载时机。
+        manualChunks(id) {
+          if (id.replaceAll('\\', '/').includes('/node_modules/lucide-react/')) return 'icons'
+        },
+      },
+    },
   },
   server: {
     port: 5174,
@@ -36,6 +45,9 @@ export default defineConfig({
       // /web/auth/。密码其实是对的，登录接口也是 200，但页面立刻被弹回登录页，
       // 看起来就是密码错。排查时先看后端日志有没有收到 /dashboard/session。
       '/dashboard': 'http://127.0.0.1:8080',
+      // 接入页使用下游令牌直接验证公共代理接口。
+      '/v1': 'http://127.0.0.1:8080',
+      '/v1beta': 'http://127.0.0.1:8080',
       // 登录页与品牌资源：不代理的话 vite 会回落到 SPA 的 index.html，
       // 于是又启动一次、又发现没有 token，来回跳。
       '/web': {

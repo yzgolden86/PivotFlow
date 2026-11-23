@@ -135,7 +135,30 @@ func (s *SQLStore) UpdateSite(ctx context.Context, id int64, site *model.Site) (
 		return nil, errors.New("site cannot be nil")
 	}
 	now := siteNow()
-	_, err := s.ExecContext(ctx, `UPDATE sites SET name=?, platform=?, base_url=?, enabled=?, timezone=?, use_system_proxy=?, proxy_url=?, external_checkin_url=?, tags_json=?, last_probe_status=?, last_error=?, checkin_method=?, checkin_method_checked_at=?, updated_at=? WHERE id=? AND deleted_at=0`, site.Name, site.Platform, site.BaseURL, site.Enabled, site.Timezone, site.UseSystemProxy, site.ProxyURL, site.ExternalCheckinURL, site.TagsJSON, site.LastProbeStatus, site.LastError, site.CheckinMethod, site.CheckinMethodCheckedAt, now, id)
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		var exists int
+		if err := s.queryRowTx(ctx, tx, "SELECT COUNT(1) FROM sites WHERE id=? AND deleted_at=0", id).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			return errors.New("not found")
+		}
+		var existingID, deletedAt int64
+		queryErr := s.queryRowTx(ctx, tx, "SELECT id,deleted_at FROM sites WHERE name=? AND id<>?", site.Name, id).Scan(&existingID, &deletedAt)
+		if queryErr != nil && !errors.Is(queryErr, sql.ErrNoRows) {
+			return queryErr
+		}
+		if queryErr == nil {
+			if deletedAt == 0 {
+				return errors.New("site_name_exists")
+			}
+			if _, err := s.execTx(ctx, tx, "UPDATE sites SET name=?,updated_at=? WHERE id=? AND deleted_at<>0", deletedSiteName(existingID, now), now, existingID); err != nil {
+				return err
+			}
+		}
+		_, err := s.execTx(ctx, tx, `UPDATE sites SET name=?, platform=?, base_url=?, enabled=?, timezone=?, use_system_proxy=?, proxy_url=?, external_checkin_url=?, tags_json=?, last_probe_status=?, last_error=?, checkin_method=?, checkin_method_checked_at=?, updated_at=? WHERE id=? AND deleted_at=0`, site.Name, site.Platform, site.BaseURL, site.Enabled, site.Timezone, site.UseSystemProxy, site.ProxyURL, site.ExternalCheckinURL, site.TagsJSON, site.LastProbeStatus, site.LastError, site.CheckinMethod, site.CheckinMethodCheckedAt, now, id)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -348,6 +371,21 @@ func (s *SQLStore) UpdateSiteAccountCredential(ctx context.Context, id int64, cr
 	return err
 }
 
+func (s *SQLStore) RepairSiteAccountCredential(ctx context.Context, id int64, credentialType, ciphertext, keyVersion string) error {
+	if strings.TrimSpace(ciphertext) == "" || strings.TrimSpace(keyVersion) == "" {
+		return errors.New("credential payload is required")
+	}
+	result, err := s.ExecContext(ctx, `UPDATE site_accounts SET credential_type=?, credential_ciphertext=?, credential_key_version=?, status='unknown', last_error='', updated_at=? WHERE id=? AND deleted_at=0`, strings.TrimSpace(credentialType), ciphertext, strings.TrimSpace(keyVersion), siteNow(), id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return errors.New("not found")
+	}
+	return err
+}
+
 func (s *SQLStore) DeleteSiteAccount(ctx context.Context, id int64) error {
 	candidates, err := s.projectedChannelIDsForAccount(ctx, id)
 	if err != nil {
@@ -492,6 +530,56 @@ func (s *SQLStore) unmarkRetainedChannelCandidates(candidates, deleted []int64) 
 
 func (s *SQLStore) ReplaceSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error {
 	return s.replaceSiteAccountModels(ctx, accountID, models, true)
+}
+
+func (s *SQLStore) RestoreSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error {
+	now := siteNow()
+	return s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		type observation struct {
+			lastSeenAt int64
+			createdAt  int64
+		}
+		retained := make(map[string]observation, len(models))
+		for _, item := range models {
+			if _, seen := retained[item.Model]; seen {
+				continue
+			}
+			var current observation
+			err := s.queryRowTx(ctx, tx,
+				"SELECT last_seen_at, created_at FROM site_account_models WHERE site_account_id=? AND model=?",
+				accountID, item.Model,
+			).Scan(&current.lastSeenAt, &current.createdAt)
+			switch {
+			case err == nil:
+				retained[item.Model] = current
+			case errors.Is(err, sql.ErrNoRows):
+			default:
+				return err
+			}
+		}
+
+		if _, err := s.execTx(ctx, tx, "DELETE FROM site_account_models WHERE site_account_id=?", accountID); err != nil {
+			return err
+		}
+		for _, item := range models {
+			current, ok := retained[item.Model]
+			lastSeenAt := int64(0)
+			createdAt := now
+			if ok {
+				lastSeenAt = current.lastSeenAt
+				createdAt = current.createdAt
+			}
+			if _, err := s.execTx(ctx, tx, `INSERT INTO site_account_models
+				(site_account_id, model, route_type, source, disabled, stale, last_seen_at, created_at, updated_at)
+				VALUES(?,?,?,?,?,?,?,?,?)`,
+				accountID, item.Model, item.RouteType, item.Source, item.Disabled, item.Stale,
+				lastSeenAt, createdAt, now,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *SQLStore) MergeSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error {

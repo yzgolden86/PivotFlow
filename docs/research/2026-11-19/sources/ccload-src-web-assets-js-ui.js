@@ -1,0 +1,2888 @@
+// 保持公共 UI 在独立加载或旧缓存混用时可用；完整实现由 web-auth.js 覆盖。
+window.WebAuth = window.WebAuth || {
+  ROLE_KEY: 'ccload_web_role',
+  clearWebSession(storage) {
+    storage.removeItem('ccload_token');
+    storage.removeItem('ccload_token_expiry');
+    storage.removeItem('ccload_web_role');
+  },
+  getWebRole() { return 'admin'; },
+  isAPITokenRole() { return false; },
+  canShowChannels(role, session) { return role !== 'api_token' || session?.show_channels === true; },
+  filterNavigation(keys) { return [...keys]; }
+};
+
+// ============================================================
+// Token认证工具（统一API调用，替代Cookie Session）
+// ============================================================
+(function () {
+  /**
+   * 生成带redirect参数的登录页URL
+   * @returns {string}
+   */
+  function getLoginUrl() {
+    const currentPath = window.location.pathname + window.location.search;
+    // 排除登录页本身
+    if (currentPath.includes('/web/login.html')) {
+      return '/web/login.html';
+    }
+    return '/web/login.html?redirect=' + encodeURIComponent(currentPath);
+  }
+
+  // 导出到全局作用域
+  window.getLoginUrl = getLoginUrl;
+
+  /**
+   * 带Token认证的fetch封装
+   * @param {string} url - 请求URL
+   * @param {Object} options - fetch选项
+   * @returns {Promise<Response>}
+   */
+  async function fetchWithAuth(url, options = {}) {
+    const token = localStorage.getItem('ccload_token');
+    const expiry = localStorage.getItem('ccload_token_expiry');
+
+    // 检查Token过期（静默跳转，不显示错误提示）
+    if (!token || (expiry && Date.now() > parseInt(expiry))) {
+      window.WebAuth.clearWebSession(localStorage);
+      window.location.href = getLoginUrl();
+      throw new Error('Token expired');
+    }
+
+    // 合并Authorization头
+    const headers = {
+      ...options.headers,
+      'Authorization': `Bearer ${token}`,
+    };
+
+    const response = await fetch(url, { ...options, headers });
+
+    // 处理401未授权（静默跳转，不显示错误提示）
+    if (response.status === 401) {
+      window.WebAuth.clearWebSession(localStorage);
+      window.location.href = getLoginUrl();
+      throw new Error('Unauthorized');
+    }
+
+    return response;
+  }
+
+  // 导出到全局作用域
+  window.fetchWithAuth = fetchWithAuth;
+  window.getWebRole = () => window.WebAuth.getWebRole(localStorage);
+  window.isAPITokenRole = () => window.WebAuth.isAPITokenRole(localStorage);
+  window.shouldHideChannels = () => !window.WebAuth.canShowChannels(window.getWebRole(), window.webSession);
+})();
+
+// ============================================================
+// API响应解析（统一后端返回格式：{success,data,error,count}）
+// ============================================================
+(function () {
+  async function parseAPIResponse(res) {
+    const text = await res.text();
+    if (!text) {
+      throw new Error(t('error.emptyResponse') + ` (HTTP ${res.status})`);
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch (e) {
+      throw new Error(t('error.invalidJson') + ` (HTTP ${res.status})`);
+    }
+
+    if (!payload || typeof payload !== 'object' || typeof payload.success !== 'boolean') {
+      throw new Error(t('error.invalidFormat') + ` (HTTP ${res.status})`);
+    }
+
+    return payload;
+  }
+
+  async function fetchAPI(url, options = {}) {
+    const res = await fetch(url, options);
+    return parseAPIResponse(res);
+  }
+
+  async function fetchAPIWithAuth(url, options = {}) {
+    const res = await fetchWithAuth(url, options);
+    return parseAPIResponse(res);
+  }
+
+  // 需要同时读取响应头（如 X-Debug-*）的场景：返回 { res, payload }
+  async function fetchAPIWithAuthRaw(url, options = {}) {
+    const res = await fetchWithAuth(url, options);
+    const payload = await parseAPIResponse(res);
+    return { res, payload };
+  }
+
+  async function fetchData(url, options = {}) {
+    const resp = await fetchAPI(url, options);
+    if (!resp.success) throw new Error(resp.error || t('error.requestFailed'));
+    return resp.data;
+  }
+
+  async function fetchDataWithAuth(url, options = {}) {
+    const resp = await fetchAPIWithAuth(url, options);
+    // response 标记这是服务端明确给出的失败，而非网络或解析错误
+    if (!resp.success) throw Object.assign(new Error(resp.error || t('error.requestFailed')), { response: resp });
+    return resp.data;
+  }
+
+  window.fetchAPI = fetchAPI;
+  window.fetchAPIWithAuth = fetchAPIWithAuth;
+  window.fetchAPIWithAuthRaw = fetchAPIWithAuthRaw;
+  window.fetchData = fetchData;
+  window.fetchDataWithAuth = fetchDataWithAuth;
+})();
+
+// ============================================================
+// 共享UI：顶部导航与背景动画（KISS/DRY）
+// 使用方式：在页面底部引入本文件，并调用 initTopbar('index'|'configs'|'stats'|'trend'|'errors')
+// ============================================================
+(function () {
+  const NAVS = [
+    { key: 'index', labelKey: 'nav.overview', href: '/web/index.html', icon: iconHome },
+    { key: 'channels', labelKey: 'nav.channels', href: '/web/channels.html', icon: iconSettings },
+    { key: 'tokens', labelKey: 'nav.tokens', href: '/web/tokens.html', icon: iconKey },
+    { key: 'stats', labelKey: 'nav.stats', href: '/web/stats.html', icon: iconBars },
+    { key: 'trend', labelKey: 'nav.trend', href: '/web/trend.html', icon: iconTrend },
+    { key: 'logs', labelKey: 'nav.logs', href: '/web/logs.html', icon: iconAlert },
+    { key: 'model-test', labelKey: 'nav.modelTest', href: '/web/model-test.html', icon: iconTest },
+    { key: 'settings', labelKey: 'nav.settings', href: '/web/settings.html', icon: iconSettings },
+  ];
+  const THEME_STORAGE_KEY = 'ccload_theme';
+  const THEME_MODES = ['system', 'light', 'dark'];
+  let systemThemeQuery = null;
+  let currentThemeMode = 'system';
+
+  function h(tag, attrs = {}, children = []) {
+    const el = document.createElement(tag);
+    Object.entries(attrs).forEach(([k, v]) => {
+      if (k === 'class') el.className = v;
+      else if (k === 'style') el.style.cssText = v;
+      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v);
+    });
+    (Array.isArray(children) ? children : [children]).forEach((c) => {
+      if (c == null) return;
+      if (typeof c === 'string') el.appendChild(document.createTextNode(c));
+      else el.appendChild(c);
+    });
+    return el;
+  }
+
+  function iconHome() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5a2 2 0 012-2h4a2 2 0 012 2v0a2 2 0 01-2 2H10a2 2 0 01-2-2v0z"/>`);
+  }
+  function iconSettings() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>`);
+  }
+  function iconBars() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>`);
+  }
+  function iconTrend() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 21l4-4 4 4"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h18"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/>`);
+  }
+  function iconAlert() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>`);
+  }
+  function iconKey() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>`);
+  }
+  function iconTest() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>`);
+  }
+  function iconThemeSystem() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3a9 9 0 100 18 9 9 0 000-18z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.6 9h16.8M3.6 15h16.8"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3c2 2.2 3 5.2 3 9s-1 6.8-3 9c-2-2.2-3-5.2-3-9s1-6.8 3-9z"/>`);
+  }
+  function iconThemeLight() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M7.05 16.95l-1.414 1.414m12.728 0l-1.414-1.414M7.05 7.05L5.636 5.636"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>`);
+  }
+  function iconThemeDark() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 118.646 3.646 7 7 0 0020.354 15.354z"/>`);
+  }
+  function svg(inner) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    el.setAttribute('fill', 'none');
+    el.setAttribute('stroke', 'currentColor');
+    el.setAttribute('viewBox', '0 0 24 24');
+    el.classList.add('w-5', 'h-5');
+    el.innerHTML = inner;
+    return el;
+  }
+
+  function getStoredTheme() {
+    if (window.ccLoadTheme && typeof window.ccLoadTheme.getStoredTheme === 'function') {
+      return window.ccLoadTheme.getStoredTheme();
+    }
+    try {
+      const saved = localStorage.getItem(THEME_STORAGE_KEY);
+      const mode = typeof saved === 'string' ? saved.split(':', 1)[0] : null;
+      return THEME_MODES.includes(mode) ? mode : 'system';
+    } catch (_) {
+      return 'system';
+    }
+  }
+
+  function resolveTheme(mode) {
+    if (mode !== 'system') return mode;
+    return systemThemeQuery && systemThemeQuery.matches ? 'dark' : 'light';
+  }
+
+  function setThemeMetaColor(resolvedTheme) {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', resolvedTheme === 'dark' ? '#0f172a' : '#3b82f6');
+  }
+
+  function getThemeCssVar(style, name, fallback) {
+    const value = style ? style.getPropertyValue(name).trim() : '';
+    return value || fallback;
+  }
+
+  function getChartTheme() {
+    const root = document.documentElement;
+    const style = window.getComputedStyle ? getComputedStyle(root) : null;
+    const resolvedTheme = root.dataset.resolvedTheme || root.dataset.theme || 'light';
+    const isDark = resolvedTheme === 'dark';
+
+    return {
+      text: getThemeCssVar(style, '--neutral-700', isDark ? '#e5e7eb' : '#374151'),
+      mutedText: getThemeCssVar(style, '--neutral-500', isDark ? '#9ca3af' : '#6b7280'),
+      strongText: getThemeCssVar(style, '--neutral-900', isDark ? '#f9fafb' : '#111827'),
+      axisLine: getThemeCssVar(style, '--surface-border-strong', isDark ? 'rgba(255, 255, 255, 0.18)' : 'rgba(17, 24, 39, 0.16)'),
+      splitLine: getThemeCssVar(style, '--surface-border', isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(17, 24, 39, 0.10)'),
+      surface: getThemeCssVar(style, '--surface-bg-strong', isDark ? 'rgba(17, 24, 39, 0.94)' : 'rgba(255, 255, 255, 0.98)'),
+      surfaceMuted: getThemeCssVar(style, '--surface-bg-muted', isDark ? 'rgba(31, 41, 55, 0.78)' : 'rgba(243, 244, 246, 0.90)'),
+      tooltipBg: getThemeCssVar(style, '--surface-bg-strong', isDark ? 'rgba(17, 24, 39, 0.94)' : 'rgba(255, 255, 255, 0.98)'),
+      tooltipBorder: getThemeCssVar(style, '--surface-border-strong', isDark ? 'rgba(255, 255, 255, 0.18)' : 'rgba(17, 24, 39, 0.16)'),
+      tooltipText: getThemeCssVar(style, '--neutral-900', isDark ? '#f9fafb' : '#111827')
+    };
+  }
+
+  function refreshThemeSwitcher(root = document) {
+    const trigger = root.querySelector ? root.querySelector('.theme-trigger') : null;
+    if (trigger) {
+      trigger.replaceChildren(getThemeIcon(currentThemeMode));
+    }
+    root.querySelectorAll && root.querySelectorAll('.theme-option').forEach((option) => {
+      const active = option.getAttribute('data-theme-mode') === currentThemeMode;
+      option.setAttribute('aria-checked', active ? 'true' : 'false');
+      option.classList.toggle('active', active);
+    });
+  }
+
+  function applyThemeMode(mode) {
+    currentThemeMode = THEME_MODES.includes(mode) ? mode : 'system';
+    const resolvedTheme = resolveTheme(currentThemeMode);
+    document.documentElement.dataset.theme = currentThemeMode;
+    document.documentElement.dataset.resolvedTheme = resolvedTheme;
+    document.documentElement.style.colorScheme = resolvedTheme;
+    setThemeMetaColor(resolvedTheme);
+    refreshThemeSwitcher();
+    window.dispatchEvent(new CustomEvent('ccload:themechange', {
+      detail: { mode: currentThemeMode, resolvedTheme }
+    }));
+  }
+
+  function applyStoredTheme() {
+    applyThemeMode(getStoredTheme());
+  }
+
+  function setThemeMode(mode) {
+    if (!THEME_MODES.includes(mode)) return;
+    if (window.ccLoadTheme && typeof window.ccLoadTheme.setStoredTheme === 'function') {
+      window.ccLoadTheme.setStoredTheme(mode);
+    } else {
+      try {
+        localStorage.setItem(THEME_STORAGE_KEY, `${mode}:${Date.now()}`);
+      } catch (_) { /* 存储失败时只应用当前页面 */ }
+    }
+    applyThemeMode(mode);
+  }
+
+  function initTheme() {
+    systemThemeQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    applyStoredTheme();
+    if (systemThemeQuery && !systemThemeQuery._ccloadThemeBound) {
+      systemThemeQuery.addEventListener('change', applyStoredTheme);
+      systemThemeQuery._ccloadThemeBound = true;
+    }
+  }
+
+  function setThemeSwitcherOpen(switcher, open) {
+    if (!switcher) return;
+    if (open) switcher.classList.add('open');
+    else switcher.classList.remove('open');
+    const trigger = switcher.querySelector('.theme-trigger');
+    if (trigger) trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function closeThemeSwitchers(except = null) {
+    document.querySelectorAll('.theme-switcher.open').forEach((switcher) => {
+      if (switcher !== except) setThemeSwitcherOpen(switcher, false);
+    });
+  }
+
+  initTheme();
+  document.addEventListener('click', () => closeThemeSwitchers());
+
+  function isLoggedIn() {
+    const token = localStorage.getItem('ccload_token');
+    const expiry = localStorage.getItem('ccload_token_expiry');
+    return token && (!expiry || Date.now() <= parseInt(expiry));
+  }
+
+  // GitHub仓库地址
+  const GITHUB_REPO_URL = 'https://github.com/caidaoli/ccLoad';
+  const GITHUB_RELEASES_URL = 'https://github.com/caidaoli/ccLoad/releases';
+
+  // 版本信息
+  let versionInfo = null;
+
+  // 获取版本信息（后端已包含新版本检测结果）
+  async function fetchVersionInfo() {
+    try {
+      const res = await fetch('/public/version');
+      const resp = await res.json();
+      versionInfo = resp.data;
+      return versionInfo;
+    } catch (e) {
+      console.error('Failed to fetch version info:', e);
+      return null;
+    }
+  }
+
+  // 更新版本显示
+  function updateVersionDisplay() {
+    const versionEl = document.getElementById('version-display');
+    const badgeEl = document.getElementById('version-badge');
+    if (!versionInfo) return;
+
+    if (versionEl) {
+      versionEl.textContent = versionInfo.version;
+    }
+    if (badgeEl) {
+      if (versionInfo.has_update && versionInfo.latest_version) {
+        badgeEl.title = t('version.hasUpdate', { version: versionInfo.latest_version });
+        badgeEl.classList.add('has-update');
+      } else {
+        badgeEl.title = t('version.checkUpdate');
+        badgeEl.classList.remove('has-update');
+      }
+    }
+  }
+
+  // 初始化版本显示
+  function initVersionDisplay() {
+    fetchVersionInfo().then(() => updateVersionDisplay());
+  }
+
+  // GitHub图标
+  function iconGitHub() {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    el.setAttribute('fill', 'currentColor');
+    el.setAttribute('viewBox', '0 0 24 24');
+    el.classList.add('w-5', 'h-5');
+    el.innerHTML = '<path d="M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/>';
+    return el;
+  }
+
+  // ---- 活动请求指示器（脉冲 + 角标 + favicon）----
+  // 全站唯一轮询源：拉取完整 payload 后自己消费 count，同时推送 data 给订阅者（如 logs.js）
+  const ACTIVE_POLL_MS = 2000;
+  let _activeTimer = null;
+  let _activeWrap = null;        // .brand-icon-wrap 元素
+  let _activeBadge = null;       // .brand-badge 元素
+  let _activeDots = [];          // .brand-flow-dots 下的圆点
+  let _faviconBase = null;       // 预加载的 favicon 底图 Image
+  let _origFaviconLinks = null;  // 页面初始 favicon 集合快照（用于完整恢复）
+  let _lastBadgeCount = -1;      // 去重：仅数量变化时重绘 favicon
+  const _activeDataListeners = [];  // 订阅者回调列表
+  let _lastActiveData = null;       // 最近一次推送的数据（新订阅者立即获得，规避时序竞争）
+  const ACTIVE_INDICATOR_PULSE_MS = 900;
+  let _activeCount = 0;
+  let _activePulseTimer = null;
+  let _faviconPulseOn = false;
+
+  // 流动圆点随并发数增多：1 个请求 3 颗，每多 1 个加 1 颗，封顶 BRAND_FLOW_DOTS_MAX
+  const BRAND_FLOW_DOTS_MAX = 8;
+
+  function brandFlowDotCount(count) {
+    return Math.min(BRAND_FLOW_DOTS_MAX, count + 2);
+  }
+
+  function syncBrandFlowDots(count) {
+    const visible = brandFlowDotCount(count);
+    _activeDots.forEach((dot, i) => {
+      const keep = i < visible;
+      // 并发减少时多出的圆点跑完当前一趟（周期末尾已透明）再隐藏，避免半路消失；闲置时无动画，直接隐藏
+      if (keep || count <= 0) {
+        dot.onanimationiteration = null;
+        dot.hidden = !keep;
+      } else if (!dot.hidden) {
+        dot.onanimationiteration = () => {
+          dot.onanimationiteration = null;
+          dot.hidden = true;
+        };
+      }
+    });
+  }
+
+  function brandBadgeLabel(count) {
+    return count > 999 ? '999+' : String(count);
+  }
+
+  function faviconBadgeLabel(count) {
+    return count > 9 ? '9+' : String(count);
+  }
+
+  function listFaviconLinks() {
+    if (typeof document.querySelectorAll === 'function') {
+      return Array.from(document.querySelectorAll('link[rel~="icon"]'));
+    }
+    const link = typeof document.querySelector === 'function'
+      ? document.querySelector('link[rel~="icon"]')
+      : null;
+    return link ? [link] : [];
+  }
+
+  function snapshotFaviconLink(link) {
+    const href = (link && (link.getAttribute('href') || link.href)) || '';
+    const rel = (link && (link.getAttribute('rel') || link.rel)) || 'icon';
+    const type = link ? (link.getAttribute('type') || link.type || '') : '';
+    const sizes = link ? (link.getAttribute('sizes') || link.sizes || '') : '';
+    return { rel, href, type, sizes };
+  }
+
+  function rememberOriginalFavicons() {
+    if (_origFaviconLinks !== null) return;
+    const links = listFaviconLinks().filter((link) => link.getAttribute('data-dynamic-favicon') !== '1');
+    _origFaviconLinks = links.map(snapshotFaviconLink);
+    if (_origFaviconLinks.length === 0) {
+      _origFaviconLinks = [{ rel: 'icon', href: '/web/favicon.svg', type: 'image/svg+xml', sizes: '' }];
+    }
+  }
+
+  function removeFaviconLinks(links) {
+    for (const link of links) {
+      if (!link) continue;
+      if (typeof link.remove === 'function') {
+        link.remove();
+        continue;
+      }
+      if (link.parentNode && typeof link.parentNode.removeChild === 'function') {
+        link.parentNode.removeChild(link);
+      }
+    }
+  }
+
+  function createFaviconLink(descriptor, dynamic = false) {
+    const link = document.createElement('link');
+    link.rel = descriptor.rel || 'icon';
+    if (dynamic) link.setAttribute('data-dynamic-favicon', '1');
+    if (descriptor.type) link.setAttribute('type', descriptor.type);
+    else link.removeAttribute('type');
+    if (descriptor.sizes) link.setAttribute('sizes', descriptor.sizes);
+    else link.removeAttribute('sizes');
+    link.href = descriptor.href;
+    document.head.appendChild(link);
+    return link;
+  }
+
+  function replaceFaviconSet(descriptors, dynamic = false) {
+    const existing = listFaviconLinks();
+    removeFaviconLinks(existing);
+    for (const descriptor of descriptors) {
+      createFaviconLink(descriptor, dynamic);
+    }
+  }
+
+  function replaceDynamicFavicon(href, type) {
+    rememberOriginalFavicons();
+    replaceFaviconSet([
+      { rel: 'shortcut icon', href, type, sizes: '' },
+      { rel: 'icon', href, type, sizes: '' }
+    ], true);
+  }
+
+  // 预加载 favicon 底图（首次异步，之后同步回调）
+  function ensureFaviconBase(cb) {
+    if (_faviconBase) { cb(); return; }
+    const img = new Image();
+    img.onload = () => { _faviconBase = img; cb(); };
+    img.onerror = () => { _faviconBase = null; };
+    img.src = '/web/favicon.svg';
+  }
+
+  // 在 favicon 右上角画呼吸色点 + 数字角标
+  function drawFaviconBadge(count, pulseOn = false) {
+    if (!_faviconBase) return;
+    const S = 64, cx = 50, cy = 14; // 小角标：不遮挡 CC 字母
+    const r = pulseOn ? 13 : 11;
+    const halo = pulseOn ? 18 : 15;
+    const canvas = document.createElement('canvas');
+    canvas.width = S; canvas.height = S;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, S, S);
+    ctx.drawImage(_faviconBase, 0, 0, S, S);
+
+    const text = faviconBadgeLabel(count);
+    ctx.beginPath(); ctx.arc(cx, cy, halo, 0, Math.PI * 2);
+    ctx.fillStyle = pulseOn ? 'rgba(249, 115, 22, 0.28)' : 'rgba(249, 115, 22, 0.12)';
+    ctx.fill();
+
+    // 外描边：先画白圆再画橙圆，保留完整橙区给文字（避免居中描边吃掉内部空间）
+    ctx.beginPath(); ctx.arc(cx, cy, r + 2, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff'; ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = pulseOn ? '#f97316' : '#ea580c'; ctx.fill();
+
+    // 字号按位数两档自适应（1~9 单字符 / 9+ 双字符）
+    const fs = text.length >= 2 ? 14 : 18;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${fs}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, cx, cy + 1);
+
+    try {
+      replaceDynamicFavicon(canvas.toDataURL('image/png'), 'image/png');
+    } catch (_) { /* 编码失败：保持原 favicon */ }
+  }
+
+  function restoreFavicon() {
+    rememberOriginalFavicons();
+    replaceFaviconSet(_origFaviconLinks || [
+      { rel: 'icon', href: '/web/favicon.svg', type: 'image/svg+xml', sizes: '' }
+    ], false);
+  }
+
+  function redrawActiveFavicon() {
+    if (_activeCount > 0) {
+      ensureFaviconBase(() => drawFaviconBadge(_activeCount, _faviconPulseOn));
+    }
+  }
+
+  function updateActiveFaviconPulse(count) {
+    if (count <= 0) {
+      if (_activePulseTimer !== null) {
+        clearInterval(_activePulseTimer);
+        _activePulseTimer = null;
+      }
+      return;
+    }
+    if (_activePulseTimer === null) {
+      _activePulseTimer = setInterval(() => {
+        _faviconPulseOn = !_faviconPulseOn;
+        redrawActiveFavicon();
+      }, ACTIVE_INDICATOR_PULSE_MS);
+    }
+  }
+
+  function updateActiveIndicator(count) {
+    _activeCount = count;
+    // 页面内 logo：脉冲 + 角标
+    if (_activeWrap) {
+      _activeWrap.classList.toggle('is-active', count > 0);
+      if (_activeBadge) _activeBadge.textContent = brandBadgeLabel(count);
+      syncBrandFlowDots(count);
+    }
+    // 标签页 favicon 角标（仅在数量变化时重绘，省 toDataURL 开销）
+    if (count !== _lastBadgeCount) {
+      _lastBadgeCount = count;
+      if (count > 0) {
+        _faviconPulseOn = false;
+        redrawActiveFavicon();
+      } else {
+        _faviconPulseOn = false;
+        restoreFavicon();
+      }
+    }
+    updateActiveFaviconPulse(count);
+  }
+
+  async function pollActiveRequests() {
+    try {
+      const payload = await fetchAPIWithAuth('/admin/active-requests');
+      const count = typeof payload.count === 'number' ? payload.count : 0;
+      updateActiveIndicator(count);
+      // 推送完整数据给订阅者
+      const data = (payload.success && Array.isArray(payload.data)) ? payload.data : [];
+      _lastActiveData = data;
+      for (const cb of _activeDataListeners) {
+        try { cb(data, count); } catch (_) { /* 订阅者异常不影响主逻辑 */ }
+      }
+    } catch (_) { /* 静默：未登录或网络异常不打断页面 */ }
+  }
+
+  function startActiveRequestsPolling() {
+    if (_activeTimer) return;
+    pollActiveRequests();
+    _activeTimer = setInterval(() => {
+      if (document.hidden) return;
+      pollActiveRequests();
+    }, ACTIVE_POLL_MS);
+    document.addEventListener('visibilitychange', _onActiveVisibilityChange);
+  }
+
+  function stopActiveRequestsPolling() {
+    if (_activeTimer) {
+      clearInterval(_activeTimer);
+      _activeTimer = null;
+    }
+  }
+
+  function _onActiveVisibilityChange() {
+    if (document.hidden) {
+      stopActiveRequestsPolling();
+    } else {
+      startActiveRequestsPolling();
+    }
+  }
+
+  // 供其他页面模块（如 logs.js）订阅活动请求数据，避免重复轮询
+  function onActiveRequestsData(callback) {
+    if (typeof callback !== 'function') return;
+    _activeDataListeners.push(callback);
+    // 已有最近数据则立即回调，避免新订阅者等到下个轮询周期
+    if (_lastActiveData !== null) {
+      try { callback(_lastActiveData); } catch (_) { /* 订阅者异常不影响主逻辑 */ }
+    }
+  }
+
+  // 顶栏 Logo 内联渲染：外部 SVG（img / use href）每次切页都要重新取文件解析，
+  // 顶栏先出现、Logo 后补上，表现为切页时 Logo 闪动。图形与 /web/brand-*.svg 保持一致；
+  // 字标 viewBox 只框字母，副标题画在框外下方，由 CSS 决定显示（桌面）或隐藏（窄屏）。
+  const BRAND_MARK_SVG = '<defs><linearGradient id="topbar-brand-gradient" x1="0" y1="0" x2="0.82" y2="1">'
+    + '<stop offset="0" stop-color="#60a5fa"/><stop offset="0.55" stop-color="#3b82f6"/><stop offset="1" stop-color="#2563eb"/>'
+    + '</linearGradient><mask id="topbar-brand-c-mask"><rect width="112" height="72" fill="#000"/>'
+    + '<circle cx="49" cy="36" r="30" fill="#fff"/><circle cx="49" cy="36" r="16" fill="#000"/><path d="M52 36 90 4v64Z" fill="#000"/>'
+    + '</mask></defs>'
+    + '<rect x="19" y="6" width="60" height="60" fill="url(#topbar-brand-gradient)" mask="url(#topbar-brand-c-mask)"/>'
+    + '<path fill="url(#topbar-brand-gradient)" fill-rule="evenodd" d="M59.4 36c4-4 8-8 12-11 8-4 16 2 16 11s-8 15-16 11c-4-3-8-7-12-11Zm17-4a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/>';
+
+  const BRAND_WORDMARK_SVG = '<path fill="currentColor" d="M19.64 17.42 25.31 18.07Q24.83 19.84 23.77 21.13Q22.69 22.43 21.04 23.15Q19.37 23.87 16.81 23.87Q14.33 23.87 12.68 23.4Q11.03 22.94 9.85 21.91Q8.66 20.88 7.99 19.49Q7.31 18.09 7.31 15.79Q7.31 13.39 8.14 11.8Q8.73 10.62 9.78 9.69Q10.82 8.76 11.91 8.31Q13.66 7.59 16.38 7.59Q20.19 7.59 22.19 8.95Q24.19 10.32 25 12.94L19.39 13.69Q19.12 12.69 18.43 12.18Q17.73 11.68 16.56 11.68Q15.08 11.68 14.16 12.74Q13.25 13.8 13.25 15.96Q13.25 17.88 14.16 18.87Q15.07 19.87 16.47 19.87Q17.64 19.87 18.44 19.27Q19.24 18.67 19.64 17.42ZM39.05 17.42 44.72 18.07Q44.24 19.84 43.18 21.13Q42.1 22.43 40.45 23.15Q38.78 23.87 36.22 23.87Q33.74 23.87 32.09 23.4Q30.44 22.94 29.26 21.91Q28.07 20.88 27.4 19.49Q26.72 18.09 26.72 15.79Q26.72 13.39 27.55 11.8Q28.14 10.62 29.19 9.69Q30.23 8.76 31.32 8.31Q33.07 7.59 35.79 7.59Q39.6 7.59 41.6 8.95Q43.6 10.32 44.41 12.94L38.8 13.69Q38.53 12.69 37.84 12.18Q37.14 11.68 35.97 11.68Q34.49 11.68 33.57 12.74Q32.66 13.8 32.66 15.96Q32.66 17.88 33.57 18.87Q34.48 19.87 35.88 19.87Q37.05 19.87 37.85 19.27Q38.65 18.67 39.05 17.42Z"/>'
+    + '<path fill="#2563eb" d="M47.25 2.03H53.89L53.89 18.21H64.24L64.24 23.5H47.25ZM91.11 12.98 85.41 12.38Q85.73 10.89 86.34 10.03Q86.95 9.17 88.09 8.54Q88.91 8.09 90.34 7.84Q91.78 7.59 93.45 7.59Q96.13 7.59 97.75 7.89Q99.39 8.19 100.47 9.14Q101.23 9.8 101.67 11.01Q102.1 12.22 102.11 13.32L102.11 20.19Q102.11 21.29 102.24 21.91Q102.38 22.53 102.85 23.5H97.26Q96.92 22.9 96.81 22.58Q96.72 22.27 96.62 21.6Q95.44 22.72 94.29 23.21Q92.7 23.85 90.6 23.85Q87.82 23.85 86.38 22.56Q84.94 21.27 84.93 19.38Q84.94 17.61 85.98 16.47Q87.02 15.33 89.82 14.77Q93.17 14.1 94.16 13.82Q95.17 13.55 96.27 13.11Q96.28 12.02 95.83 11.58Q95.37 11.14 94.22 11.14Q92.76 11.14 92.03 11.61Q91.46 11.97 91.11 12.98ZM96.28 16.12Q95.05 16.56 93.72 16.89Q91.9 17.38 91.42 17.85Q90.91 18.33 90.91 18.94Q90.91 19.65 91.41 20.09Q91.9 20.54 92.85 20.54Q93.84 20.54 94.7 20.06Q95.56 19.57 95.92 18.88Q96.28 18.18 96.27 17.07ZM121.46 2.03 121.46 23.5H115.88L115.88 21.2Q114.7 22.67 113.74 23.18Q112.44 23.85 110.86 23.85Q107.68 23.85 106.01 21.43Q104.34 19.02 104.33 15.56Q104.33 11.69 106.19 9.64Q108.04 7.59 110.9 7.59Q112.29 7.59 113.43 8.06Q114.56 8.53 115.44 9.47L115.44 2.03ZM115.48 15.68Q115.48 13.85 114.71 12.95Q113.93 12.04 112.75 12.04Q111.71 12.04 111 12.91Q110.29 13.77 110.3 15.81Q110.3 17.71 111.02 18.6Q111.75 19.49 112.82 19.49Q113.96 19.49 114.72 18.59Q115.48 17.7 115.48 15.68Z"/>'
+    + '<path fill="#2563eb" fill-rule="evenodd" d="M65.53 15.77Q65.53 12.21 67.93 9.9Q70.34 7.59 74.42 7.59Q79.1 7.59 81.49 10.3Q83.4 12.48 83.4 15.68Q83.4 19.27 81.02 21.56Q78.64 23.85 74.43 23.85Q70.68 23.85 68.37 21.95Q65.53 19.59 65.53 15.77ZM74.47 9.87L69.76 17.02L73.46 17.02L74.46 21.58L79.16 14.42L75.46 14.42Z"/>'
+    + '<text x="7" y="35" textLength="114.5" lengthAdjust="spacingAndGlyphs" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="10" font-weight="600" fill="#475569" style="fill: var(--brand-tagline-color, #475569)">Self-hosted AI Gateway</text>';
+
+  function createInlineBrandSVG(className, viewBox, markup) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    el.setAttribute('viewBox', viewBox);
+    el.setAttribute('aria-hidden', 'true');
+    el.classList.add(className);
+    el.innerHTML = markup;
+    return el;
+  }
+
+  function buildTopbar(active) {
+    const bar = h('header', { class: 'topbar' });
+
+    // 图标与字标独立复用；活动动画层只属于图标
+    const iconImg = createInlineBrandSVG('brand-mark', '8 6 88 60', BRAND_MARK_SVG);
+    const wordmark = createInlineBrandSVG('brand-wordmark', '0 1 132 24', BRAND_WORDMARK_SVG);
+    const speedLines = h('span', { class: 'brand-speed-lines', 'aria-hidden': 'true' }, [
+      h('i'), h('i'), h('i'), h('i'), h('i')
+    ]);
+    _activeDots = Array.from({ length: BRAND_FLOW_DOTS_MAX }, () => h('i'));
+    const flowDots = h('span', { class: 'brand-flow-dots', 'aria-hidden': 'true' }, _activeDots);
+    _activeBadge = h('span', { class: 'brand-badge' }, '0');
+    _activeWrap = h('span', { class: 'brand-icon-wrap' }, [speedLines, iconImg, flowDots, _activeBadge]);
+
+    const left = h('div', { class: 'topbar-left' }, [
+      h('a', {
+        class: 'brand',
+        href: GITHUB_REPO_URL,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        title: t('nav.githubRepo'),
+        'aria-label': 'ccLoad — Self-hosted AI Gateway'
+      }, [
+        _activeWrap,
+        wordmark
+      ])
+    ]);
+    const role = window.getWebRole();
+    const visibleNavKeys = new Set(window.WebAuth.filterNavigation(NAVS.map((item) => item.key), role));
+    const nav = h('nav', { class: 'topnav' }, [
+      ...NAVS.filter((item) => visibleNavKeys.has(item.key)).map(n => h('a', {
+        class: `topnav-link ${n.key === active ? 'active' : ''}`,
+        href: n.href,
+        'data-nav-key': n.key,
+        ...(n.key === active ? { 'aria-current': 'page' } : {})
+      }, [n.icon(), h('span', { 'data-i18n': n.labelKey }, t(n.labelKey))]))
+    ]);
+    const loggedIn = isLoggedIn();
+
+    // 版本信息组件（点击跳转到GitHub releases页面）
+    const versionBadge = h('a', {
+      id: 'version-badge',
+      class: 'version-badge',
+      href: GITHUB_RELEASES_URL,
+      target: '_blank',
+      rel: 'noopener noreferrer',
+      title: t('version.checkUpdate')
+    }, [
+      h('span', { id: 'version-display' }, 'v...')
+    ]);
+
+    // GitHub链接
+    const githubLink = h('a', {
+      href: GITHUB_REPO_URL,
+      target: '_blank',
+      rel: 'noopener noreferrer',
+      class: 'github-link',
+      title: t('nav.githubRepo')
+    }, [iconGitHub()]);
+
+    // 版本+GitHub组合成一个视觉组
+    const versionGroup = h('div', { class: 'version-group' }, [versionBadge, githubLink]);
+
+    // 语言切换器
+    const langSwitcher = window.i18n ? window.i18n.createLanguageSwitcher() : null;
+    const themeSwitcher = buildThemeSwitcher();
+
+    const tools = h('div', { class: 'topbar-tools' }, [
+      themeSwitcher,
+      langSwitcher && h('span', { class: 'topbar-tools-sep', 'aria-hidden': 'true' }),
+      langSwitcher
+    ].filter(Boolean));
+
+    const right = h('div', { class: 'topbar-right' }, [
+      versionGroup,
+      tools,
+      h('button', {
+        id: 'auth-btn',
+        class: 'btn btn-secondary btn-sm',
+        'data-i18n': loggedIn ? 'common.logout' : 'common.login',
+        onclick: loggedIn ? onLogout : () => location.href = window.getLoginUrl()
+      }, t(loggedIn ? 'common.logout' : 'common.login'))
+    ].filter(Boolean));
+    bar.appendChild(left); bar.appendChild(nav); bar.appendChild(right);
+    return bar;
+  }
+
+  function buildThemeSwitcher() {
+    const modes = [
+      { mode: 'system', labelKey: 'theme.system', icon: iconThemeSystem },
+      { mode: 'light', labelKey: 'theme.light', icon: iconThemeLight },
+      { mode: 'dark', labelKey: 'theme.dark', icon: iconThemeDark },
+    ];
+    const trigger = h('button', {
+      type: 'button',
+      class: 'theme-trigger',
+      title: t('theme.label'),
+      'aria-label': t('theme.label'),
+      'aria-expanded': 'false',
+      onclick: (event) => {
+        event.stopPropagation();
+        const switcher = event.currentTarget.closest('.theme-switcher');
+        const nextOpen = !switcher.classList.contains('open');
+        closeThemeSwitchers(switcher);
+        setThemeSwitcherOpen(switcher, nextOpen);
+      }
+    }, [getThemeIcon(currentThemeMode)]);
+    const menu = h('div', {
+      class: 'theme-menu',
+      role: 'menu',
+      onclick: (event) => event.stopPropagation()
+    }, modes.map(({ mode, labelKey, icon }) => h('button', {
+      type: 'button',
+      class: 'theme-option',
+      role: 'menuitemradio',
+      'data-theme-mode': mode,
+      'aria-checked': mode === currentThemeMode ? 'true' : 'false',
+      onclick: (event) => {
+        setThemeMode(mode);
+        setThemeSwitcherOpen(event.currentTarget.closest('.theme-switcher'), false);
+      }
+    }, [icon(), h('span', { 'data-i18n': labelKey }, t(labelKey))])));
+    const switcher = h('div', { class: 'theme-switcher' }, [trigger, menu]);
+    refreshThemeSwitcher(switcher);
+    return switcher;
+  }
+
+  function getThemeIcon(mode) {
+    if (mode === 'light') return iconThemeLight();
+    if (mode === 'dark') return iconThemeDark();
+    return iconThemeSystem();
+  }
+
+  async function onLogout() {
+    if (!(await showConfirm({ message: t('confirm.logout') }))) return;
+
+    // 先清理本地Token，避免后续请求触发token检查
+    const token = localStorage.getItem('ccload_token');
+    window.WebAuth.clearWebSession(localStorage);
+
+    // 如果有token，尝试调用后端登出接口（使用普通fetch，不触发token检查）
+    if (token) {
+      try {
+        await fetch('/logout', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      } catch (error) {
+        console.error('Logout error:', error);
+      }
+    }
+
+    // 跳转到登录页
+    location.href = '/web/login.html';
+  }
+
+  let bgAnimElement = null;
+
+  function injectBackground() {
+    if (document.querySelector('.bg-anim')) return;
+    bgAnimElement = h('div', { class: 'bg-anim' });
+    document.body.appendChild(bgAnimElement);
+  }
+
+  // 暂停/恢复背景动画（性能优化：减少文件选择器打开时的CPU占用）
+  window.pauseBackgroundAnimation = function () {
+    if (bgAnimElement) {
+      bgAnimElement.style.animationPlayState = 'paused';
+    }
+  }
+
+  window.resumeBackgroundAnimation = function () {
+    if (bgAnimElement) {
+      bgAnimElement.style.animationPlayState = 'running';
+    }
+  }
+
+  window.initTopbar = function initTopbar(activeKey) {
+    document.body.classList.toggle('web-role-api-token', window.isAPITokenRole());
+    const app = document.querySelector('.app-container') || document.body;
+    // 隐藏侧边栏与移动按钮
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.style.display = 'none';
+    const mobileBtn = document.getElementById('mobile-menu-btn');
+    if (mobileBtn) mobileBtn.style.display = 'none';
+
+    // 插入顶部条；放在 body 最前，键盘 Tab 先到导航。角色变化后重复调用时原位替换
+    const topbar = buildTopbar(activeKey);
+    const existing = document.querySelector('body > .topbar');
+    if (existing) existing.replaceWith(topbar);
+    else document.body.prepend(topbar);
+
+    // 窄屏导航横向滚动时，让当前页可见，并用两侧渐隐提示还有更多项
+    const nav = topbar.querySelector('.topnav');
+    const activeLink = nav && nav.querySelector('.topnav-link.active');
+    if (activeLink && nav.scrollWidth > nav.clientWidth) {
+      const navRect = nav.getBoundingClientRect();
+      const linkRect = activeLink.getBoundingClientRect();
+      nav.scrollLeft += linkRect.left - navRect.left - (navRect.width - linkRect.width) / 2;
+    }
+    if (nav) {
+      const updateNavOverflow = () => {
+        nav.classList.toggle('has-more-start', nav.scrollLeft > 2);
+        nav.classList.toggle('has-more-end', nav.scrollLeft + nav.clientWidth < nav.scrollWidth - 2);
+      };
+      nav.addEventListener('scroll', updateNavOverflow, { passive: true });
+      window.addEventListener('resize', updateNavOverflow);
+      updateNavOverflow();
+    }
+
+    // 背景动效
+    injectBackground();
+
+    // 初始化版本显示
+    initVersionDisplay();
+
+    // 启动活动请求指示器轮询
+    if (isLoggedIn() && !window.isAPITokenRole()) startActiveRequestsPolling();
+    else stopActiveRequestsPolling();
+  }
+
+  // 供其他模块订阅活动请求数据（全站唯一轮询源，避免重复请求）
+  window.onActiveRequestsData = onActiveRequestsData;
+  window.getChartTheme = getChartTheme;
+
+  // 通知系统（全局复用，DRY）；外观全部由 styles.css 的 .notification* 定义
+  function ensureNotifyHost() {
+    let host = document.getElementById('notify-host');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'notify-host';
+      document.body.appendChild(host);
+    }
+    return host;
+  }
+
+  window.ensureNotifyHost = ensureNotifyHost;
+
+  window.showNotification = function (message, type = 'info') {
+    const el = document.createElement('div');
+    el.className = `notification notification-${type}`;
+    el.textContent = message;
+    el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    ensureNotifyHost().appendChild(el);
+    requestAnimationFrame(() => el.classList.add('is-visible'));
+    setTimeout(() => {
+      el.classList.remove('is-visible');
+      setTimeout(() => el.remove(), 320);
+    }, 3600);
+  };
+  window.showSuccess = (msg) => window.showNotification(msg, 'success');
+  window.showError = (msg) => window.showNotification(msg, 'error');
+  window.showWarning = (msg) => window.showNotification(msg, 'warning');
+
+  /**
+   * 统一确认框（替代原生 confirm）。基于 <dialog>：顶层渲染、Esc 取消、焦点受控。
+   * @param {string|{title?: string, message: string, detail?: string, confirmText?: string, cancelText?: string, danger?: boolean}} options
+   * @returns {Promise<boolean>}
+   */
+  function showConfirm(options) {
+    const opts = typeof options === 'string' ? { message: options } : (options || {});
+    const tr = (key, fallback) => (typeof window.t === 'function' ? window.t(key) : fallback);
+    const dialog = document.createElement('dialog');
+    dialog.className = 'app-confirm-dialog';
+    dialog.setAttribute('aria-modal', 'true');
+
+    const titleId = `app-confirm-title-${Date.now()}`;
+    const title = document.createElement('h2');
+    title.className = 'modal-title';
+    title.id = titleId;
+    title.textContent = opts.title || tr('common.confirm', '确认');
+    dialog.setAttribute('aria-labelledby', titleId);
+
+    const message = document.createElement('p');
+    message.className = 'app-confirm-message';
+    message.textContent = opts.message || '';
+    dialog.append(title, message);
+
+    if (opts.detail) {
+      const detail = document.createElement('p');
+      detail.className = 'app-confirm-detail';
+      detail.textContent = opts.detail;
+      dialog.appendChild(detail);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'confirm-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'btn btn-secondary';
+    cancelBtn.textContent = opts.cancelText || tr('common.cancel', '取消');
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = opts.danger ? 'btn btn-danger' : 'btn btn-primary';
+    okBtn.textContent = opts.confirmText || tr('common.confirm', '确认');
+    actions.append(cancelBtn, okBtn);
+    dialog.appendChild(actions);
+    document.body.appendChild(dialog);
+
+    return new Promise((resolve) => {
+      let result = false;
+      cancelBtn.addEventListener('click', () => dialog.close());
+      okBtn.addEventListener('click', () => { result = true; dialog.close(); });
+      dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
+      dialog.addEventListener('close', () => { dialog.remove(); resolve(result); }, { once: true });
+      // 推迟到下一任务打开：若由 Esc keydown 触发，该按键的关闭请求会立即取消同步打开的对话框
+      setTimeout(() => {
+        dialog.showModal();
+        (opts.danger ? cancelBtn : okBtn).focus();
+      }, 0);
+    });
+  }
+  window.showConfirm = showConfirm;
+
+  /**
+   * 未保存改动离开保护。isDirty 返回 true 时刷新/关闭页面会触发浏览器确认。
+   * @param {() => boolean} isDirty
+   * @returns {() => void} 解除保护
+   */
+  function guardUnsavedChanges(isDirty) {
+    const handler = (e) => {
+      if (!isDirty()) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }
+  window.guardUnsavedChanges = guardUnsavedChanges;
+})();
+
+// ============================================================
+// 协议配置管理模块（动态加载配置，单一数据源）
+// ============================================================
+(function () {
+  let protocolsCache = null;
+
+  // 复用公共工具（DRY）：真实实现由下方公共工具模块导出到 window.escapeHtml
+  const escapeHtml = (str) => window.escapeHtml(str);
+
+  // 协议显示名由 locales 提供（与 model-test.js 共用词条）
+  const PROTOCOL_LABEL_KEYS = {
+    anthropic: 'modelTest.clientProtocolAnthropic',
+    codex: 'modelTest.clientProtocolCodex',
+    openai: 'modelTest.clientProtocolOpenAI',
+    gemini: 'modelTest.clientProtocolGemini'
+  };
+
+  function protocolDisplayName(value) {
+    const key = PROTOCOL_LABEL_KEYS[value];
+    const label = key && typeof window.t === 'function' ? window.t(key) : '';
+    return label && label !== key ? label : value;
+  }
+
+  /**
+   * 获取协议列表（带缓存）。后端返回协议名数组，显示名由前端 locales 补齐。
+   * @returns {Promise<Array<{value: string, display_name: string}>>}
+   */
+  async function getProtocols() {
+    if (protocolsCache) {
+      return protocolsCache;
+    }
+
+    const values = await fetchData('/public/protocols');
+    protocolsCache = (Array.isArray(values) ? values : []).map(value => ({
+      value,
+      display_name: protocolDisplayName(value)
+    }));
+    return protocolsCache;
+  }
+
+  /**
+   * 渲染协议下拉选择框
+   * @param {string} selectId - select元素ID
+   * @param {string} selectedValue - 选中的值（默认'anthropic'）
+   */
+  async function renderProtocolSelect(selectId, selectedValue = 'anthropic') {
+    const select = document.getElementById(selectId);
+    if (!select) {
+      console.error('select element not found:', selectId);
+      return;
+    }
+
+    const protocols = await getProtocols();
+
+    select.innerHTML = protocols.map(protocol => `
+      <option value="${escapeHtml(protocol.value)}"
+              ${protocol.value === selectedValue ? 'selected' : ''}>
+        ${escapeHtml(protocol.display_name)}
+      </option>
+    `).join('');
+  }
+
+  // 导出到全局作用域
+  window.ProtocolManager = {
+    getProtocols,
+    renderProtocolSelect
+  };
+})();
+
+// ============================================================
+// 公共工具函数（DRY原则：消除重复代码）
+// ============================================================
+(function () {
+  /**
+   * 防抖函数
+   * @param {Function} func - 要防抖的函数
+   * @param {number} wait - 等待时间(ms)
+   * @returns {Function} 防抖后的函数
+   */
+  function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+      const later = () => {
+        clearTimeout(timeout);
+        func(...args);
+      };
+      clearTimeout(timeout);
+      timeout = setTimeout(later, wait);
+    };
+  }
+
+  function bindFilterApplyInputs(options = {}) {
+    const apply = typeof options.apply === 'function' ? options.apply : null;
+    if (!apply) return;
+
+    const debounceMs = Number.isFinite(options.debounceMs) ? options.debounceMs : 500;
+    const debouncedApply = debounce(apply, debounceMs);
+
+    (Array.isArray(options.debounceInputIds) ? options.debounceInputIds : []).forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('input', debouncedApply);
+    });
+
+    (Array.isArray(options.enterInputIds) ? options.enterInputIds : []).forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          apply();
+        }
+      });
+    });
+  }
+
+  const delegatedActionConfig = {
+    click: {
+      selector: '[data-action]',
+      datasetKey: 'action'
+    },
+    change: {
+      selector: '[data-change-action]',
+      datasetKey: 'changeAction'
+    },
+    input: {
+      selector: '[data-input-action]',
+      datasetKey: 'inputAction'
+    }
+  };
+
+  function initDelegatedActions(options = {}) {
+    const root = options.root || document;
+    const boundElement = options.boundElement || document.body;
+    const boundKey = options.boundKey;
+
+    if (!root || !boundElement || !boundElement.dataset || !boundKey) {
+      return false;
+    }
+
+    if (boundElement.dataset[boundKey]) {
+      return false;
+    }
+
+    Object.entries(delegatedActionConfig).forEach(([eventType, config]) => {
+      const handlers = options[eventType];
+      if (!handlers || typeof handlers !== 'object') return;
+
+      root.addEventListener(eventType, (event) => {
+        const eventTarget = event.target;
+        if (!eventTarget || typeof eventTarget.closest !== 'function') return;
+
+        const actionTarget = eventTarget.closest(config.selector);
+        if (!actionTarget) return;
+
+        const actionName = actionTarget.dataset[config.datasetKey];
+        const handler = handlers[actionName];
+        if (typeof handler === 'function') {
+          handler(actionTarget, event);
+        }
+      });
+    });
+
+    boundElement.dataset[boundKey] = '1';
+    return true;
+  }
+
+  // defer 脚本执行期间 readyState 已是 interactive 但 DOMContentLoaded 未触发，
+  // 只能在 ui.js 自身执行时注册监听；导航计时用于识别已触发过的情况。
+  const domContentLoaded = new Promise((resolve) => {
+    const nav = typeof performance !== 'undefined' && performance.getEntriesByType
+      ? performance.getEntriesByType('navigation')[0]
+      : null;
+    if (document.readyState === 'complete' || (nav && nav.domContentLoadedEventEnd > 0)) {
+      resolve();
+      return;
+    }
+    document.addEventListener('DOMContentLoaded', () => resolve(), { once: true });
+  });
+
+  function initPageBootstrap(options = {}) {
+    const run = typeof options.run === 'function' ? options.run : () => {};
+
+    const execute = async () => {
+      // 顶栏先按登录时缓存的角色立即渲染，不等 session 往返，否则每次切页顶栏都会闪现
+      const cachedRole = window.getWebRole();
+      if (options.topbarKey && typeof window.initTopbar === 'function') {
+        window.initTopbar(options.topbarKey);
+      }
+
+	  const session = await window.fetchDataWithAuth('/dashboard/session');
+	  if (session && session.role) localStorage.setItem(window.WebAuth.ROLE_KEY, session.role);
+      window.webSession = session;
+      document.body.classList.toggle('web-hide-channels', window.shouldHideChannels());
+	  const restrictedPages = new Set(['channels', 'tokens', 'settings']);
+	  if (window.isAPITokenRole() && restrictedPages.has(options.topbarKey)) {
+	    window.location.replace('/web/index.html');
+	    return;
+	  }
+      if (options.translate !== false && window.i18n && typeof window.i18n.translatePage === 'function') {
+        window.i18n.translatePage();
+      }
+
+      if (options.topbarKey && typeof window.initTopbar === 'function' && window.getWebRole() !== cachedRole) {
+        window.initTopbar(options.topbarKey);
+      }
+
+      // 页面脚本之后的 defer 依赖（如 echarts）在 DOMContentLoaded 前才保证执行完
+      await domContentLoaded;
+      await run();
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => {
+        void execute();
+      }, { once: true });
+      return;
+    }
+
+    void execute();
+  }
+
+  function getFilterControlConfig(config) {
+    if (typeof config === 'string') {
+      return { id: config, defaultValue: '', trim: false };
+    }
+    return {
+      id: config && config.id ? config.id : '',
+      defaultValue: config && config.defaultValue !== undefined ? config.defaultValue : '',
+      trim: Boolean(config && config.trim)
+    };
+  }
+
+  function readFilterControlValues(fieldMap = {}) {
+    const values = {};
+    Object.entries(fieldMap).forEach(([key, config]) => {
+      const { id, defaultValue, trim } = getFilterControlConfig(config);
+      const rawValue = document.getElementById(id)?.value;
+      const normalizedValue = typeof rawValue === 'string' && trim ? rawValue.trim() : rawValue;
+      values[key] = normalizedValue || defaultValue;
+    });
+    return values;
+  }
+
+  function applyFilterControlValues(values = {}, fieldMap = {}) {
+    Object.entries(fieldMap).forEach(([key, config]) => {
+      const { id, defaultValue } = getFilterControlConfig(config);
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.value = values[key] || defaultValue;
+    });
+  }
+
+  function persistFilterState(options = {}) {
+    const values = options.values !== undefined
+      ? options.values
+      : (typeof options.getValues === 'function' ? options.getValues() : {});
+
+    if (!window.FilterState) {
+      return values;
+    }
+
+    if (options.key) {
+      window.FilterState.save(options.key, values);
+    }
+
+    if (options.fields) {
+      const historyOptions = {
+        values,
+        fields: options.fields
+      };
+
+      ['search', 'pathname', 'preserveExistingParams', 'historyMethod'].forEach((key) => {
+        if (options[key] !== undefined) {
+          historyOptions[key] = options[key];
+        }
+      });
+
+      window.FilterState.writeHistory(historyOptions);
+    }
+
+    return values;
+  }
+
+  function initSavedDateRangeFilter(options = {}) {
+    if (typeof window.initDateRangeSelector !== 'function') return null;
+
+    const selectId = options.selectId;
+    if (!selectId) return null;
+
+    const defaultValue = typeof options.defaultValue === 'string' && options.defaultValue
+      ? options.defaultValue
+      : 'today';
+    const restoredValue = typeof options.restoredValue === 'string' && options.restoredValue
+      ? options.restoredValue
+      : defaultValue;
+    const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
+    const selectorOptions = {};
+    if (options.includeCustom === true) {
+      selectorOptions.includeCustom = true;
+    }
+    if (options.includeAll === true) {
+      selectorOptions.includeAll = true;
+    }
+    if (Array.isArray(options.values)) {
+      selectorOptions.values = options.values;
+    }
+    if (typeof options.restoredValue === 'string' && options.restoredValue) {
+      selectorOptions.restoredValue = restoredValue;
+    }
+    if (options.customRange) {
+      selectorOptions.customRange = options.customRange;
+    }
+    if (options.customPickerContainerId) {
+      selectorOptions.customPickerContainerId = options.customPickerContainerId;
+    }
+
+    window.initDateRangeSelector(selectId, defaultValue, onChange, selectorOptions);
+
+    const el = document.getElementById(selectId);
+    if (el) {
+      el.value = restoredValue;
+    }
+    return el;
+  }
+
+  function fillAuthTokenSelect(selectId, tokens, opts) {
+    const o = opts || {};
+    const select = document.getElementById(selectId);
+    if (select && tokens.length > 0) {
+      select.innerHTML = `<option value="">${window.t('stats.allTokens')}</option>`;
+      tokens.forEach(token => {
+        const option = document.createElement('option');
+        option.value = token.id;
+        option.textContent = token.description || `${o.tokenPrefix || 'Token #'}${token.id}`;
+        select.appendChild(option);
+      });
+      if (o.restoreValue) select.value = o.restoreValue;
+    }
+  }
+
+  async function initAuthTokenFilter(options = {}) {
+    const selectId = options.selectId;
+    if (!selectId) return [];
+
+    if (window.isAPITokenRole()) {
+      return [];
+    }
+
+    if (Array.isArray(options.preloadedTokens)) {
+      fillAuthTokenSelect(selectId, options.preloadedTokens, options.loadOptions);
+      const el = document.getElementById(selectId);
+      if (!el) return options.preloadedTokens;
+      el.value = options.value || '';
+      if (typeof options.onChange === 'function') {
+        el.addEventListener('change', options.onChange);
+      }
+      return options.preloadedTokens;
+    }
+
+    if (typeof window.loadAuthTokensIntoSelect !== 'function') return [];
+
+    const tokens = await window.loadAuthTokensIntoSelect(selectId, options.loadOptions);
+    const el = document.getElementById(selectId);
+    if (!el) return tokens;
+
+    el.value = options.value || '';
+    if (typeof options.onChange === 'function') {
+      el.addEventListener('change', options.onChange);
+    }
+
+    return tokens;
+  }
+
+  /**
+   * @brief 计算单条请求的输出速度（tok/s），与后端 speedGenerationSeconds 同口径
+   * @param outputTokens 输出 Token 数（含推理 Token）
+   * @param durationSeconds 总耗时（秒）
+   * @param firstByteSeconds 首字耗时（秒），非流式传 0
+   * @param reasoningTokens 推理 Token 数；大于 0 时隐藏推理在首字前生成，按总耗时计算
+   * @return 输出速度；无输出或耗时无效时返回 null
+   * @details 仅首字 ≤ 3 秒、无推理 Token 的流式请求扣除首字；首字过慢视为首字前有隐藏生成，按总耗时计算以免高估。
+   */
+  function calculateTokenSpeed(outputTokens, durationSeconds, firstByteSeconds, reasoningTokens) {
+    const output = Number(outputTokens);
+    const duration = Number(durationSeconds);
+    if (!Number.isFinite(output) || output <= 0 || !Number.isFinite(duration) || duration <= 0) {
+      return null;
+    }
+
+    let tokenDuration = duration;
+    const firstByte = Number(firstByteSeconds);
+    if (!(Number(reasoningTokens) > 0) && Number.isFinite(firstByte) && firstByte > 0 && firstByte <= 3 && firstByte < duration) {
+      const generationDuration = duration - firstByte;
+      if (generationDuration >= 1) {
+        tokenDuration = generationDuration;
+      }
+    }
+
+    return output / tokenDuration;
+  }
+
+  // 缓存命中率 = 缓存读 /（输入 + 缓存读 + 缓存建）；无缓存读时返回 null
+  function calculateCacheHitRate(inputTokens, cacheReadTokens, cacheCreationTokens) {
+    const read = Number(cacheReadTokens) || 0;
+    const total = (Number(inputTokens) || 0) + read + (Number(cacheCreationTokens) || 0);
+    if (total <= 0 || read <= 0) return null;
+    return read / total;
+  }
+
+  // 质量指标（耗时、速度、成功率、缓存命中率、RPM）统一四档 good / normal / warn / bad → 绿 / 默认文字色 / 橙 / 红，无效值为空串。
+  // 请求数、Token 数等量值不分档，保持中性色。
+  // 耗时分级：越小越好
+  function timingLevel(seconds, greenThreshold, normalThreshold, warningThreshold) {
+    const value = Number(seconds);
+    if (!Number.isFinite(value) || value <= 0) return '';
+    if (value <= greenThreshold) return 'good';
+    if (value <= normalThreshold) return 'normal';
+    if (value <= warningThreshold) return 'warn';
+    return 'bad';
+  }
+
+  const METRIC_LEVEL_COLORS = { good: 'var(--success-600)', normal: 'var(--neutral-700)', warn: 'var(--warning-600)', bad: 'var(--error-600)' };
+
+  function getFirstByteTimingLevel(seconds) {
+    return timingLevel(seconds, 3, 6, 10);
+  }
+
+  function getDurationTimingLevel(seconds) {
+    return timingLevel(seconds, 10, 30, 60);
+  }
+
+  function metricLevelColor(level) {
+    return METRIC_LEVEL_COLORS[level] || 'var(--neutral-600)';
+  }
+
+  function getFirstByteTimingColor(seconds) {
+    return metricLevelColor(getFirstByteTimingLevel(seconds));
+  }
+
+  function getDurationTimingColor(seconds) {
+    return metricLevelColor(getDurationTimingLevel(seconds));
+  }
+
+  // 正值分级：越大越好，≤0 视为无数据
+  function positiveLevel(value, greenThreshold, normalThreshold, warningThreshold) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    if (n >= greenThreshold) return 'good';
+    if (n >= normalThreshold) return 'normal';
+    if (n >= warningThreshold) return 'warn';
+    return 'bad';
+  }
+
+  // 输出速度分级（tok/s）：≥100 / 50–100 / 20–50 / <20
+  function getSpeedLevel(tokensPerSecond) {
+    return positiveLevel(tokensPerSecond, 100, 50, 20);
+  }
+
+  function getSpeedColor(tokensPerSecond) {
+    return metricLevelColor(getSpeedLevel(tokensPerSecond));
+  }
+
+  // RPM 分级（看渠道吞吐）：≥20 / 10–20 / 5–10 / <5
+  function getRpmColor(rpm) {
+    return metricLevelColor(positiveLevel(rpm, 20, 10, 5));
+  }
+
+  // 比例分级（0~1）：越大越好
+  function ratioLevel(ratio, greenThreshold, normalThreshold, warningThreshold) {
+    const value = Number(ratio);
+    if (ratio === null || ratio === undefined || !Number.isFinite(value) || value < 0) return '';
+    if (value >= greenThreshold) return 'good';
+    if (value >= normalThreshold) return 'normal';
+    if (value >= warningThreshold) return 'warn';
+    return 'bad';
+  }
+
+  // 成功率：≥99% / 95–99% / 80–95% / <80%
+  function getSuccessRateLevel(ratio) {
+    return ratioLevel(ratio, 0.99, 0.95, 0.8);
+  }
+
+  function getSuccessRateColor(ratio) {
+    return metricLevelColor(getSuccessRateLevel(ratio));
+  }
+
+  // 缓存命中率：≥85% / 70–85% / 50–70% / <50%
+  function getCacheHitRateLevel(ratio) {
+    return ratioLevel(ratio, 0.85, 0.7, 0.5);
+  }
+
+  function getCacheHitRateColor(ratio) {
+    return metricLevelColor(getCacheHitRateLevel(ratio));
+  }
+
+  /**
+   * 格式化成本（美元）
+   * @param {number} cost - 成本值
+   * @param {number} [decimalPlaces] - 小数位数；省略时默认 3 位，不足 $0.01 的小额保留两位有效数字（最多 6 位）
+   * @returns {string} 格式化后的字符串
+   */
+  function formatCost(cost, decimalPlaces) {
+    const value = Number(cost);
+    if (!Number.isFinite(value)) return '';
+    if (Number.isInteger(decimalPlaces)) {
+      const places = Math.max(0, Math.min(6, decimalPlaces));
+      if (value === 0) return places > 0 ? '$0.' + '0'.repeat(places) : '$0';
+      return '$' + value.toFixed(places);
+    }
+    if (value === 0) return '$0';
+    const abs = Math.abs(value);
+    if (value > 0 && abs < 0.000001) return '<$0.000001';
+    if (abs >= 0.01) return '$' + value.toFixed(3);
+    // 小额成本按有效数字展开，避免单次请求显示成 $0.000
+    const places = Math.min(6, Math.ceil(-Math.log10(abs)) + 1);
+    return '$' + value.toFixed(places).replace(/0+$/, '');
+  }
+
+  /**
+   * 格式化标准成本/倍率后成本对
+   * 倍率为 1 或两值相等时仅显示标准成本，否则显示 "标准/倍率后"
+   * @param {number} standard - 标准成本
+   * @param {number|null|undefined} effective - 倍率后成本
+   * @returns {string}
+   */
+  function formatCostPair(standard, effective) {
+    const s = Number(standard) || 0;
+    const e = (effective === undefined || effective === null) ? s : (Number(effective) || 0);
+    if (Math.abs(e - s) < 1e-9) return formatCost(s);
+    return formatCost(s) + '/' + formatCost(e);
+  }
+
+  /**
+   * 格式化倍率文本
+   * @param {number} multiplier - 倍率
+   * @returns {string}
+   */
+  function formatCostMultiplier(multiplier) {
+    const value = Number(multiplier);
+    if (!Number.isFinite(value) || value < 0 || Math.abs(value - 1) < 1e-9) return '';
+    return formatCostMultiplierValue(value);
+  }
+
+  // 区间端点必须显式显示 1x；单值倍率为 1 时才由上层整体隐藏。
+  function formatCostMultiplierValue(multiplier) {
+    const value = Number(multiplier);
+    if (!Number.isFinite(value) || value < 0) return '';
+    return `${Number(value.toFixed(2)).toString()}x`;
+  }
+
+  /**
+   * 解析标准成本/倍率后成本显示信息
+   * @param {number} standard - 标准成本
+   * @param {number|null|undefined} effective - 倍率后成本
+   * @returns {{standardCost:number,effectiveCost:number,hasMultiplier:boolean,multiplier:number,multiplierText:string}}
+   */
+  function getCostDisplayInfo(standard, effective) {
+    const standardCost = Number(standard) || 0;
+    if (!(standardCost > 0)) {
+      return {
+        standardCost: 0,
+        effectiveCost: 0,
+        hasMultiplier: false,
+        multiplier: 1,
+        multiplierText: ''
+      };
+    }
+
+    const hasExplicitEffectiveCost = effective !== undefined && effective !== null;
+    const effectiveValue = hasExplicitEffectiveCost ? (Number(effective) || 0) : standardCost;
+    const effectiveCost = hasExplicitEffectiveCost ? effectiveValue : standardCost;
+    const hasMultiplier = Math.abs(effectiveCost - standardCost) >= 1e-9;
+    const multiplier = hasMultiplier ? (effectiveCost / standardCost) : 1;
+
+    return {
+      standardCost,
+      effectiveCost,
+      hasMultiplier,
+      multiplier,
+      multiplierText: formatCostMultiplier(multiplier)
+    };
+  }
+
+  /**
+   * 构建两行成本显示HTML
+   * @param {number} standard - 标准成本
+   * @param {number|null|undefined} effective - 倍率后成本
+   * @param {{tone?: 'warning'|'success'|'neutral', decimalPlaces?: number}} options - 样式配置
+   * @returns {string}
+   */
+  function buildCostStackHtml(standard, effective, options = {}) {
+    const info = getCostDisplayInfo(standard, effective);
+    if (!(info.standardCost > 0)) return '';
+
+    const tone = options.tone === 'success' || options.tone === 'neutral' ? options.tone : 'warning';
+    const inline = options.inline === true;
+    const classes = ['cost-stack', `cost-stack--${tone}`];
+    if (info.hasMultiplier) {
+      classes.push('cost-stack--with-multiplier');
+    }
+    if (inline) {
+      classes.push('cost-stack--inline');
+    }
+
+    const format = cost => formatCost(cost, options.decimalPlaces);
+
+    if (!info.hasMultiplier) {
+      return `<span class="${classes.join(' ')}"><span class="cost-stack-effective">${format(info.effectiveCost)}</span></span>`;
+    }
+
+    if (inline) {
+      return `<span class="${classes.join(' ')}"><span class="cost-stack-standard">${format(info.standardCost)}</span><span class="cost-stack-effective">${format(info.effectiveCost)}</span></span>`;
+    }
+
+    return `<span class="${classes.join(' ')}"><span class="cost-stack-standard">${format(info.standardCost)}</span><span class="cost-stack-effective">${format(info.effectiveCost)}</span></span>`;
+  }
+
+  /**
+   * 构建单元格右上角倍率角标
+   * @param {number} multiplierMin - 倍率区间下限
+   * @param {number} multiplierMax - 倍率区间上限（缺省或等于下限时按单值显示）
+   * @returns {string}
+   */
+  function buildCornerMultiplierBadge(multiplierMin, multiplierMax) {
+    const lo = Number(multiplierMin);
+    if (!Number.isFinite(lo)) return '';
+    const hi = Number(multiplierMax);
+    let text;
+    if (Number.isFinite(hi) && Math.abs(hi - lo) >= 1e-9) {
+      text = `${formatCostMultiplierValue(lo)}–${formatCostMultiplierValue(hi)}`;
+    } else {
+      text = formatCostMultiplier(lo);
+    }
+    if (!text) return '';
+    return `<sup class="cell-multiplier-badge">${text}</sup>`;
+  }
+
+  const COMPACT_NUMBER_UNITS = ['K', 'M', 'B'];
+
+  // 格式化数字显示（通用：K/M/B缩写）；一位小数舍入后满 1000 进到下一单位，不出现 1000.0K
+  function formatNumber(num) {
+    const n = Number(num);
+    if (!Number.isFinite(n)) return '0';
+    if (n < 1000) return n.toString();
+    let unitIndex = 0;
+    let text = (n / 1000).toFixed(1);
+    while (Number(text) >= 1000 && unitIndex < COMPACT_NUMBER_UNITS.length - 1) {
+      unitIndex++;
+      text = (n / 1000 ** (unitIndex + 1)).toFixed(1);
+    }
+    return text + COMPACT_NUMBER_UNITS[unitIndex];
+  }
+
+  /**
+   * 百分比统一格式：保留 1 位小数，0/100 等整数也不省略（100.0%）
+   * @param {number} ratio - 0~1 的比例
+   * @returns {string} 无效值返回 '--'
+   */
+  function formatPercent(ratio) {
+    const n = Number(ratio);
+    if (ratio === null || ratio === undefined || !Number.isFinite(n)) return '--';
+    return `${(n * 100).toFixed(1)}%`;
+  }
+
+  /**
+   * HTML转义（防XSS）
+   * @param {string} str - 需要转义的字符串
+   * @returns {string} 转义后的安全字符串
+   */
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // 简单显示/隐藏切换（用于日志/测试响应块等）
+  function toggleResponse(elementId) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  }
+
+  // 导出到全局作用域
+  window.debounce = debounce;
+  window.bindFilterApplyInputs = bindFilterApplyInputs;
+  window.initDelegatedActions = initDelegatedActions;
+  window.initPageBootstrap = initPageBootstrap;
+  window.readFilterControlValues = readFilterControlValues;
+  window.applyFilterControlValues = applyFilterControlValues;
+  window.persistFilterState = persistFilterState;
+  window.initSavedDateRangeFilter = initSavedDateRangeFilter;
+  window.fillAuthTokenSelect = fillAuthTokenSelect;
+  window.initAuthTokenFilter = initAuthTokenFilter;
+  window.calculateTokenSpeed = calculateTokenSpeed;
+  window.calculateCacheHitRate = calculateCacheHitRate;
+  window.formatCost = formatCost;
+  window.formatCostPair = formatCostPair;
+  window.getCostDisplayInfo = getCostDisplayInfo;
+  window.buildCostStackHtml = buildCostStackHtml;
+  window.buildCornerMultiplierBadge = buildCornerMultiplierBadge;
+  window.getFirstByteTimingColor = getFirstByteTimingColor;
+  window.getDurationTimingColor = getDurationTimingColor;
+  window.getFirstByteTimingLevel = getFirstByteTimingLevel;
+  window.getDurationTimingLevel = getDurationTimingLevel;
+  window.getSpeedLevel = getSpeedLevel;
+  window.getSpeedColor = getSpeedColor;
+  window.getRpmColor = getRpmColor;
+  window.getSuccessRateLevel = getSuccessRateLevel;
+  window.getSuccessRateColor = getSuccessRateColor;
+  window.getCacheHitRateLevel = getCacheHitRateLevel;
+  window.getCacheHitRateColor = getCacheHitRateColor;
+  window.formatNumber = formatNumber;
+  window.formatPercent = formatPercent;
+  window.escapeHtml = escapeHtml;
+  window.toggleResponse = toggleResponse;
+
+  // 页面自动刷新（基于 system_settings.auto_refresh_interval_seconds）
+  // 用法：const ar = window.createAutoRefresh({ load: () => loadStats() }); ar.init();
+  // 行为：间隔>0 启动 setInterval；tick 时若 document.hidden 或 .modal.show 存在则跳过；
+  //       visibilitychange 隐藏时 stop，恢复时立即刷新一次并重启。
+  const AUTO_REFRESH_CACHE_KEY = '__autoRefreshIntervalSec';
+  const AUTO_REFRESH_CACHE_TTL_MS = 60 * 1000;
+
+  async function fetchAutoRefreshIntervalSec() {
+    if (window.isAPITokenRole()) return 0;
+    try {
+      const cached = window.sessionStorage?.getItem(AUTO_REFRESH_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && typeof parsed.value === 'number' && Date.now() - parsed.ts < AUTO_REFRESH_CACHE_TTL_MS) {
+          return parsed.value;
+        }
+      }
+    } catch (_) { /* 忽略 sessionStorage 异常 */ }
+
+    let seconds = 0;
+    try {
+      const fetcher = window.fetchDataWithAuth || window.fetchData;
+      if (typeof fetcher !== 'function') return 0;
+      const data = await fetcher('/admin/settings/auto_refresh_interval_seconds');
+      const n = data ? Number(data.value) : 0;
+      if (Number.isFinite(n) && n > 0) seconds = Math.floor(n);
+    } catch (_) { /* 拉取失败：不刷新 */ }
+
+    try {
+      window.sessionStorage?.setItem(AUTO_REFRESH_CACHE_KEY, JSON.stringify({ value: seconds, ts: Date.now() }));
+    } catch (_) { /* 忽略 */ }
+    return seconds;
+  }
+
+  function createAutoRefresh(options = {}) {
+    const load = typeof options.load === 'function' ? options.load : null;
+    if (!load) {
+      return { init: async () => {}, stop: () => {} };
+    }
+
+    let intervalId = null;
+    let intervalMs = 0;
+    let visibilityHandler = null;
+
+    function shouldSkip() {
+      if (typeof document === 'undefined') return true;
+      if (document.hidden) return true;
+      if (document.querySelector('.modal.show')) return true;
+      return false;
+    }
+
+    function tick() {
+      if (shouldSkip()) return;
+      try {
+        const result = load();
+        if (result && typeof result.catch === 'function') {
+          result.catch(() => { /* 单次失败不影响后续轮询 */ });
+        }
+      } catch (_) { /* 同步异常吞掉 */ }
+    }
+
+    function startTimer() {
+      if (intervalId !== null || intervalMs <= 0) return;
+      intervalId = setInterval(tick, intervalMs);
+    }
+
+    function stopTimer() {
+      if (intervalId !== null) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    }
+
+    function onVisibilityChange() {
+      if (intervalMs <= 0) return;
+      if (document.hidden) {
+        stopTimer();
+      } else {
+        tick();
+        startTimer();
+      }
+    }
+
+    async function init() {
+      const seconds = await fetchAutoRefreshIntervalSec();
+      if (!seconds || seconds <= 0) return;
+      intervalMs = seconds * 1000;
+      visibilityHandler = onVisibilityChange;
+      document.addEventListener('visibilitychange', visibilityHandler);
+      startTimer();
+    }
+
+    function stop() {
+      stopTimer();
+      if (visibilityHandler) {
+        document.removeEventListener('visibilitychange', visibilityHandler);
+        visibilityHandler = null;
+      }
+      intervalMs = 0;
+    }
+
+    return { init, stop };
+  }
+
+  window.createAutoRefresh = createAutoRefresh;
+})();
+
+// ============================================================
+// 通用可搜索下拉选择框组件 (SearchableCombobox)
+// ============================================================
+(function () {
+  /**
+   * 创建可搜索下拉选择框
+   * @param {Object} config - 配置对象
+   * @param {HTMLElement|string} [config.container] - 容器元素或ID（生成模式必需）
+   * @param {string} config.inputId - input 元素 ID
+   * @param {string} config.dropdownId - 下拉框元素 ID
+   * @param {Function} config.getOptions - 获取选项列表的函数，返回 [{value, label, className?}]
+   * @param {Function} config.onSelect - 选中回调 (value, label) => void
+   * @param {Function} [config.onCancel] - 取消选择回调
+   * @param {string} [config.placeholder] - placeholder 文本
+   * @param {string} [config.initialValue] - 初始值
+   * @param {string} [config.initialLabel] - 初始显示文本
+   * @param {number} [config.minWidth] - 最小宽度 (px)
+   * @param {boolean} [config.attachMode] - 附着模式，使用已存在的 HTML 元素
+   * @param {boolean} [config.allowCustomInput] - 允许提交非下拉选项的自定义输入
+   * @param {boolean} [config.commitEmptyAsFirst] - 输入为空回车/失焦时提交第一项（通常为“全部”），覆盖默认的取消/恢复行为
+   * @param {boolean} [config.showAllOptionsOnOpen] - 打开时先展示完整选项，开始输入后再按关键字过滤
+   * @param {number} [config.dropdownMinWidth] - 下拉面板最小宽度；选项带 description 时用于避免说明文字过度折行
+   * @returns {Object} 组件实例
+   */
+  function createSearchableCombobox(config) {
+    const {
+      container: containerArg,
+      inputId,
+      dropdownId,
+      getOptions,
+      onSelect,
+      onCancel,
+      placeholder = '',
+      initialValue = '',
+      initialLabel = '',
+      minWidth = 150,
+      attachMode = false,
+      allowCustomInput = false,
+      commitEmptyAsFirst = false,
+      showAllOptionsOnOpen = false,
+      dropdownMinWidth = 0
+    } = config;
+
+    let input, dropdown, wrapper, dropdownHome, container = null;
+
+    if (attachMode) {
+      // 附着模式：使用已存在的 HTML 元素
+      input = document.getElementById(inputId);
+      dropdown = document.getElementById(dropdownId);
+      if (!input || !dropdown) {
+        console.error('SearchableCombobox: input or dropdown not found in attach mode');
+        return null;
+      }
+      wrapper = input.closest('.filter-combobox-wrapper');
+      dropdownHome = dropdown.parentElement;
+      if (initialLabel) input.value = initialLabel;
+    } else {
+      // 生成模式：创建新的 HTML 结构
+      container = typeof containerArg === 'string'
+        ? document.getElementById(containerArg)
+        : containerArg;
+
+      if (!container) {
+        console.error('SearchableCombobox: container not found');
+        return null;
+      }
+
+      container.innerHTML = `
+        <div class="filter-combobox-wrapper" style="min-width: ${minWidth}px;">
+          <input
+            id="${inputId}"
+            class="filter-select filter-combobox"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="${escapeHtml(placeholder)}"
+            value="${escapeHtml(initialLabel)}"
+          />
+          <div id="${dropdownId}" class="filter-dropdown" role="listbox"></div>
+        </div>
+      `;
+
+      input = document.getElementById(inputId);
+      dropdown = document.getElementById(dropdownId);
+      wrapper = input.closest('.filter-combobox-wrapper');
+      dropdownHome = dropdown.parentElement;
+    }
+
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-haspopup', 'listbox');
+    input.setAttribute('aria-controls', dropdown.id);
+    input.setAttribute('aria-expanded', 'false');
+    dropdown.setAttribute('role', 'listbox');
+
+    let activeIndex = -1;
+    let outsideHandler = null;
+    let repositionHandler = null;
+    let currentValue = initialValue;
+
+    function clearOutsideHandler() {
+      if (!outsideHandler) return;
+      document.removeEventListener('mousedown', outsideHandler, true);
+      outsideHandler = null;
+    }
+
+    function clearRepositionHandler() {
+      if (!repositionHandler) return;
+      window.removeEventListener('resize', repositionHandler, true);
+      window.removeEventListener('scroll', repositionHandler, true);
+      repositionHandler = null;
+    }
+
+    function closeDropdown() {
+      dropdown.style.display = 'none';
+      dropdown.dataset.open = '0';
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+      activeIndex = -1;
+      clearOutsideHandler();
+      clearRepositionHandler();
+      if (dropdownHome && dropdown.parentElement !== dropdownHome) {
+        dropdownHome.appendChild(dropdown);
+      }
+    }
+
+    function beginPick() {
+      if (input.dataset.pickActive === '1') return;
+      input.dataset.pickActive = '1';
+      input.dataset.prevInputValue = input.value;
+      input.dataset.prevValue = currentValue;
+      delete input.dataset.pickEdited;
+      // 非自定义输入模式始终清空；自定义输入模式下：
+      // - 当前值为空（全量态）→ 清空，避免把“所有渠道”这类占位标签当成过滤关键字
+      // - 当前值精确命中下拉选项（用户已从下拉选中而非输入自定义词）→ 清空，便于再次浏览全部选项
+      // - 其余情况（自定义搜索词）→ 保留以便继续编辑
+      let shouldClear = !allowCustomInput;
+      if (allowCustomInput) {
+        const trimmedCurrent = String(currentValue || '').trim();
+        if (!trimmedCurrent) {
+          shouldClear = true;
+        } else {
+          const trimmedLower = trimmedCurrent.toLowerCase();
+          const matchesOption = getOptions().some((opt) => {
+            const v = String(opt.value || '').trim().toLowerCase();
+            const l = String(opt.label || '').trim().toLowerCase();
+            return v === trimmedLower || l === trimmedLower;
+          });
+          if (matchesOption) shouldClear = true;
+        }
+      }
+      if (shouldClear) {
+        // 清空便于搜索，用 placeholder 保留当前选中项提示
+        input.dataset.prevPlaceholder = input.placeholder;
+        if (input.value) input.placeholder = input.value;
+        input.value = '';
+      }
+      activeIndex = -1;
+    }
+
+    function endPick() {
+      if (input.dataset.prevPlaceholder !== undefined) input.placeholder = input.dataset.prevPlaceholder;
+      delete input.dataset.prevPlaceholder;
+      delete input.dataset.pickActive;
+      delete input.dataset.prevInputValue;
+      delete input.dataset.prevValue;
+      delete input.dataset.pickEdited;
+    }
+
+    function cancelPick() {
+      if (input.dataset.pickActive !== '1') {
+        closeDropdown();
+        return;
+      }
+
+      const prevInputValue = input.dataset.prevInputValue ?? '';
+      const prevValue = input.dataset.prevValue ?? '';
+
+      input.value = prevInputValue;
+      currentValue = prevValue;
+
+      endPick();
+
+      closeDropdown();
+      if (onCancel) onCancel();
+    }
+
+    function commitValue(value, label) {
+      currentValue = value;
+      input.value = label;
+
+      endPick();
+
+      closeDropdown();
+      if (onSelect) onSelect(value, label);
+    }
+
+    function commitOption(option) {
+      if (!option || option.disabled === true) return false;
+      commitValue(option.value, option.label);
+      return true;
+    }
+
+    function commitFirstMatchedOrCancel() {
+      const keyword = input.value.trim();
+      if (!keyword) {
+        if (commitEmptyAsFirst) {
+          // 空输入回车/失焦时提交第一项（约定为“全部”），无论之前是否有选中值。
+          const option = getOptions().find(opt => opt.disabled !== true);
+          if (option) {
+            commitOption(option);
+            return;
+          }
+        }
+        if (allowCustomInput) {
+          // 自定义输入模式下，若打开下拉前已存在选中值（即本次仅是浏览/清空显示），
+          // 视为取消并恢复之前的选择；只有从空态主动确认空值时才清除筛选。
+          const prevInputValue = String(input.dataset.prevInputValue ?? '').trim();
+          const prevValue = String(input.dataset.prevValue ?? '').trim();
+          if (prevInputValue || prevValue) {
+            cancelPick();
+            return;
+          }
+          commitValue('', '');
+          return;
+        }
+        cancelPick();
+        return;
+      }
+      if (allowCustomInput) {
+        const normalizedKeyword = keyword.toLowerCase();
+        const exactOption = getOptions().find((opt) => {
+          if (opt.disabled === true) return false;
+          const label = String(opt.label || '').trim().toLowerCase();
+          const value = String(opt.value || '').trim().toLowerCase();
+          return label === normalizedKeyword || value === normalizedKeyword;
+        });
+        if (exactOption) {
+          commitOption(exactOption);
+          return;
+        }
+        commitValue(keyword, keyword);
+        return;
+      }
+      const items = getDropdownItems();
+      const option = items.find(item => item.disabled !== true);
+      if (option) {
+        commitOption(option);
+        return;
+      }
+      cancelPick();
+    }
+
+    function getDropdownItems() {
+      const allOptions = getOptions();
+      if (showAllOptionsOnOpen && input.dataset.pickActive === '1' && input.dataset.pickEdited !== '1') {
+        return allOptions;
+      }
+      const keyword = input.value.trim().toLowerCase();
+      if (!keyword) return allOptions;
+      return allOptions.filter(opt =>
+        String(opt.label).toLowerCase().includes(keyword) ||
+        String(opt.value).toLowerCase().includes(keyword)
+      );
+    }
+
+    function renderDropdown() {
+      if (dropdown.dataset.open !== '1') return;
+
+      const items = getDropdownItems();
+      dropdown.innerHTML = '';
+
+      if (activeIndex >= items.length) activeIndex = items.length - 1;
+      if (activeIndex < -1) activeIndex = -1;
+
+      items.forEach((item, idx) => {
+        const row = document.createElement('div');
+        row.className = 'filter-dropdown-item';
+        row.setAttribute('role', 'option');
+        row.id = `${dropdown.id}-option-${idx}`;
+        row.dataset.value = item.value;
+        row.dataset.index = String(idx);
+        const label = document.createElement('span');
+        label.className = 'filter-dropdown-item__label';
+        label.textContent = item.label;
+        label.title = item.label;
+        let content = [label];
+        if (item.description) {
+          // 图文选项：标题 + 说明两行
+          row.classList.add('filter-dropdown-item--described');
+          const description = document.createElement('span');
+          description.className = 'filter-dropdown-item__desc';
+          description.textContent = item.description;
+          content = [label, description];
+        }
+        // icon 为返回 DOM 节点的函数：每次渲染生成新节点，避免共享节点在重绘时被移走
+        const icon = typeof item.icon === 'function' ? item.icon() : null;
+        if (icon) {
+          row.classList.add('filter-dropdown-item--with-icon');
+          const text = document.createElement('span');
+          text.className = 'filter-dropdown-item__text';
+          text.append(...content);
+          row.append(icon, text);
+        } else {
+          row.append(...content);
+        }
+        if (item.className) {
+          row.classList.add(...String(item.className).split(/\s+/).filter(Boolean));
+        }
+        if (item.disabled === true) {
+          row.classList.add('filter-dropdown-item--disabled');
+          row.setAttribute('aria-disabled', 'true');
+        }
+
+        const selected = item.value === currentValue;
+        row.setAttribute('aria-selected', selected ? 'true' : 'false');
+        if (selected) row.classList.add('selected');
+        if (idx === activeIndex) row.classList.add('active');
+
+        // Keep the option in the DOM until the click event is dispatched.
+        // Firefox retargets a click to the dialog when a mousedown handler
+        // removes the clicked node immediately; dialog backdrop handlers then
+        // mistake a normal selection for an outside click and close the modal.
+        row.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        row.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          commitOption(item);
+        });
+
+        dropdown.appendChild(row);
+      });
+
+      if (activeIndex >= 0 && activeIndex < items.length) {
+        input.setAttribute('aria-activedescendant', `${dropdown.id}-option-${activeIndex}`);
+      } else {
+        input.removeAttribute('aria-activedescendant');
+      }
+    }
+
+    function positionDropdown() {
+      if (dropdown.dataset.open !== '1') return;
+      const rect = input.getBoundingClientRect();
+      const margin = 6;
+
+      const viewportWidth = window.innerWidth || 0;
+      const availableWidth = Math.max(0, viewportWidth - margin * 2);
+      const baseWidth = Math.min(Math.max(rect.width, dropdownMinWidth), availableWidth);
+      dropdown.style.width = `${Math.ceil(baseWidth)}px`;
+      // 只按标题扩宽，说明文字仍可折行；计入图标、内边距和滚动条。
+      const chromeWidth = dropdown.offsetWidth - dropdown.clientWidth;
+      let contentWidth = baseWidth;
+      dropdown.querySelectorAll('.filter-dropdown-item__label').forEach((label) => {
+        const row = label.closest('.filter-dropdown-item');
+        // scrollWidth 会取整，少于一个像素的缺口也会触发 ellipsis。
+        const textRange = document.createRange();
+        textRange.selectNodeContents(label);
+        contentWidth = Math.max(contentWidth, textRange.getBoundingClientRect().width +
+          row.getBoundingClientRect().width - label.getBoundingClientRect().width + chromeWidth);
+      });
+      const width = Math.min(Math.ceil(contentWidth), availableWidth);
+      const left = Math.max(margin, Math.min(rect.left, viewportWidth - margin - width));
+      dropdown.style.left = `${Math.round(left)}px`;
+      dropdown.style.width = `${Math.round(width)}px`;
+      dropdown.style.top = `${Math.round(rect.bottom + margin)}px`;
+
+      // 高度受视口约束：下方放不下且上方更宽裕时向上展开，超出部分由 overflow 滚动
+      const scrollTop = dropdown.scrollTop;
+      dropdown.style.maxHeight = '';
+      const naturalHeight = dropdown.offsetHeight || 0;
+      const viewportHeight = window.innerHeight || 0;
+      if (!naturalHeight || !viewportHeight) return;
+      const spaceBelow = viewportHeight - rect.bottom - margin * 2;
+      const spaceAbove = rect.top - margin * 2;
+      const openUp = naturalHeight > spaceBelow && spaceAbove > spaceBelow;
+      const height = Math.min(naturalHeight, Math.max(0, openUp ? spaceAbove : spaceBelow));
+      if (height < naturalHeight) dropdown.style.maxHeight = `${Math.floor(height)}px`;
+      if (openUp) dropdown.style.top = `${Math.round(rect.top - margin - height)}px`;
+      dropdown.scrollTop = scrollTop;
+    }
+
+    function openDropdown() {
+      const dialog = input.closest('dialog');
+      const portalRoot = dialog?.open ? dialog : document.body;
+      if (dropdownHome && dropdown.parentElement !== portalRoot) {
+        portalRoot.appendChild(dropdown);
+      }
+      dropdown.style.display = 'block';
+      dropdown.dataset.open = '1';
+      input.setAttribute('aria-expanded', 'true');
+      renderDropdown();
+      positionDropdown();
+
+      clearOutsideHandler();
+      outsideHandler = (e) => {
+        if (!wrapper.contains(e.target) && !dropdown.contains(e.target)) {
+          commitFirstMatchedOrCancel();
+        }
+      };
+      document.addEventListener('mousedown', outsideHandler, true);
+
+      clearRepositionHandler();
+      repositionHandler = (e) => {
+        // 列表自身滚动不影响定位；若重新测量会清空 maxHeight 并把 scrollTop 归零
+        if (e?.type === 'scroll' && dropdown.contains(e.target)) return;
+        positionDropdown();
+      };
+      window.addEventListener('resize', repositionHandler, true);
+      window.addEventListener('scroll', repositionHandler, true);
+    }
+
+    function moveActive(delta) {
+      const items = getDropdownItems();
+      if (items.length <= 0) return;
+      let nextIndex = activeIndex;
+      if (nextIndex === -1) nextIndex = delta < 0 ? items.length : -1;
+      while (true) {
+        nextIndex += delta;
+        if (nextIndex < 0 || nextIndex >= items.length) return;
+        if (items[nextIndex].disabled !== true) break;
+      }
+      activeIndex = nextIndex;
+      renderDropdown();
+      // 列表可滚动时让键盘选中项保持可见
+      dropdown.querySelector?.('.filter-dropdown-item.active')?.scrollIntoView?.({ block: 'nearest' });
+    }
+
+    // 事件绑定
+    input.addEventListener('mousedown', () => {
+      beginPick();
+      openDropdown();
+    });
+
+    input.addEventListener('input', () => {
+      const wasClosed = dropdown.dataset.open !== '1';
+      if (wasClosed) {
+        beginPick();
+      }
+      input.dataset.pickEdited = '1';
+      if (wasClosed) {
+        openDropdown();
+      }
+      activeIndex = -1;
+      renderDropdown();
+      // 过滤改变列表高度，需重新锚定；否则向上展开的列表会停在视口顶部
+      positionDropdown();
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (dropdown.dataset.open === '1') {
+          e.preventDefault();
+          cancelPick();
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (dropdown.dataset.open !== '1') {
+          beginPick();
+          openDropdown();
+          return;
+        }
+        moveActive(1);
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (dropdown.dataset.open !== '1') {
+          beginPick();
+          openDropdown();
+          return;
+        }
+        moveActive(-1);
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (dropdown.dataset.open === '1') {
+          const items = getDropdownItems();
+          if (activeIndex >= 0 && activeIndex < items.length) {
+            commitOption(items[activeIndex]);
+            return;
+          }
+          commitFirstMatchedOrCancel();
+          return;
+        }
+        if (input.dataset.pickActive === '1') {
+          commitFirstMatchedOrCancel();
+        }
+      }
+    });
+
+    // 按住列表空白或滚动条时保持输入框焦点，避免 blur 提前收起下拉
+    dropdown.addEventListener('mousedown', (e) => e.preventDefault());
+
+    input.addEventListener('blur', () => {
+      if (dropdown.dataset.open !== '1') return;
+      commitFirstMatchedOrCancel();
+    });
+
+    // 返回组件实例，提供外部控制接口
+    return {
+      getValue: () => currentValue,
+      setValue: (value, label) => {
+        currentValue = value;
+        input.value = label;
+      },
+      refresh: () => {
+        if (dropdown.dataset.open === '1') {
+          renderDropdown();
+          positionDropdown();
+        }
+      },
+      getInput: () => input,
+      getDropdown: () => dropdown,
+      destroy: () => {
+        closeDropdown();
+        clearOutsideHandler();
+        clearRepositionHandler();
+        if (!attachMode && container) {
+          container.innerHTML = '';
+        }
+      }
+    };
+  }
+
+  // 导出到全局作用域
+  window.createSearchableCombobox = createSearchableCombobox;
+})();
+
+// ============================================================
+// 跨页面共享工具函数
+// ============================================================
+(function () {
+  /**
+   * 复制文本到剪贴板（带降级处理）
+   * @param {string} text - 要复制的文本
+   * @returns {Promise<void>}
+   */
+  function copyWithSelection(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.tabIndex = -1;
+    const dialogs = typeof document.querySelectorAll === 'function'
+      ? document.querySelectorAll('dialog[open]')
+      : [];
+    const host = dialogs.length > 0 ? dialogs[dialogs.length - 1] : document.body;
+    const previousFocus = document.activeElement;
+    host.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange?.(0, ta.value.length);
+
+    try {
+      return typeof document.execCommand === 'function' && document.execCommand('copy');
+    } catch {
+      return false;
+    } finally {
+      host.removeChild(ta);
+      previousFocus?.focus?.({ preventScroll: true });
+    }
+  }
+
+  function copyToClipboard(text) {
+    // 必须在点击事件的同步调用栈内执行，异步 Clipboard API 被拒绝后
+    // 再降级会丢失 user activation，浏览器仍会拦截复制。
+    if (typeof document.execCommand === 'function' && copyWithSelection(text)) {
+      return Promise.resolve();
+    }
+    const clipboard = globalThis.navigator && globalThis.navigator.clipboard;
+    if (clipboard && typeof clipboard.writeText === 'function') {
+      return clipboard.writeText(text);
+    }
+    return Promise.reject(new Error('copy failed'));
+  }
+
+  function escapeCodeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function wrapHighlightedToken(text, modifier) {
+    return `<span class="upstream-token upstream-token--${modifier}">${escapeCodeHtml(text)}</span>`;
+  }
+
+  function highlightSyntax(text, language) {
+    const highlighter = globalThis.hljs;
+    if (!highlighter || typeof highlighter.highlight !== 'function') {
+      throw new Error('highlight.js is required for syntax highlighting');
+    }
+
+    return highlighter.highlight(String(text || ''), {
+      language,
+      ignoreIllegals: true
+    }).value;
+  }
+
+  function classifyStatusModifier(statusCode) {
+    const code = Number.parseInt(statusCode, 10);
+    if (!Number.isFinite(code)) return 'status-unknown';
+    if (code >= 200 && code < 300) return 'status-success';
+    if (code >= 400 && code < 500) return 'status-client-error';
+    if (code >= 500) return 'status-server-error';
+    return 'status-neutral';
+  }
+
+  function renderHighlightedLines(text, language) {
+    const value = String(text || '');
+    return highlightSyntax(value, language).split('\n');
+  }
+
+  function renderHeaderLine(line) {
+    const match = line.match(/^([^:]+)(:\s*)(.*)$/);
+    if (!match) return escapeCodeHtml(line);
+
+    const [, key, separator, value] = match;
+    return `${wrapHighlightedToken(key, 'header-key')}${escapeCodeHtml(separator)}${value ? wrapHighlightedToken(value, 'header-value') : ''}`;
+  }
+
+  function renderRequestLine(line) {
+    const requestMatch = line.match(/^(\s*)([A-Z]+)(\s+)(\S.*)$/);
+    if (requestMatch && /^[a-z]+:\/\//i.test(requestMatch[4])) {
+      const [, indent, method, gap, url] = requestMatch;
+      return `${escapeCodeHtml(indent)}${wrapHighlightedToken(method, 'method')}${escapeCodeHtml(gap)}${wrapHighlightedToken(url, 'url')}`;
+    }
+
+    const urlMatch = line.match(/^(\s*)([a-z]+:\/\/\S.*)$/i);
+    if (urlMatch) {
+      const [, indent, url] = urlMatch;
+      return `${escapeCodeHtml(indent)}${wrapHighlightedToken(url, 'url')}`;
+    }
+
+    return escapeCodeHtml(line);
+  }
+
+  function renderStatusLine(line) {
+    const responseMatch = line.match(/^(\s*)(HTTP)(\s+)(\d{3})(.*)$/i);
+    if (responseMatch) {
+      const [, indent, protocol, gap, statusCode, rest] = responseMatch;
+      const modifier = classifyStatusModifier(statusCode);
+      return `${escapeCodeHtml(indent)}${wrapHighlightedToken(protocol, 'protocol')}${escapeCodeHtml(gap)}${wrapHighlightedToken(statusCode, modifier)}${escapeCodeHtml(rest)}`;
+    }
+
+    const statusMatch = line.match(/^(\s*)(\d{3})(.*)$/);
+    if (statusMatch) {
+      const [, indent, statusCode, rest] = statusMatch;
+      const modifier = classifyStatusModifier(statusCode);
+      return `${escapeCodeHtml(indent)}${wrapHighlightedToken(statusCode, modifier)}${escapeCodeHtml(rest)}`;
+    }
+
+    return escapeCodeHtml(line);
+  }
+
+  function looksLikeJSONBlock(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    const startsLikeJSON = (trimmed.startsWith('{') && trimmed.endsWith('}'))
+      || (trimmed.startsWith('[') && trimmed.endsWith(']'));
+    if (!startsLikeJSON) return false;
+
+    try {
+      JSON.parse(trimmed);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function looksLikeSSE(text) {
+    let hits = 0;
+    for (const line of text.split('\n')) {
+      if (/^(event|data|id|retry):/.test(line) && ++hits >= 2) return true;
+    }
+    return false;
+  }
+
+  function renderSSELine(line) {
+    const fieldMatch = line.match(/^(event|data|id|retry)(:)(.*)/);
+    if (fieldMatch) {
+      const [, field, colon, value] = fieldMatch;
+      const renderedField = wrapHighlightedToken(field + colon, 'sse-field');
+      if (field === 'event') return renderedField + wrapHighlightedToken(value, 'sse-event-name');
+      if (field === 'data' && value.trim()) {
+        const trimmed = value.trim();
+        const jsonLike = (trimmed[0] === '{' || trimmed[0] === '[');
+        if (jsonLike) return renderedField + highlightSyntax(value, 'json');
+      }
+      return renderedField + escapeCodeHtml(value);
+    }
+    if (line.startsWith(':')) return wrapHighlightedToken(line, 'sse-comment');
+    return escapeCodeHtml(line);
+  }
+
+  function leadingSpaceCount(line) {
+    let i = 0;
+    while (i < line.length && (line[i] === ' ' || line[i] === '\t')) i++;
+    return i;
+  }
+
+  // 基于缩进配对识别可折叠区间。
+  // rawLines: 字符串数组（折叠分析针对的"逻辑"行，索引与最终渲染行索引一一对应）
+  // 返回 Map<startIndex, { endIndex, count }>，startIndex 指向打开 { 或 [ 的行；
+  // endIndex 指向对应的 } 或 ] 行；count 为可折叠行数（不含起止行）。
+  function computeFoldRegions(rawLines) {
+    const regions = new Map();
+    const stack = [];
+    for (let i = 0; i < rawLines.length; i++) {
+      const raw = rawLines[i] || '';
+      const trimmedRight = raw.replace(/[,\s]+$/, '');
+      const lastChar = trimmedRight.slice(-1);
+      const isOpen = lastChar === '{' || lastChar === '[';
+      const trimmedLeft = raw.trimStart();
+      const firstChar = trimmedLeft[0];
+      const isClose = firstChar === '}' || firstChar === ']';
+      const indent = leadingSpaceCount(raw);
+
+      if (isClose && stack.length) {
+        // 找到匹配的同缩进 open
+        for (let s = stack.length - 1; s >= 0; s--) {
+          if (stack[s].indent === indent) {
+            const opener = stack[s];
+            const span = i - opener.index - 1;
+            if (span >= 1) {
+              regions.set(opener.index, { endIndex: i, count: span });
+            }
+            stack.length = s;
+            break;
+          }
+        }
+      }
+      if (isOpen) {
+        stack.push({ index: i, indent });
+      }
+    }
+    return regions;
+  }
+
+  let foldIdCounter = 0;
+  function nextFoldId() {
+    foldIdCounter += 1;
+    return `f${foldIdCounter}`;
+  }
+
+  function renderCodeLines(lines, foldRegions) {
+    const contentHtml = (line, suffix = '') => `<span class="code-line-content">${line || ''}${suffix}</span>`;
+    if (!foldRegions || foldRegions.size === 0) {
+      return lines.map(line => `<span class="code-line">${contentHtml(line)}</span>`).join('');
+    }
+    // 为每个区间生成 id；保留每行的 ancestor region ids 列表（开区间 s < i < e）。
+    const startToId = new Map();
+    const regionList = []; // {id, start, end, count}
+    for (const [startIdx, info] of foldRegions.entries()) {
+      const id = nextFoldId();
+      startToId.set(startIdx, { id, count: info.count });
+      regionList.push({ id, start: startIdx, end: info.endIndex, count: info.count });
+    }
+    const ancestorIdsAt = (i) => {
+      const ids = [];
+      for (const r of regionList) {
+        if (r.start < i && i < r.end) ids.push(r.id);
+      }
+      return ids;
+    };
+
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const content = lines[i] || '';
+      const ancestors = ancestorIdsAt(i);
+      const regionAttr = ancestors.length ? ` data-fold-region="${ancestors.join(' ')}"` : '';
+      const startMeta = startToId.get(i);
+      if (startMeta) {
+        const { id, count } = startMeta;
+        const summary = `<span class="code-fold-summary" data-fold-summary-for="${id}">…${count} lines</span>`;
+        const toggle = `<button type="button" class="code-fold-toggle" data-fold-toggle="${id}" aria-expanded="true" aria-label="toggle code fold"></button>`;
+        out.push(`<span class="code-line code-line--foldable" data-fold-id="${id}"${regionAttr}>${toggle}${contentHtml(content, summary)}</span>`);
+        continue;
+      }
+      out.push(`<span class="code-line"${regionAttr}>${contentHtml(content)}</span>`);
+    }
+    return out.join('');
+  }
+
+  function renderUpstreamRequestOrResponse(text, mode) {
+    const lines = String(text || '').split('\n');
+    if (lines.length === 0) return '';
+
+    const separatorIndex = lines.findIndex(line => line === '');
+    const headerEnd = separatorIndex === -1 ? lines.length : separatorIndex;
+    const renderedLines = [];
+    const rawForFold = []; // 与 renderedLines 同索引，仅用于折叠分析；header 区填空字符串避免参与配对
+
+    renderedLines.push(mode === 'response' ? renderStatusLine(lines[0]) : renderRequestLine(lines[0]));
+    rawForFold.push('');
+
+    for (let i = 1; i < headerEnd; i++) {
+      renderedLines.push(renderHeaderLine(lines[i]));
+      rawForFold.push('');
+    }
+
+    if (separatorIndex !== -1) {
+      renderedLines.push('');
+      rawForFold.push('');
+      const bodyLines = lines.slice(separatorIndex + 1);
+      const bodyText = bodyLines.join('\n');
+      const bodyRenderedLines = looksLikeJSONBlock(bodyText)
+        ? renderHighlightedLines(bodyText, 'json')
+        : looksLikeSSE(bodyText)
+          ? bodyLines.map(renderSSELine)
+          : bodyLines.map(escapeCodeHtml);
+      bodyRenderedLines.forEach((line, index) => {
+        const rawLine = bodyLines[index] || '';
+        renderedLines.push(line);
+        rawForFold.push(rawLine);
+      });
+    }
+
+    return renderCodeLines(renderedLines, computeFoldRegions(rawForFold));
+  }
+
+  function renderUpstreamCodeBlock(text, mode = 'text') {
+    const value = String(text || '');
+    if (!value) return '';
+
+    switch (mode) {
+      case 'request':
+      case 'response':
+        return renderUpstreamRequestOrResponse(value, mode);
+      case 'json': {
+        const rawLines = value.split('\n');
+        return renderCodeLines(renderHighlightedLines(value, 'json'), computeFoldRegions(rawLines));
+      }
+      case 'url':
+        return renderCodeLines(value.split('\n').map(renderRequestLine));
+      case 'status':
+        return renderCodeLines(value.split('\n').map(renderStatusLine));
+      default:
+        return renderCodeLines(value.split('\n').map(escapeCodeHtml));
+    }
+  }
+
+  // 与 internal/privacy/engine.go 的占位符格式一致：{{CCLOAD_<KIND>_<16 位十六进制>}}
+  const PRIVACY_PLACEHOLDER_RE = /\{\{CCLOAD_([A-Z][A-Z0-9_]{0,23})_[a-f0-9]{16}\}\}/g;
+
+  /**
+   * @brief 高亮文本节点中的完整脱敏占位符，并记录类别供日志定位。
+   * @param root 已完成渲染的 DOM 根节点；链接属性与跨节点的占位符保持原样。
+   */
+  function highlightPrivacyPlaceholders(root) {
+    if (!root || typeof document.createTreeWalker !== 'function') return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.nodeValue.search(PRIVACY_PLACEHOLDER_RE) !== -1) nodes.push(node);
+    }
+    for (const node of nodes) {
+      const text = node.nodeValue;
+      const fragment = document.createDocumentFragment();
+      let last = 0;
+      for (const match of text.matchAll(PRIVACY_PLACEHOLDER_RE)) {
+        if (match.index > last) fragment.append(text.slice(last, match.index));
+        const mark = document.createElement('mark');
+        mark.className = 'privacy-placeholder';
+        mark.dataset.privacyKind = match[1];
+        mark.textContent = match[0];
+        fragment.append(mark);
+        last = match.index + match[0].length;
+      }
+      if (last < text.length) fragment.append(text.slice(last));
+      node.replaceWith(fragment);
+    }
+  }
+
+  // 统计文本中的脱敏占位符：同一原值在会话内映射到同一占位符，按去重后的占位符计“值”。
+  function privacyPlaceholderStats(text) {
+    const seen = new Set();
+    const kinds = new Map();
+    let occurrences = 0;
+    for (const [placeholder, kind] of String(text || '').matchAll(PRIVACY_PLACEHOLDER_RE)) {
+      occurrences++;
+      if (seen.has(placeholder)) continue;
+      seen.add(placeholder);
+      kinds.set(kind, (kinds.get(kind) || 0) + 1);
+    }
+    return { values: seen.size, occurrences, kinds: Array.from(kinds) };
+  }
+
+  function setHighlightedCodeContent(target, text, mode = 'text') {
+    const el = typeof target === 'string' ? document.getElementById(target) : target;
+    if (!el) return;
+    el._rawText = text || '';
+    el.innerHTML = renderUpstreamCodeBlock(text || '', mode);
+    // 隐私脱敏默认关闭，大多数日志不含占位符；先查原文，免得遍历大段代码块的全部文本节点。
+    if ((text || '').search(PRIVACY_PLACEHOLDER_RE) !== -1) highlightPrivacyPlaceholders(el);
+  }
+
+  // 全局折叠按钮事件委托（仅绑定一次）。
+  // 任何使用 setHighlightedCodeContent 渲染的 pre 都自动支持折叠。
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function'
+      && !document.__codeFoldDelegated) {
+    document.__codeFoldDelegated = true;
+    document.addEventListener('click', (e) => {
+      const foldBtn = e.target.closest('.code-fold-toggle');
+      if (!foldBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const id = foldBtn.dataset.foldToggle;
+      if (!id) return;
+      const startLine = foldBtn.closest('.code-line--foldable');
+      if (!startLine) return;
+      const collapsed = startLine.classList.toggle('code-line--collapsed');
+      foldBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      const pre = startLine.closest('pre');
+      const root = pre || document;
+      root.querySelectorAll(`[data-fold-region~="${id}"]`).forEach(el => {
+        el.classList.toggle('code-line--hidden', collapsed);
+      });
+    });
+  }
+
+  async function loadAuthTokensIntoSelect(selectId, opts) {
+    const o = opts || {};
+	if (window.isAPITokenRole()) return [];
+    try {
+      const data = await fetchDataWithAuth('/admin/auth-tokens');
+      const tokens = (data && data.tokens) || [];
+      window.fillAuthTokenSelect(selectId, tokens, o);
+      return tokens;
+    } catch (error) {
+      console.error('Failed to load auth tokens:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 初始化时间范围按钮选择器
+   * @param {function(string)} onRangeChange - 范围变更回调，参数为 range 值
+   */
+  function initTimeRangeSelector(onRangeChange) {
+    const buttons = document.querySelectorAll('.time-range-btn');
+    buttons.forEach(btn => {
+      if (typeof btn.__timeRangeClickHandler === 'function') {
+        btn.removeEventListener('click', btn.__timeRangeClickHandler);
+      }
+
+      const handleClick = function () {
+        const result = onRangeChange(this.dataset.range, this);
+        if (result === false) return;
+
+        buttons.forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+      };
+
+      btn.__timeRangeClickHandler = handleClick;
+      btn.addEventListener('click', handleClick);
+    });
+  }
+
+  // 渲染日期按钮 + 绑定切换回调 + 监听 i18n 重渲染
+  function bindTimeRangeSelector(options = {}) {
+    const { containerId, values, includeAll = false, initialValue, customRange, onChange } = options;
+    let currentValue = initialValue;
+    let currentCustomRange = customRange || null;
+
+    const render = () => {
+      if (typeof window.renderDateRangeButtons !== 'function') return;
+      const cfg = { values, activeValue: currentValue };
+      if (includeAll) cfg.includeAll = true;
+      window.renderDateRangeButtons(containerId, cfg);
+    };
+
+    const bind = () => {
+      initTimeRangeSelector((range, button) => {
+        if (range === 'custom' && typeof window.openCustomDateRangePicker === 'function') {
+          window.openCustomDateRangePicker({
+            containerId,
+            range: currentCustomRange,
+            onConfirm: (confirmedRange) => {
+              currentValue = 'custom';
+              currentCustomRange = confirmedRange;
+              document.querySelectorAll('.time-range-btn').forEach(b => b.classList.remove('active'));
+              if (button) button.classList.add('active');
+              if (button && confirmedRange.label) button.title = confirmedRange.label;
+              if (typeof onChange === 'function') onChange('custom', confirmedRange);
+            }
+          });
+          return false;
+        }
+
+        currentValue = range;
+        if (typeof onChange === 'function') onChange(range);
+      });
+    };
+
+    render();
+    bind();
+
+    if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
+      window.i18n.onLocaleChange(() => {
+        render();
+        bind();
+      });
+    }
+  }
+
+  const SENSITIVE_HEADER_RE = /^(authorization|x-refresh-token|x-api-key|api-key|x-goog-api-key|proxy-authorization)$/i;
+
+  function maskHeaderValue(v) {
+    if (typeof v !== 'string' || v.length <= 8) return '******';
+    return v.slice(0, 4) + '******' + v.slice(-4);
+  }
+
+  function maskSensitiveHeaders(headers) {
+    if (!headers || typeof headers !== 'object') return headers;
+    const out = {};
+    for (const [key, value] of Object.entries(headers)) {
+      if (SENSITIVE_HEADER_RE.test(key)) {
+        out[key] = Array.isArray(value) ? value.map(maskHeaderValue) : maskHeaderValue(value);
+      } else {
+        out[key] = value;
+      }
+    }
+    return out;
+  }
+
+  window.maskSensitiveHeaders = maskSensitiveHeaders;
+  window.copyToClipboard = copyToClipboard;
+  window.renderUpstreamCodeBlock = renderUpstreamCodeBlock;
+  window.setHighlightedCodeContent = setHighlightedCodeContent;
+  window.privacyPlaceholderStats = privacyPlaceholderStats;
+  window.highlightPrivacyPlaceholders = highlightPrivacyPlaceholders;
+  window.loadAuthTokensIntoSelect = loadAuthTokensIntoSelect;
+  window.initTimeRangeSelector = initTimeRangeSelector;
+  window.bindTimeRangeSelector = bindTimeRangeSelector;
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+      renderUpstreamCodeBlock,
+      setHighlightedCodeContent,
+      privacyPlaceholderStats
+    };
+  }
+})();

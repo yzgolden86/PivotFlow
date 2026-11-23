@@ -94,6 +94,9 @@ type fwResult struct {
 	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
 	Cache1hInputTokens       int // 1小时缓存写入Token数（新增2025-12）
 	ToolCostUSD              float64
+	costSnapshot             *requestCostSnapshot
+	siteEstimate             *siteCostEstimate
+	siteEstimateResolved     bool
 
 	// 转发诊断信息（2025-12新增）
 	StreamDiagMsg string // 诊断消息（例如：流中断/不完整、上游响应体读取失败），合并到日志的 Message 字段
@@ -132,14 +135,22 @@ type fwResult struct {
 
 // ForwardObserver 封装转发过程中的观测回调（遵循SRP，避免函数签名膨胀）
 type ForwardObserver struct {
-	OnBytesRead         func(int64) // 字节读取回调（可选）
-	OnFirstByteRead     func()      // 首字节读取回调（可选）
-	OnUpstreamWebsocket func(bool)  // 实际上游传输变化回调（可选）
-	OnDebugCapture      func(*debugCapture)
+	OnBytesRead          func(int64) // 字节读取回调（可选）
+	OnFirstByteRead      func()      // 首字节读取回调（可选）
+	OnUpstreamWebsocket  func(bool)  // 实际上游传输变化回调（可选）
+	OnDebugCapture       func(*debugCapture)
+	OnRequestCacheBypass func(string)
+}
+
+func (o *ForwardObserver) bypassRequestCache(reason string) {
+	if o != nil && o.OnRequestCacheBypass != nil {
+		o.OnRequestCacheBypass(reason)
+	}
 }
 
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
 type proxyRequestContext struct {
+	trace                        *requestTrace
 	originalModel                string
 	clientProtocol               protocol.Protocol
 	upstreamProtocol             protocol.Protocol
@@ -328,7 +339,7 @@ func copyRequestHeaders(dst *http.Request, src http.Header) {
 		// 不透传认证头（由上游注入）
 		if strings.EqualFold(k, "Authorization") ||
 			strings.EqualFold(k, "X-Api-Key") ||
-			strings.EqualFold(k, "x-goog-api-key") {
+			strings.EqualFold(k, "x-goog-api-key") || strings.EqualFold(k, requestCacheHeader) {
 			continue
 		}
 		// 不透传 Accept-Encoding，避免上游返回 br/gzip 压缩导致错误体乱码
@@ -500,6 +511,9 @@ func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
 
 	connTokens := connectionHeaderTokens(hdr)
 	for k, vs := range hdr {
+		if strings.EqualFold(k, requestIDHeader) || strings.EqualFold(k, requestCacheHeader) {
+			continue
+		}
 		// hop-by-hop headers 一律不透传（以及 Connection 显式声明的 hop-by-hop 字段）
 		if shouldSkipHopByHopHeader(k, connTokens) {
 			continue
@@ -522,54 +536,53 @@ func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
 // 模型和路径解析工具函数
 // ============================================================================
 
-// extractModelFromPath 从URL路径中提取模型名称
-// 支持格式：/models/{model}:method 或 /models/{model}
+// extractModelFromPath 从转义后的 URL 路径提取完整模型名，只解码一次。
+// 模型名可以包含 /、:、Unicode 及字面的 %xx；最后的 : 分隔调用动作。
 func extractModelFromPath(path string) string {
-	// 查找 "/models/" 子串
 	modelsPrefix := "/models/"
 	idx := strings.Index(path, modelsPrefix)
 	if idx == -1 {
 		return ""
 	}
-
-	// 提取 "/models/" 之后的部分
-	start := idx + len(modelsPrefix)
-	remaining := path[start:]
-
-	// 查找模型名称的结束位置（遇到 : 或 / 或字符串结尾）
-	end := len(remaining)
-	for i, ch := range remaining {
-		if ch == ':' || ch == '/' {
-			end = i
-			break
-		}
+	remaining := path[idx+len(modelsPrefix):]
+	if end := strings.LastIndex(remaining, ":"); end >= 0 {
+		remaining = remaining[:end]
+	} else if end := strings.Index(remaining, "/"); end >= 0 {
+		// Preserve the legacy /models/{model}/completions form. Encoded
+		// slashes in Gemini models stay inside the model until PathUnescape.
+		remaining = remaining[:end]
 	}
-
-	return remaining[:end]
+	name, err := neturl.PathUnescape(remaining)
+	if err != nil {
+		return ""
+	}
+	return name
 }
 
 func replaceModelInPath(path string, originalModel string, actualModel string) string {
-	if originalModel == "" || actualModel == "" || originalModel == actualModel {
+	if originalModel == "" || actualModel == "" {
 		return path
 	}
 	modelPrefix := "/models/"
-	needle := modelPrefix + originalModel
-	idx := strings.Index(path, needle)
-	if idx == -1 {
+	idx := strings.Index(path, modelPrefix)
+	if idx == -1 || extractModelFromPath(path) != originalModel {
 		return path
 	}
-	end := idx + len(needle)
-	if end < len(path) && path[end] != ':' && path[end] != '/' {
-		return path
+	start := idx + len(modelPrefix)
+	suffix := ""
+	if end := strings.LastIndex(path[start:], ":"); end >= 0 {
+		suffix = path[start+end:]
+	} else if end := strings.Index(path[start:], "/"); end >= 0 {
+		suffix = path[start+end:]
 	}
-	return path[:idx+len(modelPrefix)] + actualModel + path[end:]
+	return path[:start] + neturl.PathEscape(actualModel) + suffix
 }
 
 func buildGeminiGeneratePath(model string, isStreaming bool) string {
 	if isStreaming {
-		return "/v1beta/models/" + model + ":streamGenerateContent"
+		return "/v1beta/models/" + neturl.PathEscape(model) + ":streamGenerateContent"
 	}
-	return "/v1beta/models/" + model + ":generateContent"
+	return "/v1beta/models/" + neturl.PathEscape(model) + ":generateContent"
 }
 
 func buildAnthropicMessagesPath() string {
@@ -595,14 +608,14 @@ func buildCodexResponsesPath() string {
 // 历史上的「模糊匹配」(model_fuzzy_match) 已移除：子串包含语义过于贪婪
 // (glm-5.3 会命中 glm-5.3-flash)，会绕过用户建立的统一映射并混淆计费。
 // 同模型不同写法的兼容由统一映射承担，语义精确、用户显式声明。
-func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) string {
+func resolveActualModelWithAliases(cfg *model.Config, originalModel string, aliases *modelAliasRegistry) string {
 	actualModel := originalModel
 	// 1. 检查模型重定向（精确匹配优先）
 	if redirectModel, ok := cfg.GetRedirectModel(originalModel); ok && redirectModel != "" {
 		actualModel = redirectModel
 	}
-	if actualModel == originalModel && s.modelAliases != nil {
-		actualModel = s.modelAliases.actualModelFor(cfg, originalModel)
+	if actualModel == originalModel && aliases != nil {
+		actualModel = aliases.actualModelFor(cfg, originalModel)
 	}
 
 	// 2. 链式解析：重定向或映射结果若另有 redirect_model 配置则继续展开
@@ -619,7 +632,11 @@ func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) str
 // 协议转换使用 resolved model 构造上游 body，随后 custom_request_rules 可能再次覆盖 body.model。
 // Gemini 的模型位于 URL 路径，body 规则不改变其路由模型。
 func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, originalModel string, upstreamProtocol string) string {
-	actualModel := s.resolveActualModel(cfg, originalModel)
+	return resolveFinalUpstreamModelWithAliases(cfg, originalModel, upstreamProtocol, s.modelAliases)
+}
+
+func resolveFinalUpstreamModelWithAliases(cfg *model.Config, originalModel string, upstreamProtocol string, aliases *modelAliasRegistry) string {
+	actualModel := resolveActualModelWithAliases(cfg, originalModel, aliases)
 	if protocol.Protocol(util.NormalizeProtocol(upstreamProtocol)) == protocol.Gemini {
 		return actualModel
 	}
@@ -896,8 +913,10 @@ type logEntryParams struct {
 	ThinkingEffort   string
 	// SiteCost 是用站点自身价目表算出的费用（不含工具费）。
 	// nil 表示站点价格不可用，buildLogEntry 会回退本地估算。
-	SiteCost *float64
-	RuleID   string // 命中的冷却规则标识符（2026-09新增）
+	SiteCost     *float64
+	SiteEstimate *siteCostEstimate
+	CostSnapshot *requestCostSnapshot
+	RuleID       string // 命中的冷却规则标识符（2026-09新增）
 }
 
 // resolveProxyBillingModel 选择代理请求的计费模型。
@@ -922,20 +941,23 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		modelName = billingModel
 	}
 	entry := &model.LogEntry{
-		Time:              model.JSONTime{Time: logTime},
-		Model:             modelName,
-		LogSource:         model.LogSourceProxy,
-		ChannelID:         p.ChannelID,
-		StatusCode:        p.StatusCode,
-		Duration:          p.Duration,
-		IsStreaming:       p.IsStreaming,
-		UpstreamWebsocket: p.Result != nil && p.Result.UpstreamWebsocket,
-		APIKeyUsed:        p.APIKeyUsed,
-		AuthTokenID:       p.AuthTokenID,
-		ClientProtocol:    string(p.ClientProtocol),
-		UpstreamProtocol:  string(p.UpstreamProtocol),
-		ClientIP:          p.ClientIP,
-		BaseURL:           p.BaseURL,
+		Time:                model.JSONTime{Time: logTime},
+		Model:               modelName,
+		LogSource:           model.LogSourceProxy,
+		ChannelID:           p.ChannelID,
+		StatusCode:          p.StatusCode,
+		Duration:            p.Duration,
+		IsStreaming:         p.IsStreaming,
+		UpstreamWebsocket:   p.Result != nil && p.Result.UpstreamWebsocket,
+		APIKeyUsed:          p.APIKeyUsed,
+		AuthTokenID:         p.AuthTokenID,
+		ClientProtocol:      string(p.ClientProtocol),
+		UpstreamProtocol:    string(p.UpstreamProtocol),
+		ClientIP:            p.ClientIP,
+		BaseURL:             p.BaseURL,
+		CostMetadataVersion: model.CostMetadataVersion,
+		CostStatus:          model.CostStatusNotCharged,
+		CostBasis:           model.CostBasisUnknown,
 	}
 	entry.ThinkingEffort = normalizeThinkingEffort(p.ThinkingEffort)
 
@@ -1003,26 +1025,22 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		entry.ServiceTier = res.ServiceTier
 
 		if p.StatusCode >= http.StatusOK && p.StatusCode < http.StatusMultipleChoices {
-			// 使用实际转发的模型计算成本（重定向时价格可能不同）；
-			// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
-			// 优先 actual（重定向可能换价）；无定价时回退 request（渠道第一列作定价别名）
-			// alpha/search 固定按 search_call 计费。
-			//
-			// 中转站按自己的倍率计费，厂商标价与之无关。调用方若已用站点价目表
-			// 算出费用会通过 p.SiteCost 传入；拿不到时（手工渠道、站点无该接口、
-			// 账号无管理凭证）回退本地估算。
-			if p.SiteCost != nil {
-				entry.Cost = *p.SiteCost + res.ToolCostUSD
-				entry.CostSource = costSourceSite
-			} else {
-				entry.Cost = computeRequestCost(billingModel, res.ServiceTier, res) + res.ToolCostUSD
-				entry.CostSource = costSourceLocal
+			snapshot := p.CostSnapshot
+			if snapshot == nil {
+				computed := resolveRequestCost(billingModel, res, p.CostMultiplier, p.SiteCost, p.SiteEstimate)
+				snapshot = &computed
 			}
+			applyRequestCostSnapshot(entry, *snapshot)
 		}
 	} else {
 		entry.Message = "unknown"
 	}
-
+	if p.Result == nil && p.StatusCode >= http.StatusOK && p.StatusCode < http.StatusMultipleChoices {
+		// No response means no request-time pricing or usage evidence was read.
+		entry.CostMetadataVersion = 0
+		entry.CostStatus = ""
+		entry.CostBasis = ""
+	}
 	if p.Result != nil {
 		if effort := normalizeThinkingEffort(p.Result.ThinkingEffort); effort != "" {
 			entry.ThinkingEffort = effort

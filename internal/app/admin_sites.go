@@ -2,14 +2,10 @@ package app
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
@@ -38,11 +34,15 @@ func (s *siteControlService) runAsync(taskID string, fn func(context.Context)) b
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancelCause(parent)
 	if s.tasks == nil {
 		s.tasks = make(map[string]context.CancelFunc)
 	}
-	s.tasks[taskID] = cancel
+	if s.taskStopCauses == nil {
+		s.taskStopCauses = make(map[string]context.CancelCauseFunc)
+	}
+	s.tasks[taskID] = func() { cancel(context.Canceled) }
+	s.taskStopCauses[taskID] = cancel
 	if s.wg != nil {
 		s.wg.Add(1)
 	}
@@ -50,9 +50,10 @@ func (s *siteControlService) runAsync(taskID string, fn func(context.Context)) b
 
 	go func() {
 		defer func() {
-			cancel()
+			cancel(nil)
 			s.taskMu.Lock()
 			delete(s.tasks, taskID)
+			delete(s.taskStopCauses, taskID)
 			s.taskMu.Unlock()
 			if s.wg != nil {
 				s.wg.Done()
@@ -69,16 +70,37 @@ func (s *siteControlService) acquireManualSiteTask(ctx context.Context, siteID i
 	waitCtx, stopWaiting := context.WithTimeout(ctx, siteTaskQueueTimeout)
 	release, ok := s.acquireSiteGate(waitCtx, siteID)
 	err := waitCtx.Err()
-	stopWaiting()
 	if !ok || err != nil {
+		stopWaiting()
 		if ok {
 			release()
 		}
 		return nil, nil, err
 	}
+	s.taskMu.Lock()
+	if s.workerSlots == nil {
+		s.workerSlots = make(chan struct{}, siteSchedulerConcurrency)
+	}
+	slots := s.workerSlots
+	s.taskMu.Unlock()
+	select {
+	case slots <- struct{}{}:
+	case <-waitCtx.Done():
+		release()
+		stopWaiting()
+		return nil, nil, waitCtx.Err()
+	}
+	err = waitCtx.Err()
+	stopWaiting()
+	if err != nil {
+		<-slots
+		release()
+		return nil, nil, err
+	}
 	runCtx, cancel := context.WithTimeout(ctx, siteTaskRunTimeout)
 	return runCtx, func() {
 		cancel()
+		<-slots
 		release()
 	}, nil
 }
@@ -96,8 +118,12 @@ func (s *siteControlService) stopTasks() {
 	s.taskMu.Lock()
 	s.stopped = true
 	cancels := make([]context.CancelFunc, 0, len(s.tasks))
-	for _, cancel := range s.tasks {
-		cancels = append(cancels, cancel)
+	for id, cancel := range s.tasks {
+		if stop := s.taskStopCauses[id]; stop != nil {
+			cancels = append(cancels, func() { stop(errSiteTaskStopped) })
+		} else {
+			cancels = append(cancels, cancel)
+		}
 	}
 	s.taskMu.Unlock()
 	for _, cancel := range cancels {
@@ -438,41 +464,12 @@ func (s *siteControlService) enqueueAccountTask(c *gin.Context, kind string, wit
 		RespondErrorMsg(c, 404, "not_found")
 		return
 	}
-	task, err := s.createTask(c.Request.Context(), kind, account.SiteID, id, 1)
+	run, merged, err := s.submitAccountTask(c.Request.Context(), account, kind, withModels, false)
 	if err != nil {
-		RespondError(c, 500, err)
+		respondSiteTaskSubmissionError(c, err)
 		return
 	}
-	if !s.runAsync(task.ID, func(ctx context.Context) {
-		runCtx, finish, queueErr := s.acquireManualSiteTask(ctx, account.SiteID)
-		if queueErr != nil {
-			s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", "排队等待同站点任务结束: "+queueErr.Error())
-			return
-		}
-		defer finish()
-		ctx = runCtx
-		leaseKey := fmt.Sprintf("site:%d:account:%d:%s", account.SiteID, id, kind)
-		now := time.Now().UnixMilli()
-		acquired, leaseErr := s.store.AcquireSiteTaskLease(ctx, leaseKey, task.ID, now, now+siteTaskLeaseDuration.Milliseconds())
-		if leaseErr != nil || !acquired {
-			s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", "conflict")
-			return
-		}
-		defer func() { _ = s.store.ReleaseSiteTaskLease(context.Background(), leaseKey, task.ID) }()
-		taskCtx, stopLease := s.leaseContext(ctx, leaseKey, task.ID)
-		defer stopLease()
-		s.updateTask(taskCtx, task, model.SiteTaskStatusRunning, "", "")
-		if kind == "checkin" {
-			s.checkin(taskCtx, task, id)
-		} else {
-			s.refreshAccount(taskCtx, task, id, withModels)
-		}
-	}) {
-		_, _ = s.store.CancelSiteTask(context.Background(), task.ID, time.Now().UnixMilli())
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "server_shutting_down")
-		return
-	}
-	RespondJSON(c, http.StatusAccepted, gin.H{"task_id": task.ID})
+	RespondJSON(c, http.StatusAccepted, gin.H{"task_id": run.id, "merged": merged})
 }
 
 func (s *siteControlService) handleAccountRefresh(c *gin.Context) {
@@ -551,100 +548,25 @@ func (s *siteControlService) handleAnnouncements(c *gin.Context) {
 func (s *siteControlService) handleAnnouncementsRefresh(c *gin.Context) {
 	var req announcementsRefreshRequest
 	_ = c.ShouldBindJSON(&req)
-	task, err := s.createTask(c.Request.Context(), "announcement_refresh", req.SiteID, 0, 1)
-	if err != nil {
-		RespondError(c, 500, err)
-		return
-	}
-	if !s.runAsync(task.ID, func(ctx context.Context) {
-		var refreshErr error
-		if req.SiteID > 0 {
-			runCtx, finish, queueErr := s.acquireManualSiteTask(ctx, req.SiteID)
-			if queueErr != nil {
-				s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", "排队等待同站点任务结束: "+queueErr.Error())
-				return
-			}
-			defer finish()
-			s.updateTask(ctx, task, model.SiteTaskStatusRunning, "", "")
-			refreshErr = s.refreshAnnouncements(runCtx, req.SiteID)
-		} else {
-			s.updateTask(ctx, task, model.SiteTaskStatusRunning, "", "")
-			sites, e := s.store.ListSites(ctx, model.SiteListFilter{})
-			if e != nil {
-				refreshErr = e
-			} else {
-				var (
-					failures  []string
-					refreshed int
-					mu        sync.Mutex
-					wg        sync.WaitGroup
-				)
-				semaphore := make(chan struct{}, 4)
-				for _, site := range sites {
-					if !site.Enabled {
-						continue
-					}
-					site := site
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						select {
-						case semaphore <- struct{}{}:
-						case <-ctx.Done():
-							return
-						}
-						defer func() { <-semaphore }()
-						runCtx, finish, queueErr := s.acquireManualSiteTask(ctx, site.ID)
-						if queueErr != nil {
-							mu.Lock()
-							failures = append(failures, fmt.Sprintf("%s: %s", site.Name, queueErr))
-							mu.Unlock()
-							return
-						}
-						defer finish()
-						if e := s.refreshAnnouncements(runCtx, site.ID); e != nil {
-							if provider.ErrorCode(e) == provider.CodeUnsupported {
-								return
-							}
-							mu.Lock()
-							failures = append(failures, fmt.Sprintf("%s: %s", site.Name, siteTaskError(e)))
-							mu.Unlock()
-							return
-						}
-						mu.Lock()
-						refreshed++
-						mu.Unlock()
-					}()
-				}
-				wg.Wait()
-				if ctx.Err() != nil {
-					s.updateTask(ctx, task, model.SiteTaskStatusCancelled, "", ctx.Err().Error())
-					return
-				}
-				if len(failures) > 1 {
-					// Concurrent refreshes finish in arbitrary order; keep task messages stable.
-					slices.Sort(failures)
-				}
-				if len(failures) > 0 {
-					refreshErr = fmt.Errorf("%s", strings.Join(failures, "; "))
-					if refreshed > 0 {
-						s.updateTask(ctx, task, model.SiteTaskStatusPartial, "announcements", refreshErr.Error())
-						return
-					}
-				}
-			}
-		}
-		if refreshErr != nil {
-			s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(refreshErr))
+	if req.SiteID > 0 {
+		if _, err := s.store.GetSite(c.Request.Context(), req.SiteID); err != nil {
+			RespondErrorMsg(c, 404, "not_found")
 			return
 		}
-		s.updateTask(ctx, task, model.SiteTaskStatusSuccess, "announcements", "")
-	}) {
-		_, _ = s.store.CancelSiteTask(context.Background(), task.ID, time.Now().UnixMilli())
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "server_shutting_down")
+		run, merged, err := s.submitAnnouncementTask(c.Request.Context(), req.SiteID, "")
+		if err != nil {
+			respondSiteTaskSubmissionError(c, err)
+			return
+		}
+		RespondJSON(c, http.StatusAccepted, gin.H{"task_id": run.id, "merged": merged})
 		return
 	}
-	RespondJSON(c, 202, gin.H{"task_id": task.ID})
+	run, merged, err := s.submitAnnouncementBatch(c.Request.Context())
+	if err != nil {
+		respondSiteTaskSubmissionError(c, err)
+		return
+	}
+	RespondJSON(c, 202, gin.H{"task_id": run.id, "merged": merged})
 }
 func (s *siteControlService) handleAnnouncementRead(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
@@ -709,9 +631,7 @@ func (s *siteControlService) handleSiteTask(c *gin.Context) {
 		RespondErrorMsg(c, 404, "not_found")
 		return
 	}
-	var progress any = gin.H{}
-	_ = json.Unmarshal([]byte(task.ProgressJSON), &progress)
-	RespondJSON(c, 200, gin.H{"id": task.ID, "kind": task.Kind, "status": task.Status, "progress": progress, "result_ref": task.ResultRef, "error": task.Error, "created_at": task.CreatedAt, "started_at": task.StartedAt, "finished_at": task.FinishedAt})
+	RespondJSON(c, 200, s.siteTaskPayload(c.Request.Context(), task))
 }
 func (s *siteControlService) handleSiteTaskCancel(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
@@ -724,9 +644,37 @@ func (s *siteControlService) handleSiteTaskCancel(c *gin.Context) {
 		RespondErrorMsg(c, 404, "not_found")
 		return
 	}
+	if run := s.registeredSiteTask(id); run != nil && (task.Status == model.SiteTaskStatusQueued || task.Status == model.SiteTaskStatusRunning) {
+		// Request cancellation, then let the worker report whether it stopped or
+		// had already observed success. Never persist a speculative terminal state.
+		s.cancelTask(id)
+		waitCtx, stop := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer stop()
+		select {
+		case <-run.done:
+			latest, readErr := s.store.GetSiteTask(waitCtx, id)
+			if readErr != nil {
+				RespondErrorMsg(c, 503, "observation_interrupted")
+				return
+			}
+			payload := s.siteTaskPayload(waitCtx, latest)
+			status := payload["status"]
+			RespondJSON(c, 200, gin.H{"id": id, "cancelled": status == model.SiteTaskStatusCancelled, "status": status})
+		case <-waitCtx.Done():
+			RespondJSON(c, 200, gin.H{"id": id, "cancelled": false, "cancel_requested": true, "status": task.Status})
+		}
+		return
+	}
+	s.taskMu.Lock()
+	_, owned := s.tasks[id]
+	s.taskMu.Unlock()
+	if !owned && (task.Status == model.SiteTaskStatusQueued || task.Status == model.SiteTaskStatusRunning) {
+		RespondJSON(c, 200, gin.H{"id": id, "cancelled": false, "status": "unknown"})
+		return
+	}
 	cancelled, err := s.store.CancelSiteTask(c.Request.Context(), id, time.Now().UnixMilli())
 	if err != nil {
-		RespondError(c, 500, err)
+		RespondErrorMsg(c, 500, "request_failed")
 		return
 	}
 	if cancelled {

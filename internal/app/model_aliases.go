@@ -94,6 +94,17 @@ func (r *modelAliasRegistry) snapshot() *modelAliasIndex {
 	return r.index.Load()
 }
 
+// frozen retains one immutable alias index across a complete diagnostic or
+// candidate evaluation, including its reported names and actual-model mapping.
+func (r *modelAliasRegistry) frozen() *modelAliasRegistry {
+	if r == nil {
+		return nil
+	}
+	result := &modelAliasRegistry{}
+	result.index.Store(r.snapshot())
+	return result
+}
+
 func (r *modelAliasRegistry) namesFor(name string) []string {
 	index := r.snapshot()
 	if index == nil {
@@ -158,7 +169,10 @@ func (r *modelAliasRegistry) canonicalizeModelNames(names []string) []string {
 	seen := make(map[string]struct{}, len(names))
 	out := make([]string, 0, len(names))
 	for _, name := range names {
-		canonical := r.canonicalModelFor(name)
+		canonical := name
+		if group, ok := index.byName[modelAliasKey(name)]; ok {
+			canonical = group.Canonical
+		}
 		if _, duplicate := seen[canonical]; duplicate {
 			continue
 		}

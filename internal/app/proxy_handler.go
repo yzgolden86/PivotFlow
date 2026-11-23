@@ -120,13 +120,13 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomin
 	// 智能检测流式请求
 	isStreaming := isStreamingRequest(requestPath, all)
 
-	// 多源模型名称获取：优先请求体，其次URL路径
+	// Gemini 的真实请求目标在 URL 中，不能让可选 body.model 绕过授权。
 	originalModel := reqModel.Model
-	if originalModel == "" {
-		originalModel = extractModelFromPath(requestPath)
+	requestFamily := protocol.DetectRequestFamily(requestPath)
+	if requestFamily == protocol.RequestFamilyGenerateContent || originalModel == "" {
+		originalModel = extractModelFromPath(c.Request.URL.EscapedPath())
 	}
 	hasModel := originalModel != ""
-	requestFamily := protocol.DetectRequestFamily(requestPath)
 
 	// GET 请求保留既有通配选路语义；Codex alpha/search 的业务模型保持为空。
 	if originalModel == "" {
@@ -267,13 +267,38 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	startTime := time.Now()
+	tokenValue, _ := c.Get("token_id")
+	requestTokenID, _ := tokenValue.(int64)
+	var trace *requestTrace
+	path := c.Request.URL.Path
+	localMetadata := c.Request.Method == http.MethodGet && (path == "/v1/models" || path == "/v1beta/models") ||
+		c.Request.Method == http.MethodPost && path == "/v1/messages/count_tokens"
+	if !localMetadata {
+		trace = newRequestTrace(startTime, requestTokenID, "http")
+		c.Header(requestIDHeader, trace.id())
+	}
+	finalTraceStatus := 0
+	defer func() {
+		status := finalTraceStatus
+		if status == 0 {
+			status = c.Writer.Status()
+		}
+		s.persistRequestTrace(trace, status, status == StatusClientClosedRequest)
+	}()
 
 	// 并发控制
+	waitStart := time.Now()
 	release, ok := s.acquireConcurrencySlot(c)
+	trace.setWait(time.Since(waitStart))
 	if !ok {
 		return
 	}
 	defer release()
+	releaseBilling, billingOK := s.acquireBillingForHTTP(c)
+	if !billingOK {
+		return
+	}
+	defer releaseBilling()
 
 	// 特殊路由优先处理
 	if s.handleSpecialRoutes(c) {
@@ -284,6 +309,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	// 提前获取客户端协议和认证信息，在解析请求体前检查协议限制
 	clientProtocol, effectiveRequestPath := clientRequestMetadata(c)
+	trace.setRequest("", string(clientProtocol), false)
 	tokenHashStr := ""
 	if v, ok := c.Get("token_hash"); ok {
 		tokenHashStr, _ = v.(string)
@@ -312,6 +338,12 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	originalModel := incoming.originalModel
 	all := incoming.body
 	isStreaming := incoming.isStreaming
+	if clientProtocol == protocol.Gemini {
+		// Preserve escaped model bytes through routing/redirects and upstream
+		// URL construction; decoded ?, # and % must remain model characters.
+		effectiveRequestPath = c.Request.URL.EscapedPath()
+	}
+	trace.setRequest(originalModel, string(clientProtocol), isStreaming)
 
 	if err := validateClientBodyMatchesProtocol(clientProtocol, all); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -336,6 +368,45 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	if timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
+	}
+
+	cacheTicket, cacheReason := s.beginRequestCache(c.Request, incoming, tokenHashStr, tokenIDInt64, clientProtocol)
+	var cacheCapture *requestCacheCapture
+	if cacheTicket == nil {
+		// Quiet default-off traffic needs no cache badge or extra response header.
+		if c.GetHeader(requestCacheHeader) != "" || s.requestCache != nil && s.requestCache.config.Enabled {
+			trace.setCache("bypass", cacheReason)
+			c.Header(requestCacheHeader, "bypass")
+		}
+	} else {
+		defer s.requestCache.closeTicket(cacheTicket)
+		cacheStatus := "miss"
+		if cacheTicket.mode == "refresh" {
+			cacheStatus = "refresh"
+		}
+		c.Header(requestCacheHeader, cacheStatus)
+		// Candidate formation is read-only: a hit must not advance SWRR, pick a
+		// credential, reserve an upstream slot, or alter sticky/cooldown state.
+		view, cacheRouteErr := s.collectModelRouteSelection(ctx, originalModel, string(clientProtocol))
+		if cacheRouteErr == nil {
+			allowed, _ := s.authService.FilterAllowedChannels(tokenHashStr, view.channels)
+			if len(allowed) > 0 {
+				cached, reason := s.requestCache.lookup(cacheTicket, allowed, time.Now())
+				cacheReason = reason
+				if cached != nil {
+					finalTraceStatus = s.writeRequestCacheHit(c, ctx, trace, cached, tokenHashStr, originalModel, startTime)
+					return
+				}
+				cacheCapture = newRequestCacheCapture(c.Writer, s.requestCache, cacheTicket)
+				defer cacheCapture.close()
+			}
+		}
+		if cacheCapture == nil {
+			cacheStatus, cacheReason = "bypass", "route_unavailable"
+			c.Header(requestCacheHeader, cacheStatus)
+			s.requestCache.bypass(cacheReason)
+		}
+		trace.setCache(cacheStatus, cacheReason)
 	}
 
 	var executionSession *responsesExecutionSession
@@ -398,6 +469,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			return
 		}
 		s.AddLogAsync(&model.LogEntry{
+			RequestID:      trace.id(),
 			Time:           model.JSONTime{Time: time.Now()},
 			Model:          originalModel,
 			LogSource:      model.LogSourceProxy,
@@ -432,6 +504,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	reqCtx := &proxyRequestContext{
+		trace:          trace,
 		originalModel:  originalModel,
 		clientProtocol: clientProtocol,
 		requestMethod:  requestMethod,
@@ -468,18 +541,45 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			s.activeRequests.SetDebugCapture(reqCtx.activeReqID, dc)
 		},
 	}
+	if cacheCapture != nil {
+		reqCtx.observer.OnRequestCacheBypass = cacheCapture.block
+	}
 	defer func() {
 		if reqCtx.activeReqID > 0 {
 			s.activeRequests.Remove(reqCtx.activeReqID)
 		}
 	}()
 
-	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
+	var forwardWriter http.ResponseWriter = c.Writer
+	if cacheCapture != nil {
+		forwardWriter = cacheCapture
+	}
+	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, forwardWriter)
+	if lastResult != nil {
+		finalTraceStatus = lastResult.status
+		if !succeeded {
+			finalTraceStatus = determineFinalClientStatus(lastResult)
+			if finalTraceStatus >= 200 && finalTraceStatus < 300 {
+				finalTraceStatus = http.StatusBadGateway
+			}
+		}
+	}
 	if succeeded {
+		if cacheCapture != nil {
+			s.finishRequestCacheFill(ctx, trace, cacheTicket, cacheCapture, lastResult, cands, clientProtocol, tokenHashStr, cacheReason)
+		}
 		if executionSession != nil && lastResult != nil && lastResult.hasResponsesTurn {
 			s.responsesExecutionSessions.commit(executionSession, executionSessionRequestBody, lastResult.responsesTurn)
 		}
 		return
+	}
+	if cacheCapture != nil {
+		reason := "upstream_error"
+		if ctx.Err() != nil || lastResult != nil && lastResult.isClientCanceled {
+			reason = "canceled"
+		}
+		trace.setCache(cacheTraceStatus(cacheTicket), reason)
+		s.requestCache.reject(reason)
 	}
 
 	s.writeFinalProxyResponse(c, reqCtx, originalModel, isStreaming, lastResult, len(cands))
@@ -576,7 +676,22 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 	sawAlphaSearchUnsupported := false
 	stickyScope := stickyScopeKey(reqCtx.tokenHash)
 	for index, cfg := range cands {
+		beforeAttempt := reqCtx.trace.number()
 		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
+		if reqCtx.trace.number() == beforeAttempt && (err != nil || result != nil && !result.succeeded) {
+			reason, status := "channel_unavailable", http.StatusServiceUnavailable
+			switch {
+			case errors.Is(err, ErrAllKeysUnavailable):
+				reason = "all_keys_unavailable"
+			case errors.Is(err, ErrChannelRPMExceeded):
+				reason, status = "channel_rpm_limit", http.StatusTooManyRequests
+			case errors.Is(err, ErrChannelConcurrencyExceeded):
+				reason, status = "channel_concurrency_limit", http.StatusTooManyRequests
+			case result != nil:
+				status = result.status
+			}
+			reqCtx.trace.skipped(cfg, -1, "", reason, status)
+		}
 
 		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
 		// 使用 cooldownManager.HandleError 统一处理（DRY原则）
@@ -690,6 +805,8 @@ func (s *Server) writeFinalProxyResponse(
 	skipLog = skipLog || candidateCount <= 1
 	if !skipLog {
 		s.AddLogAsync(&model.LogEntry{
+			RequestID:      reqCtx.trace.id(),
+			AuthTokenID:    reqCtx.tokenID,
 			Time:           model.JSONTime{Time: reqCtx.startTime},
 			Model:          originalModel,
 			LogSource:      model.LogSourceProxy,

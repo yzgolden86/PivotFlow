@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,5 +209,187 @@ func TestProviderClientSendsUserAgent(t *testing.T) {
 	}
 	if request.Header.Get("User-Agent") != "" {
 		t.Fatalf("the caller's request object was mutated: %q", request.Header.Get("User-Agent"))
+	}
+}
+
+func TestProviderClientRejectsForeignRedirectBeforeSendingCredentialsOrBody(t *testing.T) {
+	const secretBody = `{"secret":"provider request body"}`
+
+	tests := []int{
+		http.StatusMovedPermanently,
+		http.StatusFound,
+		http.StatusTemporaryRedirect,
+		http.StatusPermanentRedirect,
+	}
+
+	for _, status := range tests {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var foreignHits atomic.Int32
+			var mu sync.Mutex
+			var foreignAuth, foreignAPIKey, foreignBody string
+			foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				foreignHits.Add(1)
+				body, _ := io.ReadAll(request.Body)
+				mu.Lock()
+				foreignAuth = request.Header.Get("Authorization")
+				foreignAPIKey = request.Header.Get("X-Api-Key")
+				foreignBody = string(body)
+				mu.Unlock()
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			t.Cleanup(foreign.Close)
+
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				http.Redirect(w, request, foreign.URL+"/steal", status)
+			}))
+			t.Cleanup(origin.Close)
+
+			client, err := ClientFactory{AllowPrivate: true}.New(DirectProxyURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, err := http.NewRequest(http.MethodPost, origin.URL+"/provider", strings.NewReader(secretBody))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Authorization", "Bearer provider-secret")
+			request.Header.Set("X-Api-Key", "site-api-key")
+
+			response, err := client.Do(request)
+			if response != nil && response.Body != nil {
+				_, _ = io.Copy(io.Discard, response.Body)
+				_ = response.Body.Close()
+			}
+			if err == nil {
+				t.Fatal("foreign provider redirect succeeded, want redirect-policy error")
+			}
+			if hits := foreignHits.Load(); hits != 0 {
+				mu.Lock()
+				defer mu.Unlock()
+				t.Fatalf("foreign target received %d request(s), auth=%q api_key=%q body=%q",
+					hits, foreignAuth, foreignAPIKey, foreignBody)
+			}
+		})
+	}
+}
+
+func TestProviderClientRejectsForeignRedirectToSameHostDifferentPort(t *testing.T) {
+	var hits atomic.Int32
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(foreign.Close)
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		http.Redirect(w, request, foreign.URL+"/next", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(origin.Close)
+
+	client, err := ClientFactory{AllowPrivate: true}.New(DirectProxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, origin.URL, strings.NewReader(`{"key":"secret"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if response != nil && response.Body != nil {
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("provider redirect to the same hostname on another port succeeded")
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("foreign port received %d request(s), want 0", got)
+	}
+}
+
+func TestProviderClientAllowsTenRedirectHops(t *testing.T) {
+	var hits atomic.Int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		hits.Add(1)
+		http.Redirect(w, request, server.URL+"/again", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := ClientFactory{AllowPrivate: true}.New(DirectProxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Get(server.URL + "/start")
+	if response != nil && response.Body != nil {
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("unbounded provider redirect loop succeeded")
+	}
+	if got := hits.Load(); got != 11 {
+		t.Fatalf("server received %d requests, want 11 (initial request plus ten followed redirects)", got)
+	}
+}
+
+func TestProviderRedirectStillRejectsProviderForbiddenComponents(t *testing.T) {
+	client, err := ClientFactory{AllowPrivate: true}.New(DirectProxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := http.NewRequest(http.MethodGet, "https://provider.example/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := http.NewRequest(http.MethodGet, "https://PROVIDER.example:443/next#fragment", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.CheckRedirect(target, []*http.Request{original})
+	if err == nil || !strings.Contains(err.Error(), "forbidden components") {
+		t.Fatalf("CheckRedirect() error = %v, want provider URL validation error", err)
+	}
+}
+
+func TestProviderRedirectPreservesRequestBodyOnSameOrigin307(t *testing.T) {
+	const requestBody = `{"secret":"provider-body"}`
+	var mu sync.Mutex
+	var gotBody string
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/redirect" {
+			http.Redirect(w, request, server.URL+"/target", http.StatusTemporaryRedirect)
+			return
+		}
+		body, _ := io.ReadAll(request.Body)
+		mu.Lock()
+		gotBody = string(body)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := ClientFactory{AllowPrivate: true}.New(DirectProxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/redirect", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if response != nil && response.Body != nil {
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("same-origin provider redirect failed: %v", err)
+	}
+	mu.Lock()
+	got := gotBody
+	mu.Unlock()
+	if got != requestBody {
+		t.Fatalf("redirected body = %q, want %q", got, requestBody)
 	}
 }

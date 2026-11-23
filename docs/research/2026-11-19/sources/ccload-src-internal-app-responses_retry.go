@@ -1,0 +1,367 @@
+package app
+
+import (
+	"bytes"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"ccLoad/internal/protocol"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+)
+
+const (
+	stripMissingRequiredInputStrategy     = "strip_missing_required_input"
+	stripMissingStoredInputItemStrategy   = "strip_missing_stored_input_item"
+	stripUnknownInputParameterStrategy    = "strip_unknown_input_parameter"
+	stripResponsesResourceItemIDsStrategy = "strip_responses_resource_item_ids"
+	responsesMissingStoredItemRetryLimit  = 1
+)
+
+// responsesRetryBodyForMissingRequiredParameter 在上游 HTTP 400 且
+// error.code=missing_required_parameter 时，按 param 指向的 input[N] 丢掉该项，
+// 供同渠道同 Key 重试一次。响应已提交则不能换 body。
+func responsesRetryBodyForMissingRequiredParameter(
+	plan protocol.TransformPlan,
+	res *fwResult,
+) ([]byte, string, bool) {
+	if res == nil || res.ResponseCommitted || res.Status != http.StatusBadRequest {
+		return nil, "", false
+	}
+	index, ok := missingRequiredInputIndex(res.Body)
+	if !ok {
+		return nil, "", false
+	}
+	retryBody, ok := responsesBodyWithoutInputIndex(plan.TranslatedBody, index)
+	if !ok {
+		return nil, "", false
+	}
+	return retryBody, stripMissingRequiredInputStrategy, true
+}
+
+// responsesRetryBodyForUnknownParameter 在上游报 unknown/unsupported parameter 时，
+// 一次性剥离所有 input item 的 status 字段（发送边界保留 status，只在此兜底剥离），
+// 供同渠道同 Key 重试一次。策略串是常量，重试循环按完整串去重，天然限 1 轮。
+// 只接受明确指向 input[N].status 的错误，避免因其他参数拒绝而重放 POST。
+// thinking/reasoning 相关错误交给 strip_codex_thinking 专门策略。响应已提交则不能换 body。
+func responsesRetryBodyForUnknownParameter(
+	upstreamProtocol protocol.Protocol,
+	plan protocol.TransformPlan,
+	res *fwResult,
+) ([]byte, string, bool) {
+	if res == nil || res.ResponseCommitted || upstreamProtocol != protocol.Codex ||
+		plan.ClientProtocol != protocol.Codex || plan.RequestFamily != protocol.RequestFamilyResponses {
+		return nil, "", false
+	}
+	errorBody, status := forwardResultErrorPayload(res)
+	if status != http.StatusBadRequest {
+		return nil, "", false
+	}
+	if !matchesUnknownInputStatusError(errorBody) {
+		return nil, "", false
+	}
+	retryBody := stripResponsesInputItemStatus(plan.TranslatedBody)
+	if bytes.Equal(retryBody, plan.TranslatedBody) {
+		return nil, "", false
+	}
+	return retryBody, stripUnknownInputParameterStrategy, true
+}
+
+// matchesUnknownInputStatusError only accepts errors that identify
+// input[N].status. Retrying a POST for some other rejected parameter is not a
+// harmless fallback: it can duplicate an upstream side effect.
+func matchesUnknownInputStatusError(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	root := gjson.ParseBytes(body)
+	code := strings.ToLower(strings.TrimSpace(firstNonEmptyJSONString(
+		root.Get("error.code"),
+		root.Get("code"),
+	)))
+	if code != "" && code != "unknown_parameter" && code != "unsupported_parameter" {
+		return false
+	}
+	param := firstNonEmptyJSONString(root.Get("error.param"), root.Get("param"))
+	message := firstNonEmptyJSONString(
+		root.Get("error.message"),
+		root.Get("message"),
+	)
+	if code == "" {
+		lowerMessage := strings.ToLower(message)
+		if !strings.Contains(lowerMessage, "unknown parameter") &&
+			!strings.Contains(lowerMessage, "unsupported parameter") {
+			return false
+		}
+	}
+	if param != "" {
+		return isResponsesInputStatusPath(param, true)
+	}
+	return isResponsesInputStatusPath(message, false)
+}
+
+func isResponsesInputStatusPath(value string, exact bool) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	_, after, ok := strings.Cut(lower, "input[")
+	if !ok {
+		return false
+	}
+	rest := after
+	end := strings.IndexByte(rest, ']')
+	if end <= 0 {
+		return false
+	}
+	if _, err := strconv.Atoi(rest[:end]); err != nil {
+		return false
+	}
+	rest = rest[end+1:]
+	if !strings.HasPrefix(rest, ".status") {
+		return false
+	}
+	rest = rest[len(".status"):]
+	if rest == "" {
+		return true
+	}
+	if exact {
+		return false
+	}
+	// 嵌套路径不是 status 字段本身。引号、空格等则是错误文案边界。
+	return rest[0] != '.' && rest[0] != '[' && !isResponsesPathIdentifierByte(rest[0])
+}
+
+func isResponsesPathIdentifierByte(value byte) bool {
+	return value == '_' || value >= '0' && value <= '9' || value >= 'a' && value <= 'z'
+}
+
+func missingRequiredInputIndex(body []byte) (int, bool) {
+	if !gjson.ValidBytes(body) {
+		return 0, false
+	}
+	root := gjson.ParseBytes(body)
+	code := strings.TrimSpace(firstNonEmptyJSONString(
+		root.Get("error.code"),
+		root.Get("code"),
+	))
+	if !strings.EqualFold(code, "missing_required_parameter") {
+		return 0, false
+	}
+	param := firstNonEmptyJSONString(
+		root.Get("error.param"),
+		root.Get("param"),
+		root.Get("error.message"),
+		root.Get("message"),
+	)
+	return parseResponsesInputIndex(param)
+}
+
+func firstNonEmptyJSONString(values ...gjson.Result) string {
+	for _, value := range values {
+		if text := strings.TrimSpace(value.String()); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func parseResponsesInputIndex(param string) (int, bool) {
+	param = strings.TrimSpace(param)
+	start := strings.Index(strings.ToLower(param), "input[")
+	if start < 0 {
+		return 0, false
+	}
+	rest := param[start+len("input["):]
+	end := strings.IndexByte(rest, ']')
+	if end <= 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+func responsesBodyWithoutInputIndex(body []byte, index int) ([]byte, bool) {
+	if !isMutableJSONObject(body) {
+		return nil, false
+	}
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() || index < 0 || index >= len(input.Array()) {
+		return nil, false
+	}
+	encoded, err := sjson.DeleteBytes(body, fmt.Sprintf("input.%d", index))
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
+}
+
+// responsesRetryBodyForMissingStoredInputItem 在上游按 ID 找不到 reasoning 项时
+// （store=false 的典型 404，也可能落在 SSE/WS 的 HTTP 200 错误事件里），
+// 仅当该项没有有效加密内容时，一次清理所有带 ID 的不可移植 reasoning，供同渠道重试。
+// 有效加密 reasoning 必须保留。assistant message 和工具项的
+// id 在此策略中保持原样；跨资源拒绝由独立策略处理。响应已提交则不能换 body。
+func responsesRetryBodyForMissingStoredInputItem(
+	plan protocol.TransformPlan,
+	res *fwResult,
+) ([]byte, string, bool) {
+	if res == nil || res.ResponseCommitted {
+		return nil, "", false
+	}
+	errorBody, status := forwardResultErrorPayload(res)
+	if status != http.StatusBadRequest && status != http.StatusNotFound {
+		return nil, "", false
+	}
+	id, ok := missingStoredInputItemID(errorBody)
+	if !ok {
+		return nil, "", false
+	}
+	matched := false
+	for _, item := range gjson.GetBytes(plan.TranslatedBody, "input").Array() {
+		if item.Get("id").String() == id && isNonPortableResponsesReasoning(item) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return nil, "", false
+	}
+	retryBody, ok := deleteCodexInputItems(plan.TranslatedBody, isNonPortableResponsesReasoning)
+	if !ok {
+		return nil, "", false
+	}
+	removed := gjson.GetBytes(plan.TranslatedBody, "input.#").Int() - gjson.GetBytes(retryBody, "input.#").Int()
+	return retryBody, fmt.Sprintf("%s:%s:removed=%d", stripMissingStoredInputItemStrategy, id, removed), true
+}
+
+func isNonPortableResponsesReasoning(item gjson.Result) bool {
+	id := item.Get("id")
+	encrypted := item.Get("encrypted_content")
+	return item.Get("type").String() == "reasoning" && id.Type == gjson.String &&
+		strings.TrimSpace(id.String()) != "" &&
+		(encrypted.Type != gjson.String || strings.TrimSpace(encrypted.String()) == "")
+}
+
+func shouldRetryResponsesForeignResource(upstreamProtocol protocol.Protocol, res *fwResult) bool {
+	if upstreamProtocol != protocol.Codex || res == nil || res.ResponseCommitted {
+		return false
+	}
+	body, status := forwardResultErrorPayload(res)
+	return status == http.StatusBadRequest && isResponsesForeignResourceError(body)
+}
+
+func isResponsesForeignResourceError(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	message := codexErrorMessage(gjson.ParseBytes(body))
+	// Some relays redact "Azure" as "***" while retaining the resource error.
+	return strings.Contains(message, "the requested item was created under a different ") &&
+		strings.Contains(message, "openai resource")
+}
+
+func responsesRetryBodyForForeignResource(
+	upstreamProtocol protocol.Protocol,
+	plan protocol.TransformPlan,
+	res *fwResult,
+) ([]byte, string, bool) {
+	if !shouldRetryResponsesForeignResource(upstreamProtocol, res) {
+		return nil, "", false
+	}
+	input := gjson.GetBytes(plan.TranslatedBody, "input")
+	if !input.IsArray() {
+		return nil, "", false
+	}
+	body := plan.TranslatedBody
+	var ranges [][2]int
+	for _, item := range input.Array() {
+		// These replay items carry their content independently of the optional
+		// resource ID. References, reasoning and hosted-tool state keep their IDs.
+		switch item.Get("type").String() {
+		case "message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output":
+		default:
+			continue
+		}
+		id := item.Get("id")
+		if !id.Exists() {
+			continue
+		}
+		start, end, ok := jsonObjectMemberDeletionRange(body, id.Index, len(id.Raw), "id")
+		if !ok {
+			return nil, "", false
+		}
+		ranges = append(ranges, [2]int{start, end})
+	}
+	if len(ranges) == 0 {
+		return nil, "", false
+	}
+	return deleteJSONRanges(body, ranges), stripResponsesResourceItemIDsStrategy, true
+}
+
+func forwardResultErrorPayload(res *fwResult) ([]byte, int) {
+	if res == nil {
+		return nil, 0
+	}
+	if len(res.SSEErrorEvent) > 0 {
+		return res.SSEErrorEvent, classifySSEErrorStatus(res.SSEErrorEvent)
+	}
+	return res.Body, res.Status
+}
+
+func missingStoredInputItemID(body []byte) (string, bool) {
+	if !gjson.ValidBytes(body) {
+		return "", false
+	}
+	root := gjson.ParseBytes(body)
+	message := firstNonEmptyJSONString(
+		root.Get("error.message"),
+		root.Get("message"),
+		root.Get("response.error.message"),
+	)
+	return parseMissingStoredInputItemID(message)
+}
+
+func parseMissingStoredInputItemID(message string) (string, bool) {
+	lower := strings.ToLower(message)
+	if !strings.Contains(lower, "not found") {
+		return "", false
+	}
+	for _, marker := range []string{"item with id '", `item with id "`} {
+		start := strings.Index(lower, marker)
+		if start < 0 {
+			continue
+		}
+		rest := message[start+len(marker):]
+		end := strings.IndexByte(rest, marker[len(marker)-1])
+		if end <= 0 {
+			continue
+		}
+		id := strings.TrimSpace(rest[:end])
+		if id == "" {
+			continue
+		}
+		return id, true
+	}
+	return "", false
+}
+
+func responsesBodyWithoutMissingReasoningID(body []byte, id string) ([]byte, bool) {
+	if id == "" {
+		return nil, false
+	}
+	return deleteCodexInputItems(body, func(item gjson.Result) bool {
+		return item.Get("id").Type == gjson.String && item.Get("id").String() == id &&
+			item.Get("type").Type == gjson.String && item.Get("type").String() == "reasoning"
+	})
+}
+
+func codexWebsocketMissingStoredInputRetryBody(replayBody, payload []byte) ([]byte, bool) {
+	id, ok := missingStoredInputItemID(payload)
+	if !ok {
+		return nil, false
+	}
+	return responsesBodyWithoutMissingReasoningID(replayBody, id)
+}

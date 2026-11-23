@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ClipboardPaste, Copy, FileUp, FlaskConical, Layers3, Pencil, Plus, Power, RefreshCw, Route, Search, Settings2, Sparkles, Trash2 } from 'lucide-react'
-import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, fetchOAuthUsage, getAuthTokens, getChannelEditor, getChannelRouteDiagnostics, getChannels, getSiteChannelBindings, getSiteInventory, importOAuthCredentials, peekChannels, restoreChannelSiteSync, runAccountTask, setChannelsEnabled, updateChannel } from '../api'
-import type { AuthToken, Channel, ChannelBodyRuleAction, ChannelEditorSnapshot, ChannelHeaderRuleAction, ChannelModel, ChannelMutation, ChannelRequestRules, ChannelRouteDiagnostic, ChannelURL, OAuthUsageSummary, RouteDiagnosticResponse, Site, SiteAccount, SiteChannelBinding } from '../types'
+import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, fetchOAuthUsage, getAuthTokens, getChannelEditor, getChannelRouteDiagnostics, getChannels, importOAuthCredentials, peekChannels, restoreChannelSiteSync, setChannelsEnabled, updateChannel } from '../api'
+import type { AuthToken, Channel, ChannelBodyRuleAction, ChannelEditorSnapshot, ChannelHeaderRuleAction, ChannelModel, ChannelMutation, ChannelRequestRules, ChannelRouteDiagnostic, ChannelURL, OAuthUsageSummary } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
 import { Modal, siteErrorMessage, StatusBadge } from './siteShared'
 import ChannelKeysModal from './ChannelKeysModal'
 import { parseChannelKeyBatch } from './channelKeyBatch'
 import HelpTip from '../components/HelpTip'
+import useReadSnapshot from '../components/useReadSnapshot'
+import { attemptStateLabel, healthObservationLabel, modelRouteURL, routeWarningLabel, stickyForwardLabel, weightReferenceLabel } from './modelRoutes'
 import SourceMenu from '../components/SourceMenu'
+import SiteTaskProgress, { useSiteTaskCompletion } from './SiteTaskProgress'
+import SiteSyncPreviewModal from './SiteSyncPreviewModal'
+import ResourceDetails, { DetailList, DetailURL, detailDate } from './ResourceDetails'
+import { browserImportId } from '../browserImportTypes'
 
 const routeDiagnosticProtocols = [
   { value: 'openai', label: 'OpenAI' },
@@ -18,10 +24,12 @@ const routeDiagnosticProtocols = [
 ]
 
 export default function ChannelsPage() {
+  const taskCompletion = useSiteTaskCompletion('model_refresh')
   const location = useLocation()
   const query = useMemo(() => new URLSearchParams(location.search), [location.search])
   const querySearch = query.get('search') || ''
   const focusChannelID = Number(query.get('focus_channel_id') || 0)
+  const syncAccountID = /^\d+$/u.test(query.get('sync_account_id') || '') ? browserImportId(Number(query.get('sync_account_id'))) : 0
   const initialResult = peekChannels({ search: querySearch, status: 'all', source: 'all', sort: 'priority', limit: 50, offset: 0 })
   const [channels, setChannels] = useState<Channel[]>(() => initialResult?.data || [])
   const [total, setTotal] = useState(() => initialResult?.count || 0)
@@ -43,12 +51,15 @@ export default function ChannelsPage() {
 	const [keyHealthChannel, setKeyHealthChannel] = useState<number | null>(null)
 	const [routeDiagnosticChannel, setRouteDiagnosticChannel] = useState<Channel | null>(null)
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
+  const [details, setDetails] = useState<Channel | null>(null)
   const [syncOpen, setSyncOpen] = useState(false)
+  const [syncSeed, setSyncSeed] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const importInput = useRef<HTMLInputElement>(null)
   const focusedChannelRef = useRef(0)
   const loadedOnceRef = useRef(Boolean(initialResult))
   const loadSequence = useRef(0)
+  useEffect(() => { if (syncAccountID) { setSyncSeed(syncAccountID); setSyncOpen(true) } }, [syncAccountID])
 
   // 手动刷新不带 AbortSignal，切换筛选时旧请求不会被取消，因此按序号丢弃过期响应。
   // 否则强制刷新（走网络）可能在筛选切换后落地，覆盖掉缓存命中的新筛选结果，
@@ -88,6 +99,12 @@ export default function ChannelsPage() {
     void load(controller.signal)
     return () => controller.abort()
   }, [load])
+  useEffect(() => {
+    if (!taskCompletion) return
+    const controller = new AbortController()
+    const timer = setTimeout(() => void load(controller.signal, { silent: true, force: true }), 100)
+    return () => { clearTimeout(timer); controller.abort() }
+  }, [taskCompletion, load])
 
   // 分页在服务端，删完末页整页后 offset 会越界，请求返回 0 行，
   // 页面显示「没有匹配的渠道」而汇总仍写着渠道总数。回退到最后一个有效页。
@@ -217,11 +234,12 @@ export default function ChannelsPage() {
               { label: '手工渠道', icon: <Plus size={15} />, onSelect: () => setEditing('new') },
             ]}
           />
-		  <button className="primary-button" type="button" onClick={() => setSyncOpen(true)}><RefreshCw size={16} />同步站点渠道</button>
+		  <button className="primary-button" type="button" onClick={() => { setSyncSeed(0); setSyncOpen(true) }}><RefreshCw size={16} />同步站点渠道</button>
           <button className="icon-button icon-button--surface" type="button" disabled={refreshing} title="刷新渠道" onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新渠道"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
         </>}
       />
 
+      {!syncOpen && <SiteTaskProgress />}
       {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
 
       <section className="compact-summary channels-summary" aria-label="渠道摘要">
@@ -247,142 +265,40 @@ export default function ChannelsPage() {
       {error && channels.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
       {loading ? <LoadingState label="正在加载渠道" /> : error && channels.length === 0 ? <ErrorState message={error} retry={() => void load()} /> : channels.length === 0 ? <EmptyState label="没有符合条件的渠道" /> : (
         <div className="channel-list">
-          {channels.map((channel) => <ChannelRow channel={channel} selected={selected.has(channel.id)} busy={busyId === channel.id || (batchBusy && selected.has(channel.id))} select={() => toggleSelected(channel.id)} toggle={() => void toggleChannel(channel)} copy={() => void copyChannel(channel)} edit={() => setEditing(channel.id)} remove={() => void removeChannel(channel)} manageKeys={() => setKeyHealthChannel(channel.id)} diagnose={() => setRouteDiagnosticChannel(channel)} restoreSync={() => void restoreSiteSync(channel)} key={channel.id} />)}
+          {channels.map((channel) => <ChannelRow channel={channel} selected={selected.has(channel.id)} busy={busyId === channel.id || (batchBusy && selected.has(channel.id))} select={() => toggleSelected(channel.id)} toggle={() => void toggleChannel(channel)} copy={() => void copyChannel(channel)} edit={() => setEditing(channel.id)} remove={() => void removeChannel(channel)} manageKeys={() => setKeyHealthChannel(channel.id)} diagnose={() => setRouteDiagnosticChannel(channel)} restoreSync={() => void restoreSiteSync(channel)} details={() => setDetails(channel)} key={channel.id} />)}
         </div>
       )}
       <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} pageSizes={[50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
       {editing && <ChannelEditor channelId={editing === 'new' ? undefined : editing} close={() => setEditing(null)} saved={() => { setEditing(null); void load(undefined, { silent: true, force: true }) }} />}
-	      {syncOpen && <SiteChannelSyncModal close={() => setSyncOpen(false)} synced={() => void load(undefined, { silent: true, force: true })} />}
+	      {syncOpen && <SiteSyncPreviewModal initialAccountId={syncSeed} close={() => setSyncOpen(false)} onApplied={() => void load(undefined, { silent: true, force: true })} />}
 	      {keyHealthChannel !== null && <ChannelKeysModal channelId={keyHealthChannel} close={() => setKeyHealthChannel(null)} changed={() => void load(undefined, { silent: true, force: true })} />}
 	      {routeDiagnosticChannel && <ChannelRouteDiagnosticsModal key={routeDiagnosticChannel.id} channel={routeDiagnosticChannel} close={() => setRouteDiagnosticChannel(null)} />}
+      {details && <ResourceDetails title="渠道详情" close={() => setDetails(null)} facts={[
+        { label: '名称', value: details.name },
+        { label: '渠道 ID', value: `#${details.id}` },
+        { label: '状态', value: details.enabled ? isCooling(details) ? '已启用 · 存在冷却' : '已启用' : '已停用' },
+        { label: '来源', value: details.source === 'site_sync' ? '站点同步' : details.source === 'manual' ? '手工添加' : details.source || '未知' },
+        { label: '同步归属', value: details.site_sync_ownership === 'manual' ? '手动接管' : details.site_sync_ownership === 'projected' ? '自动投影' : '不适用' },
+        { label: '关联账号', value: details.site_account_id ? <a href={`#/accounts?focus_account_id=${details.site_account_id}`} onClick={() => setDetails(null)}>账号 #{details.site_account_id}</a> : '未关联' },
+        { label: '认证类型', value: details.auth_type || '未知' },
+        { label: '地址与声明协议', value: <DetailList values={details.urls.map((url) => <><DetailURL value={url.url} /><small>{url.exact ? '精确地址' : '基础地址'} · {url.protocols?.length ? url.protocols.join(' / ') : '自动协商'}</small></>)} /> },
+        { label: '协议转换', value: protocolMode(details.protocol_transform_mode) },
+        { label: '模型与映射', value: <DetailList values={details.models.map((model) => <><code>{model.model}</code>{model.redirect_model && <> → <code>{model.redirect_model}</code></>}{model.disabled && <small>已停用</small>}</>)} /> },
+        { label: '基础优先级', value: details.priority },
+        { label: '有效优先级', value: details.effective_priority?.toFixed(1) ?? '未知' },
+        { label: '窗口成功率', value: details.success_rate === undefined ? '未知' : formatChannelSuccessRate(details.success_rate) },
+        { label: '成本倍率', value: details.auth_type === 'api_key' ? `按最终选中的 Key 倍率计算；渠道默认 ${details.cost_multiplier ?? 1}x` : `${details.cost_multiplier ?? 1}x` },
+        { label: 'RPM 限制', value: details.rpm_limit || '不限' },
+        { label: '最大并发', value: details.max_concurrency || '不限' },
+        { label: '每日费用软限额', value: details.daily_cost_limit ? `${details.daily_cost_limit.toFixed(2)} USD` : '不限' },
+        { label: 'Key 数量', value: details.auth_type === 'api_key' ? `总数 ${details.key_count} · 有效 ${details.effective_key_count ?? '未知'}（排除禁用或冷却中的 Key）` : '不适用' },
+        { label: '冷却范围', value: isCooling(details) ? cooldownSummary(details) : '当前没有冷却' },
+        { label: '渠道冷却结束', value: details.cooldown_until ? detailDate(details.cooldown_until) : '当前没有渠道冷却' },
+        { label: '可用时段', value: details.available_time_start && details.available_time_end ? `${details.available_time_start}–${details.available_time_end}` : '未设置时段限制' },
+        { label: '代理方式', value: details.proxy_url ? '自定义代理已配置' : '使用默认代理设置' },
+        { label: '自动健康检测', value: details.scheduled_check_enabled === undefined ? '未知' : details.scheduled_check_enabled ? `已启用 · ${details.scheduled_check_model || '检测模型未设置'}` : '已停用' },
+      ]} />}
     </div>
-  )
-}
-
-function SiteChannelSyncModal({ close, synced }: { close: () => void; synced: () => void }) {
-  const [sites, setSites] = useState<Site[]>([])
-  const [accounts, setAccounts] = useState<SiteAccount[]>([])
-  const [bindings, setBindings] = useState<SiteChannelBinding[]>([])
-  const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [results, setResults] = useState<Map<number, { status: string; message?: string }>>(new Map())
-  const [loading, setLoading] = useState(true)
-  const [syncing, setSyncing] = useState(false)
-  const [progress, setProgress] = useState({ done: 0, total: 0 })
-  const [error, setError] = useState('')
-  const [accountSearch, setAccountSearch] = useState('')
-
-  const loadData = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true); setError('')
-    try {
-      const [inventory, currentBindings] = await Promise.all([getSiteInventory(signal), getSiteChannelBindings(signal)])
-      setSites(inventory.sites); setAccounts(inventory.accounts); setBindings(currentBindings)
-    } catch (reason) {
-      if (!signal?.aborted) setError(siteErrorMessage(reason))
-    } finally {
-      if (!signal?.aborted) setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { const controller = new AbortController(); void loadData(controller.signal); return () => controller.abort() }, [loadData])
-
-  const siteMap = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites])
-  const bindingMap = useMemo(() => {
-    const next = new Map<number, SiteChannelBinding[]>()
-    for (const binding of bindings) {
-      const items = next.get(binding.site_account_id) || []
-      items.push(binding)
-      next.set(binding.site_account_id, items)
-    }
-    return next
-  }, [bindings])
-  const filteredAccounts = useMemo(() => {
-    const needle = accountSearch.trim().toLowerCase()
-    if (!needle) return accounts
-    return accounts.filter((account) => {
-      const site = siteMap.get(account.site_id)
-      return [account.label, account.credential_type, site?.name, site?.base_url]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(needle))
-    })
-  }, [accountSearch, accounts, siteMap])
-  const toggle = (id: number) => setSelected((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next })
-  const selectAll = () => setSelected((current) => {
-    const available = filteredAccounts.filter((account) => account.enabled).map((account) => account.id)
-    if (available.length > 0 && available.every((id) => current.has(id))) {
-      const next = new Set(current)
-      available.forEach((id) => next.delete(id))
-      return next
-    }
-    return new Set([...current, ...available])
-  })
-
-  const sync = async () => {
-    const targets = accounts.filter((account) => selected.has(account.id))
-    if (!targets.length) { setError('请至少选择一个站点账号'); return }
-    setSyncing(true); setError(''); setResults(new Map(targets.map((account) => [account.id, { status: 'queued' }]))); setProgress({ done: 0, total: targets.length })
-    let cursor = 0; let done = 0
-    const worker = async () => {
-      while (cursor < targets.length) {
-        const account = targets[cursor++]
-        setResults((current) => new Map(current).set(account.id, { status: 'running' }))
-        try {
-          const task = await runAccountTask(account.id, 'model_refresh')
-          if (!['success', 'partial'].includes(task.status)) throw new Error(task.error || task.status)
-          setResults((current) => new Map(current).set(account.id, { status: task.status, message: task.error ? siteErrorMessage(task.error) : undefined }))
-        } catch (reason) {
-          setResults((current) => new Map(current).set(account.id, { status: 'failed', message: siteErrorMessage(reason) }))
-        }
-        done++; setProgress({ done, total: targets.length })
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(3, targets.length) }, worker))
-    await loadData(); synced(); setSyncing(false)
-  }
-
-  const resultValues = [...results.values()]
-  const successCount = resultValues.filter((item) => item.status === 'success').length
-  const partialCount = resultValues.filter((item) => item.status === 'partial').length
-  const failedCount = resultValues.filter((item) => item.status === 'failed').length
-  const completedCount = successCount + partialCount + failedCount
-  const progressPercent = progress.total ? Math.round((progress.done / progress.total) * 100) : 0
-  const hasFinished = results.size > 0 && completedCount === progress.total && !syncing
-
-  return (
-    <Modal title="同步站点渠道" close={close} wide>
-      {error && <div className="inline-error modal-error">{error}</div>}
-      {loading ? <LoadingState label="正在加载站点账号" /> : (
-        <div className="site-sync-dialog">
-          <div className="site-sync-toolbar">
-            <span>选择账号后，系统会刷新模型，并用模型 API Key 创建或更新对应路由渠道。</span>
-            <div><button className="text-button" type="button" onClick={selectAll}>{filteredAccounts.some((account) => account.enabled) && filteredAccounts.filter((account) => account.enabled).every((account) => selected.has(account.id)) ? '取消全选' : '全选搜索结果'}</button><button className="text-button" type="button" onClick={() => setSelected(new Set())}>清空</button></div>
-          </div>
-          <label className="search-field site-sync-search"><Search size={15} /><input value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} placeholder="搜索账号、站点名称或网址" aria-label="搜索站点账号" /><span>{filteredAccounts.length}/{accounts.length}</span></label>
-          {(syncing || hasFinished) && <div className="site-sync-progress" aria-live="polite"><div className="site-sync-progress-head"><strong>{syncing ? `同步进行中 · ${progress.done}/${progress.total}` : `同步完成 · 成功 ${successCount} · 部分成功 ${partialCount} · 失败 ${failedCount}`}</strong><span>{progressPercent}%</span></div><div className="site-sync-progress-track"><i style={{ width: `${progressPercent}%` }} /></div></div>}
-          {!accounts.length ? <EmptyState label="还没有站点账号" /> : (
-            <div className="site-sync-list">
-              {!filteredAccounts.length ? <EmptyState label="没有匹配的站点账号" /> : filteredAccounts.map((account) => {
-                const site = siteMap.get(account.site_id)
-                const accountBindings = bindingMap.get(account.id) || []
-                const activeBindings = accountBindings.filter((item) => item.status === 'active')
-                const binding = activeBindings.find((item) => item.projection_key === 'default') || activeBindings[0] || accountBindings[0]
-                const result = results.get(account.id)
-                const failedBinding = activeBindings.find((item) => item.last_sync_error)
-                const channelCount = activeBindings.filter((item) => item.channel_id).length
-                const inactiveCount = accountBindings.length - activeBindings.length
-                const bindingMessage = failedBinding?.last_sync_error
-                  ? siteErrorMessage(failedBinding.last_sync_error)
-                  : channelCount
-                    ? `${channelCount} 个渠道 · ${activeBindings.length} 把 Key${inactiveCount ? ` · 已停用 ${inactiveCount} 个旧渠道` : ''}`
-                    : '尚未创建渠道'
-                const bindingStatus = result?.status || failedBinding?.last_sync_status || (binding ? binding.status : 'unknown')
-                return <div className={`site-sync-row${selected.has(account.id) ? ' is-selected' : ''}`} key={account.id}><input type="checkbox" checked={selected.has(account.id)} disabled={!account.enabled || syncing} onChange={() => toggle(account.id)} aria-label={`选择 ${account.label}`} /><div><a className="entity-link" href={`#/accounts?focus_account_id=${account.id}${['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`} onClick={close}><strong>{account.label}</strong></a><span><a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`} onClick={close}>{site?.name || `站点 #${account.site_id}`}</a> · {account.credential_type === 'api_key' ? '模型 API Key' : '站点登录'}</span></div><div><StatusBadge status={bindingStatus} /><span>{result?.message || bindingMessage}</span></div></div>
-              })}
-            </div>
-          )}
-          <footer><span>{syncing ? `正在同步 ${progress.done}/${progress.total}` : hasFinished ? `已完成 ${completedCount} 个账号，可查看上方逐项结果` : `已选择 ${selected.size} 个账号`}</span><div><button className="secondary-button" type="button" onClick={close} disabled={syncing}>关闭</button><button className="primary-button" type="button" onClick={() => void sync()} disabled={syncing || !selected.size}>{syncing && <RefreshCw className="spin" size={15} />}{syncing ? '同步中' : hasFinished ? '再次同步' : '开始同步'}</button></div></footer>
-        </div>
-      )}
-    </Modal>
   )
 }
 
@@ -391,47 +307,16 @@ function ChannelRouteDiagnosticsModal({ channel, close }: { channel: Channel; cl
   const [model, setModel] = useState(models[0] || '')
   const [protocol, setProtocol] = useState('openai')
   const [tokenIdValue, setTokenIdValue] = useState('')
-  const [tokens, setTokens] = useState<AuthToken[]>([])
-  const [snapshot, setSnapshot] = useState<RouteDiagnosticResponse | null>(null)
-  const [loading, setLoading] = useState(Boolean(models.length))
-  const [error, setError] = useState('')
   const tokenId = Number(tokenIdValue) || 0
-
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    if (!model) {
-      setSnapshot(null)
-      setLoading(false)
-      setError('')
-      return
-    }
-    setLoading(true)
-    setError('')
-    try {
-      const result = await getChannelRouteDiagnostics(channel.id, model, protocol, tokenId, signal)
-      setSnapshot(result)
-    } catch (reason) {
-      if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '路由诊断加载失败')
-    } finally {
-      if (!signal?.aborted) setLoading(false)
-    }
-  }, [channel.id, model, protocol, tokenId])
-
-  useEffect(() => {
-    if (!model) return
-    const controller = new AbortController()
-    void refresh(controller.signal)
-    return () => controller.abort()
-  }, [model, protocol, refresh, tokenIdValue])
-
-  useEffect(() => {
-    const controller = new AbortController()
-    getAuthTokens('today', controller.signal).then((result) => {
-      if (!controller.signal.aborted) setTokens(result.tokens || [])
-    }).catch((reason) => {
-      if (!controller.signal.aborted) setError(reason instanceof Error ? `访问令牌加载失败：${reason.message}` : '访问令牌加载失败')
-    })
-    return () => controller.abort()
-  }, [])
+  const readDiagnostic = useCallback((signal: AbortSignal) => getChannelRouteDiagnostics(channel.id, model, protocol, tokenId, signal), [channel.id, model, protocol, tokenId])
+  const observation = useReadSnapshot(`channel-route:${channel.id}:${model}:${protocol}:${tokenId}`, readDiagnostic, Boolean(model))
+  const readTokens = useCallback((signal: AbortSignal) => getAuthTokens('today', signal), [])
+  const tokenObservation = useReadSnapshot('channel-route-tokens', readTokens)
+  const tokens = tokenObservation.data?.tokens || []
+  const snapshot = observation.data
+  const loading = observation.loading
+  const error = observation.error
+  const refresh = observation.refresh
 
   const strategyLabel = snapshot?.route_strategy === 'sticky' ? '粘性轮询' : '均衡轮询'
   const target = snapshot?.target
@@ -441,13 +326,14 @@ function ChannelRouteDiagnosticsModal({ channel, close }: { channel: Channel; cl
         <div className="route-diagnostic-controls">
           <label><span>诊断模型</span><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
           <label><span>客户端协议</span><select value={protocol} onChange={(event) => setProtocol(event.target.value)}>{routeDiagnosticProtocols.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
-          <label title="选择访问令牌后，诊断会套用该令牌的渠道限制、统计它的今日实际占比，并在粘性轮询下显示当前命中渠道"><span>访问令牌</span><select value={tokenIdValue} onChange={(event) => setTokenIdValue(event.target.value)}><option value="">全局视角</option>{tokens.map((token) => <option value={token.id} key={token.id}>{authTokenLabel(token)}</option>)}</select></label>
+          <label><span>访问令牌</span><select value={tokenIdValue} onChange={(event) => setTokenIdValue(event.target.value)}><option value="">全局视角</option>{tokenIdValue && !tokens.some((token) => String(token.id) === tokenIdValue) && <option value={tokenIdValue}>所选令牌未载入 · #{tokenIdValue}</option>}{tokens.map((token) => <option value={token.id} key={token.id}>{authTokenLabel(token)}</option>)}</select></label>
           <button className="secondary-button" type="button" onClick={() => void refresh()} disabled={loading || !model}><RefreshCw className={loading ? 'spin' : ''} size={15} />{loading ? '诊断中' : '重新诊断'}</button>
         </div>
+        {model && <a className="text-button" href={`#${modelRouteURL({ model, clientProtocol: protocol, tokenId: tokenIdValue })}`}>在模型路由工作台查看</a>}
+        {tokenObservation.error && <p className="inline-error" role="alert">访问令牌清单读取失败，当前范围保持。<button className="text-button" type="button" onClick={tokenObservation.refresh}>重试令牌清单</button></p>}
         {snapshot?.route_strategy === 'sticky' && snapshot.sticky ? (
           <div className="route-diagnostic-sticky">
-            <div><small>粘性命中</small><strong title={snapshot.sticky.channel_name}>{snapshot.sticky.channel_name || `#${snapshot.sticky.channel_id}`}</strong><span>有效至 {formatDiagnosticTime(snapshot.sticky.expires_at)}</span></div>
-            <HelpTip label="粘性命中" text={snapshot.sticky.in_candidate_pool ? '粘性只会在同优先级层内把该渠道提前。' : '该历史命中不在当前候选池中，本次请求会按候选池重新选择。'} />
+            <div><small>最近成功渠道</small><strong title={snapshot.sticky.channel_name}>{snapshot.sticky.channel_name || `#${snapshot.sticky.channel_id}`}</strong><span>有效至 {formatDiagnosticTime(snapshot.sticky.expires_at)}</span><span>{stickyForwardLabel(snapshot.sticky.forward_status)}</span></div>
           </div>
         ) : snapshot?.route_strategy === 'sticky' && !tokenId ? <div className="route-diagnostic-note"><span>粘性轮询：选择访问令牌后查看当前命中</span><HelpTip label="粘性轮询" text="同一「访问令牌 + 模型」会优先沿用上次成功渠道；全局视角只展示候选和日志占比。" /></div> : null}
         {loading ? <LoadingState label="正在计算候选池" /> : error ? <ErrorState message={error} retry={() => void refresh()} /> : !model ? <EmptyState label="该渠道没有启用模型" /> : snapshot ? (
@@ -455,13 +341,14 @@ function ChannelRouteDiagnosticsModal({ channel, close }: { channel: Channel; cl
             <div className="route-diagnostic-summary">
               <article><small>当前策略</small><strong>{strategyLabel}</strong></article>
               <article><small>候选渠道</small><strong>{snapshot.candidates.length}</strong></article>
-              <article><small>今日实际请求</small><strong>{snapshot.actual_total_requests}</strong></article>
-              <article className={target?.candidate ? 'is-success' : 'is-warning'}><small>诊断结果</small><strong>{target?.candidate ? '已进入候选池' : '不在候选池'}</strong></article>
+              <article><small>今日已保存上游尝试</small><strong>{snapshot.actual_total_requests}</strong></article>
+              <article className={target?.attemptable ? 'is-success' : 'is-warning'}><small>当前尝试状态</small><strong>{attemptStateLabel(target?.attempt_status || '')}</strong></article>
             </div>
-            {snapshot.summary.length > 0 && <div className="route-diagnostic-callout"><strong>结论</strong><span>{snapshot.summary[0]}</span><HelpTip label="完整诊断结论" text={snapshot.summary.join('\n')} /></div>}
+            {snapshot.warnings.length > 0 && <ul className="route-diagnostic-readable-reasons">{snapshot.warnings.map((code) => <li key={code}>{routeWarningLabel(code)}</li>)}</ul>}
+            {snapshot.summary.length > 0 && <details className="route-diagnostic-callout"><summary>{snapshot.summary[0]}</summary><ul>{snapshot.summary.slice(1).map((text, index) => <li key={index}>{text}</li>)}</ul></details>}
             {target && <RouteDiagnosticChannelCard diagnostic={target} actualTotal={snapshot.actual_total_requests} highlight />}
             <section className="route-diagnostic-candidates">
-              <header><strong>候选池 · 优先级层</strong><HelpTip label="候选池说明" text="列表表示当前会进入的候选池与优先级层；层内顺序不代表下一次请求一定命中。理论份额由优先级层和可用 Key 计算，今日实际占比来自请求日志。" /></header>
+              <header><strong>候选池 · 优先级层</strong><HelpTip label="候选池说明" text="列表表示当前候选池。权重按启用 Key 数减当前冷却数计算；模型范围内 Key 与尝试能力另行检查。低层份额是故障转移时的条件参考。历史占比来自本机今日保存的精确模型与协议上游尝试。" /></header>
               {snapshot.candidates.length ? <div className="route-diagnostic-list">{snapshot.candidates.map((item) => <RouteDiagnosticChannelCard diagnostic={item} actualTotal={snapshot.actual_total_requests} key={item.channel_id} />)}</div> : <EmptyState label="当前模型没有可用候选渠道" />}
             </section>
           </>
@@ -473,28 +360,26 @@ function ChannelRouteDiagnosticsModal({ channel, close }: { channel: Channel; cl
 
 function RouteDiagnosticChannelCard({ diagnostic, actualTotal, highlight = false }: { diagnostic: ChannelRouteDiagnostic; actualTotal: number; highlight?: boolean }) {
   const blockingCount = diagnostic.reasons.filter((reason) => reason.blocking).length
-  const reasonText = diagnostic.reasons.map((reason) => `${reason.blocking ? '阻断' : '说明'}：${reason.message}`).join('\n')
   return (
     <article className={`route-diagnostic-channel${highlight ? ' is-highlight' : ''}`}>
       <header>
         <div><strong title={diagnostic.channel_name}>{diagnostic.channel_name}</strong><small>#{diagnostic.channel_id}</small></div>
         <div className="route-diagnostic-shares">
-          <span title={`理论流量份额 ${(diagnostic.estimated_traffic_share * 100).toFixed(1)}%`}>{diagnostic.candidate ? `理论 ${(diagnostic.estimated_traffic_share * 100).toFixed(1)}%` : '未入池'}</span>
-          <span className={actualTotal > 0 ? '' : 'is-muted'} title={actualTotal > 0 ? `今日实际占比 ${(diagnostic.actual_share * 100).toFixed(1)}%` : '今日暂无请求'}>{actualTotal > 0 ? `实际 ${(diagnostic.actual_share * 100).toFixed(1)}%` : '今日暂无'}</span>
+          <span>{weightReferenceLabel(diagnostic)}</span>
+          <span className={actualTotal > 0 ? '' : 'is-muted'}>{diagnostic.actual_known ? `已保存尝试 ${(diagnostic.actual_share * 100).toFixed(1)}%` : '历史未知'}</span>
         </div>
       </header>
       <div className="route-diagnostic-metrics">
         <span title="优先级层">{diagnostic.candidate && diagnostic.candidate_position ? `第 ${diagnostic.candidate_position} 层` : '未排序'}</span>
         <span title="可用 Key / 允许当前模型的启用 Key">Key {diagnostic.active_key_count}/{diagnostic.model_eligible_key_count}</span>
-        <span title="今日实际请求数与占比">今日 {diagnostic.actual_requests}{actualTotal > 0 ? ` · ${(diagnostic.actual_share * 100).toFixed(1)}%` : ''}</span>
+        <span>轮询权重 {diagnostic.routing_weight}</span>
+        <span>{attemptStateLabel(diagnostic.attempt_status)}</span>
+        <span>{healthObservationLabel(diagnostic)}</span>
         <span title="当前 RPM / 限制">RPM {diagnostic.rpm_limit ? `${diagnostic.current_rpm}/${diagnostic.rpm_limit}` : '不限'}</span>
         <span title="当前并发 / 限制">并发 {diagnostic.max_concurrency ? `${diagnostic.active_concurrency}/${diagnostic.max_concurrency}` : '不限'}</span>
       </div>
       {diagnostic.reasons.length > 0 && (
-        <div className={`route-diagnostic-reasons${blockingCount ? ' is-blocking' : ''}`}>
-          <span>{blockingCount ? `${blockingCount} 项阻断` : `${diagnostic.reasons.length} 项说明`}</span>
-          <HelpTip label="排除原因" text={reasonText} />
-        </div>
+        <details className={`route-diagnostic-reasons${blockingCount ? ' is-blocking' : ''}`}><summary>{blockingCount ? `${blockingCount} 项阻断` : `${diagnostic.reasons.length} 项说明`}</summary><ul className="route-diagnostic-readable-reasons">{diagnostic.reasons.map((reason, index) => <li key={`${reason.code}:${index}`}>{({ admission: '准入', candidate: '候选', attempt: '尝试' } as Record<string, string>)[reason.stage] || '观察'} · {reason.message}</li>)}</ul></details>
       )}
     </article>
   )
@@ -517,7 +402,7 @@ function formatChannelSuccessRate(value: number) {
   return `${percent.toFixed(1).replace(/\.0$/, '')}%`
 }
 
-function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remove, manageKeys, diagnose, restoreSync }: { channel: Channel; selected: boolean; busy: boolean; select: () => void; toggle: () => void; copy: () => void; edit: () => void; remove: () => void; manageKeys: () => void; diagnose: () => void; restoreSync: () => void }) {
+function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remove, manageKeys, diagnose, restoreSync, details }: { channel: Channel; selected: boolean; busy: boolean; select: () => void; toggle: () => void; copy: () => void; edit: () => void; remove: () => void; manageKeys: () => void; diagnose: () => void; restoreSync: () => void; details: () => void }) {
   const cooling = isCooling(channel)
   const activeModels = channel.models.filter((model) => !model.disabled)
   const protocols = Array.from(new Set(channel.urls.flatMap((url) => url.protocols?.length ? url.protocols : ['auto'])))
@@ -526,7 +411,7 @@ function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remov
       <div className="channel-identity">
         <input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${channel.name}`} />
         <span className={`status-dot ${channel.enabled ? cooling ? 'status-dot--warning' : 'status-dot--success' : 'status-dot--muted'}`} />
-        <div><div className="channel-name"><strong title={channel.name}>{channel.name}</strong><small>#{channel.id}</small>{channel.site_sync_ownership === 'manual' && <span className="site-sync-badge">手动接管</span>}</div>{channel.auth_type === 'api_key' ? <button type="button" className={`channel-key-health-link${channel.key_health_issue_count ? ' has-issues' : ''}`} onClick={manageKeys} aria-label={`管理 ${channel.name} 的 Key`} title="查看每个 Key 的状态、复检或清理">{channel.key_count} Keys · 健康管理{Boolean(channel.key_health_issue_count) && <em>{channel.key_health_issue_count} 需关注</em>}</button> : <span>{channel.auth_type}</span>}</div>
+        <div><div className="channel-name"><strong title={channel.name}>{channel.name}</strong><small>#{channel.id}</small>{channel.site_sync_ownership === 'manual' && <span className="site-sync-badge">手动接管</span>}</div>{channel.auth_type === 'api_key' ? <button type="button" className={`channel-key-health-link${channel.key_health_issue_count ? ' has-issues' : ''}`} onClick={manageKeys} aria-label={`管理 ${channel.name} 的 Key`} title="查看每个 Key 的状态、复检或清理">{channel.key_count} Keys · 健康管理{Boolean(channel.key_health_issue_count) && <em>{channel.key_health_issue_count} 需关注</em>}</button> : <span>{channel.auth_type}</span>}<button className="resource-details-trigger" type="button" onClick={details} aria-label={`查看 ${channel.name} 详情`}>详情</button></div>
       </div>
       <div className="channel-endpoints">{channel.urls[0]?.url ? <a className="site-base-link" href={channel.urls[0].url} target="_blank" rel="noreferrer" title={`在新标签页打开 ${channel.urls[0].url}`}><strong>{channel.urls[0].url}</strong></a> : <strong>未配置 URL</strong>}<span title={channel.urls.map((item) => item.url).join('\n')}>{channel.urls.length} URL · {protocols.join(' / ')}</span></div>
       <div className="channel-routing">

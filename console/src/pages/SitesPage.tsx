@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Copy, ExternalLink, Globe2, Network, Pencil, Plus, Power, Radar, RefreshCw, Search, Trash2, UserPlus } from 'lucide-react'
+import { Copy, ExternalLink, FileInput, Globe2, Network, Pencil, Plus, Power, Radar, RefreshCw, Search, Trash2, UserPlus } from 'lucide-react'
 import { createSite, deleteSite, getSiteInventory, peekSiteInventory, probeSite, updateSite } from '../api'
 import type { Site, SiteAccount, SiteCascadeResult } from '../types'
-import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagination, SecretInput } from './shared'
+import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagination, SecretInput, SelectionSummary } from './shared'
 import { Modal, siteConfiguredCheckinURL, StatusBadge, siteErrorMessage } from './siteShared'
 import { siteCheckinMethodHint } from './siteCheckinMethod'
 import { useLocation } from 'react-router-dom'
 import { credentialLabel, credentialOptions, normalizeCredentialType, platformSupportsCheckin, type CredentialType } from '../siteCredentials'
+import { buildSiteAccountIndex } from './siteAccountIndex'
+import ResourceDetails, { DetailList, DetailURL, detailDate } from './ResourceDetails'
+import { listWindow } from './listWindow'
 
 type SiteForm = {
   name: string; base_url: string; platform: string; timezone: string; use_system_proxy: boolean; proxy_url: string; external_checkin_url: string; enabled: boolean
@@ -44,6 +47,7 @@ export default function SitesPage() {
   const [batchBusy, setBatchBusy] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [editing, setEditing] = useState<Site | null | undefined>(undefined)
+  const [details, setDetails] = useState<Site | null>(null)
   const [form, setForm] = useState<SiteForm>(emptyForm)
   const [saving, setSaving] = useState(false)
   const rowRefs = useRef(new Map<number, HTMLElement>())
@@ -63,20 +67,24 @@ export default function SitesPage() {
 
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
   useEffect(() => setSearch(querySearch), [querySearch])
+  const accountIndex = useMemo(() => buildSiteAccountIndex(accounts), [accounts])
   const visible = useMemo(() => {
     const filtered = sites.filter((site) => !search.trim() || [site.name, site.base_url, site.platform].some((value) => value.toLowerCase().includes(search.trim().toLowerCase())))
     return [...filtered].sort((left, right) => {
       if (sort === 'name') return left.name.localeCompare(right.name, 'zh-CN')
       if (sort === 'enabled') return Number(right.enabled) - Number(left.enabled) || left.name.localeCompare(right.name, 'zh-CN')
       if (sort === 'health') {
-        const leftHealthy = accounts.filter((account) => account.site_id === left.id && account.status === 'healthy').length
-        const rightHealthy = accounts.filter((account) => account.site_id === right.id && account.status === 'healthy').length
+        const leftHealthy = accountIndex.get(left.id)?.healthy ?? 0
+        const rightHealthy = accountIndex.get(right.id)?.healthy ?? 0
         return rightHealthy - leftHealthy || left.name.localeCompare(right.name, 'zh-CN')
       }
       return right.id - left.id
     })
-  }, [accounts, search, sites, sort])
-  const pagedVisible = useMemo(() => visible.slice((page - 1) * pageSize, page * pageSize), [page, pageSize, visible])
+  }, [accountIndex, search, sites, sort])
+  const pagedVisible = useMemo(() => {
+    const current = listWindow(visible.length, page, pageSize)
+    return visible.slice(current.start, current.end)
+  }, [page, pageSize, visible])
   const healthy = accounts.filter((account) => account.status === 'healthy').length
 
   useEffect(() => { setPage(1) }, [search])
@@ -226,27 +234,43 @@ export default function SitesPage() {
       icon={Globe2}
       title="站点管理"
       tone="blue"
-      actions={<><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新站点"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></>}
+      actions={<><a className="secondary-button" href="#/browser-import"><FileInput size={16} />浏览器导入</a><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新站点"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></>}
     />
     <section className="compact-summary"><span><strong>{sites.length}</strong>站点总数</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>已启用</span><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{healthy}</strong>健康账号</span></section>
-    <div className="filter-bar"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前筛选下的全部站点" /><span>全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索站点、地址或平台" aria-label="搜索站点" /></label><select value={sort} onChange={(event) => { setSort(event.target.value); setPage(1) }} aria-label="站点排序"><option value="newest">新建优先</option><option value="name">名称 A-Z</option><option value="enabled">启用优先</option><option value="health">健康账号数</option></select><span className="filter-count"><Globe2 size={14} />{visible.length} 个站点</span></div>
-    {selected.size > 0 && <div className="batch-toolbar" aria-label="站点批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('proxy_on')} disabled={batchBusy}><Network size={14} />开启系统代理</button><button type="button" onClick={() => void runBatch('proxy_off')} disabled={batchBusy}><Network size={14} />关闭系统代理</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
+    <div className="filter-bar"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前页站点" /><span>本页全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索站点、地址或平台" aria-label="搜索站点" /></label><select value={sort} onChange={(event) => { setSort(event.target.value); setPage(1) }} aria-label="站点排序"><option value="newest">新建优先</option><option value="name">名称 A-Z</option><option value="enabled">启用优先</option><option value="health">健康账号数</option></select><span className="filter-count"><Globe2 size={14} />{visible.length} 个站点</span></div>
+    {selected.size > 0 && <div className="batch-toolbar" aria-label="站点批量操作"><SelectionSummary selected={selected.size} matching={visible.filter((site) => selected.has(site.id)).length} clear={() => setSelected(new Set())} /><div><button type="button" onClick={() => void runBatch('proxy_on')} disabled={batchBusy}><Network size={14} />开启系统代理</button><button type="button" onClick={() => void runBatch('proxy_off')} disabled={batchBusy}><Network size={14} />关闭系统代理</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
     {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}{error && sites.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
-    {loading ? <LoadingState label="正在加载站点资产" /> : error && !sites.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={sites.length ? '没有匹配的站点' : '尚未添加站点'} /> : <div className="site-list">{pagedVisible.map((site) => <SiteRow key={site.id} site={site} accounts={accounts.filter((account) => account.site_id === site.id)} selected={selected.has(site.id)} busy={busyId === site.id || (batchBusy && selected.has(site.id))} focused={site.id === focusSiteId} rowRef={(node) => { if (node) rowRefs.current.set(site.id, node); else rowRefs.current.delete(site.id) }} select={() => toggleSelected(site.id)} copy={() => void copySite(site)} edit={() => openForm(site)} execute={(action) => void execute(site, action)} />)}</div>}
-    <Pagination page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
+    {loading ? <LoadingState label="正在加载站点资产" /> : error && !sites.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={sites.length ? '没有匹配的站点' : '尚未添加站点'} /> : <div className="site-list">{pagedVisible.map((site) => <SiteRow key={site.id} site={site} accounts={accountIndex.get(site.id)?.accounts ?? []} healthyCount={accountIndex.get(site.id)?.healthy ?? 0} selected={selected.has(site.id)} busy={busyId === site.id || (batchBusy && selected.has(site.id))} focused={site.id === focusSiteId} rowRef={(node) => { if (node) rowRefs.current.set(site.id, node); else rowRefs.current.delete(site.id) }} select={() => toggleSelected(site.id)} copy={() => void copySite(site)} edit={() => openForm(site)} details={() => setDetails(site)} execute={(action) => void execute(site, action)} />)}</div>}
+    <Pagination label="站点分页" page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
     {editing !== undefined && <Modal title={editing ? '编辑站点' : '添加站点'} close={() => setEditing(undefined)}>{error && <div className="inline-error modal-error">{error}</div>}<SiteFormView form={form} setForm={setForm} saving={saving} submit={save} editing={Boolean(editing)} /></Modal>}
+    {details && <ResourceDetails title="站点详情" close={() => setDetails(null)} facts={[
+      { label: '名称', value: details.name },
+      { label: '站点 ID', value: `#${details.id}` },
+      { label: '站点地址', value: <DetailURL value={details.base_url} /> },
+      { label: '平台', value: details.platform || '未知' },
+      { label: '状态', value: details.enabled ? '已启用' : '已停用' },
+      { label: '时区', value: details.timezone || 'Asia/Shanghai' },
+      { label: '代理方式', value: details.proxy_url ? '自定义代理已配置' : details.use_system_proxy ? '系统代理' : '直连' },
+      { label: '账号', value: <DetailList empty="暂无账号" values={(accountIndex.get(details.id)?.accounts ?? []).map((account) => <><a href={`#/accounts?focus_account_id=${account.id}`} onClick={() => setDetails(null)}>{account.label}</a> · #{account.id} · <StatusBadge status={account.status} /> · {account.enabled ? '已启用' : '已停用'}</>)} /> },
+      { label: '最近探测', value: <StatusBadge status={details.last_probe_status} /> },
+      { label: '探测说明', value: details.last_error || '尚无说明' },
+      { label: '签到方式', value: siteCheckinMethodHint(details) || '未知' },
+      { label: '签到方式检查时间', value: detailDate(details.checkin_method_checked_at) },
+      { label: '辅助签到地址', value: <DetailURL value={siteConfiguredCheckinURL(details)} /> },
+      { label: '创建时间', value: detailDate(details.created_at) },
+      { label: '更新时间', value: detailDate(details.updated_at) },
+    ]} />}
   </div>
 }
 
-function SiteRow({ site, accounts, selected, busy, focused, rowRef, select, copy, edit, execute }: { site: Site; accounts: SiteAccount[]; selected: boolean; busy: boolean; focused: boolean; rowRef: (node: HTMLElement | null) => void; select: () => void; copy: () => void; edit: () => void; execute: (action: 'probe' | 'toggle' | 'delete') => void }) {
-  const healthy = accounts.filter((account) => account.status === 'healthy').length
+function SiteRow({ site, accounts, healthyCount, selected, busy, focused, rowRef, select, copy, edit, details, execute }: { site: Site; accounts: SiteAccount[]; healthyCount: number; selected: boolean; busy: boolean; focused: boolean; rowRef: (node: HTMLElement | null) => void; select: () => void; copy: () => void; edit: () => void; details: () => void; execute: (action: 'probe' | 'toggle' | 'delete') => void }) {
   // 只有显式配置了签到地址才显示入口：给每个 New API 系站点兜底生成个人页链接，
   // 会把手动配置的那几个真正需要人工签到的站点淹掉。
   const checkinURL = siteConfiguredCheckinURL(site)
   return <article ref={rowRef} data-site-id={site.id} className={`site-row${selected ? ' row-selected' : ''}${focused ? ' row-focus-highlight' : ''}`}>
-    <div className="site-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${site.name}`} /><span className={`status-dot ${site.enabled ? 'status-dot--success' : 'status-dot--muted'}`} /><div><a className="entity-link" href={`#/sites?focus_site_id=${site.id}`}><strong>{site.name}</strong></a><span>#{site.id} · {site.timezone || 'Asia/Shanghai'}</span></div></div>
+    <div className="site-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${site.name}`} /><span className={`status-dot ${site.enabled ? 'status-dot--success' : 'status-dot--muted'}`} /><div><a className="entity-link" href={`#/sites?focus_site_id=${site.id}`}><strong>{site.name}</strong></a><span>#{site.id} · {site.timezone || 'Asia/Shanghai'}</span><button className="resource-details-trigger" type="button" onClick={details} aria-label={`查看 ${site.name} 详情`}>详情</button></div></div>
     <div className="site-address"><a className="site-base-link" href={site.base_url} target="_blank" rel="noreferrer" title={`在新标签页打开 ${site.base_url}`}><strong>{site.base_url}</strong></a><span>{site.platform || 'unknown'} · {site.proxy_url ? '自定义代理' : site.use_system_proxy ? '系统代理' : '直连'}</span></div>
-    <div className="site-account-summary"><strong>{healthy}/{accounts.length}</strong><div className="site-account-links">{accounts.length ? accounts.slice(0, 2).map((account) => <a className="entity-chip" key={account.id} href={`#/accounts?focus_account_id=${account.id}${['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}>{account.label}</a>) : <span>暂无账号</span>}</div></div>
+    <div className="site-account-summary"><strong>{healthyCount}/{accounts.length}</strong><div className="site-account-links">{accounts.length ? accounts.slice(0, 2).map((account) => <a className="entity-chip" key={account.id} href={`#/accounts?focus_account_id=${account.id}${['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}>{account.label}</a>) : <span>暂无账号</span>}</div></div>
     <div className="site-probe"><StatusBadge status={site.last_probe_status} /><span title={site.last_error}>{site.last_error || '最近探测状态'}{siteCheckinMethodHint(site) ? ` · ${siteCheckinMethodHint(site)}` : ''}</span></div>
     <div className="row-actions">
       {checkinURL && <a className="icon-button icon-button--surface" href={checkinURL} target="_blank" rel="noreferrer" aria-label={`打开 ${site.name} 签到页`} title="浏览器辅助签到页"><ExternalLink size={16} /></a>}

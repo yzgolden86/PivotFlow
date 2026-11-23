@@ -33,10 +33,10 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
-			SUM(COALESCE(cost, 0.0)) as total_cost,
+			SUM(` + standardCostSQL("") + `) as total_cost,
 			SUM(` + effectiveCostSQL("") + `) as effective_cost,
-			MIN(CASE WHEN status_code != 499 THEN ` + effectiveCostMultiplierSQL("") + ` ELSE NULL END) as actual_cost_multiplier_min,
-			MAX(CASE WHEN status_code != 499 THEN ` + effectiveCostMultiplierSQL("") + ` ELSE NULL END) as actual_cost_multiplier_max
+			MIN(CASE WHEN status_code != 499 THEN ` + safeEffectiveCostMultiplierSQL("") + ` ELSE NULL END) as actual_cost_multiplier_min,
+			MAX(CASE WHEN status_code != 499 THEN ` + safeEffectiveCostMultiplierSQL("") + ` ELSE NULL END) as actual_cost_multiplier_max
 		FROM logs`
 
 	startMs := startTime.UnixMilli()
@@ -55,7 +55,7 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 		return []model.StatsEntry{}, map[int64]bool{}, nil
 	}
 
-	qb.ApplyFilter(filter)
+	qb.ApplyFilter(filter, s.driverName)
 
 	suffix := "GROUP BY channel_id, model ORDER BY channel_id ASC, model ASC"
 	query, args := qb.BuildWithSuffix(suffix)
@@ -233,7 +233,7 @@ func (s *SQLStore) fillStatsLastSuccesses(ctx context.Context, stats []model.Sta
 
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
-	query, args := buildLatestChannelSuccessQuery(entryIndexesByChannel, lastStateFilter, s.IsSQLite())
+	query, args := buildLatestChannelSuccessQuery(entryIndexesByChannel, lastStateFilter, s.IsSQLite(), s.driverName)
 	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -281,7 +281,7 @@ func (s *SQLStore) fillStatsLastSuccessesByEntry(ctx context.Context, stats []mo
 
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
-	query, args := buildLatestEntrySuccessQuery(entryIndexes, lastStateFilter, s.IsSQLite())
+	query, args := buildLatestEntrySuccessQuery(entryIndexes, lastStateFilter, s.IsSQLite(), s.driverName)
 	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -335,7 +335,7 @@ func (s *SQLStore) fillStatsLastRequests(ctx context.Context, stats []model.Stat
 
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
-	query, args := buildLatestChannelRequestQuery(entryIndexesByChannel, lastStateFilter, s.IsSQLite())
+	query, args := buildLatestChannelRequestQuery(entryIndexesByChannel, lastStateFilter, s.IsSQLite(), s.driverName)
 	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -390,7 +390,7 @@ func (s *SQLStore) fillStatsLastRequestsByEntry(ctx context.Context, stats []mod
 
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
-	query, args := buildLatestEntryRequestQuery(entryIndexes, lastStateFilter, s.IsSQLite())
+	query, args := buildLatestEntryRequestQuery(entryIndexes, lastStateFilter, s.IsSQLite(), s.driverName)
 	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -436,38 +436,38 @@ func hasStatsModelFilter(filter *model.LogFilter) bool {
 	return filter != nil && (filter.Model != "" || filter.ModelLike != "")
 }
 
-func buildLatestChannelSuccessQuery(entryIndexesByChannel map[int][]int, filter *model.LogFilter, scalarProjection bool) (string, []any) {
+func buildLatestChannelSuccessQuery(entryIndexesByChannel map[int][]int, filter *model.LogFilter, scalarProjection bool, driverNames ...string) (string, []any) {
 	return buildLatestChannelLogQuery(entryIndexesByChannel, filter, []string{"l.time", "l.id"}, scalarProjection, func(qb *QueryBuilder) {
 		qb.Where("status_code >= 200").
 			Where("status_code < 300")
-	})
+	}, driverNames...)
 }
 
-func buildLatestChannelRequestQuery(entryIndexesByChannel map[int][]int, filter *model.LogFilter, scalarProjection bool) (string, []any) {
+func buildLatestChannelRequestQuery(entryIndexesByChannel map[int][]int, filter *model.LogFilter, scalarProjection bool, driverNames ...string) (string, []any) {
 	return buildLatestChannelLogQuery(entryIndexesByChannel, filter, []string{"l.time", "l.id", "l.status_code", "l.message"}, scalarProjection, func(qb *QueryBuilder) {
 		qb.Where("status_code != 499")
-	})
+	}, driverNames...)
 }
 
-func buildLatestEntrySuccessQuery(entryIndexes map[statsRequestKey]int, filter *model.LogFilter, scalarProjection bool) (string, []any) {
+func buildLatestEntrySuccessQuery(entryIndexes map[statsRequestKey]int, filter *model.LogFilter, scalarProjection bool, driverNames ...string) (string, []any) {
 	return buildLatestEntryLogQuery(entryIndexes, filter, []string{"l.time", "l.id"}, scalarProjection, func(qb *QueryBuilder) {
 		qb.Where("status_code >= 200").
 			Where("status_code < 300")
-	})
+	}, driverNames...)
 }
 
-func buildLatestEntryRequestQuery(entryIndexes map[statsRequestKey]int, filter *model.LogFilter, scalarProjection bool) (string, []any) {
+func buildLatestEntryRequestQuery(entryIndexes map[statsRequestKey]int, filter *model.LogFilter, scalarProjection bool, driverNames ...string) (string, []any) {
 	return buildLatestEntryLogQuery(entryIndexes, filter, []string{"l.time", "l.id", "l.status_code", "l.message"}, scalarProjection, func(qb *QueryBuilder) {
 		qb.Where("status_code != 499")
-	})
+	}, driverNames...)
 }
 
-func buildLatestChannelLogQuery(entryIndexesByChannel map[int][]int, filter *model.LogFilter, selectColumns []string, scalarProjection bool, applyStatePredicate func(*QueryBuilder)) (string, []any) {
+func buildLatestChannelLogQuery(entryIndexesByChannel map[int][]int, filter *model.LogFilter, selectColumns []string, scalarProjection bool, applyStatePredicate func(*QueryBuilder), driverNames ...string) (string, []any) {
 	scopeSQL, scopeArgs := buildChannelScope(entryIndexesByChannel)
 	if scalarProjection {
 		// SQLite 会扁平化下面的相关 JOIN，并把 logs l 提到 scope 前做全表扫描。
 		// 标量投影让小 scope 驱动查询，每列都沿 channel_id,time,id 索引直接定位最新行。
-		projections, projectionArgs := buildLatestScalarProjections(selectColumns, filter, false, applyStatePredicate)
+		projections, projectionArgs := buildLatestScalarProjections(selectColumns, filter, false, applyStatePredicate, driverNames...)
 		query := fmt.Sprintf(`
 			SELECT scope.channel_id, %s
 			FROM (%s) scope`, strings.Join(projections, ", "), scopeSQL)
@@ -481,7 +481,7 @@ func buildLatestChannelLogQuery(entryIndexesByChannel map[int][]int, filter *mod
 		Where("channel_id = scope.channel_id").
 		Where("channel_id > 0")
 	applyStatePredicate(subQB)
-	subQB.ApplyFilter(filter)
+	subQB.ApplyFilter(filter, driverNames...)
 	subQuery, subArgs := subQB.BuildWithSuffix("ORDER BY time DESC, id DESC LIMIT 1")
 
 	query := fmt.Sprintf(`
@@ -495,10 +495,10 @@ func buildLatestChannelLogQuery(entryIndexesByChannel map[int][]int, filter *mod
 	return query, args
 }
 
-func buildLatestEntryLogQuery(entryIndexes map[statsRequestKey]int, filter *model.LogFilter, selectColumns []string, scalarProjection bool, applyStatePredicate func(*QueryBuilder)) (string, []any) {
+func buildLatestEntryLogQuery(entryIndexes map[statsRequestKey]int, filter *model.LogFilter, selectColumns []string, scalarProjection bool, applyStatePredicate func(*QueryBuilder), driverNames ...string) (string, []any) {
 	scopeSQL, scopeArgs := buildEntryScope(entryIndexes)
 	if scalarProjection {
-		projections, projectionArgs := buildLatestScalarProjections(selectColumns, filter, true, applyStatePredicate)
+		projections, projectionArgs := buildLatestScalarProjections(selectColumns, filter, true, applyStatePredicate, driverNames...)
 		query := fmt.Sprintf(`
 			SELECT scope.channel_id, scope.model, %s
 			FROM (%s) scope`, strings.Join(projections, ", "), scopeSQL)
@@ -513,7 +513,7 @@ func buildLatestEntryLogQuery(entryIndexes map[statsRequestKey]int, filter *mode
 		Where("COALESCE(model, '') = scope.model").
 		Where("channel_id > 0")
 	applyStatePredicate(subQB)
-	subQB.ApplyFilter(filter)
+	subQB.ApplyFilter(filter, driverNames...)
 	subQuery, subArgs := subQB.BuildWithSuffix("ORDER BY time DESC, id DESC LIMIT 1")
 
 	query := fmt.Sprintf(`
@@ -527,7 +527,7 @@ func buildLatestEntryLogQuery(entryIndexes map[statsRequestKey]int, filter *mode
 	return query, args
 }
 
-func buildLatestScalarProjections(selectColumns []string, filter *model.LogFilter, byEntry bool, applyStatePredicate func(*QueryBuilder)) ([]string, []any) {
+func buildLatestScalarProjections(selectColumns []string, filter *model.LogFilter, byEntry bool, applyStatePredicate func(*QueryBuilder), driverNames ...string) ([]string, []any) {
 	projections := make([]string, 0, len(selectColumns))
 	args := make([]any, 0)
 	for _, column := range selectColumns {
@@ -539,7 +539,7 @@ func buildLatestScalarProjections(selectColumns []string, filter *model.LogFilte
 			qb.Where("COALESCE(model, '') = scope.model")
 		}
 		applyStatePredicate(qb)
-		qb.ApplyFilter(filter)
+		qb.ApplyFilter(filter, driverNames...)
 		query, queryArgs := qb.BuildWithSuffix("ORDER BY time DESC, id DESC LIMIT 1")
 		projections = append(projections, "("+query+")")
 		args = append(args, queryArgs...)
@@ -628,7 +628,7 @@ func (s *SQLStore) GetClientProtocolStats(ctx context.Context, startTime, endTim
 			SUM(COALESCE(output_tokens, 0)) AS total_output_tokens,
 			SUM(COALESCE(cache_read_input_tokens, 0)) AS total_cache_read_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) AS total_cache_creation_tokens,
-			SUM(COALESCE(cost, 0.0)) AS total_cost,
+			SUM(` + standardCostSQL("") + `) AS total_cost,
 			SUM(` + effectiveCostSQL("") + `) AS effective_cost
 		FROM logs`
 
@@ -644,7 +644,7 @@ func (s *SQLStore) GetClientProtocolStats(ctx context.Context, startTime, endTim
 	if isEmpty {
 		return []model.ClientProtocolStats{}, nil
 	}
-	qb.ApplyFilter(filter)
+	qb.ApplyFilter(filter, s.driverName)
 
 	query, args := qb.BuildWithSuffix("GROUP BY client_protocol ORDER BY client_protocol ASC")
 	rows, err := s.QueryContext(ctx, query, args...)
@@ -711,7 +711,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 	}
 
 	// 应用其余过滤器（模型/状态码等）
-	combinedQB.ApplyFilter(filter)
+	combinedQB.ApplyFilter(filter, s.driverName)
 
 	combinedQuery, combinedArgs := combinedQB.BuildWithSuffix("GROUP BY minute_bucket) t")
 
@@ -751,7 +751,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 		}
 		if !isEmpty {
 			// 应用其余过滤器
-			recentQB.ApplyFilter(filter)
+			recentQB.ApplyFilter(filter, s.driverName)
 
 			recentQuery, recentArgs := recentQB.Build()
 			var recentCount int64
@@ -811,7 +811,7 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 
 	// 仅当渠道过滤非空时才执行查询
 	if !isEmpty {
-		peakQB.ApplyFilter(filter)
+		peakQB.ApplyFilter(filter, s.driverName)
 		peakQuery, peakArgs := peakQB.BuildWithSuffix("GROUP BY channel_id, model, minute_bucket) t GROUP BY channel_id, model")
 
 		peakRows, err := s.QueryContext(ctx, peakQuery, peakArgs...)
@@ -857,7 +857,7 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 
 		// 仅当渠道过滤非空时才执行查询
 		if !isEmpty {
-			recentQB.ApplyFilter(filter)
+			recentQB.ApplyFilter(filter, s.driverName)
 			recentQuery, recentArgs := recentQB.BuildWithSuffix("GROUP BY channel_id, model")
 			recentRows, err := s.QueryContext(ctx, recentQuery, recentArgs...)
 			if err != nil {

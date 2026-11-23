@@ -16,6 +16,11 @@ var ErrSettingNotFound = model.ErrSettingNotFound
 // 理由：8个子接口无任何地方被独立使用，所有消费者都依赖完整 Store
 type Store interface {
 	SiteStore
+	// RestoreSiteAccountModels replaces one account's complete model list using
+	// backup-owned flags and routing metadata. Storage keeps the target's
+	// observation timestamps for retained models and ignores archived runtime
+	// timestamps supplied in the restore payload.
+	RestoreSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error
 	// === Channel Management ===
 	ListConfigs(ctx context.Context) ([]*model.Config, error)
 	GetConfig(ctx context.Context, id int64) (*model.Config, error)
@@ -88,8 +93,15 @@ type Store interface {
 	ListLogsRangeWithCount(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, int, error)
 	CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error)
 	CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error)
+	GetCostSummary(ctx context.Context, since, until time.Time, filter *model.LogFilter) (*model.CostSummary, error)
 	GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error)
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error
+
+	// === Request History ===
+	BatchAddRequestTraces(ctx context.Context, traces []*model.RequestTrace) error
+	GetRequestTrace(ctx context.Context, id string, authTokenID *int64) (*model.RequestTrace, error)
+	ListRequestTraces(ctx context.Context, since, until time.Time, limit, offset int, filter *model.RequestTraceFilter) ([]*model.RequestTrace, int, error)
+	GetRequestTraceStats(ctx context.Context, since, until time.Time, filter *model.RequestTraceFilter) (*model.RequestTraceStats, error)
 
 	// === Debug Log Management ===
 	AddDebugLog(ctx context.Context, e *model.DebugLogEntry) error
@@ -121,6 +133,7 @@ type Store interface {
 	DeleteAuthToken(ctx context.Context, id int64) error
 	UpdateTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error
 	UpdateTokenStats(ctx context.Context, tokenHash string, isSuccess bool, duration float64, isStreaming bool, firstByteTime float64, promptTokens int64, completionTokens int64, cacheReadTokens int64, cacheCreationTokens int64, costUSD float64, effectiveCostUSD float64) error
+	ApplyTokenSettlement(ctx context.Context, event model.TokenSettlement) error
 	GetAuthTokenStatsInRange(ctx context.Context, startTime, endTime time.Time) (map[int64]*model.AuthTokenRangeStats, error)
 	FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*model.AuthTokenRangeStats, startTime, endTime time.Time, isToday bool) error
 

@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { CircleHelp } from 'lucide-react'
 import { helpTipPosition } from './helpTipPosition'
+import useFocusLayer from './useFocusLayer'
 
 export default function HelpTip({ label, text, code }: { label: string; text: string; code?: string }) {
   const [mode, setMode] = useState<'closed' | 'preview' | 'pinned'>('closed')
@@ -10,6 +11,7 @@ export default function HelpTip({ label, text, code }: { label: string; text: st
   const bubble = useRef<HTMLSpanElement>(null)
   const id = useId()
   const open = mode !== 'closed'
+  useFocusLayer(bubble, { open: open && Boolean(position), modal: false, passive: true, close: () => setMode('closed') })
 
   useLayoutEffect(() => {
     if (!open) {
@@ -25,9 +27,6 @@ export default function HelpTip({ label, text, code }: { label: string; text: st
     const dismiss = (event: PointerEvent) => {
       if (event.target instanceof Node && !trigger.current?.contains(event.target) && !bubble.current?.contains(event.target)) setMode('closed')
     }
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMode('closed')
-    }
     place()
     const observer = new ResizeObserver(place)
     if (trigger.current) observer.observe(trigger.current)
@@ -35,13 +34,11 @@ export default function HelpTip({ label, text, code }: { label: string; text: st
     window.addEventListener('resize', place)
     window.addEventListener('scroll', place, true)
     document.addEventListener('pointerdown', dismiss, true)
-    document.addEventListener('keydown', escape)
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', place)
       window.removeEventListener('scroll', place, true)
       document.removeEventListener('pointerdown', dismiss, true)
-      document.removeEventListener('keydown', escape)
     }
   }, [open])
 

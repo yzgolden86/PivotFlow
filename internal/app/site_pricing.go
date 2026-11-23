@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/yzgolden86/PivotFlow/internal/model"
 	"github.com/yzgolden86/PivotFlow/internal/site/provider"
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 // sitePricingTTL bounds how stale a site price table may get. Operators change
@@ -33,7 +36,7 @@ type channelPricing struct {
 //
 // Cost is otherwise computed from vendor list prices, which have no relation to
 // a relay's configured 倍率. Reading the site's own table is what makes the
-// stored cost match what the upstream actually deducts.
+// stored estimate reflect the site's declared prices instead of vendor prices.
 type sitePricingCache struct {
 	mu      sync.RWMutex
 	entries map[int64]*sitePricingEntry
@@ -42,6 +45,10 @@ type sitePricingCache struct {
 	byChannel   map[int64]channelBinding
 	channelsAt  time.Time
 	channelsTTL time.Duration
+	// generations retires in-flight reads when a site's pricing source changes.
+	// A flight captures the generation before it starts and may only commit a
+	// result while that generation is still current.
+	generations map[int64]uint64
 	// unsupportedLogged throttles the reason log for sites whose pricing is
 	// permanently unavailable (platform without the endpoint, account without
 	// a management credential). Re-armed by a later success or a full drop.
@@ -65,6 +72,7 @@ func newSitePricingCache() *sitePricingCache {
 	return &sitePricingCache{
 		entries:           make(map[int64]*sitePricingEntry),
 		byChannel:         make(map[int64]channelBinding),
+		generations:       make(map[int64]uint64),
 		unsupportedLogged: make(map[int64]bool),
 		channelsTTL:       5 * time.Minute,
 	}
@@ -80,6 +88,9 @@ func (c *sitePricingCache) invalidate() {
 	c.byChannel = make(map[int64]channelBinding)
 	c.channelsAt = time.Time{}
 	c.unsupportedLogged = make(map[int64]bool)
+	for siteID := range c.generations {
+		c.generations[siteID]++
+	}
 	c.mu.Unlock()
 }
 
@@ -92,7 +103,33 @@ func (c *sitePricingCache) invalidateSite(siteID int64) {
 	c.mu.Lock()
 	delete(c.entries, siteID)
 	delete(c.unsupportedLogged, siteID)
+	c.generations[siteID]++
 	c.mu.Unlock()
+}
+
+// currentGeneration returns the site's pricing-source generation, creating the
+// entry so a later invalidate can retire a read that is already in flight.
+func (c *sitePricingCache) currentGeneration(siteID int64) uint64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generations == nil {
+		c.generations = make(map[int64]uint64)
+	}
+	generation := c.generations[siteID]
+	c.generations[siteID] = generation
+	return generation
+}
+
+func (c *sitePricingCache) generationChanged(siteID int64, generation uint64) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.generations[siteID] != generation
 }
 
 // invalidateBindings drops only the channel→site bindings, keeping cached
@@ -143,7 +180,24 @@ func (c *sitePricingCache) store(siteID int64, pricing provider.SitePricing, fai
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.storeLocked(siteID, pricing, failed, now)
+}
 
+// storeForGeneration commits a flight result only while the generation it was
+// read under is still current. Returns whether the result was accepted.
+func (c *sitePricingCache) storeForGeneration(siteID int64, generation uint64, pricing provider.SitePricing, failed bool, now time.Time) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generations[siteID] != generation {
+		return false
+	}
+	return c.storeLocked(siteID, pricing, failed, now)
+}
+
+func (c *sitePricingCache) storeLocked(siteID int64, pricing provider.SitePricing, failed bool, now time.Time) bool {
 	// 防御性覆盖：并发 cache miss 可能触发多次 fetchSitePricing，有的成功、
 	// 有的超时或失败；若无条件覆盖，失败结果能覆盖刚写入的成功缓存，导致
 	// 同渠道在秒级内交替使用站点价目表和本地估算。
@@ -154,7 +208,7 @@ func (c *sitePricingCache) store(siteID int64, pricing provider.SitePricing, fai
 			ttl := sitePricingTTL
 			if now.Sub(existing.fetchedAt) <= ttl {
 				// 已有成功结果且未过期，拒绝失败结果覆盖
-				return
+				return false
 			}
 		}
 	}
@@ -164,6 +218,7 @@ func (c *sitePricingCache) store(siteID int64, pricing provider.SitePricing, fai
 		// 成功后重新武装「不可用原因」日志：凭证补齐等修复值得再次可见。
 		delete(c.unsupportedLogged, siteID)
 	}
+	return true
 }
 
 // shouldLogUnsupported reports whether the caller should log why this site's
@@ -245,7 +300,6 @@ func (s *Server) resolveChannelPricing(ctx context.Context, channelID int64) (ch
 
 	pricing, err := s.fetchSitePricing(ctx, binding.siteID)
 	if err != nil {
-		s.sitePricing.store(binding.siteID, provider.SitePricing{}, true, now)
 		if provider.ErrorCode(err) == provider.CodeUnsupported {
 			// 长期不可用的原因也要可见：平台无价目表接口、账号缺管理凭证
 			// 或站点未暴露该端点都会让站点持续走本地估算。每站点只提示
@@ -258,7 +312,6 @@ func (s *Server) resolveChannelPricing(ctx context.Context, channelID int64) (ch
 		}
 		return channelPricing{}, false
 	}
-	s.sitePricing.store(binding.siteID, pricing, false, now)
 	return channelPricing{pricing: pricing, group: binding.group}, true
 }
 
@@ -293,6 +346,77 @@ func (s *Server) loadChannelBindings(ctx context.Context) (map[int64]channelBind
 
 // fetchSitePricing reads one site's table through its provider adapter.
 func (s *Server) fetchSitePricing(ctx context.Context, siteID int64) (provider.SitePricing, error) {
+	if err := ctx.Err(); err != nil {
+		return provider.SitePricing{}, err
+	}
+	for {
+		generation := s.sitePricing.currentGeneration(siteID)
+		// The generation is part of the key: after invalidateSite, new waiters
+		// start (or join) the read for the new source instead of attaching to a
+		// flight that can only return the retired table.
+		key := strconv.FormatInt(siteID, 10) + ":" + strconv.FormatUint(generation, 10)
+		result := s.siteControl.pricingFlights.DoChan(key, func() (any, error) {
+			type pricingResult struct {
+				pricing provider.SitePricing
+				err     error
+			}
+			done := make(chan pricingResult, 1)
+			if !s.siteControl.runAsync("pricing:"+newSiteTaskID(), func(parent context.Context) {
+				readCtx, cancel := context.WithTimeout(parent, 8*time.Second)
+				defer cancel()
+				// The flight owns the cache commit. A waiter may cancel (or
+				// disappear), but the read and its result still belong here;
+				// otherwise the cancellation would look like a site failure.
+				commit := func(pricing provider.SitePricing, err error) {
+					if s.sitePricing == nil {
+						return
+					}
+					if err != nil {
+						if errors.Is(err, context.Canceled) || errors.Is(err, errSiteTaskStopped) ||
+							errors.Is(readCtx.Err(), context.Canceled) {
+							return
+						}
+						s.sitePricing.storeForGeneration(siteID, generation, provider.SitePricing{}, true, time.Now())
+						return
+					}
+					s.sitePricing.storeForGeneration(siteID, generation, pricing, false, time.Now())
+				}
+				release, ok := s.siteControl.acquireSiteGate(readCtx, siteID)
+				if !ok {
+					err := readCtx.Err()
+					commit(provider.SitePricing{}, err)
+					done <- pricingResult{err: err}
+					return
+				}
+				defer release()
+				pricing, err := s.fetchSitePricingUnshared(readCtx, siteID)
+				commit(pricing, err)
+				done <- pricingResult{pricing: pricing, err: err}
+			}) {
+				return provider.SitePricing{}, errSiteTaskStopped
+			}
+			loaded := <-done
+			return loaded.pricing, loaded.err
+		})
+		select {
+		case <-ctx.Done():
+			return provider.SitePricing{}, ctx.Err()
+		case result := <-result:
+			if s.sitePricing.generationChanged(siteID, generation) {
+				// The source changed while this flight was running. Its table
+				// may describe the old endpoint, so retry under the new
+				// generation rather than return or cache retired data.
+				continue
+			}
+			if result.Err != nil {
+				return provider.SitePricing{}, result.Err
+			}
+			return result.Val.(provider.SitePricing), nil
+		}
+	}
+}
+
+func (s *Server) fetchSitePricingUnshared(ctx context.Context, siteID int64) (provider.SitePricing, error) {
 	site, err := s.store.GetSite(ctx, siteID)
 	if err != nil {
 		return provider.SitePricing{}, err
@@ -320,6 +444,9 @@ func (s *Server) fetchSitePricing(ctx context.Context, siteID int64) (provider.S
 		creds, err := s.siteControl.credentials(account)
 		if err != nil {
 			lastErr = err
+			if provider.ErrorCode(err) == provider.CodeRateLimited || ctx.Err() != nil {
+				break
+			}
 			continue
 		}
 		// /api/pricing needs a management session; a model-call key cannot read it.
@@ -333,6 +460,9 @@ func (s *Server) fetchSitePricing(ctx context.Context, siteID int64) (provider.S
 		})
 		if err != nil {
 			lastErr = err
+			if provider.ErrorCode(err) == provider.CodeRateLimited || ctx.Err() != nil {
+				break
+			}
 			continue
 		}
 		return pricing, nil
@@ -408,11 +538,9 @@ func (s *Server) handleSitePricing(c *gin.Context) {
 		fetched, fetchErr := s.fetchSitePricing(ctx, siteID)
 		cancel()
 		if fetchErr != nil {
-			s.sitePricing.store(siteID, provider.SitePricing{}, true, now)
 			pricing = provider.SitePricing{}
 		} else {
 			pricing = fetched
-			s.sitePricing.store(siteID, pricing, false, now)
 		}
 	}
 	RespondJSON(c, http.StatusOK, buildSitePricingPayload(siteID, pricing))
@@ -435,8 +563,13 @@ func costSourceLabel(fromSite bool) string {
 // siteSourcedCost prices a request with the owning site's declared ratios.
 // Returns false when the site's prices are unavailable for any reason.
 func (s *Server) siteSourcedCost(modelName string, channelID int64, res *fwResult) (float64, bool) {
+	estimate, ok := s.siteSourcedEstimate(modelName, channelID, res)
+	return estimate.cost, ok
+}
+
+func (s *Server) siteSourcedEstimate(modelName string, channelID int64, res *fwResult) (siteCostEstimate, bool) {
 	if s == nil || s.sitePricing == nil || res == nil || channelID <= 0 {
-		return 0, false
+		return siteCostEstimate{}, false
 	}
 	// Bounded: the table is cached per site, so this only reaches the upstream
 	// once per site per TTL, never on the hot path of every request.
@@ -445,9 +578,12 @@ func (s *Server) siteSourcedCost(modelName string, channelID int64, res *fwResul
 
 	cp, ok := s.resolveChannelPricing(ctx, channelID)
 	if !ok {
-		return 0, false
+		return siteCostEstimate{}, false
 	}
-	return computeSiteCost(cp, modelName, res)
+	if mapped, exists := cp.pricing.DetermineBillingModel(modelName); exists {
+		modelName = mapped
+	}
+	return computeSiteCostEstimate(cp, modelName, res)
 }
 
 // computeSiteCost prices one request with the site's own ratios.
@@ -459,12 +595,17 @@ func (s *Server) siteSourcedCost(modelName string, channelID int64, res *fwResul
 // the 5-minute and 1-hour write buckets are priced independently. Legacy ratio
 // pricing has one cache-creation ratio, so USDPerMillionAll maps it to both.
 func computeSiteCost(cp channelPricing, modelName string, res *fwResult) (float64, bool) {
+	estimate, ok := computeSiteCostEstimate(cp, modelName, res)
+	return estimate.cost, ok
+}
+
+func computeSiteCostEstimate(cp channelPricing, modelName string, res *fwResult) (siteCostEstimate, bool) {
 	if res == nil {
-		return 0, false
+		return siteCostEstimate{}, false
 	}
 	price, ok := sitePriceFor(cp.pricing, modelName)
 	if !ok {
-		return 0, false
+		return siteCostEstimate{}, false
 	}
 	groupRatio := siteGroupRatioFor(cp.pricing, price, cp.group)
 
@@ -472,10 +613,14 @@ func computeSiteCost(cp channelPricing, modelName string, res *fwResult) (float6
 	// per-token expression that could not be evaluated must refuse the row;
 	// otherwise its display model_ratio is known to be unrelated to billing.
 	if price.QuotaType == 1 {
-		return price.PerCallUSD(groupRatio), true
+		cost := price.PerCallUSD(groupRatio)
+		if !model.IsValidCostAmount(cost) {
+			return siteCostEstimate{}, false
+		}
+		return siteCostEstimate{cost: cost, basis: model.CostBasisPerCall}, true
 	}
 	if price.BillingExprUnsupported {
-		return 0, false
+		return siteCostEstimate{}, false
 	}
 
 	inputPerM, outputPerM, cacheReadPerM, cacheWrite5mPerM, cacheWrite1hPerM := price.USDPerMillionAll(groupRatio)
@@ -501,10 +646,20 @@ func computeSiteCost(cp channelPricing, modelName string, res *fwResult) (float6
 		float64(res.CacheReadInputTokens)*cacheReadPerM/perMillion +
 		float64(cacheWrite5mTokens)*cacheWrite5mPerM/perMillion +
 		float64(cacheWrite1hTokens)*cacheWrite1hPerM/perMillion
-	if total < 0 {
-		return 0, false
+	if !model.IsValidCostAmount(total) {
+		return siteCostEstimate{}, false
 	}
-	return total, true
+	breakdown := &util.StandardCostBreakdown{
+		Input:      util.CostComponent{PricePerMillion: inputPerM, Quantity: billableInput, Cost: float64(billableInput) * inputPerM / perMillion},
+		Output:     util.CostComponent{PricePerMillion: outputPerM, Quantity: res.OutputTokens, Cost: float64(res.OutputTokens) * outputPerM / perMillion},
+		CacheRead:  util.CostComponent{PricePerMillion: cacheReadPerM, Quantity: res.CacheReadInputTokens, Cost: float64(res.CacheReadInputTokens) * cacheReadPerM / perMillion},
+		CacheWrite: util.CostComponent{Quantity: cacheWrite5mTokens + cacheWrite1hTokens, Cost: (float64(cacheWrite5mTokens)*cacheWrite5mPerM + float64(cacheWrite1hTokens)*cacheWrite1hPerM) / perMillion},
+		Total:      total,
+	}
+	if breakdown.CacheWrite.Quantity > 0 {
+		breakdown.CacheWrite.PricePerMillion = breakdown.CacheWrite.Cost * perMillion / float64(breakdown.CacheWrite.Quantity)
+	}
+	return siteCostEstimate{cost: total, basis: model.CostBasisToken, breakdown: breakdown}, true
 }
 
 // siteGroupRatioFor resolves the upstream group multiplier for one price row.

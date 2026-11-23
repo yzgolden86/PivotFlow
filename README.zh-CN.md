@@ -16,6 +16,7 @@ PivotFlow 是面向个人使用的 AI API 站点管理与智能路由控制台�
 
 - 站点探测与平台识别。
 - 账号凭证加密保存。
+- 浏览器助手与 All API Hub 账号文件导入，先核对来源和目标、验证并预览差异；新账号默认停用，既有修复保留历史和渠道。
 - 余额刷新，签到后显示余额变化。
 - 手动或按账号/站点时区定时签到，并保留账号级结果历史。
 - 同步账号模型，使用站点账号直接测试模型。
@@ -30,6 +31,7 @@ PivotFlow 是面向个人使用的 AI API 站点管理与智能路由控制台�
 - Key 级、模型级和渠道级冷却。
 - 对认证失败、限流、上游故障、超时和流中断分类并故障切换。
 - 本地协议转换、上游原生协议和自动协议协商。
+- 可选短期文本请求缓存，默认关闭；客户端显式选择，按令牌和精确请求隔离，命中不新增上游费用。范围与使用见[请求缓存](docs/request-cache.md)。
 - RPM、并发、成本倍率、日成本上限、WebSocket 和请求日志。
 
 ![PivotFlow 渠道分发](docs/assets/routing.png)
@@ -42,7 +44,7 @@ PivotFlow 是面向个人使用的 AI API 站点管理与智能路由控制台�
 - Codex OAuth、Antigravity OAuth 及凭证文件导入。
 - SQLite、MySQL、PostgreSQL 和主库加 SQLite 副本的混合存储。
 - 主题、路由、冷却、日志、自动签到时间、通知和只读上游版本检查。
-- 支持完整配置、连接与路由、系统设置三类 JSON 导入导出，并可定时备份到 WebDAV。
+- 支持全部配置、连接与路由、系统设置三类 JSON 导入导出，恢复时重映射渠道绑定，并可定时备份到 WebDAV。上传后回读同一目标，比较完整字节数和 SHA-256；控制台分别说明内容校验、记录保存和状态警告。
 
 ## 四个概念
 
@@ -133,7 +135,7 @@ Codex                    http://127.0.0.1:8080/v1/responses
 - `PIVOTFLOW_ALLOW_INSECURE_TLS=1` 只用于临时排障。
 - 管理 API 使用登录会话；代理 API 使用访问令牌。
 
-迁移或恢复数据前请阅读 [安全与备份](docs/security.md)。
+迁移或恢复数据前按[备份与恢复](docs/backup-recovery.md)区分可迁移配置和数据库恢复集合；更换程序或数据库版本前请阅读[升级与回退](docs/upgrade.md)。
 
 ## 文档
 
@@ -141,9 +143,13 @@ Codex                    http://127.0.0.1:8080/v1/responses
 - [快速开始](docs/getting-started.md)
 - [核心概念](docs/concepts.md)
 - [站点与账号管理](docs/site-management.md)
+- [浏览器辅助与账号导入](docs/browser-import.md)
 - [路由与分发](docs/routing.md)
 - [模型测试](docs/model-testing.md)
 - [系统配置](docs/configuration.md)
+- [配置导入与渠道同步](docs/config-import.md)
+- [备份与恢复](docs/backup-recovery.md)
+- [升级与回退](docs/upgrade.md)
 - [部署](docs/deployment.md)
 - [安全与备份](docs/security.md)
 - [维护与 PivotFlow 同步](docs/maintenance.md)
@@ -182,7 +188,7 @@ PivotFlow 的实现离不开开源社区已有的积累与启发，特别感谢�
 - [ccLoad](https://github.com/caidaoli/ccLoad)：为 PivotFlow 提供并保留了路由选择、调度、冷却、故障切换与协议转换基础。
 - [Metapi](https://github.com/cita-777/metapi)：站点聚合、账号管理流程与首页看板设计的重要参考。
 - [All API Hub](https://github.com/qixing-jk/all-api-hub)：多站点资产管理、Provider 兼容和交互设计的重要参考。
-- [Octopus](https://github.com/Hureru/octopus)：个人网关、渠道管理和简洁控制台设计的重要参考。
+- [Octopus 上游](https://github.com/bestruirui/octopus)与开发时参考的 [Hureru fork](https://github.com/Hureru/octopus)：个人网关、渠道管理和简洁控制台设计的重要参考；两者为独立发展分支。
 - [Sub2API](https://github.com/Wei-Shaw/sub2api) 与 [New API](https://github.com/QuantumNous/new-api)：上游接口契约、生态约定和管理流程的重要参考。
 
 感谢以上项目的维护者与贡献者为社区提供优秀的开源成果。此处的参考与致谢不替代各项目自身的许可证及版权声明。

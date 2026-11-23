@@ -299,6 +299,12 @@ func BindAndValidate(c *gin.Context, obj RequestValidator) error {
 // - search: 跨模型、实际上游模型、错误信息和上游 URL 的模糊搜索
 func BuildLogFilter(c *gin.Context) model.LogFilter {
 	var lf model.LogFilter
+	lf.RequestID = strings.TrimSpace(c.Query("request_id"))
+	// Keep unsupported values as restrictions. Storage handles them with a
+	// parameterized, fail-closed filter instead of silently widening the query.
+	lf.CostSource = strings.ToLower(strings.TrimSpace(c.Query("cost_source")))
+	lf.CostStatus = strings.ToLower(strings.TrimSpace(c.Query("cost_status")))
+	lf.CostBasis = strings.ToLower(strings.TrimSpace(c.Query("cost_basis")))
 
 	// 渠道ID过滤
 	if cidStr := strings.TrimSpace(c.Query("channel_id")); cidStr != "" {

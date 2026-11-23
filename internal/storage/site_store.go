@@ -25,6 +25,10 @@ type SiteStore interface {
 	CreateSiteAccount(ctx context.Context, account *model.SiteAccount) (*model.SiteAccount, error)
 	UpdateSiteAccount(ctx context.Context, id int64, account *model.SiteAccount) (*model.SiteAccount, error)
 	UpdateSiteAccountCredential(ctx context.Context, id int64, credentialType, ciphertext, keyVersion string) error
+	// RepairSiteAccountCredential replaces only authentication fields and marks
+	// the current credential status unknown. It preserves account switches,
+	// observations, histories, bindings and channels without a toggle cascade.
+	RepairSiteAccountCredential(ctx context.Context, id int64, credentialType, ciphertext, keyVersion string) error
 	DeleteSiteAccount(ctx context.Context, id int64) error
 
 	ReplaceSiteAccountModels(ctx context.Context, accountID int64, models []model.SiteAccountModel) error
@@ -80,6 +84,12 @@ type SiteStore interface {
 
 	GetSiteChannelBinding(ctx context.Context, siteAccountID int64, projectionKey string) (*model.SiteChannelBinding, error)
 	ListSiteChannelBindings(ctx context.Context) ([]*model.SiteChannelBinding, error)
+	// RestoreSiteChannelBinding links an existing account and channel as manual
+	// configuration, derives availability locally and rejects competing owners.
+	RestoreSiteChannelBinding(ctx context.Context, binding *model.SiteChannelBinding) error
+	// RestoreDisabledSiteChannelBindings takes over all historical links for a
+	// disabled channel, retaining their identities and synchronization history.
+	RestoreDisabledSiteChannelBindings(ctx context.Context, channelID int64) error
 	MarkSiteProjectionManual(ctx context.Context, channelID int64) error
 	SetSiteProjectionOwnership(ctx context.Context, channelID int64, ownership string) error
 	UpsertSiteProjection(ctx context.Context, input model.SiteProjectionInput) (*model.SiteProjectionResult, error)

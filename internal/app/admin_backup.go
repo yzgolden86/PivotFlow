@@ -9,11 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
 	"github.com/yzgolden86/PivotFlow/internal/site/provider"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -41,6 +43,7 @@ type backupToken struct {
 	ExpiresAt              *int64   `json:"expires_at,omitempty"`
 	IsActive               bool     `json:"is_active"`
 	AllowedModels          []string `json:"allowed_models,omitempty"`
+	AllowedProtocols       []string `json:"allowed_protocols"`
 	AllowedChannelIDs      []int64  `json:"allowed_channel_ids,omitempty"`
 	ChannelRestrictionMode string   `json:"channel_restriction_mode,omitempty"`
 	CostLimitUSD           float64  `json:"cost_limit_usd"`
@@ -53,11 +56,21 @@ type backupChannel struct {
 	OAuthCredential string         `json:"oauth_credential,omitempty"`
 }
 
+// Portable references only; synchronization ownership and observations belong
+// to the destination and are never copied from the source instance.
+type backupBinding struct {
+	SiteAccountID int64  `json:"site_account_id"`
+	ChannelID     int64  `json:"channel_id"`
+	ProjectionKey string `json:"projection_key"`
+	PricingGroup  string `json:"pricing_group,omitempty"`
+}
+
 type backupConnections struct {
 	Sites    []*model.Site            `json:"sites"`
 	Accounts []backupAccount          `json:"accounts"`
 	Models   []model.SiteAccountModel `json:"models"`
 	Channels []backupChannel          `json:"channels"`
+	Bindings []backupBinding          `json:"bindings,omitempty"`
 	Tokens   []backupToken            `json:"tokens"`
 }
 
@@ -99,6 +112,7 @@ type backupImportResult struct {
 	Sites    int  `json:"sites"`
 	Accounts int  `json:"accounts"`
 	Channels int  `json:"channels"`
+	Bindings int  `json:"bindings"`
 	Tokens   int  `json:"tokens"`
 	Settings int  `json:"settings"`
 	Restart  bool `json:"restart_required"`
@@ -110,7 +124,8 @@ type backupPasswordSecret struct {
 
 type backupConfigView struct {
 	*model.BackupConfig
-	PasswordMasked string `json:"password_masked,omitempty"`
+	PasswordMasked string   `json:"password_masked,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
 }
 
 func normalizeBackupType(value string) (string, error) {
@@ -131,6 +146,18 @@ func (s *Server) buildBackupDocument(ctx context.Context, requestedType string) 
 	if err != nil {
 		return nil, err
 	}
+	var document *backupDocument
+	// Capture every reference and credential from the same primary snapshot.
+	// Encoding and all WebDAV network operations happen after this completes.
+	err = storage.WithConfigurationTransaction(ctx, storage.ConfigurationSource(s.store), func(txCtx context.Context, store storage.Store) error {
+		var buildErr error
+		document, buildErr = s.backupWriter(store).buildBackupDocumentSnapshot(txCtx, backupType)
+		return buildErr
+	})
+	return document, err
+}
+
+func (s *Server) buildBackupDocumentSnapshot(ctx context.Context, backupType string) (*backupDocument, error) {
 	document := &backupDocument{Version: backupSchemaVersion, ExportedAt: time.Now().UnixMilli(), Type: backupType}
 	if backupType == "all" || backupType == "connections" {
 		connections, warnings, buildErr := s.buildBackupConnections(ctx)
@@ -177,6 +204,7 @@ func (s *Server) buildBackupConnections(ctx context.Context) (*backupConnections
 		return nil, nil, err
 	}
 	result := &backupConnections{Sites: sites, Accounts: make([]backupAccount, 0, len(accounts))}
+	accountIDs := make(map[int64]bool, len(accounts))
 	for _, account := range accounts {
 		if account == nil {
 			continue
@@ -186,7 +214,8 @@ func (s *Server) buildBackupConnections(ctx context.Context) (*backupConnections
 			return nil, nil, fmt.Errorf("decrypt account %d: %w", account.ID, credentialErr)
 		}
 		result.Accounts = append(result.Accounts, backupAccount{Account: account, Credentials: credentials})
-		models, modelErr := s.store.ListSiteAccountModels(ctx, model.SiteModelFilter{SiteAccountID: account.ID, IncludeDisabled: true, Limit: 100000})
+		accountIDs[account.ID] = true
+		models, modelErr := s.store.ListSiteAccountModels(ctx, model.SiteModelFilter{SiteAccountID: account.ID, IncludeDisabled: true})
 		if modelErr != nil {
 			return nil, nil, modelErr
 		}
@@ -200,6 +229,7 @@ func (s *Server) buildBackupConnections(ctx context.Context) (*backupConnections
 	if err != nil {
 		return nil, nil, err
 	}
+	channelIDs := make(map[int64]bool, len(configs))
 	for _, config := range configs {
 		if config == nil {
 			continue
@@ -211,8 +241,23 @@ func (s *Server) buildBackupConnections(ctx context.Context) (*backupConnections
 			}
 		}
 		result.Channels = append(result.Channels, channel)
+		channelIDs[config.ID] = true
 	}
 	var warnings []string
+	bindings, err := s.store.ListSiteChannelBindings(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, binding := range bindings {
+		if binding == nil {
+			continue
+		}
+		if !accountIDs[binding.SiteAccountID] || !channelIDs[binding.ChannelID] {
+			warnings = append(warnings, fmt.Sprintf("绑定 #%d 的账号或渠道已不存在，未包含在连接备份中", binding.ID))
+			continue
+		}
+		result.Bindings = append(result.Bindings, backupBinding{SiteAccountID: binding.SiteAccountID, ChannelID: binding.ChannelID, ProjectionKey: binding.ProjectionKey, PricingGroup: binding.PricingGroup})
+	}
 	tokens, err := s.store.ListAuthTokens(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -228,7 +273,7 @@ func (s *Server) buildBackupConnections(ctx context.Context) (*backupConnections
 		if plain == "" {
 			warnings = append(warnings, fmt.Sprintf("令牌 #%d 是历史不可恢复令牌，导入时会跳过", token.ID))
 		}
-		result.Tokens = append(result.Tokens, backupToken{PlainToken: plain, Description: token.Description, ExpiresAt: token.ExpiresAt, IsActive: token.IsActive, AllowedModels: token.AllowedModels, AllowedChannelIDs: token.AllowedChannelIDs, ChannelRestrictionMode: token.ChannelRestrictionMode, CostLimitUSD: token.CostLimitUSD(), MaxConcurrency: token.MaxConcurrency})
+		result.Tokens = append(result.Tokens, backupToken{PlainToken: plain, Description: token.Description, ExpiresAt: token.ExpiresAt, IsActive: token.IsActive, AllowedModels: token.AllowedModels, AllowedProtocols: append([]string{}, token.AllowedProtocols...), AllowedChannelIDs: token.AllowedChannelIDs, ChannelRestrictionMode: token.ChannelRestrictionMode, CostLimitUSD: token.CostLimitUSD(), MaxConcurrency: token.MaxConcurrency})
 	}
 	return result, warnings, nil
 }
@@ -280,274 +325,19 @@ func (s *Server) HandleBackupExport(c *gin.Context) {
 }
 
 func (s *Server) HandleBackupImport(c *gin.Context) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backupMaxImportBytes)
-	var request struct {
-		Data json.RawMessage `json:"data"`
-	}
-	if err := c.ShouldBindJSON(&request); err != nil || len(request.Data) == 0 {
-		RespondErrorMsg(c, http.StatusBadRequest, "invalid_backup_document")
-		return
-	}
-	var document backupDocument
-	if err := json.Unmarshal(request.Data, &document); err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "invalid_backup_document")
-		return
-	}
-	result, err := s.importBackupDocument(c.Request.Context(), &document)
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	RespondJSON(c, http.StatusOK, result)
-	if result.Restart {
-		go triggerRestart()
-	}
+	RespondErrorMsg(c, http.StatusPreconditionRequired, "preview_required")
 }
 
 func (s *Server) importBackupDocument(ctx context.Context, document *backupDocument) (backupImportResult, error) {
-	var result backupImportResult
-	if document == nil || document.Version != backupSchemaVersion {
-		return result, errors.New("unsupported_backup_version")
-	}
-	backupType, err := normalizeBackupType(document.Type)
+	preview, err := s.previewBackupDocument(ctx, document)
 	if err != nil {
-		return result, err
+		return backupImportResult{}, err
 	}
-	if (backupType == "all" || backupType == "connections") && document.Connections != nil {
-		connectionResult, importErr := s.importBackupConnections(ctx, document.Connections)
-		if importErr != nil {
-			return result, importErr
-		}
-		result.Sites, result.Accounts, result.Channels, result.Tokens = connectionResult.Sites, connectionResult.Accounts, connectionResult.Channels, connectionResult.Tokens
-	}
-	if backupType == "all" || backupType == "settings" {
-		updates := make(map[string]string)
-		for _, item := range document.Settings {
-			setting := s.configService.GetSetting(item.Key)
-			if setting == nil || isContainerManagedUpdateSetting(item.Key) {
-				continue
-			}
-			if err := validateSettingValue(item.Key, setting.ValueType, item.Value); err != nil {
-				return result, fmt.Errorf("invalid setting %s: %w", item.Key, err)
-			}
-			updates[item.Key] = item.Value
-		}
-		if len(updates) > 0 {
-			if err := s.configService.BatchUpdateSettings(ctx, updates); err != nil {
-				return result, err
-			}
-			result.Settings = len(updates)
-			result.Restart = true
-		}
-		if document.Notification != nil {
-			if err := s.importNotification(ctx, document.Notification); err != nil {
-				return result, err
-			}
-		}
-		if document.BackupTarget != nil {
-			if err := s.importBackupTarget(ctx, document.BackupTarget); err != nil {
-				return result, err
-			}
-		}
-	}
-	return result, nil
-}
-
-func (s *Server) importBackupConnections(ctx context.Context, input *backupConnections) (backupImportResult, error) {
-	var result backupImportResult
-	if s.siteControl == nil || s.siteControl.cipher == nil {
-		return result, errors.New("credential_locked")
-	}
-	existingSites, err := s.store.ListSites(ctx, model.SiteListFilter{})
+	result, err := s.applyConfigPreview(ctx, preview.ID)
 	if err != nil {
-		return result, err
+		return backupImportResult{}, err
 	}
-	siteIDs := make(map[int64]int64)
-	for _, item := range input.Sites {
-		if item == nil {
-			continue
-		}
-		var existing *model.Site
-		for _, candidate := range existingSites {
-			if candidate != nil && (strings.EqualFold(strings.TrimRight(candidate.BaseURL, "/"), strings.TrimRight(item.BaseURL, "/")) || candidate.Name == item.Name) {
-				existing = candidate
-				break
-			}
-		}
-		oldID := item.ID
-		copySite := *item
-		copySite.DeletedAt = 0
-		if existing != nil {
-			copySite.ID = existing.ID
-			updated, updateErr := s.store.UpdateSite(ctx, existing.ID, &copySite)
-			if updateErr != nil {
-				return result, updateErr
-			}
-			siteIDs[oldID] = updated.ID
-		} else {
-			copySite.ID, copySite.CreatedAt, copySite.UpdatedAt = 0, 0, 0
-			created, createErr := s.store.CreateSite(ctx, &copySite)
-			if createErr != nil {
-				return result, createErr
-			}
-			siteIDs[oldID] = created.ID
-			existingSites = append(existingSites, created)
-		}
-		result.Sites++
-	}
-	existingAccounts, err := s.store.ListSiteAccounts(ctx, 0, false)
-	if err != nil {
-		return result, err
-	}
-	accountIDs := make(map[int64]int64)
-	for _, item := range input.Accounts {
-		if item.Account == nil {
-			continue
-		}
-		newSiteID := siteIDs[item.Account.SiteID]
-		if newSiteID == 0 {
-			continue
-		}
-		sealed, sealErr := s.siteControl.cipher.Seal(item.Credentials)
-		if sealErr != nil {
-			return result, sealErr
-		}
-		oldID := item.Account.ID
-		copyAccount := *item.Account
-		copyAccount.SiteID, copyAccount.DeletedAt = newSiteID, 0
-		copyAccount.CredentialCiphertext, copyAccount.CredentialKeyVersion = sealed, s.siteControl.cipher.Version()
-		var existing *model.SiteAccount
-		for _, candidate := range existingAccounts {
-			if candidate != nil && candidate.SiteID == newSiteID && candidate.Label == copyAccount.Label {
-				existing = candidate
-				break
-			}
-		}
-		if existing != nil {
-			copyAccount.ID = existing.ID
-			updated, updateErr := s.store.UpdateSiteAccount(ctx, existing.ID, &copyAccount)
-			if updateErr != nil {
-				return result, updateErr
-			}
-			if updateErr = s.store.UpdateSiteAccountCredential(ctx, existing.ID, copyAccount.CredentialType, sealed, s.siteControl.cipher.Version()); updateErr != nil {
-				return result, updateErr
-			}
-			accountIDs[oldID] = updated.ID
-		} else {
-			copyAccount.ID, copyAccount.CreatedAt, copyAccount.UpdatedAt = 0, 0, 0
-			created, createErr := s.store.CreateSiteAccount(ctx, &copyAccount)
-			if createErr != nil {
-				return result, createErr
-			}
-			accountIDs[oldID] = created.ID
-			existingAccounts = append(existingAccounts, created)
-		}
-		result.Accounts++
-	}
-	modelsByAccount := make(map[int64][]model.SiteAccountModel)
-	for _, item := range input.Models {
-		if mapped := accountIDs[item.SiteAccountID]; mapped > 0 {
-			item.SiteAccountID = mapped
-			modelsByAccount[mapped] = append(modelsByAccount[mapped], item)
-		}
-	}
-	for accountID, models := range modelsByAccount {
-		if err := s.store.ReplaceSiteAccountModels(ctx, accountID, models); err != nil {
-			return result, err
-		}
-	}
-	channelIDs := make(map[int64]int64, len(input.Channels))
-	if len(input.Channels) > 0 {
-		existingChannels, listErr := s.store.ListConfigs(ctx)
-		if listErr != nil {
-			return result, listErr
-		}
-		existingByID := make(map[int64]*model.Config, len(existingChannels))
-		existingByName := make(map[string]*model.Config, len(existingChannels))
-		for _, channel := range existingChannels {
-			if channel != nil {
-				existingByID[channel.ID] = channel
-				existingByName[channel.Name] = channel
-			}
-		}
-		channels := make([]*model.ChannelWithKeys, 0, len(input.Channels))
-		oldIDs := make([]int64, 0, len(input.Channels))
-		for _, item := range input.Channels {
-			if item.Config == nil {
-				continue
-			}
-			config := item.Config.Clone()
-			oldID := config.ID
-			config.OAuthCredential = item.OAuthCredential
-			if existing := existingByName[config.Name]; existing != nil {
-				config.ID = existing.ID
-			} else if existing := existingByID[config.ID]; existing != nil && existing.Name != config.Name {
-				config.ID = 0
-			}
-			keys := append([]model.APIKey(nil), item.APIKeys...)
-			channels = append(channels, &model.ChannelWithKeys{Config: config, APIKeys: keys})
-			oldIDs = append(oldIDs, oldID)
-		}
-		created, updated, importErr := s.store.ImportChannelBatch(ctx, channels)
-		if importErr != nil {
-			return result, importErr
-		}
-		for index, channel := range channels {
-			if channel != nil && channel.Config != nil {
-				channelIDs[oldIDs[index]] = channel.Config.ID
-			}
-		}
-		result.Channels = created + updated
-		s.InvalidateChannelListCache()
-		s.InvalidateAllAPIKeysCache()
-	}
-	existingTokens, err := s.store.ListAuthTokens(ctx)
-	if err != nil {
-		return result, err
-	}
-	tokenByHash := make(map[string]*model.AuthToken)
-	for _, token := range existingTokens {
-		if token != nil {
-			tokenByHash[token.Token] = token
-		}
-	}
-	for _, item := range input.Tokens {
-		plain := strings.TrimSpace(item.PlainToken)
-		if plain == "" {
-			continue
-		}
-		hash := model.HashToken(plain)
-		sealed, sealErr := s.siteControl.cipher.Seal(plain)
-		if sealErr != nil {
-			return result, sealErr
-		}
-		mode, modeErr := model.NormalizeChannelRestrictionMode(item.ChannelRestrictionMode)
-		if modeErr != nil {
-			return result, modeErr
-		}
-		allowedChannelIDs := remapBackupChannelIDs(item.AllowedChannelIDs, channelIDs)
-		if existing := tokenByHash[hash]; existing != nil {
-			existing.Description, existing.ExpiresAt, existing.IsActive = item.Description, item.ExpiresAt, item.IsActive
-			existing.AllowedModels, existing.AllowedChannelIDs, existing.ChannelRestrictionMode = item.AllowedModels, allowedChannelIDs, mode
-			existing.TokenCiphertext, existing.TokenHint, existing.MaxConcurrency = sealed, model.MaskToken(plain), item.MaxConcurrency
-			existing.SetCostLimitUSD(item.CostLimitUSD)
-			if err := s.store.UpdateAuthToken(ctx, existing); err != nil {
-				return result, err
-			}
-		} else {
-			token := &model.AuthToken{Token: hash, TokenCiphertext: sealed, TokenHint: model.MaskToken(plain), Description: item.Description, ExpiresAt: item.ExpiresAt, IsActive: item.IsActive, AllowedModels: item.AllowedModels, AllowedChannelIDs: allowedChannelIDs, ChannelRestrictionMode: mode, MaxConcurrency: item.MaxConcurrency}
-			token.SetCostLimitUSD(item.CostLimitUSD)
-			if err := s.store.CreateAuthToken(ctx, token); err != nil {
-				return result, err
-			}
-			tokenByHash[hash] = token
-		}
-		result.Tokens++
-	}
-	if s.authService != nil {
-		_ = s.authService.ReloadAuthTokens()
-	}
-	return result, nil
+	return *result.Backup, nil
 }
 
 func remapBackupChannelIDs(ids []int64, mapping map[int64]int64) []int64 {
@@ -598,16 +388,26 @@ func (s *Server) importNotification(ctx context.Context, input *backupNotificati
 }
 
 func (s *Server) importBackupTarget(ctx context.Context, input *backupTarget) error {
-	config := &model.BackupConfig{ID: 1, Enabled: input.Enabled, FileURL: input.FileURL, Username: input.Username, ExportType: input.ExportType, AutoSyncEnabled: input.AutoSyncEnabled, AutoSyncIntervalHours: input.AutoSyncIntervalHours}
-	if existing, err := s.store.GetBackupConfig(ctx); err == nil {
-		config.CreatedAt = existing.CreatedAt
+	config := defaultBackupConfig()
+	existing, err := s.store.GetBackupConfig(ctx)
+	if err != nil && err.Error() != "not found" {
+		return err
 	}
-	if input.Password != "" {
-		sealed, err := s.siteControl.cipher.Seal(backupPasswordSecret{Value: input.Password})
-		if err != nil {
+	if existing != nil {
+		*config = *existing
+	}
+	before := *config
+	config.Enabled, config.FileURL, config.Username = input.Enabled, input.FileURL, input.Username
+	config.ExportType, config.AutoSyncEnabled, config.AutoSyncIntervalHours = input.ExportType, input.AutoSyncEnabled, input.AutoSyncIntervalHours
+	if input.Password == "" {
+		config.PasswordCiphertext, config.PasswordKeyVersion = "", ""
+	} else {
+		if err := s.replaceBackupPassword(config, input.Password); err != nil {
 			return err
 		}
-		config.PasswordCiphertext, config.PasswordKeyVersion = sealed, s.siteControl.cipher.Version()
+	}
+	if !sameBackupDestination(&before, config) {
+		clearBackupObservations(config)
 	}
 	return s.store.UpsertBackupConfig(ctx, config)
 }
@@ -628,6 +428,11 @@ func (s *Server) backupConfigView(config *model.BackupConfig) backupConfigView {
 	view := backupConfigView{BackupConfig: config}
 	if config != nil && config.PasswordConfigured {
 		view.PasswordMasked = "********"
+	}
+	if config != nil {
+		if warning := s.pendingBackupObservationWarning(config); warning != "" {
+			view.Warnings = []string{warning}
+		}
 	}
 	return view
 }
@@ -704,33 +509,49 @@ func (s *Server) HandleBackupWebDAV(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid_backup_interval")
 		return
 	}
-	config, err := s.loadBackupConfig(c.Request.Context())
+	var config *model.BackupConfig
+	err = storage.WithConfigurationTransaction(c.Request.Context(), s.store, func(ctx context.Context, store storage.Store) error {
+		loaded, loadErr := store.GetBackupConfig(ctx)
+		if loadErr != nil && loadErr.Error() != "not found" {
+			return loadErr
+		}
+		if loaded == nil {
+			loaded = defaultBackupConfig()
+		}
+		config = loaded
+		before := *config
+		config.Enabled, config.FileURL, config.Username = request.Enabled, strings.TrimSpace(request.FileURL), strings.TrimSpace(request.Username)
+		config.ExportType, config.AutoSyncEnabled, config.AutoSyncIntervalHours = exportType, request.AutoSyncEnabled, request.AutoSyncIntervalHours
+		if request.ClearPassword {
+			config.PasswordCiphertext, config.PasswordKeyVersion = "", ""
+		}
+		if request.Password != nil && strings.TrimSpace(*request.Password) != "" {
+			if err := s.replaceBackupPassword(config, *request.Password); err != nil {
+				return err
+			}
+		}
+		if !sameBackupDestination(&before, config) {
+			clearBackupObservations(config)
+		}
+		config.PasswordConfigured = strings.TrimSpace(config.PasswordCiphertext) != ""
+		return store.UpsertBackupConfig(ctx, config)
+	})
 	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
-		return
-	}
-	config.Enabled, config.FileURL, config.Username = request.Enabled, strings.TrimSpace(request.FileURL), strings.TrimSpace(request.Username)
-	config.ExportType, config.AutoSyncEnabled, config.AutoSyncIntervalHours = exportType, request.AutoSyncEnabled, request.AutoSyncIntervalHours
-	if request.ClearPassword {
-		config.PasswordCiphertext, config.PasswordKeyVersion = "", ""
-	}
-	if request.Password != nil && strings.TrimSpace(*request.Password) != "" {
-		if s.siteControl == nil || s.siteControl.cipher == nil {
+		if err.Error() == "credential_locked" {
 			RespondErrorMsg(c, http.StatusLocked, "credential_locked")
-			return
+		} else if storage.IsConfigurationCacheDegraded(err) {
+			s.discardChangedBackupObservation(config)
+			view := s.backupConfigView(config)
+			view.Warnings = append(view.Warnings, "backup_status_cache_degraded")
+			RespondJSON(c, http.StatusOK, view)
+		} else if storage.IsConfigurationCommitUnknown(err) {
+			RespondErrorMsg(c, http.StatusInternalServerError, "backup_settings_result_unknown")
+		} else {
+			RespondErrorMsg(c, http.StatusInternalServerError, "backup_settings_save_failed")
 		}
-		sealed, sealErr := s.siteControl.cipher.Seal(backupPasswordSecret{Value: *request.Password})
-		if sealErr != nil {
-			RespondError(c, http.StatusInternalServerError, sealErr)
-			return
-		}
-		config.PasswordCiphertext, config.PasswordKeyVersion = sealed, s.siteControl.cipher.Version()
-	}
-	config.PasswordConfigured = strings.TrimSpace(config.PasswordCiphertext) != ""
-	if err := s.store.UpsertBackupConfig(c.Request.Context(), config); err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
+	s.discardChangedBackupObservation(config)
 	RespondJSON(c, http.StatusOK, s.backupConfigView(config))
 }
 
@@ -746,6 +567,23 @@ func (s *Server) webDAVPassword(config *model.BackupConfig) (string, error) {
 		return "", err
 	}
 	return secret.Value, nil
+}
+
+func (s *Server) replaceBackupPassword(config *model.BackupConfig, value string) error {
+	if s.siteControl == nil || s.siteControl.cipher == nil {
+		return errors.New("credential_locked")
+	}
+	// A readable identical secret keeps the destination identity. An unreadable
+	// old envelope can be repaired by an explicit replacement under this key.
+	if oldValue, err := s.webDAVPassword(config); err == nil && oldValue == value {
+		return nil
+	}
+	sealed, err := s.siteControl.cipher.Seal(backupPasswordSecret{Value: value})
+	if err != nil {
+		return err
+	}
+	config.PasswordCiphertext, config.PasswordKeyVersion = sealed, s.siteControl.cipher.Version()
+	return nil
 }
 
 func webDAVHTTPError(statusCode int, operation string) error {
@@ -789,7 +627,7 @@ func webDAVHTMLResponse(response *http.Response) bool {
 	return strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml+xml")
 }
 
-func (s *Server) exportToWebDAV(ctx context.Context, requestedType string) (*model.BackupConfig, error) {
+func (s *Server) exportToWebDAV(ctx context.Context, requestedType string) (*backupExportResult, error) {
 	if !s.backupExportRunning.CompareAndSwap(false, true) {
 		return nil, errors.New("backup_in_progress")
 	}
@@ -798,8 +636,9 @@ func (s *Server) exportToWebDAV(ctx context.Context, requestedType string) (*mod
 	if err != nil {
 		return nil, err
 	}
-	if !config.Enabled || validateWebDAVURL(config.FileURL) != nil {
-		return config, errors.New("webdav_not_configured")
+	result := &backupExportResult{config: config, Warnings: []string{}}
+	if config == nil || !config.Enabled || validateWebDAVURL(config.FileURL) != nil {
+		return result, errors.New("webdav_not_configured")
 	}
 	backupType := requestedType
 	if strings.TrimSpace(backupType) == "" {
@@ -807,24 +646,28 @@ func (s *Server) exportToWebDAV(ctx context.Context, requestedType string) (*mod
 	}
 	document, err := s.buildBackupDocument(ctx, backupType)
 	if err != nil {
-		return config, err
+		return result, err
 	}
 	body, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
-		return config, err
+		return result, err
+	}
+	if len(body) > backupMaxImportBytes {
+		return result, errors.New("backup_too_large")
 	}
 	password, err := s.webDAVPassword(config)
 	if err != nil {
-		return config, err
+		return result, err
 	}
 	client, err := provider.ClientFactory{AllowPrivate: true}.New("")
 	if err != nil {
-		return config, err
+		return result, err
 	}
+	defer client.CloseIdleConnections()
 	targetURL := webDAVTargetURL(config.FileURL)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, targetURL, bytes.NewReader(body))
 	if err != nil {
-		return config, err
+		return result, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if config.Username != "" || password != "" {
@@ -832,89 +675,127 @@ func (s *Server) exportToWebDAV(ctx context.Context, requestedType string) (*mod
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return config, errors.New("webdav_request_failed")
+		return result, errors.New("webdav_request_failed")
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-		return config, webDAVHTTPError(response.StatusCode, "upload")
+		return result, webDAVHTTPError(response.StatusCode, "upload")
 	}
 	// A successful WebDAV PUT may legitimately return an HTML status page
 	// (some providers do this for 201/204 responses). The HTTP status is the
-	// authoritative upload result; only downloads need HTML detection because
-	// the response body must be parsed as JSON.
+	// accepted upload result; the following GET must match the file itself.
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-	config.LastSyncAt, config.LastError = time.Now().UnixMilli(), ""
-	_ = s.store.UpsertBackupConfig(context.Background(), config)
-	return config, nil
+	_ = response.Body.Close()
+	if err := verifyWebDAVUpload(ctx, client, targetURL, config.Username, password, body); err != nil {
+		return result, err
+	}
+	proof := newBackupVerification(body, document)
+	result.Status, result.FileURL, result.LastSyncAt, result.Verification = "success", targetURL, proof.VerifiedAt, proof
+	stateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	var warning string
+	result.MetadataSaved, warning = s.completeBackupVerification(stateCtx, config, proof)
+	if warning != "" {
+		result.Warnings = append(result.Warnings, warning)
+	}
+	if proof.WarningCount > 0 {
+		result.Warnings = append(result.Warnings, "backup_has_warnings")
+	}
+	return result, nil
 }
 
-func (s *Server) importFromWebDAV(ctx context.Context) (backupImportResult, *model.BackupConfig, error) {
-	var result backupImportResult
+func (s *Server) downloadWebDAVBackup(ctx context.Context) (*backupDocument, *model.BackupConfig, error) {
+	var result *backupDocument
 	config, err := s.loadBackupConfig(ctx)
 	if err != nil {
-		return result, nil, err
+		return result, nil, previewFailure("", "snapshot_failed")
 	}
-	if !config.Enabled || validateWebDAVURL(config.FileURL) != nil {
+	if config == nil || !config.Enabled || validateWebDAVURL(config.FileURL) != nil {
 		return result, config, errors.New("webdav_not_configured")
 	}
 	password, err := s.webDAVPassword(config)
 	if err != nil {
-		return result, config, err
+		return result, config, previewFailure("", "credential_locked")
 	}
 	client, err := provider.ClientFactory{AllowPrivate: true}.New("")
 	if err != nil {
-		return result, config, err
+		return result, config, previewFailure("", "webdav_request_failed")
 	}
+	defer client.CloseIdleConnections()
 	targetURL := webDAVTargetURL(config.FileURL)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
-	if err != nil {
-		return result, config, err
-	}
-	if config.Username != "" || password != "" {
-		request.SetBasicAuth(config.Username, password)
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return result, config, errors.New("webdav_request_failed")
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-		return result, config, webDAVHTTPError(response.StatusCode, "download")
-	}
-	if webDAVHTMLResponse(response) {
-		return result, config, errors.New("webdav_html_response")
-	}
-	if response.ContentLength > backupMaxImportBytes {
-		return result, config, errors.New("backup_too_large")
-	}
-	body, readErr := io.ReadAll(io.LimitReader(response.Body, backupMaxImportBytes+1))
+	body, readErr := readWebDAVBody(ctx, client, targetURL, config.Username, password)
 	if readErr != nil {
-		return result, config, errors.New("webdav_request_failed")
-	}
-	if len(body) > backupMaxImportBytes {
-		return result, config, errors.New("backup_too_large")
+		return result, config, readErr
 	}
 	var document backupDocument
 	if err := json.Unmarshal(body, &document); err != nil {
 		return result, config, errors.New("invalid_backup_document")
 	}
-	result, err = s.importBackupDocument(ctx, &document)
+	return &document, config, nil
+}
+
+func (s *Server) importFromWebDAV(ctx context.Context) (backupImportResult, *model.BackupConfig, error) {
+	document, config, err := s.downloadWebDAVBackup(ctx)
 	if err != nil {
-		return result, config, err
+		return backupImportResult{}, config, err
 	}
-	config.LastSyncAt, config.LastError = time.Now().UnixMilli(), ""
-	_ = s.store.UpsertBackupConfig(context.Background(), config)
-	return result, config, nil
+	result, err := s.importBackupDocument(ctx, document)
+	return result, config, err
+}
+
+func (s *Server) HandleBackupWebDAVPreview(c *gin.Context) {
+	document, _, err := s.downloadWebDAVBackup(c.Request.Context())
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, safeBackupWebDAVPreviewError(err))
+		return
+	}
+	preview, err := s.previewBackupDocument(c.Request.Context(), document)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	RespondJSON(c, http.StatusOK, preview)
+}
+
+func safeBackupWebDAVPreviewError(err error) string {
+	var safe *configPreviewError
+	if errors.As(err, &safe) {
+		return safe.code
+	}
+	code := strings.SplitN(err.Error(), ":", 2)[0]
+	switch code {
+	case "webdav_not_configured", "webdav_request_failed", "webdav_html_response", "backup_too_large", "invalid_backup_document", "credential_locked":
+		return code
+	}
+	if strings.HasPrefix(code, "webdav_http_") {
+		status, parseErr := strconv.Atoi(strings.TrimPrefix(code, "webdav_http_"))
+		if parseErr == nil && status >= 100 && status <= 599 {
+			return code
+		}
+	}
+	return "webdav_request_failed"
 }
 
 func (s *Server) recordBackupError(config *model.BackupConfig, err error) {
 	if config == nil || err == nil {
 		return
 	}
-	config.LastError = sanitizeWebhookError(err)
-	_ = s.store.UpsertBackupConfig(context.Background(), config)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.backupVerificationState.mu.Lock()
+	defer s.backupVerificationState.mu.Unlock()
+	_ = storage.WithConfigurationTransaction(ctx, s.store, func(txCtx context.Context, store storage.Store) error {
+		current, loadErr := store.GetBackupConfig(txCtx)
+		if loadErr != nil {
+			return loadErr
+		}
+		if backupIdentity(current) != backupIdentity(config) {
+			return nil
+		}
+		current.LastError = safeBackupExportError(err).Error()
+		return store.UpsertBackupConfig(txCtx, current)
+	})
 }
 
 func (s *Server) HandleBackupWebDAVExport(c *gin.Context) {
@@ -922,30 +803,21 @@ func (s *Server) HandleBackupWebDAVExport(c *gin.Context) {
 		Type string `json:"type"`
 	}
 	_ = c.ShouldBindJSON(&request)
-	config, err := s.exportToWebDAV(c.Request.Context(), request.Type)
+	result, err := s.exportToWebDAV(c.Request.Context(), request.Type)
 	if err != nil {
-		s.recordBackupError(config, err)
+		if result != nil {
+			s.recordBackupError(result.config, err)
+		}
 		// Keep admin operation failures as JSON so reverse proxies cannot hide
 		// the actual WebDAV diagnosis behind an HTML error page.
-		RespondErrorMsg(c, http.StatusOK, err.Error())
-		return
-	}
-	RespondJSON(c, http.StatusOK, gin.H{"status": "success", "file_url": webDAVTargetURL(config.FileURL), "last_sync_at": config.LastSyncAt})
-}
-
-func (s *Server) HandleBackupWebDAVImport(c *gin.Context) {
-	result, config, err := s.importFromWebDAV(c.Request.Context())
-	if err != nil {
-		s.recordBackupError(config, err)
-		// Keep admin operation failures as JSON so reverse proxies cannot hide
-		// the actual WebDAV diagnosis behind an HTML error page.
-		RespondErrorMsg(c, http.StatusOK, err.Error())
+		RespondErrorMsg(c, http.StatusOK, safeBackupExportError(err).Error())
 		return
 	}
 	RespondJSON(c, http.StatusOK, result)
-	if result.Restart {
-		go triggerRestart()
-	}
+}
+
+func (s *Server) HandleBackupWebDAVImport(c *gin.Context) {
+	RespondErrorMsg(c, http.StatusPreconditionRequired, "preview_required")
 }
 
 func (s *Server) startBackupScheduler() {
@@ -960,18 +832,14 @@ func (s *Server) startBackupScheduler() {
 				return
 			case <-ticker.C:
 				config, err := s.loadBackupConfig(s.baseCtx)
-				if err != nil || !config.Enabled || !config.AutoSyncEnabled {
+				if err != nil || config == nil {
 					continue
 				}
-				interval := time.Duration(config.AutoSyncIntervalHours) * time.Hour
-				if interval <= 0 {
-					interval = backupDefaultIntervalHour * time.Hour
-				}
-				if config.LastSyncAt > 0 && time.Since(time.UnixMilli(config.LastSyncAt)) < interval {
+				if !s.backupSyncDue(s.baseCtx, config, time.Now()) {
 					continue
 				}
-				if _, err := s.exportToWebDAV(s.baseCtx, config.ExportType); err != nil {
-					s.recordBackupError(config, err)
+				if result, err := s.exportToWebDAV(s.baseCtx, config.ExportType); err != nil && result != nil {
+					s.recordBackupError(result.config, err)
 				}
 			}
 		}

@@ -140,12 +140,19 @@ func (s *Server) HandleStats(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
+	costSummary, err := s.statsCache.GetCostSummary(c.Request.Context(), startTime, endTime, &lf)
+	if err != nil {
+		log.Printf("[ERROR] 读取费用汇总失败: %v", err)
+		RespondErrorMsg(c, http.StatusInternalServerError, "读取费用汇总失败")
+		return
+	}
 
 	channelHealth := s.fillHealthTimeline(c.Request.Context(), stats, startTime, endTime, &lf, isToday)
 	balanceHistory := s.siteBalanceHistory(c.Request.Context(), startTime, endTime, params.Range)
 
 	RespondJSON(c, http.StatusOK, gin.H{
 		"stats":            stats,
+		"cost_summary":     costSummary,
 		"channel_health":   channelHealth,
 		"balance_history":  balanceHistory,
 		"duration_seconds": durationSeconds,
@@ -233,23 +240,22 @@ func (s *Server) HandleDashboardSummary(c *gin.Context) {
 	// 判断是否为本日（本日才计算最近一分钟）
 	isToday := params.Range == "today" || params.Range == ""
 	ctx := c.Request.Context()
-	logFilter := &model.LogFilter{LogSource: model.LogSourceProxy}
-	if _, ok := WebIdentityFromContext(c); ok {
-		filter := BuildLogFilter(c)
-		filter.LogSource = model.LogSourceProxy
-		logFilter = &filter
-	}
+	filter := BuildLogFilter(c)
+	filter.LogSource = model.LogSourceProxy
+	logFilter := &filter
 
-	// 协议摘要与 RPM 相互独立，并行查询。
+	// 协议摘要、RPM 与费用汇总相互独立，并行查询。
 	var (
-		stats    []model.ClientProtocolStats
-		rpmStats *model.RPMStats
-		statsErr error
-		rpmErr   error
-		wg       sync.WaitGroup
+		stats       []model.ClientProtocolStats
+		rpmStats    *model.RPMStats
+		costSummary *model.CostSummary
+		statsErr    error
+		rpmErr      error
+		costErr     error
+		wg          sync.WaitGroup
 	)
 
-	wg.Add(2)
+	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
@@ -260,8 +266,17 @@ func (s *Server) HandleDashboardSummary(c *gin.Context) {
 		defer wg.Done()
 		rpmStats, rpmErr = s.statsCache.GetRPMStats(ctx, startTime, endTime, logFilter, isToday)
 	}()
+	go func() {
+		defer wg.Done()
+		costSummary, costErr = s.statsCache.GetCostSummary(ctx, startTime, endTime, logFilter)
+	}()
 
 	wg.Wait()
+	if costErr != nil {
+		log.Printf("[ERROR] 读取费用汇总失败: %v", costErr)
+		RespondErrorMsg(c, http.StatusInternalServerError, "读取费用汇总失败")
+		return
+	}
 
 	if statsErr != nil {
 		RespondError(c, http.StatusInternalServerError, statsErr)
@@ -291,6 +306,7 @@ func (s *Server) HandleDashboardSummary(c *gin.Context) {
 	}
 
 	response := gin.H{
+		"cost_summary":       costSummary,
 		"total_requests":     totalSuccess + totalError,
 		"success_requests":   totalSuccess,
 		"error_requests":     totalError,

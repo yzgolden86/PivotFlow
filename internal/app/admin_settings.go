@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
@@ -72,6 +73,11 @@ var systemSettingRuntimeEffects = map[string]string{
 	"non_stream_timeout":                      "非流式请求总超时",
 	"route_strategy":                          "渠道选择策略",
 	"model_alias_groups":                      "live:全局模型统一映射",
+	"request_cache_enabled":                   "可选网关响应缓存开关",
+	"request_cache_ttl_seconds":               "网关响应缓存有效期",
+	"request_cache_max_entries":               "网关响应缓存条目上限",
+	"request_cache_max_bytes":                 "网关响应缓存正文容量",
+	"request_cache_max_entry_bytes":           "网关响应缓存单条正文上限",
 	"channel_test_content":                    "手动测试与定时巡检",
 	"channel_check_interval_hours":            "渠道定时巡检调度器",
 	"site_daily_checkin_time":                 "站点每日签到调度器",
@@ -205,6 +211,7 @@ func (s *Server) applyLiveSettings(ctx context.Context, keys []string) {
 			// 注册表是从设置派生出来的纯数据，用新值重建一份快照即可；
 			// 代理热路径上的读者会原子地切到新快照，不会看到半成品。
 			s.modelAliases.reload(s.configService)
+			s.invalidateRequestCache("aliases_changed")
 		}
 		log.Printf("[INFO] 设置 %s 已热生效（未重启）", key)
 	}
@@ -334,6 +341,10 @@ func (s *Server) AdminResetSetting(c *gin.Context) {
 	}
 
 	// 重置为默认值
+	if err := validateSettingValue(key, setting.ValueType, setting.DefaultValue); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := s.configService.UpdateSetting(c.Request.Context(), key, setting.DefaultValue); err != nil {
 		log.Printf("[ERROR] AdminResetSetting key=%s 失败: %v", key, err)
 		RespondError(c, http.StatusInternalServerError, err)
@@ -445,6 +456,9 @@ func settingBatchUpdateMessage(count int, restartRequired bool) string {
 
 // validateSettingValue 验证配置值的合法性
 func validateSettingValue(key, valueType, value string) error {
+	if strings.HasPrefix(key, "request_cache_") {
+		return validateRequestCacheSetting(key, value)
+	}
 	if key == globalCooldownDetectionRulesSettingKey {
 		_, err := parseGlobalCooldownDetectionRules(value)
 		return err

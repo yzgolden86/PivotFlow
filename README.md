@@ -16,6 +16,7 @@ PivotFlow is the product and the routing foundation is integrated into the same 
 
 - Detect and classify upstream sites.
 - Store account credentials encrypted at rest.
+- Import browser account files or All API Hub account backups through source checks, bounded verification, and a fixed configuration preview; new accounts start disabled.
 - Refresh balances and display balance changes after check-in.
 - Run check-ins and retain account-level history.
 - Discover models and test a model directly with a site account.
@@ -31,6 +32,7 @@ PivotFlow is the product and the routing foundation is integrated into the same 
 - Key-, model-, and channel-level cooldowns.
 - Classified failover for authentication errors, rate limits, upstream failures, timeouts, and interrupted streams.
 - Local conversion, native upstream protocol, and automatic protocol negotiation.
+- Optional short-lived text response caching, disabled by default and explicitly selected by the client. Exact requests are isolated by token; delivered hits add no new upstream usage or charges. See [Request cache](docs/request-cache.md) for its supported scope.
 - RPM, concurrency, cost multiplier, daily limit, WebSocket, and request-log controls.
 
 ![PivotFlow routing and distribution](docs/assets/routing.png)
@@ -43,7 +45,7 @@ PivotFlow is the product and the routing foundation is integrated into the same 
 - Codex OAuth, Antigravity OAuth, and credential-file import.
 - SQLite, MySQL, PostgreSQL, and hybrid primary-database/SQLite storage.
 - Themes, routing, cooldown, logging, notification, scheduled check-in, and read-only upstream version settings.
-- Portable JSON import/export for all configuration, connections and routing, or system settings, with optional scheduled WebDAV backups.
+- Portable JSON import/export for all configuration, connections and routing, or system settings, including channel binding remapping and optional scheduled WebDAV backups. Uploads read back the same target and compare the complete byte count and SHA-256; the console distinguishes verified content, persisted records, and warnings.
 
 ## Four concepts
 
@@ -134,17 +136,21 @@ Clients receive a PivotFlow downstream key. Upstream credentials stay in site ac
 - `PIVOTFLOW_ALLOW_INSECURE_TLS=1` is a temporary diagnostic switch, not a production setting.
 - Admin APIs require a login session; proxy APIs require a downstream key.
 
-Read [Security and backup](docs/security.md) before migrating or restoring data.
+Use [Backup and recovery](docs/backup-recovery.md) to choose between portable configuration and a consistent database recovery set. Read [Upgrade and rollback](docs/upgrade.md) before changing the program or database version.
 
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [Browser assistance and account import](docs/browser-import.md)
 - [Getting started](docs/getting-started.md)
 - [Core concepts](docs/concepts.md)
 - [Site management](docs/site-management.md)
 - [Routing](docs/routing.md)
 - [Model testing](docs/model-testing.md)
 - [Configuration](docs/configuration.md)
+- [Configuration import and channel sync](docs/config-import.md)
+- [Backup and recovery](docs/backup-recovery.md)
+- [Upgrade and rollback](docs/upgrade.md)
 - [Deployment](docs/deployment.md)
 - [Security and backup](docs/security.md)
 - [Maintenance and PivotFlow sync policy](docs/maintenance.md)
@@ -183,7 +189,7 @@ PivotFlow stands on the work and ideas of the open-source community. Special tha
 - [ccLoad](https://github.com/caidaoli/ccLoad) for the routing, scheduling, cooldown, failover, and protocol-conversion foundation retained by PivotFlow.
 - [Metapi](https://github.com/cita-777/metapi) for its site aggregation, account workflows, and dashboard ideas.
 - [All API Hub](https://github.com/qixing-jk/all-api-hub) for its multi-site asset management, provider compatibility, and interaction design references.
-- [Octopus](https://github.com/Hureru/octopus) for its personal gateway, channel management, and concise console design ideas.
+- [Octopus upstream](https://github.com/bestruirui/octopus) and the [Hureru fork](https://github.com/Hureru/octopus) referenced during development for their personal gateway, channel management, and concise console design ideas; these are separate development branches.
 - [Sub2API](https://github.com/Wei-Shaw/sub2api) and [New API](https://github.com/QuantumNous/new-api) for their upstream contracts, ecosystem conventions, and management workflows.
 
 Thanks to every maintainer and contributor who made these projects available to the community. References and acknowledgements do not replace the licenses and copyright notices of their respective projects.

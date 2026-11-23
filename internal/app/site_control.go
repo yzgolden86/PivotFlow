@@ -22,6 +22,7 @@ import (
 	"github.com/yzgolden86/PivotFlow/internal/storage"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/sync/singleflight"
 )
 
 type siteControlService struct {
@@ -32,17 +33,25 @@ type siteControlService struct {
 	baseCtx                context.Context
 	wg                     *sync.WaitGroup
 	taskMu                 sync.Mutex
+	submitMu               sync.Mutex
+	activeSiteTasks        map[string]*siteTaskRun
+	workerSlots            chan struct{}
+	pricingFlights         singleflight.Group
 	webhookMu              sync.Mutex
 	tasks                  map[string]context.CancelFunc
+	taskStopCauses         map[string]context.CancelCauseFunc
+	cancelledRefreshUntil  sync.Map // account ID -> next scheduled refresh opportunity
 	stopped                bool
 	webhookSender          sitewebhook.Sender
 	onProjectionChanged    func()
+	onModelAliasesChanged  func(context.Context) error
 	onPricingSourceChanged func(int64)
 	// siteGates holds one cap-1 semaphore per site ID so every upstream site
 	// operation (scheduled refresh/checkin/announcement, manual refresh) for
 	// the same site queues up instead of hitting CF-protected upstreams
 	// concurrently (map[int64]chan struct{}).
-	siteGates sync.Map
+	siteGates     sync.Map
+	requestBudget *provider.RequestBudget
 
 	// History retention bookkeeping. historyPruneAt is the unix-ms timestamp of
 	// the last sweep; zero means "never run", which is why the first scheduler
@@ -66,20 +75,23 @@ func newSiteControlService(store storage.Store, baseCtx context.Context, wg *syn
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
+	budget := provider.NewRequestBudget()
+	clients := provider.ClientFactory{Budget: budget}
 	return &siteControlService{
 		store:  store,
 		cipher: cipher,
 		registry: provider.NewRegistry(
-			provider.NewSub2API(provider.ClientFactory{}),
-			provider.NewVeloera(provider.ClientFactory{}),
-			provider.NewAnyRouter(provider.ClientFactory{}),
-			provider.NewNewAPI(provider.ClientFactory{}),
-			provider.NewOpenAICompatible(provider.ClientFactory{}),
+			provider.NewSub2API(clients),
+			provider.NewVeloera(clients),
+			provider.NewAnyRouter(clients),
+			provider.NewNewAPI(clients),
+			provider.NewOpenAICompatible(clients),
 		),
 		baseCtx:       baseCtx,
 		wg:            wg,
 		tasks:         make(map[string]context.CancelFunc),
 		webhookSender: sitewebhook.Sender{Clients: provider.ClientFactory{}, Timeout: 5 * time.Second},
+		requestBudget: budget,
 	}
 }
 
@@ -154,37 +166,31 @@ func newSiteTask(kind string, siteID, accountID int64, total int) *model.SiteTas
 	return &model.SiteTask{ID: newSiteTaskID(), Kind: kind, Status: model.SiteTaskStatusQueued, SiteID: siteID, SiteAccountID: accountID, ProgressJSON: string(progress), CreatedAt: time.Now().UnixMilli()}
 }
 
-func (s *siteControlService) createTask(ctx context.Context, kind string, siteID, accountID int64, total int) (*model.SiteTask, error) {
-	task := newSiteTask(kind, siteID, accountID, total)
-	if err := s.store.CreateSiteTask(ctx, task); err != nil {
-		return nil, err
-	}
-	return task, nil
-}
-
-// persistTask stores a task that newSiteTask built but did not write. It hands
-// back the lease it was given on failure: a caller that acquired a lease before
-// persisting would otherwise leave the key held by a task that does not exist,
-// which silently blocks that account/kind until the lease expires.
-func (s *siteControlService) persistTask(ctx context.Context, task *model.SiteTask, leaseKey string) bool {
-	if err := s.store.CreateSiteTask(ctx, task); err != nil {
-		if leaseKey != "" {
-			_ = s.store.ReleaseSiteTaskLease(context.Background(), leaseKey, task.ID)
-		}
-		log.Printf("[SITE] persist %s task for site %d: %v", task.Kind, task.SiteID, err)
-		return false
-	}
-	return true
-}
-
 func (s *siteControlService) updateTask(ctx context.Context, task *model.SiteTask, status, resultRef, message string) {
+	if ctx != nil && ctx.Err() != nil && status != model.SiteTaskStatusSuccess && status != model.SiteTaskStatusPartial {
+		if errors.Is(context.Cause(ctx), errSiteTaskLeaseLost) {
+			status, message = model.SiteTaskStatusFailed, "site_task_lease_lost"
+		} else if errors.Is(context.Cause(ctx), errSiteTaskStopped) {
+			status, message = model.SiteTaskStatusCancelled, "server_shutting_down"
+		} else if errors.Is(ctx.Err(), context.Canceled) {
+			status, message = model.SiteTaskStatusCancelled, "cancelled"
+		} else {
+			status, message = model.SiteTaskStatusFailed, provider.CodeTimeout
+		}
+	}
 	task.Status, task.ResultRef, task.Error = status, resultRef, message
 	now := time.Now().UnixMilli()
-	if status == model.SiteTaskStatusRunning {
+	if status == model.SiteTaskStatusRunning && task.StartedAt == 0 {
 		task.StartedAt = now
 	}
-	if status == model.SiteTaskStatusSuccess || status == model.SiteTaskStatusPartial || status == model.SiteTaskStatusFailed || status == model.SiteTaskStatusCancelled {
+	if status == model.SiteTaskStatusSuccess || status == model.SiteTaskStatusPartial || status == model.SiteTaskStatusFailed || status == model.SiteTaskStatusCancelled || status == "unknown" {
 		task.FinishedAt = now
+		if task.SiteAccountID > 0 || task.SiteID > 0 {
+			task.ProgressJSON = `{"completed":1,"total":1}`
+		}
+	}
+	if status == model.SiteTaskStatusCancelled {
+		task.CancelledAt = now
 	}
 	persistCtx := ctx
 	if persistCtx == nil || persistCtx.Err() != nil {
@@ -196,7 +202,7 @@ func (s *siteControlService) updateTask(ctx context.Context, task *model.SiteTas
 }
 
 func (s *siteControlService) leaseContext(parent context.Context, taskKey, ownerID string) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancelCause(parent)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -209,14 +215,14 @@ func (s *siteControlService) leaseContext(parent context.Context, taskKey, owner
 			case now := <-ticker.C:
 				ok, err := s.store.RenewSiteTaskLease(ctx, taskKey, ownerID, now.Add(siteTaskLeaseDuration).UnixMilli(), now.UnixMilli())
 				if err != nil || !ok {
-					cancel()
+					cancel(errSiteTaskLeaseLost)
 					return
 				}
 			}
 		}
 	}()
 	return ctx, func() {
-		cancel()
+		cancel(nil)
 		<-done
 	}
 }
@@ -779,13 +785,29 @@ func (s *siteControlService) refreshAccountWithOptions(ctx context.Context, task
 			s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(modelErr))
 			return
 		}
+		var previousFacts []model.SiteAccountModel
+		authoritativeFacts := false
+		aliasSnapshotOK := true
+		if modelErr == nil && len(facts) > 0 {
+			snapshot, snapshotErr := s.store.ListSiteAccountModels(ctx, model.SiteModelFilter{SiteAccountID: account.ID})
+			if snapshotErr != nil {
+				// Without the pre-replace snapshot there is no positive evidence
+				// of which members this sync removed.
+				log.Printf("[WARN] model refresh could not snapshot prior account models for account %d", accountID)
+				aliasSnapshotOK = false
+			} else {
+				previousFacts = snapshot
+			}
+		}
 		if modelErr == nil {
-			// A complete refresh is authoritative: models no longer returned by
-			// the upstream are removed from the current account snapshot.
-			if err := s.store.ReplaceSiteAccountModels(ctx, account.ID, facts); err != nil {
+			// Keep vanished observations stale until projected channels and alias
+			// cleanup succeed. They are durable retry evidence even after restart
+			// or repeated setting CAS contention; current routing uses projections.
+			if err := s.store.MergeSiteAccountModels(ctx, account.ID, facts); err != nil {
 				s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
 				return
 			}
+			authoritativeFacts = len(facts) > 0
 		} else {
 			// A partial refresh must not erase evidence from unresolved keys; keep
 			// those older facts marked stale until a complete refresh succeeds.
@@ -798,6 +820,9 @@ func (s *siteControlService) refreshAccountWithOptions(ctx context.Context, task
 		_, _ = s.store.UpdateSiteAccount(ctx, account.ID, account)
 		activeProjectionKeys := make([]string, 0, len(keys))
 		syncErrors := make([]string, 0)
+		if !aliasSnapshotOK {
+			syncErrors = append(syncErrors, "model_alias_snapshot_failed")
+		}
 		if modelErr != nil {
 			syncErrors = append(syncErrors, siteTaskError(modelErr))
 		}
@@ -818,10 +843,9 @@ func (s *siteControlService) refreshAccountWithOptions(ctx context.Context, task
 			if strings.TrimSpace(item.Name) != "" && strings.TrimSpace(item.Name) != strings.TrimSpace(item.Group) && !strings.EqualFold(strings.TrimSpace(item.Name), strings.TrimSpace(account.Label)) {
 				name += " / " + strings.TrimSpace(item.Name)
 			}
-			// "Sync route" is an explicit reconciliation operation. Projected
-			// channels follow the upstream key name, URL, credential and models;
-			// manual channels are protected by ownership checks in the store.
-			if _, err := s.projectAccountWithModelsForProtocols(ctx, account, site, keyCreds, projectionKey, name, item.Protocols, models, manual, pricingGroup); err != nil {
+			// Automatic account refresh reconciles generated projected channels,
+			// but never overrides a binding that an administrator has taken over.
+			if _, err := s.projectAccountWithModelsForProtocolsOwnership(ctx, account, site, keyCreds, projectionKey, name, item.Protocols, models, true, false, pricingGroup); err != nil {
 				syncErrors = append(syncErrors, fmt.Sprintf("%s: %s", routingKeyLabel(item, projectionKey), siteTaskError(err)))
 			}
 		}
@@ -830,6 +854,21 @@ func (s *siteControlService) refreshAccountWithOptions(ctx context.Context, task
 			return
 		}
 		s.projectionChanged()
+		aliasReconcileOK := true
+		if modelErr == nil && authoritativeFacts && len(previousFacts) > 0 {
+			if err := s.reconcileModelAliasesAfterSiteRefresh(ctx, previousFacts, facts); err != nil {
+				aliasReconcileOK = false
+				log.Printf("[WARN] model alias cleanup after account %d model refresh failed", accountID)
+				syncErrors = append(syncErrors, "model_alias_reconcile_failed")
+			}
+		}
+		if modelErr == nil && aliasReconcileOK && len(syncErrors) == 0 {
+			// Only discard the positive disappearance evidence after all cleanup
+			// has settled. A failed prune also leaves it available for the next sync.
+			if err := s.store.ReplaceSiteAccountModels(ctx, account.ID, facts); err != nil {
+				syncErrors = append(syncErrors, "model_snapshot_finalize_failed")
+			}
+		}
 		if len(syncErrors) > 0 {
 			s.updateTask(ctx, task, model.SiteTaskStatusPartial, fmt.Sprintf("site_account:%d", accountID), strings.Join(syncErrors, "; "))
 			return
@@ -1215,6 +1254,19 @@ func (s *siteControlService) projectAccountWithModels(ctx context.Context, accou
 // pricingGroup 是上游令牌所属分组，仅在按路由 Key 投影时才有值。
 // 站点价目表按分组给倍率，落库后才能用站点自身价格算费用。
 func (s *siteControlService) projectAccountWithModelsForProtocols(ctx context.Context, account *model.SiteAccount, site *model.Site, creds provider.Credentials, projectionKey, name string, protocols, names []string, force bool, pricingGroup string) (*model.SiteProjectionResult, error) {
+	return s.projectAccountWithModelsForProtocolsOwnership(ctx, account, site, creds, projectionKey, name, protocols, names, force, force, pricingGroup)
+}
+
+func (s *siteControlService) projectAccountWithModelsForProtocolsOwnership(
+	ctx context.Context,
+	account *model.SiteAccount,
+	site *model.Site,
+	creds provider.Credentials,
+	projectionKey, name string,
+	protocols, names []string,
+	force, overrideManual bool,
+	pricingGroup string,
+) (*model.SiteProjectionResult, error) {
 	filtered := make([]string, 0, len(names))
 	seen := map[string]struct{}{}
 	for _, item := range names {
@@ -1240,7 +1292,7 @@ func (s *siteControlService) projectAccountWithModelsForProtocols(ctx context.Co
 	protocols = projectedRoutingProtocols(site, protocols)
 	baseURL := routingBaseURL(site.BaseURL)
 	sourceHash := model.SiteProjectionSourceHash(baseURL, protocols, filtered, creds.APIKey, account.Enabled)
-	result, err := s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: baseURL, Protocols: protocols, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, PricingGroup: pricingGroup, Enabled: account.Enabled, Force: force, OverrideManual: force})
+	result, err := s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: account.ID, ProjectionKey: projectionKey, Name: name, BaseURL: baseURL, Protocols: protocols, Models: filtered, APIKey: creds.APIKey, SourceHash: sourceHash, PricingGroup: pricingGroup, Enabled: account.Enabled, Force: force, OverrideManual: overrideManual})
 	if err != nil {
 		return nil, err
 	}
@@ -1501,6 +1553,37 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 		s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", err.Error())
 		return
 	}
+	var attempt *model.CheckinAttempt
+	// Cancellation cannot write through the cancelled execution context. Leave
+	// a finished attempt so the scheduler does not mistake it for a crashed run
+	// and send the same side-effecting POST on its next tick.
+	defer func() {
+		if ctx.Err() == nil {
+			return
+		}
+		persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		run.FinishedAt = time.Now().UnixMilli()
+		if attempt != nil && checkinSettled(attempt.Status) {
+			run.Status = model.SiteTaskStatusSuccess
+		} else {
+			run.Status = model.SiteTaskStatusCancelled
+			run.SuccessCount, run.AlreadyCount, run.FailedCount, run.BrowserRequiredCount = 0, 0, 0, 0
+			if attempt != nil {
+				attempt.Status, attempt.ErrorCode = model.SiteTaskStatusCancelled, "cancelled"
+				attempt.Message = "任务已取消；已提交的上游操作不会撤回，请核实签到结果"
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					run.Status, run.FailedCount = model.SiteTaskStatusFailed, 1
+					attempt.Status, attempt.ErrorCode = provider.CheckinFailed, provider.CodeTimeout
+				}
+			}
+		}
+		if attempt != nil {
+			attempt.FinishedAt = run.FinishedAt
+			_ = s.store.UpdateCheckinAttempt(persistCtx, attempt)
+		}
+		_ = s.store.UpdateCheckinRun(persistCtx, run)
+	}()
 	var balanceBefore *float64
 	if account.Balance != nil {
 		value := *account.Balance
@@ -1515,7 +1598,7 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 		applyBalanceSnapshot(account, preSnapshot, time.Now().UnixMilli())
 		s.recordBalanceSnapshot(ctx, account, site, account.BalanceUpdatedAt)
 	}
-	attempt, err := s.prepareCheckinAttempt(ctx, run, account, adapter, day, triggerScope, balanceBefore)
+	attempt, err = s.prepareCheckinAttempt(ctx, run, account, adapter, day, triggerScope, balanceBefore)
 	if err != nil {
 		s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", err.Error())
 		return
@@ -1543,7 +1626,7 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 	}
 	for try := 1; !skipCheckin && try <= 3; try++ {
 		result, err = adapter.Checkin(ctx, provider.AccountRequest{BaseURL: site.BaseURL, ProxyURL: siteProxyURL(site), Credentials: creds})
-		if err == nil || provider.ErrorCode(err) == provider.CodeBrowserRequired || provider.ErrorCode(err) == provider.CodeUnsupported || provider.ErrorCode(err) == provider.CodeExpired || provider.ErrorCode(err) == provider.CodeUserIDRequired {
+		if err == nil || provider.ErrorCode(err) == provider.CodeRateLimited || provider.ErrorCode(err) == provider.CodeBrowserRequired || provider.ErrorCode(err) == provider.CodeUnsupported || provider.ErrorCode(err) == provider.CodeExpired || provider.ErrorCode(err) == provider.CodeUserIDRequired {
 			break
 		}
 		if try < 3 {
@@ -1635,13 +1718,21 @@ func (s *siteControlService) checkinWithTrigger(ctx context.Context, task *model
 		run.FailedCount = 1
 		account.LastCheckinStatus = result.Status
 	}
-	_ = s.store.UpdateCheckinAttempt(ctx, attempt)
-	_ = s.store.UpdateCheckinRun(ctx, run)
-	_, _ = s.store.UpdateSiteAccount(ctx, account.ID, account)
+	// The check-in result is authoritative even if cancellation interrupts the
+	// optional balance read that follows it. Persist the observed side effect.
+	persistCtx := ctx
+	if ctx.Err() != nil && checkinSettled(attempt.Status) {
+		var cancel context.CancelFunc
+		persistCtx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+	}
+	_ = s.store.UpdateCheckinAttempt(persistCtx, attempt)
+	_ = s.store.UpdateCheckinRun(persistCtx, run)
+	_, _ = s.store.UpdateSiteAccount(persistCtx, account.ID, account)
 	if result.Status == provider.CheckinSuccess && attempt.BalanceAfter != nil {
 		s.evaluateLowBalance(account, site)
 	}
-	if result.Status == provider.CheckinFailed {
+	if result.Status == provider.CheckinFailed && ctx.Err() == nil {
 		s.notifyCheckinFailure(account, site, day, attempt.ErrorCode)
 	}
 	if err != nil {

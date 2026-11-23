@@ -2,10 +2,12 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
   Activity,
+  ArrowRight,
   BarChart3,
   Bell,
   CalendarCheck2,
   FlaskConical,
+  FolderInput,
   Gauge,
   Globe2,
   KeyRound,
@@ -14,6 +16,7 @@ import {
   Monitor,
   Moon,
   PanelLeftClose,
+  PlugZap,
   Route as RouteIcon,
   ScrollText,
   Settings,
@@ -26,44 +29,57 @@ import { getCheckinAttemptsBatch, getSiteInventory } from './api'
 import AnchoredPopover from './components/AnchoredPopover'
 import GlobalSearch from './components/GlobalSearch'
 import PageErrorBoundary from './components/PageErrorBoundary'
+import useFocusLayer from './components/useFocusLayer'
 import { applyTheme, readThemePreference, resolveTheme } from './theme'
 import type { ResolvedTheme, ThemePreference } from './theme'
 
 const loadDashboardPage = () => import('./pages/DashboardPage')
 const loadChannelsPage = () => import('./pages/ChannelsPage')
+const loadModelRoutesPage = () => import('./pages/ModelRoutesPage')
 const loadLogsPage = () => import('./pages/LogsPage')
 const loadStatsPage = () => import('./pages/StatsPage')
+const loadHealthPage = () => import('./pages/HealthPage')
 const loadModelTestPage = () => import('./pages/ModelTestPage')
 const loadSitesPage = () => import('./pages/SitesPage')
 const loadAccountsPage = () => import('./pages/AccountsPageV2')
 const loadCheckinsPage = () => import('./pages/CheckinsPage')
 const loadAnnouncementsPage = () => import('./pages/AnnouncementsPage')
 const loadTokensPage = () => import('./pages/TokensPage')
+const loadConnectPage = () => import('./pages/ConnectPage')
+const loadBrowserImportPage = () => import('./pages/BrowserImportPage')
 const loadSystemSettingsPage = () => import('./pages/SystemSettingsPageV2')
 
 const DashboardPage = lazy(loadDashboardPage)
 const ChannelsPage = lazy(loadChannelsPage)
+const ModelRoutesPage = lazy(loadModelRoutesPage)
 const LogsPage = lazy(loadLogsPage)
 const StatsPage = lazy(loadStatsPage)
+const HealthPage = lazy(loadHealthPage)
 const ModelTestPage = lazy(loadModelTestPage)
 const SitesPage = lazy(loadSitesPage)
 const AccountsPage = lazy(loadAccountsPage)
 const CheckinsPage = lazy(loadCheckinsPage)
 const AnnouncementsPage = lazy(loadAnnouncementsPage)
 const TokensPage = lazy(loadTokensPage)
+const ConnectPage = lazy(loadConnectPage)
+const BrowserImportPage = lazy(loadBrowserImportPage)
 const SystemSettingsPage = lazy(loadSystemSettingsPage)
 
 const pageLoaders: Record<string, () => Promise<unknown>> = {
   '/': loadDashboardPage,
   '/channels': loadChannelsPage,
+  '/routing': loadModelRoutesPage,
   '/logs': loadLogsPage,
   '/stats': loadStatsPage,
+  '/health': loadHealthPage,
   '/models': loadModelTestPage,
   '/sites': loadSitesPage,
   '/accounts': loadAccountsPage,
   '/checkins': loadCheckinsPage,
   '/announcements': loadAnnouncementsPage,
   '/tokens': loadTokensPage,
+  '/connect': loadConnectPage,
+  '/browser-import': loadBrowserImportPage,
   '/system': loadSystemSettingsPage,
 }
 
@@ -100,6 +116,8 @@ const navigation: NavGroup[] = [
     label: '路由',
     entries: [
       { label: '渠道分发', href: '/channels', icon: RouteIcon },
+      { label: '模型路由', href: '/routing', icon: RouteIcon },
+      { label: '客户端接入', href: '/connect', icon: PlugZap },
       { label: '令牌管理', href: '/tokens', icon: KeyRound },
     ],
   },
@@ -108,12 +126,14 @@ const navigation: NavGroup[] = [
     entries: [
       { label: '请求日志', href: '/logs', icon: ScrollText },
       { label: '数据面板', href: '/stats', icon: BarChart3 },
+      { label: '运行健康', href: '/health', icon: Activity },
     ],
   },
   {
     label: '工具',
     entries: [
       { label: '模型测试', href: '/models', icon: FlaskConical },
+      { label: '浏览器导入', href: '/browser-import', icon: FolderInput },
 	  { label: '系统设置', href: '/system', icon: Settings },
     ],
   },
@@ -130,38 +150,23 @@ function App() {
   const location = useLocation()
   const sidebar = useRef<HTMLElement>(null)
   const mobileTrigger = useRef<HTMLButtonElement>(null)
+  const mobileScrim = useRef<HTMLButtonElement>(null)
   // 主题菜单的定位锚点取**整条底部操作栏**，不是那个 `flex: 1` 的按钮容器：
   // 展开态要右对齐到操作栏内边缘（按钮容器只有约 110px 宽，168px 的菜单右对齐到它
   // 会整块被推出侧栏左边界），收起态则要贴着操作栏右侧外挂。详见 popoverPosition。
   const themePickerAnchor = useRef<HTMLDivElement>(null)
   const showLabels = !collapsed || mobileOpen
   const currentPage = navigation.flatMap((group) => group.entries).find((entry) => entry.href === location.pathname)?.label || '控制台'
+  useFocusLayer(sidebar, {
+    open: mobileOpen, modal: true, close: () => setMobileOpen(false),
+    initialFocus: () => sidebar.current?.querySelector<HTMLButtonElement>('.sidebar-mobile-close'),
+    returnFocus: () => mobileTrigger.current,
+    backdrop: () => mobileScrim.current,
+  })
 
   useEffect(() => {
     try { localStorage.setItem('pivotflow_sidebar_collapsed', String(collapsed)) } catch { /* Storage may be disabled. */ }
   }, [collapsed])
-
-  useEffect(() => {
-    if (!mobileOpen) return
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    sidebar.current?.querySelector<HTMLButtonElement>('.sidebar-mobile-close')?.focus()
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileOpen(false)
-      if (event.key !== 'Tab') return
-      const items = Array.from(sidebar.current?.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), input') || []).filter((item) => item.getClientRects().length)
-      const first = items[0]
-      const last = items.at(-1)
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
-    }
-    window.addEventListener('keydown', handleKey)
-    return () => {
-      document.body.style.overflow = previousOverflow
-      window.removeEventListener('keydown', handleKey)
-      mobileTrigger.current?.focus()
-    }
-  }, [mobileOpen])
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -248,6 +253,7 @@ function App() {
 
       {mobileOpen && (
         <button
+          ref={mobileScrim}
           className="sidebar-scrim"
           type="button"
           aria-label="关闭导航"
@@ -354,17 +360,22 @@ function App() {
       <main className="main-content" id="main-content" tabIndex={-1}>
         <Suspense fallback={<PageLoading />}>
           <PageErrorBoundary resetKey={location.pathname}>
+            {new URLSearchParams(location.search).get('onboarding') === '1' && <div className="connect-return"><PlugZap size={16} aria-hidden="true" /><span>接入引导：完成当前操作后，可继续配置客户端。</span><a href="#/connect">返回接入引导<ArrowRight size={13} /></a></div>}
             <Routes>
               <Route path="/" element={<DashboardPage />} />
               <Route path="/channels" element={<ChannelsPage />} />
+              <Route path="/routing" element={<ModelRoutesPage />} />
               <Route path="/logs" element={<LogsPage />} />
               <Route path="/stats" element={<StatsPage />} />
+              <Route path="/health" element={<HealthPage />} />
               <Route path="/models" element={<ModelTestPage />} />
               <Route path="/model-test" element={<ModelTestPage />} />
               <Route path="/advanced" element={<Navigate to="/system" replace />} />
               <Route path="/settings" element={<Navigate to="/system" replace />} />
               <Route path="/system" element={<SystemSettingsPage />} />
               <Route path="/tokens" element={<TokensPage />} />
+              <Route path="/connect" element={<ConnectPage />} />
+              <Route path="/browser-import" element={<BrowserImportPage />} />
               <Route path="/trend" element={<Navigate to="/stats" replace />} />
               <Route path="/fingerprints" element={<Navigate to="/models" replace />} />
               <Route path="/sites" element={<SitesPage />} />

@@ -22,6 +22,10 @@ type ConfigService struct {
 	loaded bool
 }
 
+type conditionalSettingStore interface {
+	CompareAndSwapSetting(ctx context.Context, key, expectedValue, newValue string) (bool, error)
+}
+
 // NewConfigService 创建配置服务
 func NewConfigService(store storage.Store) *ConfigService {
 	return &ConfigService{
@@ -159,6 +163,20 @@ func (cs *ConfigService) UpdateSetting(ctx context.Context, key, value string) e
 	return cs.store.UpdateSetting(ctx, key, value)
 }
 
+// CompareAndSwapSetting updates one setting only while its persisted value
+// still matches the caller's snapshot. Runtime reconciliation uses it so a
+// background cleanup cannot overwrite a concurrent administrator edit.
+func (cs *ConfigService) CompareAndSwapSetting(ctx context.Context, key, expectedValue, newValue string) (bool, error) {
+	if cs == nil || cs.store == nil {
+		return false, fmt.Errorf("conditional setting update requires a store")
+	}
+	store, ok := cs.store.(conditionalSettingStore)
+	if !ok {
+		return false, fmt.Errorf("conditional setting update is unavailable")
+	}
+	return store.CompareAndSwapSetting(ctx, key, expectedValue, newValue)
+}
+
 // ListAllSettings 获取所有配置(用于前端展示)
 func (cs *ConfigService) ListAllSettings(ctx context.Context) ([]*model.SystemSetting, error) {
 	return cs.store.ListAllSettings(ctx)
@@ -183,12 +201,21 @@ func (cs *ConfigService) RefreshSetting(ctx context.Context, key string) error {
 	if err != nil {
 		return fmt.Errorf("refresh setting %s: %w", key, err)
 	}
+	cs.applySettingSnapshot(key, setting)
+	return nil
+}
+
+// applySettingSnapshot refreshes only this process's cache from a setting
+// already read from the authoritative configuration source.
+func (cs *ConfigService) applySettingSnapshot(key string, setting *model.SystemSetting) {
+	if cs == nil {
+		return
+	}
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	if setting == nil {
 		delete(cs.cache, key)
-		return nil
+		return
 	}
 	cs.cache[key] = setting
-	return nil
 }

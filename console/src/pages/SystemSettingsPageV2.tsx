@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, ArrowRight, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, Clock3, ExternalLink, FileClock, Gauge, Network,
-  DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
+  Database, DatabaseBackup, RefreshCw, RotateCcw, Route, Save, Search, ShieldAlert, Sun, Moon, Monitor,
   KeyRound, ListPlus, Palette, PanelsTopLeft, Pencil, Play, Plus, Power, Settings, SlidersHorizontal, TimerReset, Trash2, Type, Wrench, X,
   Code, Image as ImageIcon, Maximize2, Layers, Shuffle,
 } from 'lucide-react'
@@ -10,6 +11,7 @@ import type { ModelAliasCandidate, ModelAliasInventory, ModelAliasSuggestion, Sy
 import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader } from './shared'
 import { WebhookSettingsPanel } from './SettingsPage'
 import { BackupSettingsPanel } from './BackupSettingsPanel'
+import RequestCachePanel from './RequestCachePanel'
 import { Modal } from './siteShared'
 import HelpTip from '../components/HelpTip'
 import { adoptSuggestions, aliasMembers, parseAliasDraft, serializeAliasDraft, withMembers } from './modelAliasDraft'
@@ -28,6 +30,7 @@ const groups = [
   { key: 'appearance', label: '外观', icon: Sun },
   { key: 'automation', label: '自动任务', icon: CalendarClock },
   { key: 'routing', label: '路由策略', icon: Route },
+  { key: 'cache', label: '请求缓存', icon: Database },
   { key: 'timeouts', label: '请求超时', icon: Clock3 },
   { key: 'cooldown', label: '故障冷却', icon: TimerReset },
   { key: 'capacity', label: '并发容量', icon: Gauge },
@@ -40,14 +43,36 @@ const groups = [
 
 type GroupKey = typeof groups[number]['key']
 
+const sections = [
+  { key: 'runtime', label: '运行设置', icon: SlidersHorizontal },
+  { key: 'notifications', label: '通知设置', icon: BellRing },
+  { key: 'backup', label: '导入导出', icon: DatabaseBackup },
+  { key: 'system-access', label: '系统访问', icon: KeyRound },
+] as const
+
 export default function SystemSettingsPageV2() {
-  const [section, setSection] = useState<'runtime' | 'notifications' | 'backup' | 'system-access'>('runtime')
+  const location = useLocation()
+  const navigate = useNavigate()
+  const scopeParams = new URLSearchParams(location.search)
+  const section = sections.find((item) => item.key === scopeParams.get('section'))?.key || 'runtime'
+  const group = groups.find((item) => item.key === scopeParams.get('group'))?.key || 'routing'
+  const setSection = (value: typeof sections[number]['key']) => {
+    const next = new URLSearchParams(location.search)
+    next.set('section', value)
+    navigate(`/system?${next}`)
+  }
+  const setGroup = (value: GroupKey) => {
+    const next = new URLSearchParams(location.search)
+    next.set('section', 'runtime')
+    next.set('group', value)
+    navigate(`/system?${next}`)
+  }
+  const sectionTabsId = useId()
   const [settings, setSettings] = useState<SystemSetting[]>([])
   const [values, setValues] = useState<Record<string, string>>({})
   const [dirty, setDirty] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   const [onlyModified, setOnlyModified] = useState(false)
-  const [group, setGroup] = useState<GroupKey>('routing')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -57,6 +82,8 @@ export default function SystemSettingsPageV2() {
   const [checkingVersion, setCheckingVersion] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [aliasRefreshTick, setAliasRefreshTick] = useState(0)
+
+  useEffect(() => { setQuery(''); setOnlyModified(false) }, [location.search])
 
   const reloadSettings = async () => {
     if (saving || refreshing) return
@@ -222,13 +249,18 @@ export default function SystemSettingsPageV2() {
       </> : undefined}
     />
 
-    <div className="view-tabs system-settings-tabs" role="tablist" aria-label="系统设置分类">
-      <button type="button" role="tab" aria-selected={section === 'runtime'} className={section === 'runtime' ? 'is-active' : ''} onClick={() => setSection('runtime')}><SlidersHorizontal size={17} />运行设置</button>
-      <button type="button" role="tab" aria-selected={section === 'notifications'} className={section === 'notifications' ? 'is-active' : ''} onClick={() => setSection('notifications')}><BellRing size={17} />通知设置</button>
-      <button type="button" role="tab" aria-selected={section === 'backup'} className={section === 'backup' ? 'is-active' : ''} onClick={() => setSection('backup')}><DatabaseBackup size={17} />导入导出</button>
-      <button type="button" role="tab" aria-selected={section === 'system-access'} className={section === 'system-access' ? 'is-active' : ''} onClick={() => setSection('system-access')}><KeyRound size={17} />系统访问</button>
+    <div className="view-tabs system-settings-tabs" role="tablist" aria-label="系统设置分类" onKeyDown={(event) => {
+      if (event.altKey || event.ctrlKey || event.metaKey || !['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return
+      event.preventDefault()
+      const index = sections.findIndex((item) => item.key === section)
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? sections.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + sections.length) % sections.length
+      setSection(sections[next].key)
+      document.getElementById(`${sectionTabsId}-tab-${sections[next].key}`)?.focus()
+    }}>
+      {sections.map(({ key, label, icon: Icon }) => <button id={`${sectionTabsId}-tab-${key}`} aria-controls={`${sectionTabsId}-panel`} type="button" role="tab" aria-selected={section === key} tabIndex={section === key ? 0 : -1} className={section === key ? 'is-active' : ''} onClick={() => setSection(key)} key={key}><Icon size={17} />{label}</button>)}
     </div>
 
+    <section className="system-settings-panel" id={`${sectionTabsId}-panel`} role="tabpanel" aria-labelledby={`${sectionTabsId}-tab-${section}`} tabIndex={0}>
     {section === 'notifications' ? <WebhookSettingsPanel /> : section === 'backup' ? <BackupSettingsPanel /> : section === 'system-access' ? <SystemAccessTokensPanel /> : <>
       {notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={16} />{notice}</OperationNotice>}
       {error && <OperationNotice tone="error">{error}</OperationNotice>}
@@ -270,12 +302,14 @@ export default function SystemSettingsPageV2() {
               </div>
             </article>)}
           </div>}
+          {group === 'cache' && !query.trim() && <RequestCachePanel unsavedCount={[...dirty].filter((key) => settingGroup(key) === 'cache').length} />}
           {group === 'maintenance' && !query.trim() && <UpdatePanel info={versionInfo} checking={checkingVersion} check={checkUpdates} />}
           </>}
           </fieldset>
         </section>
       </div>
     </>}
+    </section>
     {dirty.size > 0 && <footer className="settings-savebar" aria-label="未保存的设置">
       <span role="status"><i aria-hidden="true" /><strong>{dirty.size} 项未保存</strong></span>
       <div><button className="secondary-button" type="button" disabled={saving || refreshing} onClick={discard}><RotateCcw size={16} />放弃修改</button><button className="primary-button" type="button" disabled={saving || refreshing} onClick={() => void save()}><Save size={16} />{saving ? '保存中' : '保存更改'}</button></div>
@@ -747,13 +781,15 @@ function SettingInput({ setting, value, change }: { setting: SystemSetting; valu
   if (options) return <select value={value} aria-label={settingLabel(setting)} onChange={(event) => change(event.target.value)} disabled={!setting.editable}>{options.map(([optionValue, label]) => <option value={optionValue} key={optionValue}>{label}</option>)}</select>
   if (setting.value_type === 'json') return <textarea rows={4} value={value} aria-label={settingLabel(setting)} onChange={(event) => change(event.target.value)} disabled={!setting.editable} spellCheck={false} />
   const type = ['int', 'float', 'duration'].includes(setting.value_type) ? 'number' : 'text'
-  return <input type={type} aria-label={settingLabel(setting)} step={setting.value_type === 'float' ? '0.1' : '1'} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
+  const bounds = settingBounds(setting.key)
+  return <input type={type} min={bounds.min} max={bounds.max} aria-label={settingLabel(setting)} step={setting.value_type === 'float' ? '0.1' : '1'} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
 }
 
 function normalizeBool(value: string): string { return value === 'true' || value === '1' ? 'true' : 'false' }
 
 function settingGroup(key: string): GroupKey {
   if (key === 'site_daily_checkin_time' || key === 'site_daily_announcement_time') return 'automation'
+  if (/^request_cache_/.test(key)) return 'cache'
   if (key === 'cooldown_fallback_enabled') return 'routing'
   if (/^cooldown_|global_cooldown/.test(key)) return 'cooldown'
   if (/timeout|connection_reuse/.test(key)) return 'timeouts'
@@ -767,6 +803,8 @@ function settingGroup(key: string): GroupKey {
 }
 
 const labels: Record<string, string> = {
+  request_cache_enabled: '启用请求缓存', request_cache_ttl_seconds: '缓存有效期', request_cache_max_entries: '最大缓存条目',
+  request_cache_max_bytes: '缓存正文总容量', request_cache_max_entry_bytes: '单条响应容量',
   max_key_retries: '单渠道密钥重试次数', cooldown_fallback_enabled: '全渠道冷却时继续尝试',
   route_strategy: '渠道选择策略',
   upstream_first_byte_timeout: '全局首字超时', upstream_connection_reuse_limit_seconds: '上游连接复用时限', stream_timeout: '流式请求总时限', non_stream_timeout: '非流式请求总时限',
@@ -782,6 +820,11 @@ const labels: Record<string, string> = {
 }
 
 const helps: Record<string, string> = {
+  request_cache_enabled: '默认关闭。启用后，客户端仍需发送 X-PivotFlow-Cache: use 才会查找缓存；refresh 强制刷新，bypass 不读不写。保存后按现有流程重启生效。',
+  request_cache_ttl_seconds: '条目从写入后保留的秒数，允许 5–3600 秒。过期条目会从统计中单列，直到被查找或容量淘汰。',
+  request_cache_max_entries: '当前进程最多保留的条目数，允许 1–4096 条；统计中的 entries 包含尚未清理的过期驻留项。',
+  request_cache_max_bytes: '已存响应正文与同时在途的捕获正文各自受此容量限制，允许 1–128 MiB；按 payload 计数，不代表 Go 堆内存或普通代理缓冲区上限。保存后重启生效。',
+  request_cache_max_entry_bytes: '单条响应正文上限，允许 4 KiB–1 MiB，且始终不得超过正文总容量。超过上限的响应不存储。',
   max_key_retries: '一次请求在同一渠道内最多尝试多少把上游密钥。', cooldown_fallback_enabled: '所有渠道都在冷却时，仍选择当前最优渠道进行最后一次尝试。',
   route_strategy: '同一模型有多个可用渠道时如何挑选。两种策略都先比优先级，只在优先级相同的渠道之间才有差别。鼠标移到选项上看详细取舍。',
   channel_test_content: '自动巡检渠道时发送的最小测试内容。', channel_check_interval_hours: '设为 0 可关闭定时巡检，小数支持分钟级间隔。', enable_health_score: '根据近期成功率动态调整同优先级渠道的顺序。', enable_ttfb_score: '在健康度排序中考虑首字响应速度。',
@@ -813,6 +856,9 @@ const optionTips: Record<string, Record<string, string>> = {
 }
 
 function settingUnit(key: string): string {
+  if (key === 'request_cache_ttl_seconds') return '秒'
+  if (key === 'request_cache_max_entries') return '条'
+  if (key === 'request_cache_max_bytes' || key === 'request_cache_max_entry_bytes') return '字节'
   if (key === 'max_body_bytes' || key === 'max_image_body_bytes' || key === 'responses_ws_max_transcript_bytes') return '字节'
   if (/interval_hours/.test(key)) return '小时'
   if (/minutes/.test(key)) return '分钟'
@@ -820,6 +866,14 @@ function settingUnit(key: string): string {
   if (/concurrency|connections|sessions|sample|retries/.test(key)) return '个'
   if (key === 'log_retention_days') return '天'
   return ''
+}
+
+function settingBounds(key: string): { min?: number; max?: number } {
+  if (key === 'request_cache_ttl_seconds') return { min: 5, max: 3_600 }
+  if (key === 'request_cache_max_entries') return { min: 1, max: 4_096 }
+  if (key === 'request_cache_max_bytes') return { min: 1_048_576, max: 134_217_728 }
+  if (key === 'request_cache_max_entry_bytes') return { min: 4_096, max: 1_048_576 }
+  return {}
 }
 
 function formatDefault(setting: SystemSetting): string {

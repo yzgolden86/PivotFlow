@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -212,9 +213,36 @@ type RefreshAccountRequest = AccountRequest
 
 type AccountSnapshot struct {
 	Username string
+	// UserID comes only from the current profile response. Request credentials
+	// and compatibility headers are hints, not evidence of the accepted user.
+	UserID   int64
 	Balance  *float64
 	Currency string
 	Status   string
+}
+
+func profileUserID(data any) int64 {
+	row, ok := data.(map[string]any)
+	if !ok {
+		return 0
+	}
+	const maxExactID = 1<<53 - 1
+	var id int64
+	switch value := row["id"].(type) {
+	case float64:
+		if value <= 0 || value > maxExactID || math.Trunc(value) != value {
+			return 0
+		}
+		id = int64(value)
+	case string:
+		id, _ = strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	case json.Number:
+		id, _ = strconv.ParseInt(string(value), 10, 64)
+	}
+	if id <= 0 || id > maxExactID {
+		return 0
+	}
+	return id
 }
 
 type ModelSnapshot struct {

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CalendarCheck2, ExternalLink, History, Info, Play, RefreshCw, Users } from 'lucide-react'
-import { getCheckinAttemptsBatch, getSiteInventory, peekCheckinAttempts, peekSiteInventory, runAccountTask as executeAccountTask } from '../api'
+import { getCheckinAttemptsBatch, getSiteInventory, peekCheckinAttempts, peekSiteInventory } from '../api'
 import type { CheckinAttempt, Site, SiteAccount } from '../types'
 import { currencySymbol, EmptyState, ErrorState, formatMoneyIn, formatNumber, formatTime, LoadingState, moneyDigits, OperationNotice, PageHeader } from './shared'
 import { siteBrowserCheckinURL, siteErrorMessage, StatusBadge } from './siteShared'
 import { needsBrowserCheckin, siteCheckinMethodHint } from './siteCheckinMethod'
 import { browserTimezone, checkinScheduleDetail, checkinScheduleTitle } from './siteCheckinSchedule'
 import { platformSupportsCheckin } from '../siteCredentials'
+import { executeSiteAccountTask, siteTaskRunner, siteTaskTarget } from '../siteTasks'
+import SiteTaskProgress, { useSiteTaskCompletion, useSiteTasks } from './SiteTaskProgress'
 
 type CheckinView = 'accounts' | 'history'
 
@@ -21,6 +23,9 @@ export default function CheckinsPage() {
   const [view, setView] = useState<CheckinView>('accounts'); const [siteFilter, setSiteFilter] = useState(0); const [status, setStatus] = useState('all'); const [loading, setLoading] = useState(!initialInventory); const [error, setError] = useState(''); const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState<Set<number>>(new Set()); const [bulk, setBulk] = useState<{ done: number; total: number; success: number } | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const maintenanceTasks = useSiteTasks()
+  const taskCompletion = useSiteTaskCompletion()
+  const maintenanceBusy = useMemo(() => new Set(maintenanceTasks.filter((item) => item.target.accountId && ['queued', 'submitting', 'running'].includes(item.status)).map((item) => item.target.accountId!)), [maintenanceTasks])
 
   const load = useCallback(async (signal?: AbortSignal, options: { silent?: boolean; force?: boolean } = {}) => {
     if (!options.silent && !peekSiteInventory()) setLoading(true)
@@ -40,10 +45,11 @@ export default function CheckinsPage() {
     }
   }, [])
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
+  useEffect(() => { if (!taskCompletion) return; const timer = setTimeout(() => void load(undefined, { silent: true, force: true }), 500); return () => clearTimeout(timer) }, [taskCompletion, load])
   const siteMap = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites]); const accountMap = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts])
   const visibleAccounts = useMemo(() => accounts.filter((account) => !siteFilter || account.site_id === siteFilter), [accounts, siteFilter])
   const visibleAttempts = useMemo(() => attempts.filter((attempt) => { const account = accountMap.get(attempt.site_account_id); return (!siteFilter || account?.site_id === siteFilter) && (status === 'all' || attempt.status === status) }), [accountMap, attempts, siteFilter, status])
-  const targets = useMemo(() => accounts.filter((account) => account.enabled && account.credential_type !== 'api_key'), [accounts])
+  const targets = useMemo(() => accounts.filter((account) => account.enabled && account.credential_type !== 'api_key' && siteMap.get(account.site_id)?.enabled && platformSupportsCheckin(siteMap.get(account.site_id)?.platform || '') && (!siteFilter || account.site_id === siteFilter)), [accounts, siteFilter, siteMap])
 
   // 签到失败原因要能直接指引下一步动作：不支持签到和需要浏览器验证是两种完全不同的
   // 处理方式，前者只能去上游手动签，后者点开签到页完成验证就能回来重试。
@@ -58,8 +64,17 @@ export default function CheckinsPage() {
     return siteErrorMessage(reason)
   }
   // 「打开签到页」的显示条件见模块顶部的 needsBrowserCheckin。
-  const runOne = async (account: SiteAccount, quiet = false) => { setBusy((current) => new Set(current).add(account.id)); setError(''); try { const result = await executeAccountTask(account.id, 'checkin'); if (!['success', 'partial'].includes(result.status)) throw new Error(result.error || result.status); if (!quiet) { setNotice(`${account.label} 签到完成`); await load(undefined, { silent: true, force: true }) } return true } catch (reason) { if (!quiet) setError(checkinFailure(reason, account)); return false } finally { setBusy((current) => { const next = new Set(current); next.delete(account.id); return next }) } }
-  const runBulk = async () => { if (!targets.length) { setError('没有可执行签到的账号'); return } setBulk({ done: 0, total: targets.length, success: 0 }); setError(''); setNotice(''); let cursor = 0; let done = 0; let success = 0; const worker = async () => { while (cursor < targets.length) { const account = targets[cursor++]; if (await runOne(account, true)) success++; done++; setBulk({ done, total: targets.length, success }) } }; await Promise.all(Array.from({ length: Math.min(4, targets.length) }, worker)); setNotice(`签到完成：${success}/${done} 个账号成功`); setBulk(null); await load(undefined, { silent: true, force: true }) }
+  const runOne = async (account: SiteAccount) => { setBusy((current) => new Set(current).add(account.id)); setError(''); try { const result = await executeSiteAccountTask(account, 'checkin', siteMap.get(account.site_id)?.name || `站点 #${account.site_id}`); if (!['success', 'partial'].includes(result.status)) throw new Error(result.error || result.status); setNotice(`${account.label} 签到完成`); await load(undefined, { silent: true, force: true }); return true } catch (reason) { setError(checkinFailure(reason, account)); return false } finally { setBusy((current) => { const next = new Set(current); next.delete(account.id); return next }) } }
+  const runBulk = async () => {
+    if (!targets.length) { setError('没有可执行签到的账号'); return }
+    setBulk({ done: 0, total: targets.length, success: 0 }); setError(''); setNotice('')
+    try {
+      const results = await siteTaskRunner.run(targets.map((account) => siteTaskTarget('checkin', account.site_id, account.id, account.label, siteMap.get(account.site_id)?.name || `站点 #${account.site_id}`)))
+      const count = (status: string) => results.filter((item) => item.status === status).length
+      setNotice(`签到完成：成功 ${count('success')}，失败 ${count('failed')}，取消 ${count('cancelled')}，待确认 ${count('unknown')}`)
+      await load(undefined, { silent: true, force: true })
+    } finally { setBulk(null) }
+  }
   const successCount = attempts.filter((item) => item.status === 'success').length; const alreadyCount = attempts.filter((item) => item.status === 'already_checked').length; const attentionCount = accounts.filter((item) => ['expired', 'error'].includes(item.status) || ['failed', 'browser_required'].includes(item.last_checkin_status)).length
 
   return <div className="workspace-page">
@@ -67,12 +82,13 @@ export default function CheckinsPage() {
       icon={CalendarCheck2}
       title="签到中心"
       tone="blue"
-      actions={<><button className="primary-button" type="button" disabled={Boolean(bulk) || !targets.length} onClick={() => void runBulk()}>{bulk ? <RefreshCw className="spin" size={16} /> : <Play size={16} />}{bulk ? `${bulk.done}/${bulk.total}` : '全部签到'}</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新签到数据"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></>}
+      actions={<><button className="primary-button" type="button" disabled={Boolean(bulk) || !targets.length} onClick={() => void runBulk()}>{bulk ? <RefreshCw className="spin" size={16} /> : <Play size={16} />}{bulk ? '签到进行中' : '全部签到'}</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新签到数据"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></>}
     />
+    <SiteTaskProgress />
     <section className="compact-summary"><span><strong>{targets.length}</strong>可签到账号</span><span><strong>{successCount}</strong>成功记录</span><span><strong>{alreadyCount}</strong>已签到记录</span><span><strong>{attentionCount}</strong>需要处理</span></section>
     <div className="filter-bar checkin-toolbar"><div className="segmented-control" aria-label="签到视图"><button className={view === 'accounts' ? 'is-active' : ''} type="button" onClick={() => setView('accounts')}><Users size={14} />账号</button><button className={view === 'history' ? 'is-active' : ''} type="button" onClick={() => setView('history')}><History size={14} />记录</button></div><select value={siteFilter} onChange={(event) => setSiteFilter(Number(event.target.value))} aria-label="签到站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select>{view === 'history' && <select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="签到状态"><option value="all">全部结果</option><option value="success">成功</option><option value="already_checked">已签到</option><option value="browser_required">需浏览器</option><option value="unsupported">不支持</option><option value="failed">失败</option></select>}<span className="filter-count"><CalendarCheck2 size={14} />{view === 'accounts' ? `${visibleAccounts.length} 个账号` : `${visibleAttempts.length} 条记录`}</span></div>
     {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}{error && accounts.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
-    {loading ? <LoadingState label="正在加载签到数据" /> : !accounts.length ? <EmptyState label="请先添加站点账号" /> : view === 'accounts' ? <AccountCheckinList accounts={visibleAccounts} siteMap={siteMap} busy={busy} run={(account) => void runOne(account)} /> : !visibleAttempts.length ? <EmptyState label="当前筛选条件下暂无签到记录" /> : <div className="records-panel checkin-records"><div className="record-head checkin-grid"><span>账号 / 站点</span><span>结果</span><span>日期 / 触发</span><span>状态说明</span><span>完成时间</span><span>操作</span></div>{visibleAttempts.map((attempt) => { const account = accountMap.get(attempt.site_account_id); const site = account ? siteMap.get(account.site_id) : undefined; return <CheckinRow key={attempt.id} attempt={attempt} account={account} site={site} busy={Boolean(account && busy.has(account.id))} rerun={() => account && void runOne(account)} /> })}</div>}
+    {loading ? <LoadingState label="正在加载签到数据" /> : !accounts.length ? <EmptyState label="请先添加站点账号" /> : view === 'accounts' ? <AccountCheckinList accounts={visibleAccounts} siteMap={siteMap} busy={new Set([...busy, ...maintenanceBusy])} run={(account) => void runOne(account)} /> : !visibleAttempts.length ? <EmptyState label="当前筛选条件下暂无签到记录" /> : <div className="records-panel checkin-records"><div className="record-head checkin-grid"><span>账号 / 站点</span><span>结果</span><span>日期 / 触发</span><span>状态说明</span><span>完成时间</span><span>操作</span></div>{visibleAttempts.map((attempt) => { const account = accountMap.get(attempt.site_account_id); const site = account ? siteMap.get(account.site_id) : undefined; return <CheckinRow key={attempt.id} attempt={attempt} account={account} site={site} busy={Boolean(account && (busy.has(account.id) || maintenanceBusy.has(account.id)))} rerun={() => account && void runOne(account)} /> })}</div>}
   </div>
 }
 

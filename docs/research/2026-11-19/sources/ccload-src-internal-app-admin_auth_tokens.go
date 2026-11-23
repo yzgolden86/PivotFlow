@@ -1,0 +1,439 @@
+package app
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"ccLoad/internal/model"
+
+	"github.com/gin-gonic/gin"
+)
+
+// ============================================================================
+// API访问令牌管理 (Admin API)
+// ============================================================================
+
+type optionalInt64JSON struct {
+	set   bool
+	value *int64
+}
+
+func (v *optionalInt64JSON) UnmarshalJSON(data []byte) error {
+	v.set = true
+	if string(data) == "null" {
+		v.value = nil
+		return nil
+	}
+
+	var n int64
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	v.value = &n
+	return nil
+}
+
+// HandleListAuthTokens 列出所有API访问令牌（支持时间范围统计，2025-12扩展）
+// GET /admin/auth-tokens?range=today
+func (s *Server) HandleListAuthTokens(c *gin.Context) {
+	ctx := c.Request.Context()
+	listCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	tokens, err := s.store.ListAuthTokens(listCtx)
+	if err != nil {
+		log.Print("[ERROR] 列出令牌失败: " + err.Error())
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	if tokens == nil {
+		tokens = make([]*model.AuthToken, 0)
+	}
+
+	type AuthTokenListResponse struct {
+		Tokens          []*model.AuthToken `json:"tokens"`
+		DurationSeconds float64            `json:"duration_seconds,omitempty"`
+		RPMStats        *model.RPMStats    `json:"rpm_stats,omitempty"`
+		IsToday         bool               `json:"is_today"`
+	}
+
+	resp := AuthTokenListResponse{
+		Tokens:  tokens,
+		IsToday: false,
+	}
+
+	// 如果请求中包含range参数，则叠加时间范围统计（用于tokens.html页面）
+	timeRange := strings.TrimSpace(c.Query("range"))
+	if timeRange != "" && timeRange != "all" {
+		params := ParsePaginationParams(c)
+		startTime, endTime := params.GetTimeRange()
+
+		// 计算时间跨度（秒），用于前端计算RPM和QPS
+		resp.DurationSeconds = endTime.Sub(startTime).Seconds()
+		if resp.DurationSeconds < 1 {
+			resp.DurationSeconds = 1 // 防止除零
+		}
+
+		// 实时范围计算最近一分钟统计。
+		isToday := rangeEndsLive(timeRange)
+		resp.IsToday = isToday
+
+		// 范围聚合与统计接口一样只受请求 context 约束：大范围（如上月）不能挤在列表的 10s 预算里。
+		// 全局RPM与按令牌统计互不依赖，并行查询。
+		var (
+			rpmStats *model.RPMStats
+			rpmErr   error
+			wg       sync.WaitGroup
+		)
+		wg.Go(func() {
+			// 获取全局RPM统计（峰值、平均、最近一分钟）
+			rpmStats, rpmErr = s.statsCache.GetRPMStats(ctx, startTime, endTime, nil, isToday)
+		})
+
+		// 从logs表聚合时间范围内每个token的统计与RPM（峰值、平均、最近）
+		rangeStats, err := s.statsCache.GetAuthTokenRangeStats(ctx, startTime, endTime, isToday)
+		wg.Wait()
+		if err != nil {
+			// 不能降级为累计统计：前端会把累计值当成所选范围的数据展示
+			log.Print("[ERROR] 查询令牌时间范围统计失败: " + err.Error())
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		if rpmErr != nil {
+			log.Printf("[WARN]  查询RPM统计失败: %v", rpmErr)
+			// 降级处理
+		}
+		resp.RPMStats = rpmStats
+
+		// 将时间范围统计叠加到每个token的响应中
+		for _, t := range tokens {
+			if stat, ok := rangeStats[t.ID]; ok {
+				// 用时间范围统计覆盖累计统计字段（前端透明）
+				t.SuccessCount = stat.SuccessCount
+				t.FailureCount = stat.FailureCount
+				t.PromptTokensTotal = stat.PromptTokens
+				t.CompletionTokensTotal = stat.CompletionTokens
+				t.CacheReadTokensTotal = stat.CacheReadTokens
+				t.CacheCreationTokensTotal = stat.CacheCreationTokens
+				t.TotalCostUSD = stat.TotalCost
+				t.EffectiveCostUSD = stat.EffectiveCost
+				t.StreamAvgTTFB = stat.StreamAvgTTFB
+				t.AvgDuration = stat.AvgDuration
+				t.StreamCount = stat.StreamCount
+				t.DurationCount = stat.DurationCount
+				t.SpeedOutputTokens = stat.SpeedOutputTokens
+				t.SpeedDurationSeconds = stat.SpeedDurationSeconds
+				// RPM统计
+				t.PeakRPM = stat.PeakRPM
+				t.AvgRPM = stat.AvgRPM
+				t.RecentRPM = stat.RecentRPM
+			} else {
+				// 该token在此时间范围内无数据，清零统计字段
+				t.SuccessCount = 0
+				t.FailureCount = 0
+				t.PromptTokensTotal = 0
+				t.CompletionTokensTotal = 0
+				t.CacheReadTokensTotal = 0
+				t.CacheCreationTokensTotal = 0
+				t.TotalCostUSD = 0
+				t.EffectiveCostUSD = 0
+				t.StreamAvgTTFB = 0
+				t.AvgDuration = 0
+				t.StreamCount = 0
+				t.DurationCount = 0
+				t.SpeedOutputTokens = 0
+				t.SpeedDurationSeconds = 0
+				t.PeakRPM = 0
+				t.AvgRPM = 0
+				t.RecentRPM = 0
+			}
+		}
+	}
+
+	RespondJSON(c, http.StatusOK, resp)
+}
+
+// HandleCreateAuthToken 创建新的API访问令牌
+// POST /admin/auth-tokens
+func (s *Server) HandleCreateAuthToken(c *gin.Context) {
+	var req struct {
+		Description            string   `json:"description" binding:"required"`
+		ExpiresAt              *int64   `json:"expires_at"`               // Unix毫秒时间戳，nil表示永不过期
+		IsActive               *bool    `json:"is_active"`                // nil表示默认启用
+		AllowedModels          []string `json:"allowed_models"`           // 允许的模型列表，空表示无限制
+		AllowedChannelIDs      []int64  `json:"allowed_channel_ids"`      // 渠道限制列表，空表示无限制
+		ChannelRestrictionMode string   `json:"channel_restriction_mode"` // allow|deny，默认 allow
+		CostLimitUSD           *float64 `json:"cost_limit_usd"`           // 总限额（0=无限制）
+		CostDailyLimitUSD      *float64 `json:"cost_daily_limit_usd"`     // 日限额（0=无限制）
+		CostMonthlyLimitUSD    *float64 `json:"cost_monthly_limit_usd"`   // 月限额（0=无限制）
+		RPMLimit               *int     `json:"rpm_limit"`
+		MaxConcurrency         *int     `json:"max_concurrency"` // 最大并发请求数（0=无限制）
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.CostLimitUSD != nil && *req.CostLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_limit_usd must be >= 0")
+		return
+	}
+	if req.CostDailyLimitUSD != nil && *req.CostDailyLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_daily_limit_usd must be >= 0")
+		return
+	}
+	if req.CostMonthlyLimitUSD != nil && *req.CostMonthlyLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_monthly_limit_usd must be >= 0")
+		return
+	}
+	if req.RPMLimit != nil && *req.RPMLimit < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "rpm_limit must be >= 0")
+		return
+	}
+	if req.MaxConcurrency != nil && *req.MaxConcurrency < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "max_concurrency must be >= 0")
+		return
+	}
+	channelRestrictionMode, err := model.NormalizeChannelRestrictionMode(req.ChannelRestrictionMode)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 生成安全令牌(64字符十六进制)
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		log.Print("[ERROR] 生成令牌失败: " + err.Error())
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	tokenPlain := hex.EncodeToString(tokenBytes)
+
+	// 计算SHA256哈希用于存储
+	tokenHash := model.HashToken(tokenPlain)
+
+	isActive := true
+	if req.IsActive != nil {
+		isActive = *req.IsActive
+	}
+
+	authToken := &model.AuthToken{
+		Token:                  tokenHash,
+		Description:            req.Description,
+		ExpiresAt:              req.ExpiresAt,
+		IsActive:               isActive,
+		AllowedModels:          req.AllowedModels,
+		AllowedChannelIDs:      req.AllowedChannelIDs,
+		ChannelRestrictionMode: channelRestrictionMode,
+	}
+	if req.CostLimitUSD != nil {
+		authToken.SetCostLimitUSD(*req.CostLimitUSD)
+	}
+	if req.CostDailyLimitUSD != nil {
+		authToken.SetCostDailyLimitUSD(*req.CostDailyLimitUSD)
+	}
+	if req.CostMonthlyLimitUSD != nil {
+		authToken.SetCostMonthlyLimitUSD(*req.CostMonthlyLimitUSD)
+	}
+	if req.RPMLimit != nil {
+		authToken.RPMLimit = *req.RPMLimit
+	}
+	if req.MaxConcurrency != nil {
+		authToken.MaxConcurrency = *req.MaxConcurrency
+	}
+	if err := authToken.ValidateUsageLimits(); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	if err := s.store.CreateAuthToken(ctx, authToken); err != nil {
+		log.Print("[ERROR] 创建令牌失败: " + err.Error())
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 触发热更新（立即生效）
+	if err := s.authService.ReloadAuthTokens(); err != nil {
+		log.Print("[WARN]  热更新失败: " + err.Error())
+	}
+
+	log.Printf("[INFO] 创建API令牌: ID=%d, 描述=%s", authToken.ID, authToken.Description)
+
+	// 返回明文令牌（仅此一次机会）
+	RespondJSON(c, http.StatusOK, gin.H{
+		"id":                       authToken.ID,
+		"token":                    tokenPlain, // 明文令牌，仅创建时返回
+		"description":              authToken.Description,
+		"created_at":               authToken.CreatedAt,
+		"expires_at":               authToken.ExpiresAt,
+		"is_active":                authToken.IsActive,
+		"allowed_models":           authToken.AllowedModels,
+		"allowed_channel_ids":      authToken.AllowedChannelIDs,
+		"channel_restriction_mode": authToken.ChannelRestrictionMode,
+		"max_concurrency":          authToken.MaxConcurrency,
+		"rpm_limit":                authToken.RPMLimit,
+	})
+}
+
+// HandleUpdateAuthToken 更新令牌信息
+// PUT /admin/auth-tokens/:id
+func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid token id")
+		return
+	}
+
+	var req struct {
+		Description            *string           `json:"description"`
+		IsActive               *bool             `json:"is_active"`
+		ExpiresAt              optionalInt64JSON `json:"expires_at"`
+		AllowedModels          *[]string         `json:"allowed_models"`           // nil=不更新，空数组=清除限制
+		AllowedChannelIDs      *[]int64          `json:"allowed_channel_ids"`      // nil=不更新，空数组=清除限制
+		ChannelRestrictionMode *string           `json:"channel_restriction_mode"` // nil=不更新
+		CostLimitUSD           *float64          `json:"cost_limit_usd"`           // 总限额（0=无限制）
+		CostDailyLimitUSD      *float64          `json:"cost_daily_limit_usd"`     // 日限额（0=无限制）
+		CostMonthlyLimitUSD    *float64          `json:"cost_monthly_limit_usd"`   // 月限额（0=无限制）
+		RPMLimit               *int              `json:"rpm_limit"`
+		MaxConcurrency         *int              `json:"max_concurrency"` // 最大并发请求数（0=无限制）
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.CostLimitUSD != nil && *req.CostLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_limit_usd must be >= 0")
+		return
+	}
+	if req.CostDailyLimitUSD != nil && *req.CostDailyLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_daily_limit_usd must be >= 0")
+		return
+	}
+	if req.CostMonthlyLimitUSD != nil && *req.CostMonthlyLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_monthly_limit_usd must be >= 0")
+		return
+	}
+	if req.RPMLimit != nil && *req.RPMLimit < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "rpm_limit must be >= 0")
+		return
+	}
+	if req.MaxConcurrency != nil && *req.MaxConcurrency < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "max_concurrency must be >= 0")
+		return
+	}
+	var channelRestrictionMode string
+	if req.ChannelRestrictionMode != nil {
+		channelRestrictionMode, err = model.NormalizeChannelRestrictionMode(*req.ChannelRestrictionMode)
+		if err != nil {
+			RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// 获取现有令牌
+	token, err := s.store.GetAuthToken(ctx, id)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusNotFound, "token not found")
+		return
+	}
+
+	// 更新字段
+	if req.Description != nil {
+		token.Description = *req.Description
+	}
+	if req.IsActive != nil {
+		token.IsActive = *req.IsActive
+	}
+	if req.ExpiresAt.set {
+		token.ExpiresAt = req.ExpiresAt.value
+	}
+	if req.AllowedModels != nil {
+		token.AllowedModels = *req.AllowedModels
+	}
+	if req.AllowedChannelIDs != nil {
+		token.AllowedChannelIDs = *req.AllowedChannelIDs
+	}
+	if req.ChannelRestrictionMode != nil {
+		token.ChannelRestrictionMode = channelRestrictionMode
+	}
+	// cost_*_limit_usd 只有传入时才更新
+	if req.CostLimitUSD != nil {
+		token.SetCostLimitUSD(*req.CostLimitUSD)
+	}
+	if req.CostDailyLimitUSD != nil {
+		token.SetCostDailyLimitUSD(*req.CostDailyLimitUSD)
+	}
+	if req.CostMonthlyLimitUSD != nil {
+		token.SetCostMonthlyLimitUSD(*req.CostMonthlyLimitUSD)
+	}
+	if req.RPMLimit != nil {
+		token.RPMLimit = *req.RPMLimit
+	}
+	if req.MaxConcurrency != nil {
+		token.MaxConcurrency = *req.MaxConcurrency
+	}
+	if err := token.ValidateUsageLimits(); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := s.store.UpdateAuthToken(ctx, token); err != nil {
+		log.Print("[ERROR] 更新令牌失败: " + err.Error())
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 触发热更新
+	if err := s.authService.ReloadAuthTokens(); err != nil {
+		log.Print("[ERROR] 令牌已更新，但运行时热更新失败: " + err.Error())
+		RespondError(c, http.StatusServiceUnavailable, err)
+		return
+	}
+
+	RespondJSON(c, http.StatusOK, token)
+}
+
+// HandleDeleteAuthToken 删除令牌
+// DELETE /admin/auth-tokens/:id
+func (s *Server) HandleDeleteAuthToken(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid token id")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	if err := s.store.DeleteAuthToken(ctx, id); err != nil {
+		log.Print("[ERROR] 删除令牌失败: " + err.Error())
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 触发热更新
+	if err := s.authService.ReloadAuthTokens(); err != nil {
+		log.Print("[ERROR] 令牌已删除，但运行时热更新失败: " + err.Error())
+		RespondError(c, http.StatusServiceUnavailable, err)
+		return
+	}
+
+	log.Printf("[INFO] 删除API令牌: ID=%d", id)
+
+	RespondJSON(c, http.StatusOK, gin.H{"id": id})
+}

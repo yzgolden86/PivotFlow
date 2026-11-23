@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -33,26 +34,105 @@ type SQLStore struct {
 
 	// 冷却策略归属存储实例，避免多个 Server 并行构造时互相覆盖。
 	cooldownPolicy atomic.Pointer[util.CooldownPolicy]
+
+	// tx is set only on a transaction view returned by
+	// WithSerializableTransaction. Reads and writes made through that view use
+	// the owning transaction; runtime state such as the channel tombstone map
+	// and cooldown policy stays attached to root.
+	tx   *sql.Tx
+	root *SQLStore
+
+	// Channel tombstones touched inside a transaction view are applied only
+	// after commit so a rollback cannot drop late log rows for a live channel.
+	pendingDeleteMu      sync.Mutex
+	pendingChannelDelete map[int64]bool
+}
+
+// ErrTransactionViewBeginTx is returned when code tries to start an
+// independent transaction from inside a configuration transaction.
+var ErrTransactionViewBeginTx = errors.New("cannot begin a transaction from a transaction view")
+
+func (s *SQLStore) runtimeStore() *SQLStore {
+	if s != nil && s.root != nil {
+		return s.root
+	}
+	return s
+}
+
+func (s *SQLStore) cooldownStore() *SQLStore {
+	return s.runtimeStore()
+}
+
+func (s *SQLStore) setChannelDeleted(id int64, deleted bool) {
+	if id <= 0 {
+		return
+	}
+	if s.tx != nil {
+		s.pendingDeleteMu.Lock()
+		defer s.pendingDeleteMu.Unlock()
+		if s.pendingChannelDelete == nil {
+			s.pendingChannelDelete = make(map[int64]bool)
+		}
+		s.pendingChannelDelete[id] = deleted
+		return
+	}
+	if deleted {
+		s.deletedChannels.Store(id, struct{}{})
+		return
+	}
+	s.deletedChannels.Delete(id)
 }
 
 func (s *SQLStore) markChannelDeleted(id int64) {
-	if id > 0 {
-		s.deletedChannels.Store(id, struct{}{})
-	}
+	s.setChannelDeleted(id, true)
 }
 
 func (s *SQLStore) unmarkChannelDeleted(id int64) {
-	if id > 0 {
-		s.deletedChannels.Delete(id)
-	}
+	s.setChannelDeleted(id, false)
 }
 
 func (s *SQLStore) isChannelDeleted(id int64) bool {
 	if id <= 0 {
 		return false
 	}
-	_, ok := s.deletedChannels.Load(id)
+	if s.tx != nil {
+		s.pendingDeleteMu.Lock()
+		deleted, ok := s.pendingChannelDelete[id]
+		s.pendingDeleteMu.Unlock()
+		if ok {
+			return deleted
+		}
+	}
+	target := s.runtimeStore()
+	if target == nil {
+		return false
+	}
+	_, ok := target.deletedChannels.Load(id)
 	return ok
+}
+
+func (s *SQLStore) applyPendingChannelDeletes() {
+	target := s.runtimeStore()
+	if target == nil {
+		return
+	}
+	s.pendingDeleteMu.Lock()
+	pending := s.pendingChannelDelete
+	s.pendingChannelDelete = nil
+	s.pendingDeleteMu.Unlock()
+	for id, deleted := range pending {
+		if deleted {
+			target.deletedChannels.Store(id, struct{}{})
+		} else {
+			target.deletedChannels.Delete(id)
+		}
+	}
+}
+
+func (s *SQLStore) discardPendingChannelDeletes() {
+	s.pendingDeleteMu.Lock()
+	s.pendingChannelDelete = nil
+	s.pendingDeleteMu.Unlock()
 }
 
 // GetHealthTimeline 查询健康时间线数据
@@ -72,7 +152,7 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 			SUM(COALESCE(output_tokens, 0)) AS output_tokens,
 			SUM(COALESCE(cache_read_input_tokens, 0)) AS cache_read_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) AS cache_creation_tokens,
-			SUM(COALESCE(cost, 0.0)) AS total_cost,
+			SUM(` + standardCostSQL("") + `) AS total_cost,
 			SUM(` + effectiveCostSQL("") + `) AS effective_cost
 		FROM logs
 	`
@@ -90,7 +170,7 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 	if isEmpty {
 		return []model.HealthTimelineRow{}, nil
 	}
-	qb.ApplyFilter(params.Filter)
+	qb.ApplyFilter(params.Filter, s.driverName)
 
 	query, args := qb.BuildWithSuffix("GROUP BY bucket_ts, channel_id, model ORDER BY bucket_ts ASC")
 	args = append([]any{params.BucketMs, params.BucketMs}, args...)
@@ -185,6 +265,9 @@ func (s *SQLStore) Ping(ctx context.Context) error {
 
 // Close 关闭存储（优雅关闭）
 func (s *SQLStore) Close() error {
+	if s.tx != nil {
+		return nil
+	}
 	var err error
 	s.closeOnce.Do(func() {
 		if s.db != nil {
@@ -196,6 +279,10 @@ func (s *SQLStore) Close() error {
 
 // CleanupLogsBefore 清理指定时间之前的日志
 func (s *SQLStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
+	if err := s.CleanupRequestTracesBefore(ctx, cutoff); err != nil {
+		return err
+	}
+
 	// time 字段是 BIGINT 毫秒时间戳
 	// 分批删除避免长时间锁表（P2优化）
 	cutoffMs := cutoff.UnixMilli()
@@ -227,7 +314,7 @@ func (s *SQLStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) erro
 }
 
 func (s *SQLStore) runSQLiteIncrementalVacuum(ctx context.Context, deletedRows int64) {
-	if !s.IsSQLite() || deletedRows <= 0 {
+	if s.tx != nil || !s.IsSQLite() || deletedRows <= 0 {
 		return
 	}
 
@@ -262,21 +349,39 @@ func (s *SQLStore) runSQLiteIncrementalVacuum(ctx context.Context, deletedRows i
 
 // QueryContext 执行查询语句
 func (s *SQLStore) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return s.db.QueryContext(ctx, s.q(query), normalizeSQLArgs(args)...)
+	query = s.q(query)
+	args = normalizeSQLArgs(args)
+	if s.tx != nil {
+		return s.tx.QueryContext(ctx, query, args...)
+	}
+	return s.db.QueryContext(ctx, query, args...)
 }
 
 // QueryRowContext 执行查询单行
 func (s *SQLStore) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	return s.db.QueryRowContext(ctx, s.q(query), normalizeSQLArgs(args)...)
+	query = s.q(query)
+	args = normalizeSQLArgs(args)
+	if s.tx != nil {
+		return s.tx.QueryRowContext(ctx, query, args...)
+	}
+	return s.db.QueryRowContext(ctx, query, args...)
 }
 
 // ExecContext 执行非查询语句
 func (s *SQLStore) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return s.db.ExecContext(ctx, s.q(query), normalizeSQLArgs(args)...)
+	query = s.q(query)
+	args = normalizeSQLArgs(args)
+	if s.tx != nil {
+		return s.tx.ExecContext(ctx, query, args...)
+	}
+	return s.db.ExecContext(ctx, query, args...)
 }
 
 // BeginTx 开启事务
 func (s *SQLStore) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	if s.tx != nil {
+		return nil, ErrTransactionViewBeginTx
+	}
 	return s.db.BeginTx(ctx, opts)
 }
 

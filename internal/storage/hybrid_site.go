@@ -26,6 +26,9 @@ func (h *HybridStore) UpdateSiteCheckinMethod(ctx context.Context, siteID int64,
 	return h.mysql.UpdateSiteCheckinMethod(ctx, siteID, method, checkedAt)
 }
 func (h *HybridStore) DeleteSite(ctx context.Context, id int64) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	accounts, err := h.mysql.ListSiteAccounts(ctx, id, true)
 	if err != nil {
 		return err
@@ -54,12 +57,21 @@ func (h *HybridStore) CreateSiteAccount(ctx context.Context, v *model.SiteAccoun
 	return h.mysql.CreateSiteAccount(ctx, v)
 }
 func (h *HybridStore) UpdateSiteAccount(ctx context.Context, id int64, v *model.SiteAccount) (*model.SiteAccount, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	return h.mysql.UpdateSiteAccount(ctx, id, v)
 }
 func (h *HybridStore) UpdateSiteAccountCredential(ctx context.Context, id int64, credentialType, ciphertext, keyVersion string) error {
 	return h.mysql.UpdateSiteAccountCredential(ctx, id, credentialType, ciphertext, keyVersion)
 }
+func (h *HybridStore) RepairSiteAccountCredential(ctx context.Context, id int64, credentialType, ciphertext, keyVersion string) error {
+	return h.mysql.RepairSiteAccountCredential(ctx, id, credentialType, ciphertext, keyVersion)
+}
 func (h *HybridStore) DeleteSiteAccount(ctx context.Context, id int64) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	candidates, err := h.projectedChannelIDs(ctx, map[int64]struct{}{id: {}})
 	if err != nil {
 		return err
@@ -116,6 +128,9 @@ func (h *HybridStore) deleteProjectedSQLiteCopies(ctx context.Context, candidate
 }
 func (h *HybridStore) ReplaceSiteAccountModels(ctx context.Context, id int64, v []model.SiteAccountModel) error {
 	return h.mysql.ReplaceSiteAccountModels(ctx, id, v)
+}
+func (h *HybridStore) RestoreSiteAccountModels(ctx context.Context, id int64, v []model.SiteAccountModel) error {
+	return h.mysql.RestoreSiteAccountModels(ctx, id, v)
 }
 func (h *HybridStore) MergeSiteAccountModels(ctx context.Context, id int64, v []model.SiteAccountModel) error {
 	return h.mysql.MergeSiteAccountModels(ctx, id, v)
@@ -199,7 +214,16 @@ func (h *HybridStore) GetWebhookConfig(ctx context.Context) (*model.WebhookConfi
 	return h.mysql.GetWebhookConfig(ctx)
 }
 func (h *HybridStore) UpsertWebhookConfig(ctx context.Context, v *model.WebhookConfig) error {
-	return h.mysql.UpsertWebhookConfig(ctx, v)
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
+	if err := h.mysql.UpsertWebhookConfig(ctx, v); err != nil {
+		return err
+	}
+	h.syncToSQLite("UpsertWebhookConfig", func() error {
+		return h.sqlite.UpsertWebhookConfig(ctx, v)
+	})
+	return nil
 }
 func (h *HybridStore) GetWebhookEventState(ctx context.Context, key string) (*model.WebhookEventState, error) {
 	return h.mysql.GetWebhookEventState(ctx, key)
@@ -211,13 +235,32 @@ func (h *HybridStore) GetBackupConfig(ctx context.Context) (*model.BackupConfig,
 	return h.mysql.GetBackupConfig(ctx)
 }
 func (h *HybridStore) UpsertBackupConfig(ctx context.Context, v *model.BackupConfig) error {
-	return h.mysql.UpsertBackupConfig(ctx, v)
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
+	if err := h.mysql.UpsertBackupConfig(ctx, v); err != nil {
+		return err
+	}
+	h.syncToSQLite("UpsertBackupConfig", func() error {
+		return h.sqlite.UpsertBackupConfig(ctx, v)
+	})
+	return nil
 }
 func (h *HybridStore) GetSiteChannelBinding(ctx context.Context, id int64, key string) (*model.SiteChannelBinding, error) {
 	return h.mysql.GetSiteChannelBinding(ctx, id, key)
 }
 func (h *HybridStore) ListSiteChannelBindings(ctx context.Context) ([]*model.SiteChannelBinding, error) {
 	return h.mysql.ListSiteChannelBindings(ctx)
+}
+func (h *HybridStore) RestoreSiteChannelBinding(ctx context.Context, binding *model.SiteChannelBinding) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+	return h.mysql.RestoreSiteChannelBinding(ctx, binding)
+}
+func (h *HybridStore) RestoreDisabledSiteChannelBindings(ctx context.Context, channelID int64) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+	return h.mysql.RestoreDisabledSiteChannelBindings(ctx, channelID)
 }
 func (h *HybridStore) MarkSiteProjectionManual(ctx context.Context, channelID int64) error {
 	return h.mysql.MarkSiteProjectionManual(ctx, channelID)
@@ -226,13 +269,22 @@ func (h *HybridStore) SetSiteProjectionOwnership(ctx context.Context, channelID 
 	return h.mysql.SetSiteProjectionOwnership(ctx, channelID, ownership)
 }
 func (h *HybridStore) UpsertSiteProjection(ctx context.Context, v model.SiteProjectionInput) (*model.SiteProjectionResult, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	return h.mysql.UpsertSiteProjection(ctx, v)
 }
 
 func (h *HybridStore) DeactivateSiteProjectionsExcept(ctx context.Context, siteAccountID int64, activeProjectionKeys []string) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	return h.mysql.DeactivateSiteProjectionsExcept(ctx, siteAccountID, activeProjectionKeys)
 }
 
 func (h *HybridStore) PruneSiteProjectionsExcept(ctx context.Context, siteAccountID int64, activeProjectionKeys []string) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	return h.mysql.PruneSiteProjectionsExcept(ctx, siteAccountID, activeProjectionKeys)
 }

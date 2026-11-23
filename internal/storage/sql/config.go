@@ -225,6 +225,28 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 				_, err := s.execTx(ctx, tx, `
 					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, available_time_start, available_time_end, retry_other_keys_on_failure, created_at, updated_at)
 					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(id) DO UPDATE SET
+						name = excluded.name,
+						url = excluded.url,
+						priority = excluded.priority,
+						rpm_limit = excluded.rpm_limit,
+						max_concurrency = excluded.max_concurrency,
+						auth_type = excluded.auth_type,
+						oauth_credential = excluded.oauth_credential,
+						websockets = excluded.websockets,
+						protocol_transform_mode = excluded.protocol_transform_mode,
+						enabled = excluded.enabled,
+						scheduled_check_enabled = excluded.scheduled_check_enabled,
+						scheduled_check_model = excluded.scheduled_check_model,
+						daily_cost_limit = excluded.daily_cost_limit,
+						cost_multiplier = excluded.cost_multiplier,
+						custom_request_rules = excluded.custom_request_rules,
+						cooldown_detection_rules = excluded.cooldown_detection_rules,
+						proxy_url = excluded.proxy_url,
+						available_time_start = excluded.available_time_start,
+						available_time_end = excluded.available_time_end,
+						retry_other_keys_on_failure = excluded.retry_other_keys_on_failure,
+						updated_at = excluded.updated_at
 					`, id, c.Name, c.URLs, c.Priority, c.RPMLimit, c.MaxConcurrency, authType, storedOAuthCredential, c.Websockets,
 					protocolTransformMode, c.Enabled, c.ScheduledCheckEnabled, c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, cooldownDetectionRules, c.ProxyURL, c.AvailableTimeStart, c.AvailableTimeEnd, c.RetryOtherKeysOnFailure, nowUnix, nowUnix)
 				if err != nil {

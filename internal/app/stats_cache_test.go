@@ -108,7 +108,7 @@ func TestStatsCache_BuildCacheKey(t *testing.T) {
 	}
 }
 
-func TestStatsCache_BuildCacheKey_BucketsLiveEndTime(t *testing.T) {
+func TestStatsCache_BuildCacheKey_PreservesRecentEndTime(t *testing.T) {
 	now := time.Now()
 	startTime := beginningOfDay(now)
 	endTime := now.Truncate(time.Minute).Add(5 * time.Second)
@@ -116,8 +116,8 @@ func TestStatsCache_BuildCacheKey_BucketsLiveEndTime(t *testing.T) {
 	key1 := buildCacheKey("stats", startTime, endTime, nil)
 	key2 := buildCacheKey("stats", startTime, endTime.Add(10*time.Second), nil)
 
-	if key1 != key2 {
-		t.Fatalf("实时统计缓存键未按 TTL 分桶: %q != %q", key1, key2)
+	if key1 == key2 {
+		t.Fatalf("不同的近期查询区间复用了同一缓存键: %q", key1)
 	}
 }
 

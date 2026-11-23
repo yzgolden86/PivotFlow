@@ -106,6 +106,13 @@ func main() {
 	// 渠道仅从数据库管理与读取；不再从本地文件初始化。
 
 	srv := app.NewServer(store)
+	billingPath, err := app.BillingJournalPath()
+	if err != nil {
+		log.Fatalf("计费记录配置失败: %v", err)
+	}
+	if err := srv.EnableDurableBilling(billingPath); err != nil {
+		log.Fatalf("计费恢复失败: %v", err)
+	}
 	srv.StartModelCatalogSync()
 
 	// 注入重启函数（避免循环依赖）

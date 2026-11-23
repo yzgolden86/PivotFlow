@@ -36,6 +36,14 @@ CLAUDE.md
 
 # 依赖和模块缓存
 vendor/
+console/node_modules/
+.gocache/
+.gomodcache/
+
+# 本地验证产物，不进入镜像构建上下文
+.tmp*/
+__pycache__/
+pivotflow.exe
 
 # 环境配置
 .env

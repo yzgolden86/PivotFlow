@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/yzgolden86/PivotFlow/internal/util"
 )
 
 var errUpstreamConnectionAgeTransportClosed = errors.New("upstream connection age transport is closed")
@@ -47,7 +49,11 @@ func newUpstreamHTTPClient(base *http.Transport, maxAge time.Duration) *http.Cli
 	if maxAge > 0 {
 		roundTripper = newUpstreamConnectionAgeTransport(base, maxAge)
 	}
-	return &http.Client{Transport: roundTripper, Timeout: 0}
+	return &http.Client{
+		Transport:     roundTripper,
+		Timeout:       0,
+		CheckRedirect: util.AuthenticatedRedirectPolicy,
+	}
 }
 
 func closeUpstreamHTTPClient(client *http.Client) {

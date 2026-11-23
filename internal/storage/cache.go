@@ -237,6 +237,28 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 	return result, nil
 }
 
+// ReadOnlyAPIKeySnapshot returns only keys already held by the forwarding
+// cache. It never loads, refreshes or inserts a cache entry. Diagnostics merge
+// this over a bulk storage read, matching the keys a real attempt would use.
+func (c *ChannelCache) ReadOnlyAPIKeySnapshot() map[int64][]*modelpkg.APIKey {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	result := make(map[int64][]*modelpkg.APIKey, len(c.apiKeysByChannelID))
+	for id, keys := range c.apiKeysByChannelID {
+		copied := make([]*modelpkg.APIKey, len(keys))
+		for i, key := range keys {
+			if key == nil {
+				continue
+			}
+			value := *key
+			value.AllowedModels = slices.Clone(key.AllowedModels)
+			copied[i] = &value
+		}
+		result[id] = copied
+	}
+	return result
+}
+
 // GetAllChannelCooldowns 缓存优先的渠道冷却查询
 func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
 	// 检查冷却缓存是否有效

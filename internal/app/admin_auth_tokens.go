@@ -248,21 +248,28 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 
 	log.Printf("[INFO] 创建API令牌: ID=%d, 描述=%s", authToken.ID, authToken.Description)
 
-	// 返回明文令牌（仅此一次机会）
-	RespondJSON(c, http.StatusOK, gin.H{
-		"id":                       authToken.ID,
-		"token":                    tokenPlain, // 明文令牌，仅创建时返回
-		"token_hint":               authToken.TokenHint,
-		"token_recoverable":        authToken.TokenRecoverable(),
-		"description":              authToken.Description,
-		"created_at":               authToken.CreatedAt,
-		"expires_at":               authToken.ExpiresAt,
-		"is_active":                authToken.IsActive,
-		"allowed_models":           authToken.AllowedModels,
-		"allowed_channel_ids":      authToken.AllowedChannelIDs,
-		"channel_restriction_mode": authToken.ChannelRestrictionMode,
-		"max_concurrency":          authToken.MaxConcurrency,
-	})
+	// 复用模型的公开序列化，避免创建响应与列表/更新响应字段漂移。
+	metadataJSON, err := json.Marshal(authToken)
+	if err != nil {
+		log.Print("[ERROR] 序列化创建令牌响应失败: " + err.Error())
+		RespondErrorMsg(c, http.StatusInternalServerError, "failed to serialize created token response")
+		return
+	}
+	var publicMetadata map[string]json.RawMessage
+	if err := json.Unmarshal(metadataJSON, &publicMetadata); err != nil {
+		log.Print("[ERROR] 组装创建令牌响应失败: " + err.Error())
+		RespondErrorMsg(c, http.StatusInternalServerError, "failed to serialize created token response")
+		return
+	}
+	publicMetadata["token"], err = json.Marshal(tokenPlain)
+	if err != nil {
+		log.Print("[ERROR] 序列化明文令牌失败: " + err.Error())
+		RespondErrorMsg(c, http.StatusInternalServerError, "failed to serialize created token response")
+		return
+	}
+
+	// 明文令牌仅在创建时返回；模型的 hash 和 ciphertext 不进入公开 JSON。
+	RespondJSON(c, http.StatusOK, publicMetadata)
 }
 
 // HandleRevealAuthToken reveals a recoverable downstream token only to an

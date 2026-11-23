@@ -3,12 +3,15 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/monitoring"
 	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 	"github.com/yzgolden86/PivotFlow/internal/util"
 )
@@ -34,17 +37,44 @@ type HybridStore struct {
 	sqlite *sqlstore.SQLStore // 本地缓存（读路径）
 	mysql  *sqlstore.SQLStore // 主存储（写路径）
 
-	// 异步同步队列（仅用于 logs）
+	// Token accounting mutations update both stores; serialize them so a
+	// canonical snapshot cannot race a legacy incremental replica update.
+	tokenAccountingMu sync.Mutex
+
+	// configurationMu orders every in-process configuration write and the
+	// postcommit snapshot/publication of WithConfigurationTransaction. When both
+	// locks are needed, acquire configurationMu before tokenAccountingMu.
+	configurationMu sync.Mutex
+
+	// 异步同步队列（logs 与 request history）
 	syncCh    chan *syncTask
 	syncWg    sync.WaitGroup
 	stopCh    chan struct{}
 	closeOnce sync.Once
+	closeMu   sync.RWMutex
+	closing   bool
 
 	// 降级可观测性计数器（参照 LogService.logDropCount 模式）
 	// 静默降级在生产中难以察觉，计数器 + 采样告警让运维可见，不改一致性语义
-	sqliteSyncFailCount atomic.Uint64 // SQLite 缓存同步失败累计
-	syncQueueDropCount  atomic.Uint64 // MySQL 同步队列满丢弃累计
+	sqliteSyncFailCount         atomic.Uint64 // SQLite 缓存同步失败累计
+	syncQueueDropCount          atomic.Uint64 // MySQL 同步队列满丢弃累计
+	logReplicationLastDroppedAt atomic.Int64
+	cacheSyncOperation          monitoring.OperationMonitor
+	logReplicationOperation     monitoring.OperationMonitor
+	traceReplicationOperation   monitoring.OperationMonitor
+	startupRecoveryMu           sync.RWMutex
+	startupRecovery             *model.StartupRecoveryStats
+
+	// Request history has its own bounded replication budget. Trace batches
+	// carry up to 32 summaries with 128 timeline events each, so letting them
+	// fill the shared 10k log queue would retain far too much memory.
+	traceReplicationQueued        atomic.Int64
+	traceReplicationDropped       atomic.Uint64
+	traceReplicationFailed        atomic.Uint64
+	traceReplicationLastDroppedAt atomic.Int64
 }
+
+var _ Store = (*HybridStore)(nil)
 
 // syncTask 同步任务
 type syncTask struct {
@@ -62,9 +92,22 @@ type syncTaskLogBatch struct {
 	entries []*model.LogEntry
 }
 
+// syncTaskRequestTraceBatch contains immutable clones of request summaries for
+// best-effort replication to the primary database.
+type syncTaskRequestTraceBatch struct {
+	traces []*model.RequestTrace
+}
+
 const (
-	syncQueueSize = 10000 // 异步同步队列大小（仅用于 logs）
+	syncQueueSize                       = 10000 // 异步同步队列大小
+	requestTraceReplicationCapacity     = 64
+	requestTraceReplicationDropLogEvery = 10
 )
+
+// RequestTraceReplicationStats reports the bounded best-effort clone queue.
+// Queued includes trace tasks currently executing or waiting in the shared
+// sync queue. Dropped and Failed count trace batch tasks, not timeline events.
+type RequestTraceReplicationStats = model.ReplicationRuntimeStats
 
 // NewHybridStore 创建混合存储实例
 func NewHybridStore(sqlite, mysql *sqlstore.SQLStore) *HybridStore {
@@ -86,13 +129,21 @@ func NewHybridStore(sqlite, mysql *sqlstore.SQLStore) *HybridStore {
 // SQLite 是本地库，启动时已验证可写，运行时通常不会失败
 // 但磁盘空间不足等极端情况仍可能导致写入失败，记录日志以便排查
 func (h *HybridStore) syncToSQLite(op string, fn func() error) {
-	if err := fn(); err != nil {
+	_ = h.syncSQLite(op, fn)
+}
+
+func (h *HybridStore) syncSQLite(op string, fn func() error) error {
+	finish := h.cacheSyncOperation.Begin()
+	err := fn()
+	finish(err)
+	if err != nil {
 		count := h.sqliteSyncFailCount.Add(1)
 		// 采样告警：首次必打印，之后每 10 次一次（避免磁盘满时日志洪泛）
 		if count%10 == 1 {
 			log.Printf("[WARN] SQLite 同步失败 (%s): %v (累计失败: %d)", op, err, count)
 		}
 	}
+	return err
 }
 
 // cloneLogEntryForSync 克隆日志条目（异步队列需要）
@@ -119,8 +170,12 @@ func cloneLogEntriesForSync(entries []*model.LogEntry) []*model.LogEntry {
 	return out
 }
 
+func cloneRequestTraceForSync(trace *model.RequestTrace) (*model.RequestTrace, error) {
+	return sqlstore.NormalizeRequestTraceForStorage(trace)
+}
+
 // ============================================================================
-// 异步同步 Worker（仅用于 logs）
+// 异步同步 Worker（logs 与 request history）
 // ============================================================================
 
 func (h *HybridStore) syncWorker() {
@@ -150,7 +205,7 @@ func (h *HybridStore) drainSyncQueue() {
 			h.executeSyncTask(task)
 			processed++
 		case <-timeout:
-			remaining := len(h.syncCh)
+			remaining := h.discardQueuedSyncTasks()
 			if remaining > 0 {
 				log.Printf("[WARN] MySQL 同步关闭超时（已处理 %d），丢弃 %d 个任务", processed, remaining)
 			}
@@ -164,19 +219,61 @@ func (h *HybridStore) drainSyncQueue() {
 	}
 }
 
+func (h *HybridStore) discardQueuedSyncTasks() int {
+	discarded := 0
+	for {
+		select {
+		case task := <-h.syncCh:
+			discarded++
+			if task != nil && task.operation == "request_trace_batch" {
+				h.releaseRequestTraceReplicationSlot()
+				h.recordRequestTraceReplicationDrop("shutdown")
+			} else if task != nil && (task.operation == "log" || task.operation == "log_batch") {
+				h.recordLogReplicationDrop("shutdown")
+			}
+		default:
+			return discarded
+		}
+	}
+}
+
 // executeSyncTask 执行单个同步任务
 func (h *HybridStore) executeSyncTask(task *syncTask) {
+	if task == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var err error
+	isRequestTrace := task.operation == "request_trace_batch"
+	var finish func(error)
+	defer func() {
+		if finish != nil {
+			finish(err)
+		}
+		if !isRequestTrace {
+			return
+		}
+		h.releaseRequestTraceReplicationSlot()
+		if err != nil {
+			h.traceReplicationFailed.Add(1)
+		}
+	}()
+
 	switch task.operation {
 	case "log":
+		finish = h.logReplicationOperation.Begin()
 		data := task.data.(*syncTaskLog)
 		err = h.mysql.AddLog(ctx, data.entry)
 	case "log_batch":
+		finish = h.logReplicationOperation.Begin()
 		data := task.data.(*syncTaskLogBatch)
 		err = h.mysql.BatchAddLogs(ctx, data.entries)
+	case "request_trace_batch":
+		finish = h.traceReplicationOperation.Begin()
+		data := task.data.(*syncTaskRequestTraceBatch)
+		err = h.mysql.BatchAddRequestTraces(ctx, data.traces)
 	default:
 		return
 	}
@@ -186,17 +283,129 @@ func (h *HybridStore) executeSyncTask(task *syncTask) {
 	}
 }
 
-// enqueueLogSync 将日志同步任务加入队列（非阻塞，队列满则丢弃）
-func (h *HybridStore) enqueueLogSync(task *syncTask) {
+func (h *HybridStore) enqueueSyncTask(task *syncTask) bool {
+	h.closeMu.RLock()
+	defer h.closeMu.RUnlock()
+	if h.closing {
+		return false
+	}
 	select {
 	case h.syncCh <- task:
+		return true
 	default:
-		count := h.syncQueueDropCount.Add(1)
-		// 队列满=MySQL 备份丢日志（数据丢失），ERROR 级；采样首次必打印
-		if count%10 == 1 {
-			log.Printf("[ERROR] MySQL 同步队列已满，丢弃任务: %s (累计丢弃: %d) - 考虑增大 syncQueueSize", task.operation, count)
+		return false
+	}
+}
+
+// enqueueLogSync 将日志同步任务加入队列（非阻塞，队列满则丢弃）
+func (h *HybridStore) enqueueLogSync(task *syncTask) {
+	if h.enqueueSyncTask(task) {
+		return
+	}
+	h.recordLogReplicationDrop("queue_unavailable")
+}
+
+func (h *HybridStore) recordLogReplicationDrop(reason string) {
+	count := h.syncQueueDropCount.Add(1)
+	h.logReplicationLastDroppedAt.Store(time.Now().UnixMilli())
+	// 队列满=MySQL 备份丢日志（数据丢失），ERROR 级；采样首次必打印
+	if count%10 == 1 {
+		log.Printf("[ERROR] 日志同步任务丢弃 (reason=%s, 累计丢弃: %d)", reason, count)
+	}
+}
+
+func (h *HybridStore) tryReserveRequestTraceReplicationSlot() bool {
+	for {
+		queued := h.traceReplicationQueued.Load()
+		if queued >= requestTraceReplicationCapacity {
+			return false
+		}
+		if h.traceReplicationQueued.CompareAndSwap(queued, queued+1) {
+			return true
 		}
 	}
+}
+
+func (h *HybridStore) releaseRequestTraceReplicationSlot() {
+	if h.traceReplicationQueued.Add(-1) < 0 {
+		log.Printf("[WARN] request trace replication slot count underflow")
+	}
+}
+
+func (h *HybridStore) enqueueRequestTraceSync(task *syncTask) {
+	if !h.tryReserveRequestTraceReplicationSlot() {
+		h.recordRequestTraceReplicationDrop("capacity")
+		return
+	}
+	if h.enqueueSyncTask(task) {
+		return
+	}
+	h.releaseRequestTraceReplicationSlot()
+	h.recordRequestTraceReplicationDrop("shared_queue")
+}
+
+func (h *HybridStore) recordRequestTraceReplicationDrop(reason string) {
+	count := h.traceReplicationDropped.Add(1)
+	h.traceReplicationLastDroppedAt.Store(time.Now().UnixMilli())
+	if count%requestTraceReplicationDropLogEvery == 1 {
+		log.Printf(
+			"[WARN] 请求历史同步任务丢弃 (reason=%s, 累计丢弃: %d, capacity=%d)",
+			reason,
+			count,
+			requestTraceReplicationCapacity,
+		)
+	}
+}
+
+// RequestTraceReplicationStats returns a snapshot of best-effort trace clone
+// capacity and failures. Local request-history writes do not depend on it.
+func (h *HybridStore) RequestTraceReplicationStats() RequestTraceReplicationStats {
+	queued := h.traceReplicationQueued.Load()
+	if queued < 0 {
+		queued = 0
+	}
+	return RequestTraceReplicationStats{
+		Enabled:       true,
+		Queued:        int(queued),
+		Capacity:      requestTraceReplicationCapacity,
+		Dropped:       h.traceReplicationDropped.Load(),
+		Failed:        h.traceReplicationFailed.Load(),
+		LastDroppedAt: h.traceReplicationLastDroppedAt.Load(),
+		Operation:     h.traceReplicationOperation.Snapshot(),
+	}
+}
+
+// SetStartupRecoveryStats transfers the factory's real startup observations.
+func (h *HybridStore) SetStartupRecoveryStats(stats model.StartupRecoveryStats) {
+	h.startupRecoveryMu.Lock()
+	defer h.startupRecoveryMu.Unlock()
+	h.startupRecovery = &stats
+}
+
+// StorageRuntimeStats reads only in-memory observations, including when either
+// database is unavailable. A later cache write cannot prove earlier repairs.
+func (h *HybridStore) StorageRuntimeStats() model.StorageRuntimeStats {
+	primary := "unknown"
+	if h.mysql != nil {
+		primary = h.mysql.DriverName()
+	}
+	operation := h.logReplicationOperation.Snapshot()
+	stats := model.StorageRuntimeStats{
+		Mode: "hybrid", Primary: primary,
+		CacheSync: h.cacheSyncOperation.Snapshot(), CacheMayBeStale: h.sqliteSyncFailCount.Load() > 0,
+		LogReplication: model.ReplicationRuntimeStats{
+			Enabled: true, Queued: len(h.syncCh), Capacity: cap(h.syncCh),
+			Dropped: h.syncQueueDropCount.Load(), Failed: operation.Failed,
+			LastDroppedAt: h.logReplicationLastDroppedAt.Load(), Operation: operation,
+		},
+	}
+	h.startupRecoveryMu.RLock()
+	if h.startupRecovery != nil {
+		copyStats := *h.startupRecovery
+		stats.StartupRecovery = &copyStats
+	}
+	h.startupRecoveryMu.RUnlock()
+	return stats
 }
 
 // ============================================================================
@@ -216,6 +425,9 @@ func (h *HybridStore) GetConfig(ctx context.Context, id int64) (*model.Config, e
 }
 
 func (h *HybridStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	result, err := h.mysql.CreateConfig(ctx, c)
 	if err != nil {
 		return nil, err
@@ -230,6 +442,9 @@ func (h *HybridStore) CreateConfig(ctx context.Context, c *model.Config) (*model
 }
 
 func (h *HybridStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	result, err := h.mysql.UpdateConfig(ctx, id, upd)
 	if err != nil {
 		return nil, err
@@ -244,6 +459,9 @@ func (h *HybridStore) UpdateConfig(ctx context.Context, id int64, upd *model.Con
 }
 
 func (h *HybridStore) UpdateOAuthCredential(ctx context.Context, id int64, credential string) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.UpdateOAuthCredential(ctx, id, credential); err != nil {
 		return err
 	}
@@ -254,6 +472,9 @@ func (h *HybridStore) UpdateOAuthCredential(ctx context.Context, id int64, crede
 }
 
 func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	result, err := h.mysql.UpdateChannelEnabled(ctx, id, enabled)
 	if err != nil {
 		return nil, err
@@ -271,6 +492,9 @@ func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enable
 // Counts come from the primary; the replica is best-effort like every other
 // write here.
 func (h *HybridStore) CascadeSiteSuspend(ctx context.Context, siteID int64, enable bool) (int, int, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	accounts, channels, err := h.mysql.CascadeSiteSuspend(ctx, siteID, enable)
 	if err != nil {
 		return 0, 0, err
@@ -297,6 +521,9 @@ func (h *HybridStore) ClearSiteAccountSuspendMark(ctx context.Context, accountID
 }
 
 func (h *HybridStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, patch model.BatchConfigPatch) (model.BatchConfigPatchResult, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	result, err := h.mysql.BatchPatchConfigs(ctx, channelIDs, patch)
 	if err != nil {
 		return model.BatchConfigPatchResult{}, err
@@ -311,6 +538,9 @@ func (h *HybridStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64,
 }
 
 func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.DeleteConfig(ctx, id); err != nil {
 		return err
 	}
@@ -330,6 +560,9 @@ func (h *HybridStore) BatchUpdatePriority(ctx context.Context, updates []struct 
 	ID       int64
 	Priority int
 }) (int64, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	affected, err := h.mysql.BatchUpdatePriority(ctx, updates)
 	if err != nil {
 		return 0, err
@@ -360,6 +593,9 @@ func (h *HybridStore) SetURLDisabled(ctx context.Context, channelID int64, url s
 }
 
 func (h *HybridStore) SetAPIKeyDisabled(ctx context.Context, channelID int64, keyIndex int, disabled bool) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.SetAPIKeyDisabled(ctx, channelID, keyIndex, disabled); err != nil {
 		return err
 	}
@@ -398,6 +634,9 @@ func (h *HybridStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.API
 }
 
 func (h *HybridStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.CreateAPIKeysBatch(ctx, keys); err != nil {
 		return err
 	}
@@ -410,6 +649,9 @@ func (h *HybridStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIK
 }
 
 func (h *HybridStore) UpdateAPIKeysStrategy(ctx context.Context, channelID int64, strategy string) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.UpdateAPIKeysStrategy(ctx, channelID, strategy); err != nil {
 		return err
 	}
@@ -422,6 +664,9 @@ func (h *HybridStore) UpdateAPIKeysStrategy(ctx context.Context, channelID int64
 }
 
 func (h *HybridStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, notesByIndex map[int]string) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.UpdateAPIKeyNotes(ctx, channelID, notesByIndex); err != nil {
 		return err
 	}
@@ -434,6 +679,9 @@ func (h *HybridStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, no
 }
 
 func (h *HybridStore) UpdateAPIKeyMetadata(ctx context.Context, channelID int64, metadataByIndex map[int]model.APIKey) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.UpdateAPIKeyMetadata(ctx, channelID, metadataByIndex); err != nil {
 		return err
 	}
@@ -446,6 +694,9 @@ func (h *HybridStore) UpdateAPIKeyMetadata(ctx context.Context, channelID int64,
 }
 
 func (h *HybridStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.DeleteAPIKey(ctx, channelID, keyIndex); err != nil {
 		return err
 	}
@@ -458,6 +709,9 @@ func (h *HybridStore) DeleteAPIKey(ctx context.Context, channelID int64, keyInde
 }
 
 func (h *HybridStore) CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.CompactKeyIndices(ctx, channelID, removedIndex); err != nil {
 		return err
 	}
@@ -470,6 +724,9 @@ func (h *HybridStore) CompactKeyIndices(ctx context.Context, channelID int64, re
 }
 
 func (h *HybridStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.DeleteAllAPIKeys(ctx, channelID); err != nil {
 		return err
 	}
@@ -493,6 +750,9 @@ func (h *HybridStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]tim
 }
 
 func (h *HybridStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	duration, err := h.mysql.BumpChannelCooldown(ctx, channelID, now, statusCode)
 	if err != nil {
 		return 0, err
@@ -507,6 +767,9 @@ func (h *HybridStore) BumpChannelCooldown(ctx context.Context, channelID int64, 
 }
 
 func (h *HybridStore) ResetChannelCooldown(ctx context.Context, channelID int64) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.ResetChannelCooldown(ctx, channelID); err != nil {
 		return err
 	}
@@ -519,6 +782,9 @@ func (h *HybridStore) ResetChannelCooldown(ctx context.Context, channelID int64)
 }
 
 func (h *HybridStore) ResetAllCooldowns(ctx context.Context, channelID int64) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.ResetAllCooldowns(ctx, channelID); err != nil {
 		return err
 	}
@@ -531,6 +797,9 @@ func (h *HybridStore) ResetAllCooldowns(ctx context.Context, channelID int64) er
 }
 
 func (h *HybridStore) SetChannelCooldown(ctx context.Context, channelID int64, until time.Time) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.SetChannelCooldown(ctx, channelID, until); err != nil {
 		return err
 	}
@@ -547,6 +816,9 @@ func (h *HybridStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int
 }
 
 func (h *HybridStore) BumpKeyCooldown(ctx context.Context, channelID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	duration, err := h.mysql.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
 	if err != nil {
 		return 0, err
@@ -561,6 +833,9 @@ func (h *HybridStore) BumpKeyCooldown(ctx context.Context, channelID int64, keyI
 }
 
 func (h *HybridStore) ResetKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.ResetKeyCooldown(ctx, channelID, keyIndex); err != nil {
 		return err
 	}
@@ -573,6 +848,9 @@ func (h *HybridStore) ResetKeyCooldown(ctx context.Context, channelID int64, key
 }
 
 func (h *HybridStore) SetKeyCooldown(ctx context.Context, channelID int64, keyIndex int, until time.Time) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.SetKeyCooldown(ctx, channelID, keyIndex, until); err != nil {
 		return err
 	}
@@ -595,6 +873,9 @@ func (h *HybridStore) BumpModelCooldown(
 	now time.Time,
 	statusCode int,
 ) (time.Duration, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	duration, err := h.mysql.BumpModelCooldown(ctx, channelID, model, now, statusCode)
 	if err != nil {
 		return 0, err
@@ -609,6 +890,9 @@ func (h *HybridStore) BumpModelCooldown(
 }
 
 func (h *HybridStore) SetModelCooldown(ctx context.Context, channelID int64, model string, until time.Time) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.SetModelCooldown(ctx, channelID, model, until); err != nil {
 		return err
 	}
@@ -621,6 +905,9 @@ func (h *HybridStore) SetModelCooldown(ctx context.Context, channelID int64, mod
 }
 
 func (h *HybridStore) ResetModelCooldown(ctx context.Context, channelID int64, model string) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.ResetModelCooldown(ctx, channelID, model); err != nil {
 		return err
 	}
@@ -694,18 +981,73 @@ func (h *HybridStore) CountLogsRange(ctx context.Context, since, until time.Time
 	return h.sqlite.CountLogsRange(ctx, since, until, filter)
 }
 
+func (h *HybridStore) GetCostSummary(ctx context.Context, since, until time.Time, filter *model.LogFilter) (*model.CostSummary, error) {
+	return h.sqlite.GetCostSummary(ctx, since, until, filter)
+}
+
 func (h *HybridStore) GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error) {
 	return h.sqlite.GetTodayChannelURLStats(ctx, dayStart)
 }
 
 func (h *HybridStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
-	if err := h.mysql.CleanupLogsBefore(ctx, cutoff); err != nil {
+	localErr := h.sqlite.CleanupLogsBefore(ctx, cutoff)
+	remoteErr := h.mysql.CleanupLogsBefore(ctx, cutoff)
+	if localErr != nil {
+		localErr = fmt.Errorf("cleanup local request history and logs: %w", localErr)
+	}
+	if remoteErr != nil {
+		remoteErr = fmt.Errorf("cleanup primary request history and logs: %w", remoteErr)
+	}
+	return errors.Join(localErr, remoteErr)
+}
+
+// === Request History ===
+// Request history uses the same local-first write and local-read policy as
+// logs. The primary copy is a best-effort asynchronous replica.
+
+func (h *HybridStore) BatchAddRequestTraces(ctx context.Context, traces []*model.RequestTrace) error {
+	syncable := make([]*model.RequestTrace, 0, len(traces))
+	for _, trace := range traces {
+		if trace == nil {
+			continue
+		}
+		clone, err := cloneRequestTraceForSync(trace)
+		if err != nil {
+			return err
+		}
+		syncable = append(syncable, clone)
+	}
+	if err := h.sqlite.BatchAddRequestTraces(ctx, syncable); err != nil {
 		return err
 	}
-	h.syncToSQLite("CleanupLogsBefore", func() error {
-		return h.sqlite.CleanupLogsBefore(ctx, cutoff)
-	})
+	if len(syncable) > 0 {
+		h.enqueueRequestTraceSync(&syncTask{
+			operation: "request_trace_batch",
+			data:      &syncTaskRequestTraceBatch{traces: syncable},
+		})
+	}
 	return nil
+}
+
+func (h *HybridStore) GetRequestTrace(ctx context.Context, id string, authTokenID *int64) (*model.RequestTrace, error) {
+	return h.sqlite.GetRequestTrace(ctx, id, authTokenID)
+}
+
+func (h *HybridStore) ListRequestTraces(
+	ctx context.Context,
+	since, until time.Time,
+	limit, offset int,
+	filter *model.RequestTraceFilter,
+) ([]*model.RequestTrace, int, error) {
+	return h.sqlite.ListRequestTraces(ctx, since, until, limit, offset, filter)
+}
+
+func (h *HybridStore) GetRequestTraceStats(
+	ctx context.Context,
+	since, until time.Time,
+	filter *model.RequestTraceFilter,
+) (*model.RequestTraceStats, error) {
+	return h.sqlite.GetRequestTraceStats(ctx, since, until, filter)
 }
 
 // === Metrics & Statistics ===
@@ -757,6 +1099,11 @@ func (h *HybridStore) GetTodayChannelCosts(ctx context.Context, todayStart time.
 // === Auth Token Management ===
 
 func (h *HybridStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+	h.tokenAccountingMu.Lock()
+	defer h.tokenAccountingMu.Unlock()
+
 	if err := h.mysql.CreateAuthToken(ctx, token); err != nil {
 		return err
 	}
@@ -770,6 +1117,11 @@ func (h *HybridStore) CreateAuthToken(ctx context.Context, token *model.AuthToke
 
 // EnsureAuthToken creates a missing auth token in the primary store and mirrors it to SQLite.
 func (h *HybridStore) EnsureAuthToken(ctx context.Context, token *model.AuthToken) (bool, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+	h.tokenAccountingMu.Lock()
+	defer h.tokenAccountingMu.Unlock()
+
 	created, err := h.mysql.EnsureAuthToken(ctx, token)
 	if err != nil {
 		return false, err
@@ -799,6 +1151,11 @@ func (h *HybridStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthTo
 }
 
 func (h *HybridStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+	h.tokenAccountingMu.Lock()
+	defer h.tokenAccountingMu.Unlock()
+
 	if err := h.mysql.UpdateAuthToken(ctx, token); err != nil {
 		return err
 	}
@@ -811,6 +1168,11 @@ func (h *HybridStore) UpdateAuthToken(ctx context.Context, token *model.AuthToke
 }
 
 func (h *HybridStore) DeleteAuthToken(ctx context.Context, id int64) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+	h.tokenAccountingMu.Lock()
+	defer h.tokenAccountingMu.Unlock()
+
 	if err := h.mysql.DeleteAuthToken(ctx, id); err != nil {
 		return err
 	}
@@ -823,6 +1185,9 @@ func (h *HybridStore) DeleteAuthToken(ctx context.Context, id int64) error {
 }
 
 func (h *HybridStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error {
+	h.tokenAccountingMu.Lock()
+	defer h.tokenAccountingMu.Unlock()
+
 	if err := h.mysql.UpdateTokenLastUsed(ctx, tokenHash, now); err != nil {
 		return err
 	}
@@ -835,6 +1200,9 @@ func (h *HybridStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string,
 }
 
 func (h *HybridStore) UpdateTokenStats(ctx context.Context, tokenHash string, isSuccess bool, duration float64, isStreaming bool, firstByteTime float64, promptTokens int64, completionTokens int64, cacheReadTokens int64, cacheCreationTokens int64, costUSD float64, effectiveCostUSD float64) error {
+	h.tokenAccountingMu.Lock()
+	defer h.tokenAccountingMu.Unlock()
+
 	if err := h.mysql.UpdateTokenStats(ctx, tokenHash, isSuccess, duration, isStreaming, firstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD, effectiveCostUSD); err != nil {
 		return err
 	}
@@ -843,6 +1211,25 @@ func (h *HybridStore) UpdateTokenStats(ctx context.Context, tokenHash string, is
 		return h.sqlite.UpdateTokenStats(ctx, tokenHash, isSuccess, duration, isStreaming, firstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD, effectiveCostUSD)
 	})
 
+	return nil
+}
+
+func (h *HybridStore) ApplyTokenSettlement(ctx context.Context, event model.TokenSettlement) error {
+	h.tokenAccountingMu.Lock()
+	defer h.tokenAccountingMu.Unlock()
+
+	if err := h.mysql.ApplyTokenSettlement(ctx, event); err != nil {
+		return err
+	}
+	canonical, err := h.mysql.GetAuthTokenByValue(ctx, event.TokenHash)
+	if err != nil {
+		return fmt.Errorf("load primary token accounting after settlement: %w", err)
+	}
+	if err := h.syncSQLite("ApplyTokenSettlement", func() error {
+		return h.sqlite.SyncTokenAccounting(ctx, canonical)
+	}); err != nil {
+		return fmt.Errorf("sync token settlement to sqlite replica: %w", err)
+	}
 	return nil
 }
 
@@ -907,6 +1294,9 @@ func (h *HybridStore) ListAllSettings(ctx context.Context) ([]*model.SystemSetti
 }
 
 func (h *HybridStore) UpdateSetting(ctx context.Context, key, value string) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.UpdateSetting(ctx, key, value); err != nil {
 		return err
 	}
@@ -918,7 +1308,26 @@ func (h *HybridStore) UpdateSetting(ctx context.Context, key, value string) erro
 	return nil
 }
 
+func (h *HybridStore) CompareAndSwapSetting(ctx context.Context, key, expectedValue, newValue string) (bool, error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
+	updated, err := h.mysql.CompareAndSwapSetting(ctx, key, expectedValue, newValue)
+	if err != nil || !updated {
+		return updated, err
+	}
+	if err := h.syncSQLite("CompareAndSwapSetting", func() error {
+		return h.sqlite.UpdateSetting(ctx, key, newValue)
+	}); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
 func (h *HybridStore) BatchUpdateSettings(ctx context.Context, updates map[string]string) error {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	if err := h.mysql.BatchUpdateSettings(ctx, updates); err != nil {
 		return err
 	}
@@ -1039,6 +1448,9 @@ func (h *HybridStore) DeleteFingerprintTestResult(ctx context.Context, id int64)
 // === Batch Operations ===
 
 func (h *HybridStore) ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error) {
+	h.configurationMu.Lock()
+	defer h.configurationMu.Unlock()
+
 	created, updated, err = h.mysql.ImportChannelBatch(ctx, channels)
 	if err != nil {
 		return 0, 0, err
@@ -1084,7 +1496,10 @@ func (h *HybridStore) TruncateDebugLogs(ctx context.Context) error {
 func (h *HybridStore) Close() error {
 	var err error
 	h.closeOnce.Do(func() {
+		h.closeMu.Lock()
+		h.closing = true
 		close(h.stopCh)
+		h.closeMu.Unlock()
 		h.syncWg.Wait()
 
 		if closeErr := h.sqlite.Close(); closeErr != nil {

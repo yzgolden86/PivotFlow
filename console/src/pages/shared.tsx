@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronLeft, ChevronRight, Eye, EyeOff, RefreshCw, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import { listWindow, parsePageInput } from './listWindow'
+import { registerLiveRegion } from '../components/focusLayers'
 
 export function PageHeader({ icon: Icon, title, actions, className = '', tone = 'green' }: {
   icon: LucideIcon
@@ -23,9 +25,14 @@ export function PageHeader({ icon: Icon, title, actions, className = '', tone = 
   )
 }
 
-export function OperationNotice({ children, persistent = false, onDismiss, tone = 'success' }: { children: ReactNode; persistent?: boolean; onDismiss?: () => void; tone?: 'success' | 'warning' | 'error' }) {
+export function OperationNotice({ children, persistent = false, onDismiss, tone = 'success', className = '' }: { children: ReactNode; persistent?: boolean; onDismiss?: () => void; tone?: 'success' | 'warning' | 'error'; className?: string }) {
   const [visible, setVisible] = useState(true)
   const onDismissRef = useRef(onDismiss)
+  const announcement = useRef<HTMLSpanElement>(null)
+
+  useLayoutEffect(() => {
+    if (visible && announcement.current) return registerLiveRegion(announcement.current)
+  }, [visible])
 
   useEffect(() => { onDismissRef.current = onDismiss }, [onDismiss])
 
@@ -52,8 +59,8 @@ export function OperationNotice({ children, persistent = false, onDismiss, tone 
   // 这条提示就会从「钉在视口右上角」变成「跟着页面滚」。与 `.search-overlay` 是同一类坑，
   // 这里顺手收口。
   return createPortal(
-    <div className={`operation-notice operation-notice--${tone}`} role={tone === 'error' ? 'alert' : 'status'} aria-live={tone === 'error' ? 'assertive' : 'polite'}>
-      <span className="operation-notice__content">{children}</span>
+    <div className={`operation-notice operation-notice--${tone}${className ? ` ${className}` : ''}`}>
+      <span ref={announcement} className="operation-notice__content" role={tone === 'error' ? 'alert' : 'status'} aria-live={tone === 'error' ? 'assertive' : 'polite'}>{children}</span>
       <button className="operation-notice__dismiss" type="button" onClick={dismiss} aria-label="关闭提示"><X size={15} /></button>
     </div>,
     document.body,
@@ -79,45 +86,65 @@ export function EmptyState({ label }: { label: string }) {
 
 // SecretInput 用统一的显隐切换替代裸 password 输入框。
 // 浏览器自绘的显示按钮已在样式中屏蔽，避免和这里的眼睛图标重叠。
-export function SecretInput({ value, change, placeholder, required = false, autoComplete = 'off' }: {
+export function SecretInput({ value, change, placeholder, required = false, disabled = false, autoComplete = 'off' }: {
   value: string
   change: (value: string) => void
   placeholder?: string
   required?: boolean
+  disabled?: boolean
   autoComplete?: string
 }) {
   const [visible, setVisible] = useState(false)
+  useEffect(() => { if (disabled) setVisible(false) }, [disabled])
   // 已保存的凭证从不回传浏览器（SiteAccount.CredentialCiphertext 标了 json:"-"），
   // 所以编辑时输入框初值是空的。此时显示切换按钮只会照出一个空框，
   // 让人以为功能坏了。只有在本次真的输入了内容时才提供切换。
   const hasValue = value.length > 0
   return <span className="secret-input">
-    <input required={required} type={visible && hasValue ? 'text' : 'password'} autoComplete={autoComplete} value={value} onChange={(event) => change(event.target.value)} placeholder={placeholder} />
-    {hasValue && <button type="button" onClick={() => setVisible((current) => !current)} aria-label={visible ? '隐藏内容' : '显示内容'} title={visible ? '隐藏内容' : '核对已输入的内容'}>
+    <input required={required} disabled={disabled} type={visible && hasValue ? 'text' : 'password'} autoComplete={autoComplete} value={value} onChange={(event) => change(event.target.value)} placeholder={placeholder} />
+    {hasValue && <button type="button" disabled={disabled} onClick={() => setVisible((current) => !current)} aria-label={visible ? '隐藏内容' : '显示内容'} title={visible ? '隐藏内容' : '核对已输入的内容'}>
       {visible ? <EyeOff size={16} /> : <Eye size={16} />}
     </button>}
   </span>
 }
 
-export function Pagination({ page, pageSize, total, onPage, pageSizes, onPageSize }: {
+export function Pagination({ page, pageSize, total, onPage, pageSizes, onPageSize, label = '分页' }: {
   page: number
   pageSize: number
   total: number
   onPage: (page: number) => void
   pageSizes?: number[]
   onPageSize?: (pageSize: number) => void
+  label?: string
 }) {
-  const pages = Math.max(1, Math.ceil(total / pageSize))
+  const current = listWindow(total, page, pageSize)
+  const [jump, setJump] = useState(String(current.page))
+  const [invalid, setInvalid] = useState(false)
+  const errorId = useId()
+  useEffect(() => { setJump(String(current.page)); setInvalid(false) }, [current.page, current.pages])
+  useEffect(() => { if (page !== current.page) onPage(current.page) }, [page, current.page, onPage])
+  const go = () => {
+    const target = parsePageInput(jump, current.pages)
+    if (target === null) { setInvalid(true); return }
+    setInvalid(false)
+    onPage(target)
+  }
   return (
-    <div className="pagination">
-      <div className="pagination-meta"><span>共 {total} 条</span>{pageSizes && onPageSize && <label>每页<select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}>{pageSizes.map((size) => <option value={size} key={size}>{size}</option>)}</select>条</label>}</div>
-      <div>
-        <button className="icon-button icon-button--surface" type="button" disabled={page <= 1} onClick={() => onPage(page - 1)} aria-label="上一页"><ChevronLeft size={16} /></button>
-        <strong>{page} / {pages}</strong>
-        <button className="icon-button icon-button--surface" type="button" disabled={page >= pages} onClick={() => onPage(page + 1)} aria-label="下一页"><ChevronRight size={16} /></button>
+    <nav className="pagination" aria-label={label}>
+      <div className="pagination-meta"><span aria-live="polite">共 {current.total} 条 · {current.total ? current.start + 1 : 0}–{current.end} 条</span>{pageSizes && onPageSize && <label>每页<select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}>{pageSizes.map((size) => <option value={size} key={size}>{size}</option>)}</select>条</label>}</div>
+      <div className="pagination-controls">
+        <button className="icon-button icon-button--surface" type="button" disabled={current.page <= 1} onClick={() => onPage(current.page - 1)} aria-label="上一页"><ChevronLeft size={16} /></button>
+        <strong>{current.page} / {current.pages}</strong>
+        <button className="icon-button icon-button--surface" type="button" disabled={current.page >= current.pages} onClick={() => onPage(current.page + 1)} aria-label="下一页"><ChevronRight size={16} /></button>
+        {current.pages > 1 && <div className="pagination-jump"><label>跳至<input type="text" inputMode="numeric" value={jump} aria-label="跳转页码" aria-invalid={invalid || undefined} aria-describedby={invalid ? errorId : undefined} onChange={(event) => { setJump(event.target.value); setInvalid(false) }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); go() } }} />页</label><button className="text-button" type="button" onClick={go}>跳转</button></div>}
       </div>
-    </div>
+      {invalid && <p id={errorId} className="pagination-error" role="alert">请输入 1 到 {current.pages} 的整数页码。</p>}
+    </nav>
   )
+}
+
+export function SelectionSummary({ selected, matching, clear }: { selected: number; matching: number; clear: () => void }) {
+  return <div className="batch-selection-summary"><div><strong>已选择 {selected} 项</strong><span>当前筛选 {matching} 项{selected > matching ? ` · 筛选外 ${selected - matching} 项` : ''}</span></div><button className="text-button" type="button" onClick={clear}>清空选择</button></div>
 }
 
 // 数字/金额/百分比的实现在 ../format.ts（纯逻辑，可被 node --test 直接测）。

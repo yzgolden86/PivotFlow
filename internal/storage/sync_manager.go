@@ -5,8 +5,12 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/monitoring"
 	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 )
 
@@ -22,8 +26,14 @@ import (
 // - KISS：简单的单向数据复制，无复杂一致性
 // - Fail-Fast：恢复失败直接退出，不降级
 type SyncManager struct {
-	mysql  *sqlstore.SQLStore
-	sqlite *sqlstore.SQLStore
+	mysql                 *sqlstore.SQLStore
+	sqlite                *sqlstore.SQLStore
+	restoreMu             sync.Mutex
+	recoveryStarted       atomic.Bool
+	recoveryLogDays       atomic.Int64
+	configurationRecovery monitoring.OperationMonitor
+	logRecovery           monitoring.OperationMonitor
+	traceRecovery         monitoring.OperationMonitor
 }
 
 // NewSyncManager 创建同步管理器
@@ -41,6 +51,10 @@ func NewSyncManager(mysql, sqlite *sqlstore.SQLStore) *SyncManager {
 //   - 0 = 仅恢复配置表，不恢复 logs
 //   - 7 = 恢复配置表 + 最近 7 天 logs
 func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error {
+	sm.restoreMu.Lock()
+	defer sm.restoreMu.Unlock()
+	sm.recoveryStarted.Store(true)
+	sm.recoveryLogDays.Store(int64(logDays))
 	start := time.Now()
 
 	// 第一步：恢复配置表（快速，<1 秒）
@@ -57,11 +71,14 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 	}
 
 	log.Printf("[INFO] 开始恢复配置表（共 %d 个表）...", len(configTables))
+	finishConfigurations := sm.configurationRecovery.Begin()
 	for _, table := range configTables {
 		if err := sm.restoreTable(ctx, table); err != nil {
+			finishConfigurations(err)
 			return fmt.Errorf("恢复表 %s 失败: %w", table, err)
 		}
 	}
+	finishConfigurations(nil)
 
 	log.Printf("[INFO] 配置表恢复完成，耗时: %v", time.Since(start))
 
@@ -69,16 +86,40 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 	// logDays: -1=全量, 0=不恢复, >0=恢复指定天数
 	if logDays != 0 {
 		logsStart := time.Now()
-		if err := sm.restoreLogsSnapshot(ctx, logDays); err != nil {
+		finishLogs := sm.logRecovery.Begin()
+		err := sm.restoreLogsSnapshot(ctx, logDays)
+		finishLogs(err)
+		if err != nil {
 			// 日志恢复失败不阻止启动，仅警告
 			log.Printf("[WARN] 日志恢复失败: %v（历史日志可能不完整）", err)
 		} else {
 			log.Printf("[INFO] 日志恢复完成，耗时: %v", time.Since(logsStart))
 		}
+
+		tracesStart := time.Now()
+		finishTraces := sm.traceRecovery.Begin()
+		err = sm.restoreRequestTracesSnapshot(ctx, logDays)
+		finishTraces(err)
+		if err != nil {
+			log.Printf("[WARN] 请求历史恢复失败: %v（本地请求历史可能不完整）", err)
+		} else {
+			log.Printf("[INFO] 请求历史恢复完成，耗时: %v", time.Since(tracesStart))
+		}
 	}
 
 	log.Printf("[INFO] 数据恢复完成，总耗时: %v", time.Since(start))
 	return nil
+}
+
+// StartupRecoveryStats retains each phase's result; optional history failures
+// are not overwritten by the successful completion of the overall startup.
+func (sm *SyncManager) StartupRecoveryStats() model.StartupRecoveryStats {
+	logDays := int(sm.recoveryLogDays.Load())
+	return model.StartupRecoveryStats{
+		Enabled: sm.recoveryStarted.Load(), HistoryEnabled: logDays != 0, LogDays: logDays,
+		Configurations: sm.configurationRecovery.Snapshot(), Logs: sm.logRecovery.Snapshot(),
+		RequestTraces: sm.traceRecovery.Snapshot(),
+	}
 }
 
 // restoreTable 恢复单表（幂等，DELETE + INSERT）
@@ -175,11 +216,6 @@ func (sm *SyncManager) restoreTable(ctx context.Context, tableName string) error
 
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("读取数据失败: %w", err)
-	}
-
-	if len(records) == 0 {
-		log.Printf("[INFO] 表 %s 为空，跳过恢复", tableName)
-		return nil
 	}
 
 	// 7. 清空 + 插入必须在同一个事务里，保证原子性
@@ -342,5 +378,103 @@ func (sm *SyncManager) restoreLogsSnapshot(ctx context.Context, days int) error 
 	}
 
 	log.Printf("[INFO] 日志快照恢复完成，共 %d 条（%d/%d 列，不复制 id）", totalRestored, len(commonCols), len(mysqlCols))
+	return nil
+}
+
+// restoreRequestTracesSnapshot merges the primary request-history window into
+// the local SQLite replica. Local-first traces may still be waiting for remote
+// replication when startup recovery runs, so rows present only in SQLite must
+// survive. Request summaries are immutable; duplicate IDs keep the local row
+// and retention cleanup remains the only deletion path for this window.
+func (sm *SyncManager) restoreRequestTracesSnapshot(ctx context.Context, days int) error {
+	var startTime int64
+	if days < 0 {
+		startTime = 0
+		log.Print("[INFO] 准备全量恢复 request_traces 表快照...")
+	} else {
+		startTime = time.Now().AddDate(0, 0, -days).UnixMilli()
+		log.Printf("[INFO] 准备恢复最近 %d 天的 request_traces 表快照...", days)
+	}
+
+	sqliteCols, err := sm.getTableColumns(ctx, sm.sqlite, "request_traces")
+	if err != nil {
+		return fmt.Errorf("获取 SQLite request_traces 表列失败: %w", err)
+	}
+	sqliteColSet := make(map[string]bool, len(sqliteCols))
+	for _, col := range sqliteCols {
+		sqliteColSet[col] = true
+	}
+
+	mysqlCols, err := sm.getTableColumns(ctx, sm.mysql, "request_traces")
+	if err != nil {
+		return fmt.Errorf("获取主库 request_traces 表列失败: %w", err)
+	}
+	var commonCols []string
+	var mysqlColIndices []int
+	for i, col := range mysqlCols {
+		if sqliteColSet[col] {
+			commonCols = append(commonCols, col)
+			mysqlColIndices = append(mysqlColIndices, i)
+		}
+	}
+	if len(commonCols) == 0 {
+		return fmt.Errorf("request_traces 表无共同列，无法恢复")
+	}
+
+	rows, err := sm.mysql.QueryContext(ctx, "SELECT * FROM request_traces WHERE started_at >= ?", startTime)
+	if err != nil {
+		return fmt.Errorf("查询主库请求历史快照失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	tx, err := sm.sqlite.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开启 SQLite 请求历史恢复事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	colNames := strings.Join(commonCols, ", ")
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(commonCols)), ",")
+	insertSQL := fmt.Sprintf(
+		"INSERT INTO request_traces (%s) VALUES (%s) ON CONFLICT(request_id) DO NOTHING",
+		colNames,
+		placeholders,
+	) //nolint:gosec // G201: columns come from database schema intersection
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("准备 SQLite 请求历史恢复语句失败: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+
+	totalRestored := 0
+	for rows.Next() {
+		scanArgs := make([]any, len(mysqlCols))
+		scanVals := make([]any, len(mysqlCols))
+		for i := range scanVals {
+			scanArgs[i] = &scanVals[i]
+		}
+		if err := rows.Scan(scanArgs...); err != nil {
+			return fmt.Errorf("扫描主库请求历史失败: %w", err)
+		}
+		record := make([]any, len(commonCols))
+		for i, idx := range mysqlColIndices {
+			if b, ok := scanVals[idx].([]byte); ok {
+				record[i] = string(b)
+			} else {
+				record[i] = scanVals[idx]
+			}
+		}
+		if _, err := stmt.ExecContext(ctx, record...); err != nil {
+			return fmt.Errorf("插入 SQLite 请求历史快照失败: %w", err)
+		}
+		totalRestored++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("读取主库请求历史快照失败: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交 SQLite 请求历史快照失败: %w", err)
+	}
+	log.Printf("[INFO] 请求历史快照恢复完成，共 %d 条（%d/%d 列）", totalRestored, len(commonCols), len(mysqlCols))
 	return nil
 }

@@ -879,14 +879,23 @@ func (s *Server) codexWebsocketTimeouts() codexWebsocketTimeouts {
 type codexWebsocketResponseBody struct {
 	*io.PipeReader
 	completed atomic.Bool
-	abort     func()
+	closed    atomic.Bool
+	cancel    context.CancelFunc
+	done      <-chan struct{}
 }
 
 func (b *codexWebsocketResponseBody) Close() error {
-	if !b.completed.Load() && b.abort != nil {
-		b.abort()
+	b.closed.Store(true)
+	if b.cancel != nil {
+		b.cancel()
 	}
-	return b.PipeReader.Close()
+	err := b.PipeReader.Close()
+	// Completion of the body owns the reader lifetime. The caller may finish
+	// its attempt or start the next turn only after this reader has stopped.
+	if b.done != nil {
+		<-b.done
+	}
+	return err
 }
 
 func writeSyntheticSSEFrame(w io.Writer, payload []byte) error {
@@ -908,10 +917,15 @@ func (s *codexUpstreamWebsocketSession) reconnectWithReplay(
 	replayBody []byte,
 	timeouts codexWebsocketTimeouts,
 ) (*websocket.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	prepared, err := buildCodexWebsocketRequestBody(replayBody)
 	if err != nil {
 		return nil, err
 	}
+	retryTraceFromContext(ctx, http.StatusBadGateway, "error", "websocket_reconnect")
+	markTraceUpstream(ctx, "websocket")
 	conn, resp, err := s.dial(ctx, dialer, target, replayReq, timeouts)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
@@ -922,7 +936,19 @@ func (s *codexUpstreamWebsocketSession) reconnectWithReplay(
 		}
 		return nil, err
 	}
+	if err = ctx.Err(); err != nil {
+		s.invalidate(conn)
+		return nil, err
+	}
+	// The new socket is not yet owned by streamResponse. Cancel its write
+	// using this immutable connection, without sharing the loop's conn variable.
+	stopCancel := context.AfterFunc(ctx, func() { s.invalidate(conn) })
+	defer stopCancel()
 	if err = s.writeRequest(conn, prepared); err != nil {
+		s.invalidate(conn)
+		return nil, err
+	}
+	if err = ctx.Err(); err != nil {
 		s.invalidate(conn)
 		return nil, err
 	}
@@ -939,13 +965,17 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 	replayBody []byte,
 	timeouts codexWebsocketTimeouts,
 ) *http.Response {
+	ctx, cancel := context.WithCancel(ctx)
 	reader, writer := io.Pipe()
-	body := &codexWebsocketResponseBody{PipeReader: reader, abort: func() { s.invalidate(conn) }}
+	done := make(chan struct{})
+	body := &codexWebsocketResponseBody{PipeReader: reader, cancel: cancel, done: done}
 	go func() {
+		defer close(done)
 		defer s.finishTurn()
+		defer cancel()
 		stopCancel := context.AfterFunc(ctx, func() {
 			if !body.completed.Load() {
-				s.invalidate(conn)
+				_ = writer.CloseWithError(ctx.Err())
 			}
 		})
 		defer stopCancel()
@@ -965,7 +995,7 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 					_ = writer.Close()
 					return
 				}
-				if !semanticOutput && !retried && ctx.Err() == nil {
+				if !semanticOutput && !retried && ctx.Err() == nil && !body.closed.Load() {
 					retried = true
 					s.recordReconnect("read: " + readErr.Error())
 					connRetry, errRetry := s.reconnectWithReplay(
@@ -988,7 +1018,7 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 			}
 			payload := event.payload
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
-			if !semanticOutput && !retried && ctx.Err() == nil &&
+			if !semanticOutput && !retried && ctx.Err() == nil && !body.closed.Load() &&
 				isCodexWebsocketPreviousResponseNotFound(payload) {
 				retried = true
 				s.invalidate(conn)
@@ -1119,6 +1149,8 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 		s.recordReconnect("write: " + err.Error())
 		preparedReplay, errPrepare := buildCodexWebsocketRequestBody(replayBody)
 		if errPrepare == nil {
+			retryTraceFromContext(ctx, http.StatusBadGateway, "error", "websocket_reconnect")
+			markTraceUpstream(ctx, "websocket")
 			connRetry, respRetry, errDial := s.dial(ctx, dialer, target, replayReq, timeouts)
 			if errDial == nil {
 				if errWrite := s.writeRequest(connRetry, preparedReplay); errWrite == nil {
@@ -1173,6 +1205,7 @@ func (s *Server) doCodexWebsocketRequest(
 	if err != nil {
 		return nil, replayReq, replayBody, err
 	}
+	markTraceUpstream(ctx, "websocket")
 	resp, usedReq, usedBody, err := session.roundTrip(
 		ctx,
 		cfg,

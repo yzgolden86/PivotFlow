@@ -27,7 +27,18 @@ import (
 //	    return err // 成功则自动提交
 //	})
 func (s *SQLStore) WithTransaction(ctx context.Context, fn func(*sql.Tx) error) error {
+	if s.tx != nil {
+		return fn(s.tx)
+	}
 	return withTransaction(ctx, s.db, fn)
+}
+
+// withTx runs fn inside the transaction view's transaction, or opens one when
+// called on an ordinary store. It is the nested-transaction primitive used by
+// write methods that need an atomic group without committing an outer
+// configuration transaction.
+func (s *SQLStore) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	return s.WithTransaction(ctx, fn)
 }
 
 type transactionRetryPolicy struct {
@@ -42,6 +53,47 @@ var defaultTransactionRetryPolicy = transactionRetryPolicy{
 	},
 }
 
+// ErrTransactionCommitUnknown marks a failed commit whose outcome cannot be
+// determined. The transaction may have committed before the driver reported an
+// error, so callers must not retry destructive work or describe it as rolled back.
+var ErrTransactionCommitUnknown = fmt.Errorf("transaction commit outcome is unknown")
+
+// TransactionCommitUnknownError is returned by WithSerializableTransaction
+// when commit fails and the driver cannot prove whether the transaction landed.
+type TransactionCommitUnknownError struct {
+	Err error
+}
+
+func (e *TransactionCommitUnknownError) Error() string {
+	if e == nil || e.Err == nil {
+		return ErrTransactionCommitUnknown.Error()
+	}
+	return ErrTransactionCommitUnknown.Error() + ": " + e.Err.Error()
+}
+
+func (e *TransactionCommitUnknownError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *TransactionCommitUnknownError) Is(target error) bool {
+	return target == ErrTransactionCommitUnknown
+}
+
+type transactionCommitStageError struct {
+	err error
+}
+
+func (e *transactionCommitStageError) Error() string {
+	return "commit transaction: " + e.err.Error()
+}
+
+func (e *transactionCommitStageError) Unwrap() error {
+	return e.err
+}
+
 // withTransaction 核心事务执行逻辑（私有函数，遵循DRY原则）
 // [INFO] KISS原则：简单的事务模板，自动处理提交/回滚
 // [INFO] 安全性：panic恢复 + defer回滚双重保障
@@ -52,6 +104,16 @@ func withTransaction(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) er
 }
 
 func withTransactionWithRetryPolicy(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error, policy transactionRetryPolicy) error {
+	return withTransactionWithRetryPolicyOptions(ctx, db, nil, fn, policy)
+}
+
+func withTransactionWithRetryPolicyOptions(
+	ctx context.Context,
+	db *sql.DB,
+	opts *sql.TxOptions,
+	fn func(*sql.Tx) error,
+	policy transactionRetryPolicy,
+) error {
 	// 增加死锁重试机制
 	// 问题: SQLite在高并发事务下可能返回"database is deadlocked"错误
 	// 解决: 自动重试带指数退避，最多12次重试（attempt 0-11）
@@ -80,7 +142,7 @@ func withTransactionWithRetryPolicy(ctx context.Context, db *sql.DB, fn func(*sq
 	}
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		err := executeSingleTransaction(ctx, db, fn)
+		err := executeSingleTransactionWithOptions(ctx, db, opts, fn)
 
 		// 成功或非BUSY错误,立即返回
 		if err == nil || !isSQLiteBusyError(err) {
@@ -121,10 +183,14 @@ func withTransactionWithRetryPolicy(ctx context.Context, db *sql.DB, fn func(*sq
 	return fmt.Errorf("unexpected: retry loop exited without result")
 }
 
-// executeSingleTransaction 执行单次事务(无重试)
-func executeSingleTransaction(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) (err error) {
+func executeSingleTransactionWithOptions(
+	ctx context.Context,
+	db *sql.DB,
+	opts *sql.TxOptions,
+	fn func(*sql.Tx) error,
+) (err error) {
 	// 1. 开启事务
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
@@ -149,7 +215,7 @@ func executeSingleTransaction(ctx context.Context, db *sql.DB, fn func(*sql.Tx) 
 
 	// 4. 提交事务
 	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
+		return &transactionCommitStageError{err: err}
 	}
 
 	return nil

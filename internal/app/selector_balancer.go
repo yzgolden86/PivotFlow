@@ -43,15 +43,24 @@ func (s *Server) sortChannelsByHealth(
 	if len(channels) == 0 {
 		return channels
 	}
+	var stats map[int64]modelpkg.ChannelHealthStats
+	if current := s.healthCache.healthStats.Load(); current != nil {
+		stats = *current
+	}
+	return s.sortChannelsByHealthFromSnapshot(channels, keyCooldowns, now, universe, s.healthCache.Config(), stats)
+}
 
-	cfg := s.healthCache.Config()
+func (s *Server) sortChannelsByHealthFromSnapshot(channels []*modelpkg.Config, keyCooldowns map[int64]map[int]time.Time,
+	now time.Time, universe rrGroupKey, cfg modelpkg.HealthScoreConfig, statsByID map[int64]modelpkg.ChannelHealthStats,
+) []*modelpkg.Config {
+	if len(channels) == 0 {
+		return channels
+	}
 
 	// Preload stats and compute candidate median TTFB for relative penalty.
-	statsByID := make(map[int64]modelpkg.ChannelHealthStats, len(channels))
 	ttfbSamples := make([]float64, 0, len(channels))
 	for _, ch := range channels {
-		st := s.healthCache.GetHealthStats(ch.ID)
-		statsByID[ch.ID] = st
+		st := routeHealthStats(statsByID, ch.ID)
 		if st.FirstByteSampleCount > 0 && st.AvgFirstByteSeconds > 0 {
 			ttfbSamples = append(ttfbSamples, st.AvgFirstByteSeconds)
 		}
@@ -60,7 +69,7 @@ func (s *Server) sortChannelsByHealth(
 
 	scored := make([]channelWithScore, len(channels))
 	for i, ch := range channels {
-		stats := statsByID[ch.ID]
+		stats := routeHealthStats(statsByID, ch.ID)
 		scored[i] = channelWithScore{
 			config:      ch,
 			effPriority: s.calculateEffectivePriority(ch, stats, cfg, medianTTFB),

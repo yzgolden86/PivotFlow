@@ -1,5 +1,216 @@
 export type DashboardRange = 'today' | 'this_week' | 'this_month'
 
+export type RuntimeHealthState = 'blocked' | 'error' | 'warning' | 'working' | 'healthy' | 'idle' | 'disabled' | 'unknown'
+export type RuntimeComponentId = 'billing' | 'request_history' | 'logs' | 'token_stats' | 'log_replication' | 'trace_replication' | 'cache_sync' | 'log_cleanup' | 'debug_cleanup' | 'startup_recovery' | 'websocket'
+export type RuntimeHealthReason = 'not_enabled' | 'awaiting_work' | 'processing' | 'write_failed' | 'queue_pressure' | 'recent_drop' | 'ready' | 'shutting_down' | 'billing_blocked' | 'billing_unpersisted' | 'settlement_failed' | 'journal_failed' | 'billing_backlog' | 'pending_settlement' | 'replication_failed' | 'cache_sync_failed' | 'cache_needs_reconcile' | 'cleanup_failed' | 'debug_disabled_cleared' | 'retention_disabled' | 'not_hybrid' | 'storage_unknown' | 'recovery_unobserved' | 'configuration_recovery_failed' | 'history_recovery_failed' | 'restoring' | 'no_sessions' | 'websocket_pressure' | 'replication_unobserved' | 'unknown'
+export type RuntimeFreshness = 'current' | 'paused' | 'stale' | 'unavailable'
+
+export interface RuntimeOperationStats {
+  active: number
+  attempts: number
+  succeeded: number
+  failed: number
+  cancelled: number
+  failing: boolean
+  consecutive_failures: number
+  last_result: '' | 'success' | 'error' | 'cancelled' | 'unknown'
+  last_attempt_at: number
+  last_finished_at: number
+  last_success_at: number
+  last_failure_at: number
+  recovered_at: number
+  last_error_code: '' | 'timeout' | 'operation_failed'
+}
+
+export interface RuntimeQueueStats {
+  enabled: boolean
+  queued: number
+  capacity: number
+  buffered: number
+  dropped: number
+  write_failed: number
+  written: number
+  last_dropped_at: number
+  operation: RuntimeOperationStats
+}
+
+export interface RuntimeReplicationStats {
+  enabled: boolean
+  queued: number
+  capacity: number
+  dropped: number
+  failed: number
+  last_dropped_at: number
+  operation: RuntimeOperationStats
+}
+
+export interface RuntimeCleanupStats {
+  enabled: boolean
+  mode: 'unknown' | 'retention' | 'clearing' | 'disabled'
+  retention_days: number
+  retention_minutes: number
+  interval_ms: number
+  next_run_at: number
+  deleted: number
+  operation: RuntimeOperationStats
+}
+
+export interface RuntimeStartupRecovery {
+  enabled: boolean
+  history_enabled: boolean
+  log_days: number
+  configurations: RuntimeOperationStats
+  logs: RuntimeOperationStats
+  request_traces: RuntimeOperationStats
+}
+
+export interface RuntimeStorageStats {
+  mode: 'unknown' | 'sqlite' | 'mysql' | 'postgres' | 'hybrid'
+  primary: 'unknown' | 'sqlite' | 'mysql' | 'postgres'
+  cache_may_be_stale: boolean
+  cache_sync: RuntimeOperationStats
+  log_replication: RuntimeReplicationStats
+  startup_recovery: RuntimeStartupRecovery | null
+}
+
+export interface RuntimeBillingStats {
+  enabled: boolean
+  pending: number
+  unpersisted: number
+  blocked: boolean
+  closing: boolean
+  journal_failures: number
+  store_failures: number
+  invalid_cost_events: number
+  settled: number
+  deleted_token_events: number
+  last_success_at: number
+  oldest_pending_at: number
+  journal: RuntimeOperationStats
+  settlement: RuntimeOperationStats
+}
+
+export interface RuntimeWebsocketStats {
+  sessions: number
+  active_attachments: number
+  downstream_connections: number
+  rejected_downstream_connections: number
+  max_downstream_connections: number
+  max_downstream_connections_per_token: number
+  upstream_connections: number
+  upstream_handshakes: number
+  upstream_reuses: number
+  upstream_heartbeat_failures: number
+  upstream_queued_read_bytes: number
+  oldest_upstream_connection_seconds: number
+  reconnects: number
+  transcript_bytes: number
+  max_transcript_bytes: number
+  max_sessions: number
+  ttl_expired: number
+  capacity_rejected: number
+  budget_rejected: number
+  previous_response_misses: number
+}
+
+export interface RuntimeHealthComponent {
+  id: RuntimeComponentId
+  state: RuntimeHealthState
+  reason: RuntimeHealthReason
+}
+
+export type RequestCacheStatus = 'hit' | 'miss' | 'refresh' | 'bypass'
+export type RequestCacheReason =
+  | 'disabled'
+  | 'not_opted_in'
+  | 'client_bypass'
+  | 'invalid_mode'
+  | 'request_no_store'
+  | 'request_no_cache'
+  | 'request_query'
+  | 'request_encoding'
+  | 'streaming'
+  | 'unsupported_endpoint'
+  | 'nondeterministic'
+  | 'tools_or_state'
+  | 'unsupported_request'
+  | 'no_identity'
+  | 'route_unavailable'
+  | 'channel_changed'
+  | 'custom_rules'
+  | 'protocol_transform'
+  | 'empty'
+  | 'expired'
+  | 'client_refresh'
+  | 'unsafe_response'
+  | 'response_no_store'
+  | 'response_too_large'
+  | 'capture_budget'
+  | 'invalidated'
+  | 'upstream_error'
+  | 'canceled'
+  | 'write_failed'
+  | 'reused'
+  | 'stored'
+export type RequestCacheInvalidationReason =
+  | 'manual_clear'
+  | 'routing_changed'
+  | 'keys_changed'
+  | 'aliases_changed'
+  | 'permissions_changed'
+
+export interface RequestCacheConfig {
+  enabled: boolean
+  ttl_seconds: number
+  max_entries: number
+  max_bytes: number
+  max_entry_bytes: number
+}
+
+export interface RequestCacheStats {
+  entries: number
+  bytes: number
+  expired_entries: number
+  captures: number
+  capture_bytes: number
+  lookups: number
+  hits: number
+  misses: number
+  refreshes: number
+  bypasses: number
+  stored: number
+  expired: number
+  evicted: number
+  rejected: number
+  clears: number
+  invalidations: Record<RequestCacheInvalidationReason, number>
+  reasons: Record<RequestCacheReason, number>
+  last_invalidation_reason: RequestCacheInvalidationReason | ''
+  last_invalidation_at: number
+}
+
+export interface RequestCacheObservation {
+  version: 1
+  observed_at: number
+  process_started_at: number
+  config: RequestCacheConfig
+  stats: RequestCacheStats
+}
+
+export interface RuntimeMetrics {
+  started_at: number
+  observed_at: number
+  health: { version: number; state: RuntimeHealthState; components: RuntimeHealthComponent[] }
+  billing: RuntimeBillingStats
+  request_traces: RuntimeQueueStats & { replication?: RuntimeReplicationStats }
+  logs: RuntimeQueueStats
+  token_failure_stats: RuntimeQueueStats
+  cleanup: { logs: RuntimeCleanupStats; debug_logs: RuntimeCleanupStats }
+  storage: RuntimeStorageStats
+  responses_websocket: RuntimeWebsocketStats
+  request_cache?: RequestCacheObservation | null
+}
+
 export interface DashboardTotals {
   requests: number
   success: number
@@ -43,6 +254,69 @@ export interface MetricPoint {
   output_tokens?: number
 }
 
+export type CostSource = 'site_pricing' | 'local_estimate'
+export type CostStatus =
+  | 'estimated'
+  | 'zero_price'
+  | 'local_free'
+  | 'usage_missing'
+  | 'unpriced_model'
+  | 'partial_estimate'
+  | 'invalid'
+  | 'historical_unknown'
+  | 'not_charged'
+export type CostBasis = 'token' | 'per_call' | 'mixed' | 'unknown'
+
+export interface StandardCostComponent {
+  price_per_million: number
+  quantity: number
+  cost: number
+}
+
+export interface StandardCostBreakdown {
+  input: StandardCostComponent
+  output: StandardCostComponent
+  cache_read: StandardCostComponent
+  cache_write: StandardCostComponent
+  total: number
+  service_tier_multiplier?: number
+}
+
+/** Frozen, public-safe request cost details returned by the backend. */
+export interface CostDetails {
+  model_cost_usd: number
+  tool_cost_usd: number
+  currency: 'USD'
+  breakdown?: StandardCostBreakdown
+}
+
+/**
+ * Versioned aggregate over successful requests in the selected range.
+ *
+ * `unknown_requests` includes `partial_requests` and `historical_requests`.
+ * `local_free_requests` is a subset of `zero_requests`. Reconciliation is
+ * intentionally limited to `not_reconciled` in this data model.
+ */
+export interface CostSummary {
+  version: 1
+  currency: 'USD'
+  reconciliation: 'not_reconciled'
+  successful_requests: number
+  estimated_requests: number
+  zero_requests: number
+  local_free_requests: number
+  partial_requests: number
+  unknown_requests: number
+  historical_requests: number
+  site_pricing_requests: number
+  local_estimate_requests: number
+  mixed_requests: number
+  recorded_cost_usd: number
+  estimated_cost_usd: number
+  partial_cost_usd: number
+  historical_cost_usd: number
+}
+
 export interface DashboardSnapshot {
   range: DashboardRange
   starts_at: number
@@ -61,6 +335,19 @@ export interface DashboardSnapshot {
   healthy_accounts: number
   channel_count: number
   enabled_channels: number
+  cost_summary?: CostSummary | null
+}
+
+export interface DashboardSummary {
+  cost_summary?: CostSummary | null
+  total_requests: number
+  success_requests: number
+  error_requests: number
+  range: string
+  duration_seconds: number
+  rpm_stats?: RPMStats
+  is_today: boolean
+  by_client_protocol?: Record<string, unknown>
 }
 
 export interface APIResponse<T> {
@@ -193,6 +480,48 @@ export interface RouteDiagnosticReason {
 	code: string
 	message: string
 	blocking: boolean
+	stage: string
+}
+
+export interface RouteDiagnosticURL {
+  index: number
+  status: string
+  declared: boolean
+  protocols: string[]
+  disabled: boolean
+  cooling: boolean
+  fallback: boolean
+  retry_after?: string
+}
+
+export interface RouteDiagnosticCost {
+  channel_multiplier: number
+  key_multiplier_min: number | null
+  key_multiplier_max: number | null
+  key_multiplier_count: number
+  daily_used_usd: number | null
+  daily_limit_usd: number
+  site_binding_known: boolean
+  site_bound: boolean
+  price_status: string
+  price_cached_at?: string
+}
+
+export interface RouteDiagnosticToken {
+  id?: number
+  description: string
+  scope: string
+  status: string
+  admission: string
+  permission_source: string
+  model_allowed: boolean | null
+  protocol_allowed: boolean | null
+  channel_restricted: boolean
+  cost_used_usd: number | null
+  cost_limit_usd: number | null
+  max_concurrency: number | null
+  active_concurrency: number | null
+  reasons: RouteDiagnosticReason[]
 }
 
 export interface ChannelRouteDiagnostic {
@@ -208,6 +537,26 @@ export interface ChannelRouteDiagnostic {
 	model_eligible_key_count: number
 	active_key_count: number
 	enabled_key_count: number
+	routing_weight: number
+	attemptable: boolean
+	attempt_status: string
+	blocked_stage?: string
+	credential_kind: string
+	failure_penalty: number
+	ttfb_penalty: number
+	ttfb_sample_count: number
+	average_ttfb_seconds: number
+	url_count: number
+	compatible_url_count: number
+	urls: RouteDiagnosticURL[]
+	possible_upstream_models: string[]
+	possible_upstream_model_count: number
+	cost: RouteDiagnosticCost
+	available_time_start: string
+	available_time_end: string
+	channel_cooldown_until?: string
+	model_cooldown_until?: string
+	actual_known: boolean
 	rpm_limit: number
 	current_rpm: number
 	max_concurrency: number
@@ -228,6 +577,7 @@ export interface RouteDiagnosticSticky {
 	remembered_at: string
 	expires_at: string
 	in_candidate_pool: boolean
+	forward_status: string
 }
 
 export interface RouteDiagnosticResponse {
@@ -243,6 +593,59 @@ export interface RouteDiagnosticResponse {
 	actual_window: string
 	actual_total_requests: number
 	summary: string[]
+	observed_at: string
+	warnings: string[]
+	token: RouteDiagnosticToken
+}
+
+export interface ModelRouteInventoryItem {
+  model: string
+  kind: 'model' | 'group' | 'wildcard'
+  aliases: string[]
+  alias_count: number
+  configured_channels: number
+  enabled_channels: number
+}
+
+export interface ModelRouteInventory {
+  version: number
+  items: ModelRouteInventoryItem[]
+  total: number
+  offset: number
+  limit: number
+}
+
+export interface ModelRouteDiagnosticResponse {
+  version: number
+  observed_at: string
+  model: string
+  client_protocol: string
+  canonical_model: string
+  group_names: string[]
+  group_name_count: number
+  policy: {
+    route_strategy: string
+    pool_mode: string
+    health_score_enabled: boolean
+    ttfb_score_enabled: boolean
+    health_window_minutes: number
+    candidate_count: number
+    attemptable_count: number
+    attempt_unknown_count: number
+    tier_count: number
+    weight_reference: string
+    actual_window: string
+    actual_known: boolean
+    actual_total_requests: number
+    sticky?: RouteDiagnosticSticky
+  }
+  token: RouteDiagnosticToken
+  channels: ChannelRouteDiagnostic[]
+  total: number
+  offset: number
+  limit: number
+  summary: string[]
+  warnings: string[]
 }
 
 export interface ChannelEditorSnapshot {
@@ -349,11 +752,29 @@ export interface LogEntry {
   cache_creation_input_tokens: number
   cost: number
   cost_multiplier: number
+  effective_cost?: number
   auth_token_id?: number
   auth_token_description?: string
-  cost_status?: 'estimated' | 'usage_missing' | 'unpriced_model' | 'free_model' | 'local_free'
-  // site_pricing = 上游计算（站点自身价目表）；local_estimate 或空 = 厂商标价本地估算。
-  cost_source?: 'site_pricing' | 'local_estimate'
+  cost_metadata_version?: number
+  cost_status?: string
+  cost_basis?: string
+  cost_details?: CostDetails | null
+  // site_pricing = 站点自身价目表估算；local_estimate = 厂商标价本地估算。
+  // 空值或未知旧值保留为来源未知，不能猜成站点价或本地价。
+  cost_source?: string
+  request_id?: string
+  attempt_number?: number
+}
+
+export interface CostEntryLike {
+  status_code?: number | null
+  effective_cost?: unknown
+  cost?: unknown
+  cost_metadata_version?: unknown
+  cost_status?: unknown
+  cost_basis?: unknown
+  cost_source?: unknown
+  cost_details?: unknown
 }
 
 export interface LogFilters {
@@ -364,8 +785,80 @@ export interface LogFilters {
   search?: string
   status_code?: string
   log_source?: string
+  cost_source?: CostSource | ''
+  cost_status?: CostStatus | ''
+  cost_basis?: CostBasis | ''
   limit: number
   offset: number
+}
+
+export type RequestOutcome = 'success' | 'error' | 'canceled'
+export type RequestAttemptOutcome = RequestOutcome | 'capability' | 'skipped'
+export type RequestRetryReason = 'none' | 'next_key' | 'next_url' | 'next_channel' | 'refresh_token' | 'compatibility'
+export type RequestCooldownScope = 'none' | 'key' | 'model' | 'channel'
+
+export interface RequestAttempt {
+  number: number
+  started_at: number
+  duration: number
+  first_byte_time: number
+  channel_id?: number
+  channel_name?: string
+  key_index?: number
+  url_index?: number
+  endpoint?: string
+  actual_model?: string
+  upstream_protocol: string
+  transport: string
+  status_code: number
+  outcome: RequestAttemptOutcome
+  upstream: boolean
+  response_committed: boolean
+  reason: string
+  retry: RequestRetryReason
+  cooldown: RequestCooldownScope
+  cooldown_until: number
+}
+
+export interface RequestTrace {
+  request_id: string
+  started_at: number
+  auth_token_id: number
+  model?: string
+  client_protocol: string
+  transport: 'http' | 'websocket'
+  is_streaming: boolean
+  final_status: number
+  outcome: RequestOutcome
+  duration: number
+  wait_duration: number
+  attempt_count: number
+  upstream_attempt_count: number
+  upstream_success_count: number
+  truncated: boolean
+  attempts?: RequestAttempt[]
+  cache_status?: string
+  cache_reason?: string
+}
+
+export interface RequestTraceStats {
+  requests: number
+  successes: number
+  errors: number
+  canceled: number
+  upstream_attempts: number
+  upstream_successes: number
+}
+
+export interface RequestTraceFilters {
+  range: DashboardRange
+  limit: number
+  offset: number
+  search?: string
+  outcome?: RequestOutcome | ''
+  auth_token_id?: string | number
+  model?: string
+  client_protocol?: string
 }
 
 export interface HealthPoint {
@@ -424,6 +917,7 @@ export interface StatsSnapshot {
   rpm_stats: RPMStats
   is_today: boolean
   balance_history?: SiteBalanceHistoryPoint[]
+  cost_summary?: CostSummary | null
 }
 
 export interface StatsFilterOptions {
@@ -435,6 +929,9 @@ export interface StatsFilters {
   range: DashboardRange
   channel_name?: string
   model?: string
+  cost_source?: CostSource | ''
+  cost_status?: CostStatus | ''
+  cost_basis?: CostBasis | ''
 }
 
 export interface ChannelTestResult {
@@ -593,8 +1090,11 @@ export interface SitePricingSnapshot {
 export interface SiteTask {
   id: string
   kind: string
-  status: 'queued' | 'running' | 'success' | 'partial' | 'failed' | 'cancelled'
-  progress?: { completed?: number; total?: number }
+	site_id?: number
+	site_account_id?: number
+  status: 'queued' | 'running' | 'success' | 'partial' | 'failed' | 'cancelled' | 'unknown'
+  progress?: { completed?: number; total?: number; items?: { site_id: number; task_id?: string; status: string; error?: string }[] }
+  budget?: { active: number; waiting: number; cooldown_until?: number; next_request_at?: number } | null
   result_ref?: string
   error?: string
   created_at: number
@@ -700,6 +1200,7 @@ export interface AuthToken {
   recent_rpm?: number
   allowed_models?: string[]
   allowed_channel_ids?: number[]
+  allowed_protocols?: string[]
   channel_restriction_mode?: 'allow' | 'deny'
   max_concurrency: number
 }
@@ -762,9 +1263,27 @@ export interface BackupImportResult {
   sites: number
   accounts: number
   channels: number
+  bindings?: number
   tokens: number
   settings: number
   restart_required: boolean
+}
+
+export interface BackupVerification {
+  verified_at: number
+  bytes: number
+  sha256: string
+  type: BackupType
+  warning_count: number
+}
+
+export interface BackupExportResult {
+  status: string
+  file_url: string
+  last_sync_at: number
+  verification?: BackupVerification
+  metadata_saved?: boolean
+  warnings?: string[]
 }
 
 export interface BackupWebDAVConfig {
@@ -778,6 +1297,12 @@ export interface BackupWebDAVConfig {
   auto_sync_enabled: boolean
   auto_sync_interval_hours: number
   last_sync_at?: number
+  last_verified_at?: number
+  last_verified_bytes?: number
+  last_verified_sha256?: string
+  last_verified_type?: BackupType | ''
+  last_verified_warning_count?: number
+  warnings?: string[]
   last_error?: string
   created_at?: number
   updated_at?: number
@@ -795,6 +1320,7 @@ export interface VersionInfo {
 
 export interface ActiveRequest {
   id: number
+  request_id?: string
   model: string
   client_ip: string
   start_time: number

@@ -22,6 +22,7 @@ import (
 	"github.com/yzgolden86/PivotFlow/internal/config"
 	"github.com/yzgolden86/PivotFlow/internal/cooldown"
 	"github.com/yzgolden86/PivotFlow/internal/model"
+	"github.com/yzgolden86/PivotFlow/internal/monitoring"
 	"github.com/yzgolden86/PivotFlow/internal/protocol"
 	protocolbuiltin "github.com/yzgolden86/PivotFlow/internal/protocol/builtin"
 	"github.com/yzgolden86/PivotFlow/internal/storage"
@@ -40,6 +41,7 @@ type Server struct {
 	logService    *LogService    // 日志管理服务
 	configService *ConfigService // 配置管理服务
 	siteControl   *siteControlService
+	billing       *billingService
 
 	// ============================================================================
 	// 核心字段
@@ -73,10 +75,16 @@ type Server struct {
 	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning atomic.Bool
 	backupExportRunning           atomic.Bool
+	backupVerificationState       backupVerificationState
+	configPreviews                configPreviewCache
+	requestCache                  *requestCache
 
 	// 异步统计（有界队列，避免每请求起goroutine）
-	tokenStatsCh        chan tokenStatsUpdate
-	tokenStatsDropCount atomic.Int64
+	tokenStatsCh            chan tokenStatsUpdate
+	tokenStatsDropCount     atomic.Int64
+	tokenStatsLastDroppedAt atomic.Int64
+	tokenStatsOperation     monitoring.OperationMonitor
+	runtimeStartedAt        int64
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
 	maxKeyRetries    int // 单个渠道内最大Key重试次数
@@ -122,6 +130,7 @@ type Server struct {
 
 // NewServer 创建并初始化一个新的 Server 实例
 func NewServer(store storage.Store) *Server {
+	startedAt := time.Now().UnixMilli()
 	// 初始化ConfigService（优先从数据库加载配置,环境变量作Fallback）
 	configService := NewConfigService(store)
 	loadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -152,6 +161,10 @@ func NewServer(store storage.Store) *Server {
 
 	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
 	runtimeCfg := loadServerRuntimeConfig(configService)
+	responseCacheConfig, cacheConfigErr := loadRequestCacheConfig(configService)
+	if cacheConfigErr != nil {
+		log.Fatalf("[FATAL] 请求缓存配置无效: %v", cacheConfigErr)
+	}
 	warnMigratedEnvSettings()
 
 	// 运行时配置必须归属具体 Server/存储实例，构造函数不修改进程级状态。
@@ -176,6 +189,7 @@ func NewServer(store storage.Store) *Server {
 
 	s := &Server{
 		store:            store,
+		runtimeStartedAt: startedAt,
 		configService:    configService,
 		loginRateLimiter: util.NewLoginRateLimiter(),
 
@@ -231,6 +245,7 @@ func NewServer(store storage.Store) *Server {
 	reg := protocol.NewRegistry()
 	protocolbuiltin.Register(reg)
 	s.protocolRegistry = reg
+	s.requestCache = newRequestCache(responseCacheConfig)
 
 	// 初始化高性能缓存层（60秒TTL，避免数据库性能杀手查询）
 	s.channelCache = storage.NewChannelCache(store, 60*time.Second)
@@ -312,8 +327,10 @@ func NewServer(store storage.Store) *Server {
 	// 白名单校验感知统一映射：把请求模型展开成映射组再对白名单求值，
 	// 组内任一名字（canonical 或别名）在白名单中即放行整组。
 	s.authService.modelAliasCandidates = s.modelAliases.namesFor
+	s.authService.onAuthTokensChanged = func() { s.invalidateRequestCache("permissions_changed") }
 	s.siteControl = newSiteControlService(store, s.baseCtx, &s.wg)
 	s.siteControl.configService = configService
+	s.siteControl.onModelAliasesChanged = s.reloadModelAliasesFromPersistedSetting
 	s.siteControl.onProjectionChanged = func() {
 		s.InvalidateChannelListCache()
 		s.InvalidateAllAPIKeysCache()
@@ -908,6 +925,7 @@ func (s *Server) hasActiveModelCooldown(ctx context.Context, channelID int64, mo
 // InvalidateChannelListCache 使渠道列表缓存失效
 // 在渠道CRUD操作后调用，确保缓存一致性
 func (s *Server) InvalidateChannelListCache() {
+	s.invalidateRequestCache("routing_changed")
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateCache()
 	}
@@ -940,6 +958,7 @@ func (s *Server) InvalidateChannelListCache() {
 // InvalidateAPIKeysCache 使指定渠道的 API Keys 缓存失效
 // 在渠道Key更新后调用，确保缓存一致性
 func (s *Server) InvalidateAPIKeysCache(channelID int64) {
+	s.invalidateRequestCache("keys_changed")
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateAPIKeysCache(channelID)
 	}
@@ -948,6 +967,7 @@ func (s *Server) InvalidateAPIKeysCache(channelID int64) {
 // InvalidateAllAPIKeysCache 使所有 API Keys 缓存失效
 // 在批量导入操作后调用，确保缓存一致性
 func (s *Server) InvalidateAllAPIKeysCache() {
+	s.invalidateRequestCache("keys_changed")
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateAllAPIKeysCache()
 	}
@@ -965,7 +985,11 @@ func (s *Server) invalidateCooldownCache() {
 func (s *Server) invalidateChannelRelatedCache(channelID int64) {
 	// 仅失效冷却缓存，不调用 InvalidateChannelListCache
 	// 因为渠道列表本身未变更，只是冷却状态变更
-	s.InvalidateAPIKeysCache(channelID)
+	// A successful attempt refreshes runtime cooldown/Key observations, not
+	// semantic configuration. Do not supersede its response-cache fill lease.
+	if cache := s.getChannelCache(); cache != nil {
+		cache.InvalidateAPIKeysCache(channelID)
+	}
 	s.invalidateCooldownCache()
 }
 
@@ -1107,6 +1131,8 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/channels/:id/site-sync-restore", s.HandleRestoreChannelAutoSync)
 		admin.GET("/channels/:id/editor", s.HandleChannelEditor)
 		admin.GET("/channels/:id/route-diagnostics", s.HandleChannelRouteDiagnostics)
+		admin.GET("/routing/models", s.HandleModelRouteInventory)
+		admin.GET("/routing/diagnostics", s.HandleModelRouteDiagnostics)
 		admin.GET("/channels/:id/keys", s.HandleChannelKeys)
 		admin.GET("/channels/:id/key-health", s.HandleChannelKeyHealth)
 		admin.GET("/channels/:id/model-stats", s.HandleChannelModelStats)
@@ -1148,6 +1174,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/site-accounts/:id/checkin-runs", s.siteControl.handleAccountCheckinRuns)
 		admin.GET("/checkin-attempts", s.siteControl.handleCheckinAttempts)
 		admin.POST("/site-accounts/:id/models/refresh", s.siteControl.handleAccountModelsRefresh)
+		admin.POST("/site-accounts/:id/sync-preview", s.HandleSiteSyncPreview)
 		admin.POST("/site-accounts/:id/model-probe", s.HandleSiteAccountModelProbe)
 		admin.POST("/site-accounts/:id/project", s.siteControl.handleAccountProjection)
 		admin.GET("/announcements", s.siteControl.handleAnnouncements)
@@ -1157,6 +1184,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/site-models", s.siteControl.handleSiteModels)
 		admin.GET("/site-channel-bindings", s.siteControl.handleSiteChannelBindings)
 		admin.GET("/site-pricing", s.handleSitePricing)
+		admin.GET("/site-tasks", s.siteControl.handleActiveSiteTasks)
 		admin.GET("/site-tasks/:id", s.siteControl.handleSiteTask)
 		admin.POST("/site-tasks/:id/cancel", s.siteControl.handleSiteTaskCancel)
 		admin.GET("/webhook", s.siteControl.handleWebhook)
@@ -1164,19 +1192,31 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/webhook/test", s.siteControl.handleWebhookTest)
 		admin.GET("/backup/export", s.HandleBackupExport)
 		admin.POST("/backup/import", s.HandleBackupImport)
+		admin.POST("/backup/preview", s.HandleBackupPreview)
+		admin.GET("/config-previews/:id", s.HandleConfigPreview)
+		admin.POST("/browser-import/inspect", s.HandleBrowserImportInspect)
+		admin.POST("/browser-import/preview", s.HandleBrowserImportPreview)
+		admin.DELETE("/config-previews/:id", s.HandleDiscardConfigPreview)
+		admin.POST("/config-previews/:id/apply", s.HandleApplyConfigPreview)
 		admin.GET("/backup/webdav", s.HandleBackupWebDAV)
 		admin.PUT("/backup/webdav", s.HandleBackupWebDAV)
 		admin.POST("/backup/webdav/export", s.HandleBackupWebDAVExport)
 		admin.POST("/backup/webdav/import", s.HandleBackupWebDAVImport)
+		admin.POST("/backup/webdav/preview", s.HandleBackupWebDAVPreview)
 
 		// 统计分析
 		admin.GET("/dashboard", s.HandleAdminDashboard)
 		admin.GET("/logs", s.HandleErrors)
+		admin.GET("/request-traces", s.HandleRequestTraces)
+		admin.GET("/request-traces/stats", s.HandleRequestTraceStats)
+		admin.GET("/request-traces/:request_id", s.HandleRequestTrace)
 		admin.GET("/logs/bootstrap", s.HandleLogsBootstrap)
 		admin.POST("/debug-logs/merged-response", s.HandleMergeDebugResponse)
 		admin.GET("/debug-logs/:log_id", s.HandleGetDebugLog)
 		admin.GET("/active-requests", s.HandleActiveRequests) // 进行中请求（内存状态）
 		admin.GET("/runtime-metrics", s.HandleRuntimeMetrics)
+		admin.GET("/request-cache", s.AdminGetRequestCache)
+		admin.DELETE("/request-cache", s.AdminClearRequestCache)
 		admin.GET("/active-requests/:request_id/debug-log", s.HandleGetActiveRequestDebugLog)
 		admin.GET("/metrics", s.HandleMetrics)
 		admin.GET("/stats", s.HandleStats)
@@ -1241,6 +1281,9 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		dashboard.GET("/session", s.authService.HandleWebSession)
 		dashboard.GET("/summary", s.HandleDashboardSummary)
 		dashboard.GET("/logs", s.HandleErrors)
+		dashboard.GET("/request-traces", s.HandleRequestTraces)
+		dashboard.GET("/request-traces/stats", s.HandleRequestTraceStats)
+		dashboard.GET("/request-traces/:request_id", s.HandleRequestTrace)
 		dashboard.GET("/logs/bootstrap", s.HandleLogsBootstrap)
 		dashboard.GET("/metrics", s.HandleMetrics)
 		dashboard.GET("/stats", s.HandleStats)
@@ -1332,7 +1375,7 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 	}
 
 	// 更新成本缓存（用于每日成本限额功能）。与统计查询共用同一口径：
-	// 站点价目表的 cost 已是上游实扣，不再乘本地渠道倍率；本地估算仍乘倍率。
+	// 站点价目表估算已包含组倍率，不再乘本地渠道倍率；本地估算仍乘倍率。
 	if s.costCache != nil && entry.ChannelID > 0 && entry.Cost > 0 && entry.LogSource == model.LogSourceProxy {
 		s.costCache.Add(entry.ChannelID, effectiveLogCost(entry))
 	}
@@ -1347,29 +1390,6 @@ func (s *Server) recordURLRequestFromLog(entry *model.LogEntry) {
 		return
 	}
 	s.urlSelector.RecordRequestResult(entry.ChannelID, entry.BaseURL, entry.StatusCode)
-}
-
-// getAllEnabledModels 获取所有启用渠道的去重模型列表。
-func (s *Server) getAllEnabledModels(ctx context.Context) ([]string, error) {
-	channels, err := s.GetEnabledChannelsByModel(ctx, "*")
-	if err != nil {
-		return nil, err
-	}
-	return modelNamesFromChannels(channels), nil
-}
-
-func modelNamesFromChannels(channels []*model.Config) []string {
-	modelSet := make(map[string]struct{})
-	for _, cfg := range channels {
-		for _, modelName := range cfg.GetModels() {
-			modelSet[modelName] = struct{}{}
-		}
-	}
-	models := make([]string, 0, len(modelSet))
-	for name := range modelSet {
-		models = append(models, name)
-	}
-	return models
 }
 
 // HandleChannelKeys 获取渠道的所有API Keys
@@ -1406,6 +1426,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.siteControl != nil {
 		s.siteControl.stopTasks()
 	}
+	s.stopConfigPreviews()
 
 	// 取消server级context，通知所有派生的后台任务退出
 	s.baseCancel()
@@ -1440,6 +1461,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var fingerprintShutdownErr error
 	if s.fingerprintJobs != nil {
 		fingerprintShutdownErr = s.fingerprintJobs.Close(ctx)
+	}
+	if s.billing != nil {
+		if billingErr := s.billing.close(ctx); billingErr != nil {
+			log.Printf("[ERROR] Billing shutdown: %v", billingErr)
+			if fingerprintShutdownErr == nil {
+				fingerprintShutdownErr = billingErr
+			}
+		}
 	}
 
 	// 使用channel等待所有goroutine完成

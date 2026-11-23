@@ -37,11 +37,19 @@ func scanLogEntry(scanner interface {
 	var cost sql.NullFloat64
 	var costMultiplier sql.NullFloat64
 	var costSource sql.NullString
+	var costMetadataVersion sql.NullInt64
+	var costStatus sql.NullString
+	var costBasis sql.NullString
+	var costDetailJSON sql.NullString
 	var ruleID sql.NullString
+	var requestID sql.NullString
+	var attemptNumber sql.NullInt64
 
 	if err := scanner.Scan(&e.ID, &timeMs, &e.Model, &actualModel, &logSource, &e.ChannelID,
 		&e.StatusCode, &e.Message, &duration, &isStreamingInt, &upstreamWebsocketInt, &firstByteTime, &apiKeyUsed, &apiKeyHash, &e.AuthTokenID, &clientProtocol, &upstreamProtocol, &clientIP, &baseURL, &serviceTier, &thinkingEffort,
-		&inputTokens, &outputTokens, &reasoningTokens, &cacheReadTokens, &cacheCreationTokens, &cache5mTokens, &cache1hTokens, &cost, &costMultiplier, &costSource, &ruleID); err != nil {
+		&inputTokens, &outputTokens, &reasoningTokens, &cacheReadTokens, &cacheCreationTokens, &cache5mTokens, &cache1hTokens, &cost, &costMultiplier, &costSource,
+		&costMetadataVersion, &costStatus, &costBasis, &costDetailJSON, &ruleID,
+		&requestID, &attemptNumber); err != nil {
 		return nil, err
 	}
 
@@ -115,8 +123,26 @@ func scanLogEntry(scanner interface {
 	if costSource.Valid {
 		e.CostSource = costSource.String
 	}
+	if costMetadataVersion.Valid {
+		e.CostMetadataVersion = int(costMetadataVersion.Int64)
+	}
+	if costStatus.Valid {
+		e.CostStatus = costStatus.String
+	}
+	if costBasis.Valid {
+		e.CostBasis = costBasis.String
+	}
+	if costDetailJSON.Valid {
+		e.CostDetailJSON = costDetailJSON.String
+	}
 	if ruleID.Valid {
 		e.RuleID = ruleID.String
+	}
+	if requestID.Valid {
+		e.RequestID = requestID.String
+	}
+	if attemptNumber.Valid {
+		e.AttemptNumber = int(attemptNumber.Int64)
 	}
 
 	return &e, nil
@@ -177,15 +203,9 @@ func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 		e.Time = model.JSONTime{Time: time.Now()}
 	}
 	if e.DebugData != nil {
-		tx, err := s.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if err := insertLogsWithDebug(ctx, s, tx, []*model.LogEntry{e}); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
+		if err := s.withTx(ctx, func(tx *sql.Tx) error {
+			return insertLogsWithDebug(ctx, s, tx, []*model.LogEntry{e})
+		}); err != nil {
 			return err
 		}
 		s.recordAPIKeyHealth(ctx, []*model.LogEntry{e})
@@ -201,11 +221,12 @@ func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 }
 
 const logsInsertColumns = `INSERT INTO logs(time, minute_bucket, model, actual_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-				input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, cost_source, rule_id) VALUES `
+				input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, cost_source,
+				cost_metadata_version, cost_status, cost_basis, cost_detail_json, rule_id, request_id, attempt_number) VALUES `
 
-const logRowPlaceholders = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const logRowPlaceholders = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-const logRowParams = 32
+const logRowParams = 38
 
 // BatchAddLogs 批量写入日志（单事务，多值 INSERT 提升刷盘吞吐）
 // 设计：
@@ -219,12 +240,6 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 		return nil
 	}
 
-	tx, err := s.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
 	plain := make([]*model.LogEntry, 0, len(logs))
 	var withDebug []*model.LogEntry
 	for _, e := range logs {
@@ -235,19 +250,19 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 		plain = append(plain, e)
 	}
 
-	if len(plain) > 0 {
-		if err := batchInsertPlainLogs(ctx, s, tx, plain); err != nil {
-			return err
+	if err := s.withTx(ctx, func(tx *sql.Tx) error {
+		if len(plain) > 0 {
+			if err := batchInsertPlainLogs(ctx, s, tx, plain); err != nil {
+				return err
+			}
 		}
-	}
-
-	if len(withDebug) > 0 {
-		if err := insertLogsWithDebug(ctx, s, tx, withDebug); err != nil {
-			return err
+		if len(withDebug) > 0 {
+			if err := insertLogsWithDebug(ctx, s, tx, withDebug); err != nil {
+				return err
+			}
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
+		return nil
+	}); err != nil {
 		return err
 	}
 	s.recordAPIKeyHealth(ctx, logs)
@@ -373,7 +388,13 @@ func logRowArgs(e *model.LogEntry) []any {
 		e.Cache5mInputTokens, e.Cache1hInputTokens, e.Cost,
 		normalizeCostMultiplier(e.CostMultiplier),
 		e.CostSource,
+		e.CostMetadataVersion,
+		e.CostStatus,
+		e.CostBasis,
+		e.CostDetailJSON,
 		e.RuleID,
+		e.RequestID,
+		e.AttemptNumber,
 	}
 }
 
@@ -383,7 +404,8 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 	// 消除 N+1：渠道过滤/名称解析用一次批量查询完成
 	baseQuery := `
 			SELECT id, time, model, actual_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-				input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, cost_source, rule_id
+				input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, cost_source,
+				cost_metadata_version, cost_status, cost_basis, cost_detail_json, rule_id, request_id, attempt_number
 			FROM logs`
 
 	// time字段现在是BIGINT毫秒时间戳，需要转换为Unix毫秒进行比较
@@ -400,7 +422,7 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 	}
 
 	// 其余过滤条件（model等）
-	qb.ApplyFilter(filter)
+	qb.ApplyFilter(filter, s.driverName)
 
 	suffix := "ORDER BY time DESC LIMIT ? OFFSET ?"
 	query, args := qb.BuildWithSuffix(suffix)
@@ -453,7 +475,7 @@ func (s *SQLStore) CountLogs(ctx context.Context, since time.Time, filter *model
 	}
 
 	// 其余过滤条件（model等）
-	qb.ApplyFilter(filter)
+	qb.ApplyFilter(filter, s.driverName)
 
 	query, args := qb.Build()
 	var count int
@@ -465,7 +487,8 @@ func (s *SQLStore) CountLogs(ctx context.Context, since time.Time, filter *model
 func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
 	baseQuery := `
 		SELECT id, time, model, actual_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-			input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, cost_source, rule_id
+			input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, cost_source,
+			cost_metadata_version, cost_status, cost_basis, cost_detail_json, rule_id, request_id, attempt_number
 		FROM logs`
 
 	sinceMs := since.UnixMilli()
@@ -482,7 +505,7 @@ func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, li
 		return []*model.LogEntry{}, nil
 	}
 
-	qb.ApplyFilter(filter)
+	qb.ApplyFilter(filter, s.driverName)
 
 	suffix := "ORDER BY time DESC LIMIT ? OFFSET ?"
 	query, args := qb.BuildWithSuffix(suffix)
@@ -536,7 +559,7 @@ func (s *SQLStore) CountLogsRange(ctx context.Context, since, until time.Time, f
 		return 0, nil
 	}
 
-	qb.ApplyFilter(filter)
+	qb.ApplyFilter(filter, s.driverName)
 
 	query, args := qb.Build()
 	var count int
@@ -621,7 +644,7 @@ func (s *SQLStore) ListLogsRangeWithCount(ctx context.Context, since, until time
 			}
 			qb.WhereIn("channel_id", vals)
 		}
-		qb.ApplyFilter(filter)
+		qb.ApplyFilter(filter, s.driverName)
 	}
 
 	// 2. 并行执行 list + count
@@ -634,7 +657,8 @@ func (s *SQLStore) ListLogsRangeWithCount(ctx context.Context, since, until time
 	go func() {
 		defer wg.Done()
 		qb := NewQueryBuilder(`SELECT id, time, model, actual_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-			input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, cost_source, rule_id
+			input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, cost_source,
+			cost_metadata_version, cost_status, cost_basis, cost_detail_json, rule_id, request_id, attempt_number
 			FROM logs`).
 			Where("time >= ?", sinceMs).
 			Where("time <= ?", untilMs)

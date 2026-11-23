@@ -1,0 +1,98 @@
+{
+  "commit": "8aa58b0340ba2de58ce74fbfacd32597c44842a2",
+  "capturedAt": "2026-11-19T18:29:42+08:00",
+  "files": [
+    {
+      "file": "octopus-src-README.md",
+      "sourcePath": "README.md",
+      "sha256": "bf29c77d47413333f36aeb18ea17903ec51030deb451c40e45601ee5a1d84f46",
+      "bytes": 11589,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/README.md"
+    },
+    {
+      "file": "octopus-src-LICENSE",
+      "sourcePath": "LICENSE",
+      "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+      "bytes": 34523,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/LICENSE"
+    },
+    {
+      "file": "octopus-src-internal-model-channel.go",
+      "sourcePath": "internal/model/channel.go",
+      "sha256": "9c42ddae51137d54db3d9433cd917ef76f6350cf8bcfe877426d7f4513dd27aa",
+      "bytes": 12353,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/internal/model/channel.go"
+    },
+    {
+      "file": "octopus-src-internal-model-group.go",
+      "sourcePath": "internal/model/group.go",
+      "sha256": "2d6ac9c024f48646a0428525e6d54c3283869c28eb193880b1fde6b06772d89c",
+      "bytes": 8271,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/internal/model/group.go"
+    },
+    {
+      "file": "octopus-src-internal-relay-route.go",
+      "sourcePath": "internal/relay/route.go",
+      "sha256": "173e562f9d2b5bef9da62c185839ad9f20f2481f4a800677fac8ce73e9b369c4",
+      "bytes": 9348,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/internal/relay/route.go"
+    },
+    {
+      "file": "octopus-src-internal-relay-handler.go",
+      "sourcePath": "internal/relay/handler.go",
+      "sha256": "db937eef49ca3d01bfdf45c0bf8d6d1f3e76d5ae51f9bcb72f1da6332259668e",
+      "bytes": 15179,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/internal/relay/handler.go"
+    },
+    {
+      "file": "octopus-src-web-src-components-modules-channel-FormGrants.tsx",
+      "sourcePath": "web/src/components/modules/channel/FormGrants.tsx",
+      "sha256": "5e39abd51886b830d30e849651c909ffe1fc4f507f7829675b32ffab358110bb",
+      "bytes": 14219,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/web/src/components/modules/channel/FormGrants.tsx"
+    },
+    {
+      "file": "octopus-src-web-src-components-modules-log-Item.tsx",
+      "sourcePath": "web/src/components/modules/log/Item.tsx",
+      "sha256": "c6286d446d6b34cd36034a3ee1319f09ff9d92fe302a4f49a2607d66cdea74a2",
+      "bytes": 38437,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/web/src/components/modules/log/Item.tsx"
+    },
+    {
+      "file": "octopus-desktop-home.png",
+      "sourcePath": "web/public/screenshot/desktop-home.png",
+      "sha256": "b4436d49c430ff2cdd1dbcc862bb2629c29019988277d4e7b053133577de7048",
+      "bytes": 257269,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/web/public/screenshot/desktop-home.png"
+    },
+    {
+      "file": "octopus-desktop-channel.png",
+      "sourcePath": "web/public/screenshot/desktop-channel.png",
+      "sha256": "2c9c721b9b28dbd85aee57bf59539f6354f06d0840980c5540f1c9a6beabcb9c",
+      "bytes": 256318,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/web/public/screenshot/desktop-channel.png"
+    },
+    {
+      "file": "octopus-desktop-group.png",
+      "sourcePath": "web/public/screenshot/desktop-group.png",
+      "sha256": "be38e70aa1b77a993e17c295e46c4f918f1ca180f3354ad33144bb864fec4b2a",
+      "bytes": 255656,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/web/public/screenshot/desktop-group.png"
+    },
+    {
+      "file": "octopus-desktop-log.png",
+      "sourcePath": "web/public/screenshot/desktop-log.png",
+      "sha256": "df34813a2b9036f6314d5eae94a12304986e44d480b746280e2d6514f9ec0dde",
+      "bytes": 339693,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/web/public/screenshot/desktop-log.png"
+    },
+    {
+      "file": "octopus-mobile-home.png",
+      "sourcePath": "web/public/screenshot/mobile-home.png",
+      "sha256": "c9efb6272a1a1806e98c17a11d2be8badd99a3180ce7eaedbece7a1964019196",
+      "bytes": 718286,
+      "sourceURL": "https://github.com/bestruirui/octopus/blob/8aa58b0340ba2de58ce74fbfacd32597c44842a2/web/public/screenshot/mobile-home.png"
+    }
+  ],
+  "notAvailableLocally": []
+}

@@ -75,6 +75,21 @@ func (c *CostCache) GetAll() map[int64]float64 {
 	return result
 }
 
+// snapshotAt observes the selected day's costs without clearing yesterday's
+// state. The next ordinary Add/Get performs the existing daily reset.
+func (c *CostCache) snapshotAt(now time.Time) map[int64]float64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	result := make(map[int64]float64, len(c.costs))
+	if !todayStart(now).Equal(c.dayStart) {
+		return result
+	}
+	for id, cost := range c.costs {
+		result[id] = cost
+	}
+	return result
+}
+
 // Load 加载初始数据（启动时调用）
 func (c *CostCache) Load(costs map[int64]float64) {
 	c.mu.Lock()

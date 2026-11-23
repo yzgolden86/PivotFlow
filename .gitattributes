@@ -19,3 +19,6 @@
 *.ico binary
 *.woff binary
 *.woff2 binary
+
+# Keep captured research evidence byte-for-byte, including upstream whitespace.
+docs/research/*/sources/** -text -eol whitespace=-blank-at-eol,-blank-at-eof

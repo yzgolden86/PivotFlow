@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { popoverPosition } from './popoverPosition'
+import useFocusLayer from './useFocusLayer'
 
 /**
  * 挂在锚点上的浮层（下拉菜单 / 弹出面板）。
@@ -43,9 +44,10 @@ export default function AnchoredPopover({
 }) {
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
   const menu = useRef<HTMLDivElement>(null)
+  useFocusLayer(menu, { open: open && Boolean(position), modal: false, close: () => onOpenChange(false) })
 
   useLayoutEffect(() => {
-    if (!open) return
+    if (!open) { setPosition(null); return }
     const place = () => {
       const anchor = anchorRef.current
       const element = menu.current
@@ -64,9 +66,6 @@ export default function AnchoredPopover({
       if (menu.current?.contains(event.target)) return
       onOpenChange(false)
     }
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onOpenChange(false)
-    }
     place()
     // 页面滚动 / 窗口缩放 / 锚点或浮层自身尺寸变化都要重新定位，
     // 否则浮层会停在旧坐标上（它已经不在锚点的定位上下文里了）。
@@ -76,13 +75,11 @@ export default function AnchoredPopover({
     window.addEventListener('resize', place)
     window.addEventListener('scroll', place, true)
     document.addEventListener('pointerdown', dismiss, true)
-    document.addEventListener('keydown', escape)
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', place)
       window.removeEventListener('scroll', place, true)
       document.removeEventListener('pointerdown', dismiss, true)
-      document.removeEventListener('keydown', escape)
     }
   }, [open, onOpenChange, anchorRef, placement, flyOut])
 
@@ -94,6 +91,7 @@ export default function AnchoredPopover({
       className={className}
       role={role}
       aria-label={ariaLabel}
+      tabIndex={-1}
       // 首帧还不知道尺寸，先隐藏但保留布局，量完再显示，避免闪一下错位。
       style={{ ...position, visibility: position ? 'visible' : 'hidden' }}
     >

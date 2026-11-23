@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
 	"github.com/yzgolden86/PivotFlow/internal/protocol"
+	"github.com/yzgolden86/PivotFlow/internal/storage"
 	"github.com/yzgolden86/PivotFlow/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -187,6 +189,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			continue
 		}
 		item.ChannelName = cfg.Name
+		previousConfig := cfg.Clone()
 
 		resp, err := s.fetchModelsForChannel(ctx, cfg, overrideProtocol)
 		if err != nil {
@@ -235,12 +238,26 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			continue
 		}
 
-		if _, err := s.store.UpdateConfig(ctx, channelID, cfg); err != nil {
+		var saveErr error
+		if mode == "replace" {
+			saveErr = s.persistChannelModelReplace(ctx, previousConfig, cfg)
+		} else {
+			_, saveErr = s.store.UpdateConfig(ctx, channelID, cfg)
+		}
+		if saveErr != nil && !storage.IsConfigurationCacheDegraded(saveErr) {
 			item.Status = "failed"
-			item.Error = "保存模型失败: " + err.Error()
+			item.Error = "保存模型或映射清理失败，请重试"
+			if storage.IsConfigurationCommitUnknown(saveErr) {
+				item.Error = "保存结果待确认，请重新读取渠道后再决定是否重试"
+				changed = true
+			}
 			failed++
 			results = append(results, item)
 			continue
+		}
+		if storage.IsConfigurationCacheDegraded(saveErr) {
+			log.Printf("[WARN] channel %d model replace committed but configuration replica refresh failed", channelID)
+			item.Error = "主库已保存，本地配置副本刷新失败"
 		}
 
 		item.Status = "updated"

@@ -1,10 +1,12 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Bell, CheckCheck, RefreshCw } from 'lucide-react'
-import { getAnnouncements, getSites, markAllAnnouncementsRead, markAnnouncementRead, refreshAnnouncements, waitForSiteTask } from '../api'
+import { getAnnouncements, getSites, markAllAnnouncementsRead, markAnnouncementRead } from '../api'
 import type { Site, SiteAnnouncement } from '../types'
 import { announcementFetchedTime } from './announcementTime'
 import { EmptyState, ErrorState, formatTime, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
 import { Modal, siteErrorMessage } from './siteShared'
+import { siteTaskRunner, siteTaskTarget } from '../siteTasks'
+import SiteTaskProgress, { useSiteTaskCompletion } from './SiteTaskProgress'
 
 const PAGE_SIZE = 30
 
@@ -15,31 +17,50 @@ const loadAnnouncementDetail = () => import('./AnnouncementDetail')
 const AnnouncementDetail = lazy(loadAnnouncementDetail)
 
 export default function AnnouncementsPage() {
+  const taskCompletion = useSiteTaskCompletion()
+  const loadRequest = useRef<AbortController | null>(null)
   const [sites, setSites] = useState<Site[]>([]); const [items, setItems] = useState<SiteAnnouncement[]>([]); const [total, setTotal] = useState(0); const [unreadCount, setUnreadCount] = useState(0)
   const [siteFilter, setSiteFilter] = useState(0); const [unread, setUnread] = useState(false); const [page, setPage] = useState(1); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [noticeTone, setNoticeTone] = useState<'success' | 'warning'>('success'); const [refreshing, setRefreshing] = useState(false); const [selected, setSelected] = useState<SiteAnnouncement | null>(null)
-  const load = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true)
+  const load = useCallback(async (signal?: AbortSignal, options: { silent?: boolean } = {}) => {
+    loadRequest.current?.abort()
+    const request = new AbortController()
+    loadRequest.current = request
+    const fetchSignal = signal ? AbortSignal.any([signal, request.signal]) : request.signal
+    if (!options.silent) setLoading(true)
     setError('')
     try {
       const [siteResult, announcementResult, unreadResult] = await Promise.allSettled([
-        getSites(signal),
-        getAnnouncements({ site_id: siteFilter, unread, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }, signal),
-        getAnnouncements({ site_id: siteFilter, unread: true, limit: 1, offset: 0 }, signal),
+        getSites(fetchSignal),
+        getAnnouncements({ site_id: siteFilter, unread, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }, fetchSignal),
+        getAnnouncements({ site_id: siteFilter, unread: true, limit: 1, offset: 0 }, fetchSignal),
       ])
+      if (fetchSignal.aborted || loadRequest.current !== request) return
       if (announcementResult.status === 'rejected') throw announcementResult.reason
       if (siteResult.status === 'fulfilled') setSites(siteResult.value)
       setItems(announcementResult.value.data)
       setTotal(announcementResult.value.count)
       if (unreadResult.status === 'fulfilled') setUnreadCount(unreadResult.value.count)
     } catch (reason) {
-      if (!signal?.aborted) setError(siteErrorMessage(reason))
+      if (!fetchSignal.aborted && loadRequest.current === request) setError(siteErrorMessage(reason))
     } finally {
-      if (!signal?.aborted) setLoading(false)
+      if (!fetchSignal.aborted && loadRequest.current === request) setLoading(false)
     }
   }, [page, siteFilter, unread])
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
+  useEffect(() => () => loadRequest.current?.abort(), [])
+  useEffect(() => { if (!taskCompletion) return; const timer = setTimeout(() => void load(undefined, { silent: true }), 500); return () => clearTimeout(timer) }, [taskCompletion, load])
   const siteMap = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites])
-  const refresh = async () => { setRefreshing(true); setError(''); setNotice(''); setNoticeTone('success'); try { const queued = await refreshAnnouncements(siteFilter); const task = await waitForSiteTask(queued.task_id); if (!['success', 'partial'].includes(task.status)) throw new Error(task.error || task.status); setNotice(task.status === 'partial' ? `公告已刷新，但部分站点失败：${task.error || '请稍后重试'}` : siteFilter ? '站点公告已刷新' : '全部站点公告已刷新'); setNoticeTone(task.status === 'partial' ? 'warning' : 'success'); await load() } catch (reason) { setError(siteErrorMessage(reason)) } finally { setRefreshing(false) } }
+  const refresh = async () => {
+    setRefreshing(true); setError(''); setNotice(''); setNoticeTone('success')
+    try {
+      const targets = sites.filter((site) => siteFilter ? site.id === siteFilter : site.enabled)
+      const results = await siteTaskRunner.run(targets.map((site) => siteTaskTarget('announcement_refresh', site.id, undefined, site.name, '站点公告')))
+      const count = (status: string) => results.filter((item) => item.status === status).length
+      setNotice(`公告刷新完成：成功 ${count('success')}，失败 ${count('failed')}，取消 ${count('cancelled')}，待确认 ${count('unknown')}`)
+      setNoticeTone(results.every((item) => item.status === 'success') ? 'success' : 'warning')
+      await load(undefined, { silent: true })
+    } catch (reason) { setError(siteErrorMessage(reason)) } finally { setRefreshing(false) }
+  }
   const readAll = async () => { try { await markAllAnnouncementsRead(siteFilter); setNoticeTone('success'); setNotice('公告已全部标记为已读'); await load() } catch (reason) { setError(siteErrorMessage(reason)) } }
   const open = async (item: SiteAnnouncement) => { setSelected(item); if (!item.read_at) { try { await markAnnouncementRead(item.id); setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, read_at: Date.now() } : entry)); setUnreadCount((value) => Math.max(0, value - 1)) } catch { /* 阅读不因回写失败而中断 */ } } }
 
@@ -50,6 +71,7 @@ export default function AnnouncementsPage() {
       tone="blue"
       actions={<><button className="secondary-button" type="button" onClick={() => void readAll()} disabled={!unreadCount}><CheckCheck size={15} />全部已读</button><button className="primary-button" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />}{refreshing ? '刷新中' : '刷新公告'}</button></>}
     />
+    <SiteTaskProgress />
     <section className="compact-summary"><span><strong>{total}</strong>当前公告</span><span><strong>{unreadCount}</strong>未读</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>启用站点</span><span><strong>{items.filter((item) => item.level === 'important' || item.level === 'warning').length}</strong>重要提醒</span></section>
     <div className="filter-bar"><select value={siteFilter} onChange={(event) => { setPage(1); setSiteFilter(Number(event.target.value)) }} aria-label="公告站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><label className="checkbox-field filter-checkbox"><input type="checkbox" checked={unread} onChange={(event) => { setPage(1); setUnread(event.target.checked) }} /><span>只看未读</span></label><span className="filter-count"><Bell size={14} />{total} 条公告</span></div>
     {notice && <OperationNotice tone={noticeTone} onDismiss={() => setNotice('')}>{notice}</OperationNotice>}{error && items.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}

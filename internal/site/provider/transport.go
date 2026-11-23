@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yzgolden86/PivotFlow/internal/util"
 	"github.com/yzgolden86/PivotFlow/internal/version"
 )
 
@@ -22,6 +23,7 @@ const DirectProxyURL = "direct://"
 type ClientFactory struct {
 	AllowPrivate bool
 	Resolver     *net.Resolver
+	Budget       *RequestBudget
 }
 
 func (f ClientFactory) New(proxyURL string) (*http.Client, error) {
@@ -78,13 +80,10 @@ func (f ClientFactory) New(proxyURL string) (*http.Client, error) {
 		transport.Proxy = http.ProxyURL(parsed)
 		hops.remember(parsed.Hostname())
 	}
-	client := &http.Client{Transport: &userAgentTransport{base: transport}, Timeout: 30 * time.Second}
+	client := &http.Client{Transport: &userAgentTransport{base: f.Budget.wrap(transport)}, Timeout: 30 * time.Second}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 4 {
-			return errors.New("too many provider redirects")
-		}
-		if len(via) > 0 && !strings.EqualFold(req.URL.Hostname(), via[0].URL.Hostname()) {
-			return errors.New("provider redirect changed host")
+		if err := util.AuthenticatedRedirectPolicy(req, via); err != nil {
+			return fmt.Errorf("provider redirect rejected: %w", err)
 		}
 		if err := ValidateBaseURL(req.URL.String(), f.AllowPrivate); err != nil {
 			return err
@@ -104,6 +103,12 @@ func (f ClientFactory) New(proxyURL string) (*http.Client, error) {
 // explicitly set header always wins, so a caller that wants to look like
 // something else keeps control.
 type userAgentTransport struct{ base http.RoundTripper }
+
+func (t *userAgentTransport) CloseIdleConnections() {
+	if closer, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
 
 func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Header.Get("User-Agent") == "" {

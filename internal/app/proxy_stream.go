@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 var (
@@ -229,7 +231,332 @@ func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter, onD
 // [INFO] 支持数据钩子（2025-11）：允许SSE usage解析器增量处理数据流
 // 设计原则：SSE事件通常200B-2KB，小缓冲区避免事件积压
 func streamCopySSE(ctx context.Context, src io.Reader, dst http.ResponseWriter, onData func([]byte) error) error {
-	return streamCopyWithBufferSize(ctx, src, dst, onData, SSEBufferSize)
+	tracker := &responsesSSETerminalTracker{}
+	err := streamCopyWithBufferSize(ctx, src, dst, func(data []byte) error {
+		tracker.observe(data)
+		if onData == nil {
+			return nil
+		}
+		return onData(data)
+	}, SSEBufferSize)
+	if err == nil && tracker.sawResponseEvent && !tracker.sawTerminalEvent {
+		return io.ErrUnexpectedEOF
+	}
+	return err
+}
+
+type responsesSSETerminalTracker struct {
+	eventBuffer      bytes.Buffer
+	eventType        string
+	dataLineCount    int
+	lineOverflow     bool
+	lineLength       int
+	lineDataStart    int
+	lineDataFed      int
+	lineField        responsesSSELineField
+	jsonType         responsesJSONTypeScanner
+	sawResponseEvent bool
+	sawTerminalEvent bool
+}
+
+const maxResponsesSSELineBytes = 64 << 10
+
+type responsesSSELineField uint8
+
+const (
+	responsesSSELineUnknown responsesSSELineField = iota
+	responsesSSELineData
+	responsesSSELineOther
+)
+
+type responsesJSONTypeScanner struct {
+	depth          int
+	expectingKey   bool
+	pendingKey     string
+	topLevelValue  bool
+	inString       bool
+	escape         bool
+	stringRole     responsesJSONStringRole
+	stringBuffer   []byte
+	stringOverflow bool
+	eventType      string
+}
+
+type responsesJSONStringRole uint8
+
+const (
+	responsesJSONStringOther responsesJSONStringRole = iota
+	responsesJSONStringKey
+	responsesJSONStringTypeValue
+)
+
+const maxResponsesJSONTokenBytes = 64
+
+func (t *responsesSSETerminalTracker) observe(data []byte) {
+	for len(data) > 0 {
+		newline := bytes.IndexByte(data, '\n')
+		if newline < 0 {
+			t.appendLine(data)
+			return
+		}
+		t.appendLine(data[:newline])
+		t.finishLine()
+		data = data[newline+1:]
+	}
+}
+
+func (t *responsesSSETerminalTracker) appendLine(data []byte) {
+	oldLength := t.lineLength
+	t.retainLine(data)
+	t.lineLength += len(data)
+	t.classifyLine()
+	if t.lineField == responsesSSELineData {
+		t.consumeLineData(data, oldLength)
+	}
+}
+
+func (t *responsesSSETerminalTracker) retainLine(data []byte) {
+	if t.lineOverflow {
+		return
+	}
+	remaining := maxResponsesSSELineBytes - t.eventBuffer.Len()
+	if len(data) > remaining {
+		_, _ = t.eventBuffer.Write(data[:remaining])
+		t.lineOverflow = true
+		return
+	}
+	_, _ = t.eventBuffer.Write(data)
+}
+
+func (t *responsesSSETerminalTracker) classifyLine() {
+	if t.lineField != responsesSSELineUnknown {
+		return
+	}
+	linePrefix := t.eventBuffer.Bytes()
+	dataField := []byte("data:")
+	if len(linePrefix) < len(dataField) {
+		if bytes.HasPrefix(dataField, linePrefix) {
+			return
+		}
+		t.lineField = responsesSSELineOther
+		return
+	}
+	if bytes.HasPrefix(linePrefix, dataField) {
+		t.lineField = responsesSSELineData
+		t.lineDataStart = len(dataField)
+		if t.dataLineCount > 0 {
+			t.jsonType.observe([]byte{'\n'})
+		}
+		t.dataLineCount++
+		return
+	}
+	t.lineField = responsesSSELineOther
+}
+
+func (t *responsesSSETerminalTracker) consumeLineData(data []byte, oldLength int) {
+	retainedEnd := min(t.lineLength, t.eventBuffer.Len())
+	if t.lineDataFed < retainedEnd {
+		start := max(t.lineDataStart, t.lineDataFed)
+		if start < retainedEnd {
+			t.jsonType.observe(t.eventBuffer.Bytes()[start:retainedEnd])
+		}
+		t.lineDataFed = retainedEnd
+	}
+	if t.lineDataFed >= t.lineLength {
+		return
+	}
+
+	inputStart := max(t.lineDataFed-oldLength, 0)
+	if inputStart < len(data) {
+		t.jsonType.observe(data[inputStart:])
+	}
+	t.lineDataFed = t.lineLength
+}
+
+func (t *responsesSSETerminalTracker) finishLine() {
+	line := t.eventBuffer.Bytes()
+	if len(line) > 0 && line[len(line)-1] == '\r' {
+		line = line[:len(line)-1]
+	}
+	if len(line) == 0 {
+		t.finishEvent()
+	} else {
+		t.observeLine(line)
+	}
+	t.eventBuffer.Reset()
+	t.lineOverflow = false
+	t.lineLength = 0
+	t.lineDataStart = 0
+	t.lineDataFed = 0
+	t.lineField = responsesSSELineUnknown
+}
+
+func (t *responsesSSETerminalTracker) observeLine(line []byte) {
+	if value, ok := bytes.CutPrefix(line, []byte("event:")); ok {
+		t.eventType = string(bytes.TrimSpace(value))
+	}
+}
+
+func (t *responsesSSETerminalTracker) finishEvent() {
+	dataType := strings.TrimSpace(t.jsonType.eventType)
+	eventType := strings.TrimSpace(t.eventType)
+	if strings.HasPrefix(eventType, "response.") || strings.HasPrefix(dataType, "response.") {
+		t.sawResponseEvent = true
+	}
+	if isResponsesTerminalEvent(eventType) || isResponsesTerminalEvent(dataType) {
+		t.sawTerminalEvent = true
+	}
+	t.eventType = ""
+	t.dataLineCount = 0
+	t.jsonType.reset()
+}
+
+func isResponsesTerminalEvent(eventType string) bool {
+	switch eventType {
+	case "response.completed", "response.done", "response.incomplete", "response.failed", "response.cancelled", "response.canceled":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *responsesJSONTypeScanner) observe(data []byte) {
+	for _, b := range data {
+		s.consume(b)
+	}
+}
+
+func (s *responsesJSONTypeScanner) consume(b byte) {
+	if s.inString {
+		s.consumeStringByte(b)
+		return
+	}
+
+	switch b {
+	case '"':
+		s.startString()
+	case '{', '[':
+		if s.depth == 0 {
+			s.depth = 1
+			s.expectingKey = b == '{'
+			s.pendingKey = ""
+			s.topLevelValue = false
+			return
+		}
+		s.depth++
+	case '}', ']':
+		switch {
+		case s.depth > 1:
+			s.depth--
+			if s.depth == 1 {
+				s.expectingKey = false
+				s.topLevelValue = false
+			}
+		case s.depth == 1:
+			s.depth = 0
+			s.expectingKey = false
+			s.pendingKey = ""
+			s.topLevelValue = false
+		}
+	case ':':
+		if s.depth == 1 && !s.expectingKey {
+			s.topLevelValue = true
+		}
+	case ',':
+		if s.depth == 1 {
+			s.expectingKey = true
+			s.pendingKey = ""
+			s.topLevelValue = false
+		}
+	}
+}
+
+func (s *responsesJSONTypeScanner) startString() {
+	s.inString = true
+	s.escape = false
+	s.stringBuffer = s.stringBuffer[:0]
+	s.stringOverflow = false
+	switch {
+	case s.depth == 1 && s.expectingKey:
+		s.stringRole = responsesJSONStringKey
+	case s.depth == 1 && s.pendingKey == "type" && s.topLevelValue:
+		s.stringRole = responsesJSONStringTypeValue
+	default:
+		s.stringRole = responsesJSONStringOther
+	}
+}
+
+func (s *responsesJSONTypeScanner) consumeStringByte(b byte) {
+	if s.escape {
+		s.escape = false
+		s.appendStringByte(b)
+		return
+	}
+	switch b {
+	case '\\':
+		s.appendStringByte(b)
+		s.escape = true
+	case '"':
+		s.finishString()
+	default:
+		s.appendStringByte(b)
+	}
+}
+
+func (s *responsesJSONTypeScanner) appendStringByte(b byte) {
+	if s.stringOverflow {
+		return
+	}
+	if len(s.stringBuffer) >= maxResponsesJSONTokenBytes {
+		s.stringOverflow = true
+		s.stringBuffer = s.stringBuffer[:0]
+		return
+	}
+	s.stringBuffer = append(s.stringBuffer, b)
+}
+
+func (s *responsesJSONTypeScanner) finishString() {
+	s.inString = false
+	switch s.stringRole {
+	case responsesJSONStringKey:
+		if s.stringOverflow {
+			s.pendingKey = ""
+		} else {
+			s.pendingKey = s.stringToken()
+		}
+		s.expectingKey = false
+	case responsesJSONStringTypeValue:
+		if !s.stringOverflow {
+			s.eventType = s.stringToken()
+		}
+		s.topLevelValue = false
+	case responsesJSONStringOther:
+		if s.depth == 1 {
+			s.topLevelValue = false
+		}
+	}
+	s.stringRole = responsesJSONStringOther
+}
+
+func (s *responsesJSONTypeScanner) stringToken() string {
+	value, err := strconv.Unquote(`"` + string(s.stringBuffer) + `"`)
+	if err != nil {
+		return string(s.stringBuffer)
+	}
+	return value
+}
+
+func (s *responsesJSONTypeScanner) reset() {
+	s.depth = 0
+	s.expectingKey = false
+	s.pendingKey = ""
+	s.topLevelValue = false
+	s.inString = false
+	s.escape = false
+	s.stringRole = responsesJSONStringOther
+	s.stringBuffer = s.stringBuffer[:0]
+	s.stringOverflow = false
+	s.eventType = ""
 }
 
 func streamTransformSSEEvents(

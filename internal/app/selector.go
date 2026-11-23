@@ -100,71 +100,22 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName, sti
 
 // selectCandidatesByModelAndClientProtocol 按模型选择候选渠道；clientProtocol 仅表示客户端协议，不过滤上游主协议。
 func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, model, clientProtocol, stickyScope string) ([]*modelpkg.Config, error) {
-	normalizedType := normalizeOptionalProtocol(clientProtocol)
-
-	channels, err := s.getEnabledChannelsSnapshotByUnifiedModel(ctx, model)
+	view, err := s.collectModelRouteSelection(ctx, model, normalizeOptionalProtocol(clientProtocol))
 	if err != nil {
 		return nil, err
 	}
-
-	// 先做冷却/成本过滤，但不触发“全冷却兜底”，以便后续还能继续做模糊匹配回退。
-	filtered, err := s.filterCooldownChannelsStrict(ctx, channels, model, normalizedType, stickyScope)
-	if err != nil {
-		return nil, err
-	}
-	if len(filtered) > 0 {
-		return filtered, nil
-	}
-
-	// 兜底：全量查询（用于“模糊匹配回退”以及最终“全冷却兜底”场景）
-	// 注意：此处不能以 len(channels)==0 作为是否回退的条件。
-	// 精确候选可能存在但全部在冷却/成本限额下不可用，这时仍需尝试模糊匹配补充候选。
-	var allCandidates []*modelpkg.Config
-	if model != "*" {
-		source, err := s.getEnabledChannelsSnapshotByModel(ctx, "*")
-		if err != nil {
-			return nil, err
-		}
-		if len(source) == 0 {
-			source, err = s.store.ListConfigs(ctx)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		allCandidates = make([]*modelpkg.Config, 0, len(source))
-		for _, cfg := range source {
-			if cfg == nil || !cfg.Enabled {
-				continue
-			}
-			if s.configSupportsModelWithFuzzyMatch(cfg, model) {
-				allCandidates = append(allCandidates, cfg)
-			}
-		}
-	}
-
-	// 再次过滤，但仍不触发“全冷却兜底”：先把可用的候选尽可能找出来。
-	filtered, err = s.filterCooldownChannelsStrict(ctx, allCandidates, model, normalizedType, stickyScope)
-	if err != nil {
-		return nil, err
-	}
-	if len(filtered) > 0 {
-		return filtered, nil
-	}
-
-	// 最终兜底：如果候选存在但全部在冷却中，让全冷却兜底逻辑选择“最早恢复”的渠道。
-	return s.filterCooldownChannels(ctx, allCandidates, model, normalizedType, stickyScope)
+	return s.orderRouteSelection(view, model, stickyScope), nil
 }
 
 func (s *Server) selectCandidatesByModelAndClientProtocolAnonymous(ctx context.Context, model, clientProtocol string) ([]*modelpkg.Config, error) {
 	return s.selectCandidatesByModelAndClientProtocol(ctx, model, clientProtocol, stickyScopeKey(""))
 }
 
-func (s *Server) getEnabledChannelsSnapshotByUnifiedModel(ctx context.Context, modelName string) ([]*modelpkg.Config, error) {
-	if modelName == "*" || s.modelAliases == nil {
+func (s *Server) getEnabledChannelsSnapshotByUnifiedModelWithAliases(ctx context.Context, modelName string, aliases *modelAliasRegistry) ([]*modelpkg.Config, error) {
+	if modelName == "*" || aliases == nil {
 		return s.getEnabledChannelsSnapshotByModel(ctx, modelName)
 	}
-	names := s.modelAliases.namesFor(modelName)
+	names := aliases.namesFor(modelName)
 	if len(names) <= 1 {
 		return s.getEnabledChannelsSnapshotByModel(ctx, modelName)
 	}

@@ -1,0 +1,415 @@
+<h4 align="center">
+<a href="./README_CN.md">简体中文</a> | English | <a href="./README_JA.md">日本語</a>
+</h4>
+
+<div align="center">
+
+# All API Hub – Your All-in-One AI Asset Manager
+
+**One-stop management for New API-compatible relay accounts: balances, usage, model prices, check-ins, API credentials, in-page testing, and channel/model sync & redirects**
+
+<p align="center">
+<a href="https://chromewebstore.google.com/detail/lapnciffpekdengooeolaienkeoilfeo">
+  <img alt="Chrome Web Store" src="https://img.shields.io/chrome-web-store/v/lapnciffpekdengooeolaienkeoilfeo?label=Chrome&logo=googlechrome&style=flat">
+</a>
+<a href="https://microsoftedge.microsoft.com/addons/detail/pcokpjaffghgipcgjhapgdpeddlhblaa">
+  <img alt="Microsoft Edge" src="https://img.shields.io/badge/dynamic/json?label=Edge&prefix=v&query=%24.version&url=https%3A%2F%2Fmicrosoftedge.microsoft.com%2Faddons%2Fgetproductdetailsbycrxid%2Fpcokpjaffghgipcgjhapgdpeddlhblaa&logo=microsoftedge&style=flat">
+</a>
+<a href="https://addons.mozilla.org/firefox/addon/{bc73541a-133d-4b50-b261-36ea20df0d24}">
+  <img alt="Firefox Add-on" src="https://img.shields.io/amo/v/{bc73541a-133d-4b50-b261-36ea20df0d24}?label=Firefox&logo=firefoxbrowser&style=flat">
+</a>
+</p>
+
+**[⚡ Quick Start](https://all-api-hub.qixing1217.top/en/get-started.html) | [🌐 Supported Sites](https://all-api-hub.qixing1217.top/en/supported-sites.html) | [🔌 Integrations](https://all-api-hub.qixing1217.top/en/supported-export-tools.html) | [📜 Changelog](https://all-api-hub.qixing1217.top/en/changelog.html)**
+
+<p align="center">
+  <a href="https://linux.do/t/topic/2395800">
+    <img alt="Linux.do discussion thread" src="https://img.shields.io/badge/Discussion-Linux.do-faa511?logo=linux&logoColor=white" />
+  </a>
+  <a href="./resources/wechat_group.png">
+    <img alt="WeChat Chinese group" src="https://img.shields.io/badge/WeChat-Chinese%20Group-green?logo=wechat&logoColor=white" />
+  </a>
+  <a href="https://qm.qq.com/q/ebSCy31Phe">
+    <img alt="QQ Chinese group" src="https://img.shields.io/badge/QQ-Chinese%20Group-12B7F5?logo=qq&logoColor=white" />
+  </a>
+  <a href="https://discord.gg/RmFXZ577ZQ">
+    <img alt="Discord multilingual community" src="https://img.shields.io/badge/Discord-Multilingual%20Community-5865F2?logo=discord&logoColor=white">
+  </a>
+  <a href="https://t.me/qixing_chat">
+    <img alt="Telegram multilingual group" src="https://img.shields.io/badge/Telegram-Multilingual%20Group-blue?logo=telegram&logoColor=white">
+  </a>
+</p>
+
+</div>
+
+<a id="introduction"></a>
+
+## ❓ Why All API Hub?
+
+**In simple terms**: AI relay sites are like a marketplace for AI credits, giving you low-cost or even free access to models such as ChatGPT, Claude, and GPT Image.
+
+But once you have multiple accounts, management quickly becomes painful:
+
+- 📂 **Scattered assets**: Balances and usage are spread across separate sites.
+- 💲 **Messy pricing**: Different billing ratios make the best deal hard to spot.
+- ✅ **Missed daily perks**: Manual daily check-ins are easy to forget.
+- 🔌 **Annoying setup work**: API details must be copied into tools such as cc-switch and Cherry Studio again and again.
+
+**All API Hub is your AI asset manager**: add your site URLs and let the extension handle the rest.
+
+<a id="features"></a>
+
+## ✨ What Can It Do for You?
+
+### 📊 All Your AI Assets in One View
+
+- **Unified Relay Account Dashboard**: Manage multiple AI relay accounts in one place and review balances, usage, and account status without signing in to each site.
+- **API Credential Library**: No site account required—bring Base URLs and API Keys shared by others or collected over time together, then check balances, view models, test connections, or export whenever needed.
+- **Usage & Trend Analytics**: Track balance changes and view charts by site, account, and model to understand where your credits go.
+
+### 💰 Price Comparison & Auto Check-In
+
+- **Cross-Site Model Price Comparison**: Compare the effective price of the same model across sites and quickly find a better-value endpoint.
+- **Multi-Site Auto Check-In**: Check in to supported sites with one click or on a schedule, collect rewards automatically, and skip daily logins.
+
+### 🚀 Quick Capture & Client Integration
+
+- **Quick Web Capture**: Find Base URLs and API Keys on a page, test them immediately, and save them to your credential library with less copying and tab switching.
+- **One-Click Client Export**: Send credentials to CC Switch, Cherry Studio, Claude Code Router, Kilo Code, Roo Code, Kelivo, AI Toolbox, Cursor++, and other [supported export tools](https://all-api-hub.qixing1217.top/en/supported-export-tools.html).
+
+### 🧪 API Verification & Troubleshooting
+
+- **API & Model Verification**: Check API connectivity and model availability in one click to see whether a Key works and a model can be called.
+- **CLI Integration Testing**: Confirm that common command-line tools can use the target API before you spend time troubleshooting a full setup.
+
+### 🔔 Announcements & Task Alerts
+
+- **Announcements in One Place**: Automatically collect and display announcements from added sites in one place, with timely alerts for maintenance, model, pricing, and other updates—no need to check sites one by one.
+- **Task Result Alerts**: After automated check-ins, WebDAV auto-sync, or model sync completes, receive the result through your browser or a configured notification method so failures and exceptions can be handled promptly.
+
+### 🛠️ Self-Hosted AI Gateway Management
+
+- **Manage Popular AI Gateways in One Place**: Manage OmniRoute, CLIProxyAPI, New API, Sub2API, Magpie, gpt-load, AxonHub, Claude Code Hub, Octopus, Veloera, and DoneHub directly in the extension without opening each admin panel.
+- **Quickly Create Gateway Channels**: Turn saved site accounts or credentials from the API Credential Library into self-hosted AI gateway channels, then call models through the gateway and switch between channels as needed.
+- **Model Sync & Redirects**: On supported sites, sync channel model lists manually or automatically on a schedule as upstream models change, and define custom redirects so clients can use the model names they prefer.
+
+### 🔐 Data Security & Cloud Sync
+
+- **Local-First Storage**: API Keys, accounts, and settings stay in your browser by default and are written to WebDAV only when you enable backup or sync.
+- **Encrypted WebDAV Auto-Sync**: Enable encryption and scheduled auto-sync to keep data safely synchronized across devices and pick up where you left off after switching computers.
+
+<a id="installation"></a>
+
+## 🚀 Quick Installation
+
+> [!IMPORTANT] > **For most users, the store build is recommended.** It is easy to install and supports automatic updates.
+
+| Channel          | Install Link                                                                                       | Current Version                                                                                                                                                                                                                                                                                                                           | Users                                                                                                                                                                                                                                                                                                         |
+| ---------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chrome Web Store | [Chrome Web Store](https://chromewebstore.google.com/detail/lapnciffpekdengooeolaienkeoilfeo)      | [![Chrome version](https://img.shields.io/chrome-web-store/v/lapnciffpekdengooeolaienkeoilfeo?label=Chrome&logo=googlechrome&style=flat)](https://chromewebstore.google.com/detail/lapnciffpekdengooeolaienkeoilfeo)                                                                                                                      | [![Chrome Web Store Users](https://img.shields.io/chrome-web-store/users/lapnciffpekdengooeolaienkeoilfeo?label=Chrome%20Users)](https://chromewebstore.google.com/detail/lapnciffpekdengooeolaienkeoilfeo)                                                                                                   |
+| Edge Add-ons     | [Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/pcokpjaffghgipcgjhapgdpeddlhblaa) | [![Edge version](https://img.shields.io/badge/dynamic/json?label=Edge&prefix=v&query=%24.version&url=https%3A%2F%2Fmicrosoftedge.microsoft.com%2Faddons%2Fgetproductdetailsbycrxid%2Fpcokpjaffghgipcgjhapgdpeddlhblaa&logo=microsoftedge&style=flat)](https://microsoftedge.microsoft.com/addons/detail/pcokpjaffghgipcgjhapgdpeddlhblaa) | [![Edge Add-ons Users](https://img.shields.io/badge/dynamic/json?label=Edge%20Users&query=$.activeInstallCount&url=https://microsoftedge.microsoft.com/addons/getproductdetailsbycrxid/pcokpjaffghgipcgjhapgdpeddlhblaa)](https://microsoftedge.microsoft.com/addons/detail/pcokpjaffghgipcgjhapgdpeddlhblaa) |
+| Firefox Add-ons  | [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/{bc73541a-133d-4b50-b261-36ea20df0d24}) | [![Firefox version](https://img.shields.io/amo/v/%7Bbc73541a-133d-4b50-b261-36ea20df0d24%7D?label=Firefox&logo=firefoxbrowser&style=flat)](https://addons.mozilla.org/firefox/addon/{bc73541a-133d-4b50-b261-36ea20df0d24})                                                                                                               | [![Mozilla Add-on Users](https://img.shields.io/amo/users/%7Bbc73541a-133d-4b50-b261-36ea20df0d24%7D?label=Firefox%20Users)](https://addons.mozilla.org/firefox/addon/{bc73541a-133d-4b50-b261-36ea20df0d24})                                                                                                 |
+
+<details>
+<summary>📦 Need manual installation or Nightly builds? (Click to expand)</summary>
+
+| Channel             | Download Link                                                                     | Best For                                                                                            |
+| ------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| GitHub Stable       | [Download Stable](https://github.com/qixing-jk/all-api-hub/releases/latest)       | When you cannot install the store build or need to temporarily install a published fix manually     |
+| Nightly pre-release | [Download Nightly](https://github.com/qixing-jk/all-api-hub/releases/tag/nightly) | When you want early access and are willing to help test; it may be less stable than the store build |
+
+GitHub Stable and Nightly are manual installation channels. When you must install from GitHub, Chromium users should install `all-api-hub-chrome.crx` (Nightly: `all-api-hub-nightly-chrome.crx`), which updates automatically like the store build. See the [installation and update guide](https://all-api-hub.qixing1217.top/en/extension-update-install.html) and [Chromium CRX self-update install](https://all-api-hub.qixing1217.top/en/chromium-crx-self-update.html).
+
+**Other environments:**
+
+- **Mobile browsers**: Supports mobile Edge, Firefox for Android, Kiwi, and more. See the [mobile browser guide](https://all-api-hub.qixing1217.top/en/faq.html#mobile-browser-support).
+- **QQ Browser / 360 Browser / similar**: See the [manual loading guide](https://all-api-hub.qixing1217.top/en/other-browser-install.html).
+- **Safari (Mac)**: Requires Xcode for compilation. See the [Safari installation guide](https://all-api-hub.qixing1217.top/en/safari-install.html).
+
+</details>
+
+<a id="sponsors"></a>
+
+## ❤️ Sponsors
+
+Thank you to all our sponsors for supporting the project's long-term feature development and maintenance. We are also grateful to every user, contributor, and community member for using, testing, sharing, and improving All API Hub.
+
+> [Want to appear here?](mailto:street-anime-olive@duck.com)
+
+<div>
+  <a href="https://s.qiniu.com/qE3eai">
+    <img src="resources/partners/qiniu.png" alt="Qiniu Cloud AI" width="180" align="left" hspace="10" vspace="4">
+  </a>
+  <p>
+    Qiniu Cloud AI is Qiniu Cloud's enterprise MaaS platform, offering one-stop access to 150+ mainstream models worldwide with compatibility across major provider protocols and full-modal capabilities for text, image, audio, video, and file processing.
+    Enterprise users can claim 12 million free tokens via <a href="https://s.qiniu.com/qE3eai">this link</a>, with referral rewards up to tens of billions of tokens.
+  </p>
+</div>
+
+<hr>
+
+<div>
+  <a href="https://api.fenno.ai/s/DCGC">
+    <img src="resources/partners/fennoai.jpg" alt="FennoAI" width="180" align="left" hspace="10" vspace="4">
+  </a>
+  <p>
+    FennoAI is a stable and efficient API relay provider focused on Codex relay services. It supports the OpenAI and Anthropic protocols, integrates flexibly with popular coding tools such as Codex, Claude Code, and OpenCode, and reliably handles enterprise demand at the scale of 100 billion tokens per day. It also supports business-to-business settlement and invoicing for entities in China and overseas.
+    FennoAI offers an exclusive benefit for All API Hub users: subscribe through <a href="https://api.fenno.ai/s/DCGC">the dedicated link</a> for just $1.99 to receive $50 in Coding Plan credits. Its referral program offers up to 20% commission on friends' purchases, with higher rewards as you invite more people (<a href="https://all-api-hub.qixing1217.top/en/service-guides/fenno.html">setup guide</a>).
+  </p>
+</div>
+
+<hr>
+
+<div>
+  <a href="https://www.packyapi.ai/register?aff=all-api-hub">
+    <img src="resources/partners/packycode.png" alt="PackyCode" width="128" align="left" hspace="10" vspace="4">
+  </a>
+  <p>
+    PackyCode is a reliable and efficient API relay service provider, offering relay services for Claude Code, Codex,
+    Gemini, and more. PackyCode provides special discounts for our software users: register using
+    <a href="https://www.packyapi.ai/register?aff=all-api-hub">this link</a> and enter the "all-api-hub" promo code during first recharge to get 10% off (<a href="https://all-api-hub.qixing1217.top/en/sponsor-guides/packycode.html">setup guide</a>).
+  </p>
+</div>
+
+<hr>
+
+<div>
+  <a href="https://ai.centos.hk">
+    <img src="resources/partners/xingchen.png" alt="Xingchen AI" width="64" align="left" hspace="10" vspace="4">
+  </a>
+  <p>
+    Xingchen AI is a stable and efficient API relay service provider, offering relay services for Claude Code, Codex,
+    Gemini, and more. It offers a 1:1 recharge ratio with invoice support and Claude from 40% pricing. Learn more using
+    <a href="https://ai.centos.hk">this link</a> (<a href="https://all-api-hub.qixing1217.top/en/sponsor-guides/xingchen.html">setup guide</a>).
+  </p>
+</div>
+
+<hr>
+
+<div>
+  <a href="https://sui-xiang.com/">
+    <img src="resources/partners/suixiang.jpg" alt="Suixiang AI Relay" width="128" align="left" hspace="10" vspace="4">
+  </a>
+  <p>
+    Suixiang AI Relay is a reliable and efficient API relay service provider for Claude, Codex, Gemini, and more. It focuses on privacy, transparency, fast support, no data resale, and no model dilution. New accounts can receive ¥0.5 in daily check-in test credits, with 1:1 top-ups, pay-as-you-go billing, redundant routes, cross-region disaster recovery, automatic failover, uninterrupted long-lived SSE streams, and 99.9% availability. Learn more through
+    <a href="https://sui-xiang.com/">this link</a> (<a href="https://all-api-hub.qixing1217.top/en/service-guides/suixiang.html">setup guide</a>).
+  </p>
+</div>
+
+<hr>
+
+<div>
+  <a href="https://88api.ai/register?aff=XcTj">
+    <img src="resources/partners/88api.jpg" alt="88API Token Aggregation Platform" width="180" align="left" hspace="10" vspace="4">
+  </a>
+  <p>
+    Thank you to 88API Token Aggregation Platform for sponsoring this project! A one-stop multi-model API platform operated by a Hong Kong company for developers, creators, and AI application users. Its unified API connects text, image, speech, and video models for AI coding, translation, content creation, voiceovers, image generation, and video generation. Add and switch providers directly in CC Switch, with major international payment methods, invoicing, and stable enterprise services. <a href="https://88api.ai/register?aff=XcTj">Register through the dedicated link to receive bonus credits!</a>
+  </p>
+</div>
+
+<hr>
+
+<div>
+  <a href="https://dzhsmartai.com/">
+    <img src="resources/partners/ccccccapi.jpg" alt="ccccccapi" width="64" align="left" hspace="10" vspace="4">
+  </a>
+  <p>
+    ccccccapi Supports ChatGPT, Claude, Gemini, Deepseek, and more at the lowest prices online. Use AI without burning a hole in your wallet—<a href="https://dzhsmartai.com/">come grab a bargain!</a>
+  </p>
+  <br clear="all">
+</div>
+
+<hr>
+
+<div>
+  <a href="https://noonoo.ai/login?aff=Y3u6">
+    <img src="resources/partners/noonoo-ai.jpg" alt="noonoo.ai" width="128" align="left" hspace="10" vspace="4">
+  </a>
+  <p>
+    noonoo.ai is a one-stop AI API platform for developers and businesses, offering Claude, GPT, Gemini, and other leading models through OpenAI- and Anthropic-compatible APIs. With low prices, stability, and easy integration, several Claude models cost as little as approximately 7.5% of official list prices, while input or output rates for some GPT models are as low as approximately 7%. It helps reduce API costs and provides reliable model services for AI-assisted coding, AI applications, and automated workflows. Visit <a href="https://noonoo.ai/login?aff=Y3u6">noonoo.ai</a> to learn more and get started.
+  </p>
+</div>
+
+<hr>
+
+<div>
+  <p>
+    <a href="https://www.byteplus.com/en/product/modelark?utm_campaign=hw&utm_content=all-api-hub&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=all-api-hub">
+      <img src="resources/partners/volcengine_en.jpg" alt="Dola Seed on BytePlus ModelArk" width="100%">
+    </a>
+  </p>
+  <p>
+    Dola Seed 2.0 is a full-modal general large model independently developed by ByteDance for the global market. Built on a unified multimodal architecture, it supports joint understanding and generation of text, images, audio, and video. It natively enables agent collaboration, with strong reasoning, long-task execution, tool integration, and coding capabilities. It is widely applicable to smart cockpits, personal assistants, education, customer support, marketing, retail, and other scenarios. It excels in multimodal perception, end-to-end complex task delivery, stable interaction, and data security, and is readily accessible and deployable via the ModelArk platform. Register via <a href="https://www.byteplus.com/en/product/modelark?utm_campaign=hw&utm_content=all-api-hub&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=all-api-hub">this link</a> to get 500,000 tokens of free inference quota per model.<a href="https://dis.chatdesks.cn/chatdesk/hsyqallapihub.html"> >>中国大陆地区的开发者请点击这里</a>
+  </p>
+</div>
+
+<hr>
+
+> [!NOTE]
+> If you previously used [One API Hub](https://github.com/fxaxg/one-api-hub), All API Hub has been heavily refactored while preserving data compatibility, so you can import your existing data with one click.
+
+<a id="quick-start"></a>
+
+## 🧑‍🚀 30-Second Quick Start
+
+1. **Install the extension**: Use one of the store links above.
+2. **Sign in to your site**: Open your usual AI relay site in the browser and log in.
+3. **Run auto detection**: Click the extension icon -> `Add Account` -> enter the site URL -> click `Auto Detect`.
+4. **Start using it**: Check balances, configure auto check-in, or export the account to your AI client.
+
+👉 **[Click here for the full illustrated beginner guide](https://all-api-hub.qixing1217.top/en/get-started.html)**
+
+<a id="introduction-tech"></a>
+
+### 🧩 Strong Compatibility
+
+No matter which architecture you use, there is a good chance we support it:
+
+- **Account-site compatible architectures**: [New API](https://github.com/QuantumNous/new-api), [Sub2API](https://github.com/Wei-Shaw/sub2api), [One API](https://github.com/songquanpeng/one-api), [one-hub](https://github.com/MartialBE/one-hub), [Veloera](https://github.com/Veloera/Veloera), [VoAPI / VoAPI v2](https://github.com/VoAPI/VoAPI), [DoneHub](https://github.com/deanxv/done-hub), [Super-API](https://github.com/SuperAI-Api/Super-API), APIyi, ModelFlare, v-api, and variants such as Neo-API, RIX_API.
+- **Independent platforms and commercial relays**: [OpenRouter](https://openrouter.ai), [Kimi Open Platform (China / Global)](https://platform.kimi.ai), [AnyRouter](https://anyrouter.top/register?aff=tDKX), [AgentRouter](https://agentrouter.org/register?aff=TUX6), [AIHubMix](https://aihubmix.com/?aff=W3DN), LaoZhang API, Dahl, FoxCode, Xiaoen AI, Cubence, RightCode, Grsai, FreeModel, SharedChat, WONG Public Welfare Site, Krill AI, EMRank, RelayFor, Daya API, [Vercel AI Gateway](https://vercel.com/ai-gateway), PM-API, [Requesty](https://app.requesty.ai), Novita AI, AI/ML API, NanoGPT, and more
+- **Self-hosted admin backends & AI gateways**: [OmniRoute](https://github.com/diegosouzapw/OmniRoute), [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), [New API](https://github.com/QuantumNous/new-api), [Sub2API](https://github.com/Wei-Shaw/sub2api), [Magpie](https://github.com/yetone/magpie), [gpt-load](https://github.com/tbphp/gpt-load), [AxonHub](https://github.com/looplj/axonhub), [Claude Code Hub](https://github.com/ding113/claude-code-hub), [Octopus](https://github.com/bestruirui/octopus), [Veloera](https://github.com/Veloera/Veloera), [DoneHub](https://github.com/deanxv/done-hub), and more, for channel or provider management, with migration and model sync where supported
+  - Batch imports can combine same-site keys on Magpie, New API, Octopus, gpt-load, regular API-key AxonHub channels, and CLIProxyAPI OpenAI-compatible resources; the target gateway owns scheduling. Magpie can also append missing keys to existing channels with the same address and protocol, preserving their configuration and model settings.
+- **Client & development tool exports**: CC Switch, Cherry Studio, Claude Code Router, Kilo Code, Roo Code, Kelivo, AI Toolbox, Cursor++, and more, see [Supported Export Tools](https://all-api-hub.qixing1217.top/en/supported-export-tools.html)
+- **Full lists**: 👉 [Supported Sites](https://all-api-hub.qixing1217.top/en/supported-sites.html) and [Supported Export Tools](https://all-api-hub.qixing1217.top/en/supported-export-tools.html)
+
+<a id="ui-preview"></a>
+
+## 🖼️ UI Preview
+
+<div align="center">
+  <img src="docs/docs/static/image/en/options-overview.png" alt="options-overview" style="width:100%; height:auto;"/>
+  <p><em>All-in-One Options Dashboard: Global asset overview, pending actions, unified API setup, and health status</em></p>
+</div>
+
+### Accounts and API keys
+
+<table>
+  <tr>
+    <td align="center" colspan="2" width="100%">
+      <img src="docs/docs/static/image/en/account-manage.png" alt="account-manage" style="width:100%; height:auto;"/>
+      <div><b>Multi-Account Asset Management</b><br/>Centralized balance tracking, currency conversion, and tag filtering</div>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/docs/static/image/en/api-key-list.png" alt="api-key-list" style="width:100%; height:auto;"/>
+      <div><b>Unified Key Management & Export</b><br/>Quota inspection across sites, one-click copying, and client config exports</div>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/docs/static/image/en/api-credential-profile-list.png" alt="api-credential-profile-list" style="width:100%; height:auto;"/>
+      <div><b>API Credential Profiles</b><br/>Account-free key repository, CLI compatibility checks, and instant export</div>
+    </td>
+  </tr>
+</table>
+
+### Model selection and API verification
+
+<table>
+  <tr>
+    <td align="center" colspan="2" width="100%">
+      <img src="docs/docs/static/image/en/model-list.png" alt="model-list" style="width:100%; height:auto;"/>
+      <div><b>Cross-Platform Model Catalog & Pricing</b><br/>Compare the same model across sites by workload and see the lowest price</div>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/docs/static/image/en/web-ai-api-check-trigger.png" alt="web-ai-api-check-trigger" style="width:100%; height:auto;"/>
+      <div><b>Quick API Testing on Webpages</b><br/>Copy an API URL and key, then click Open to test them on the current page</div>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/docs/static/image/en/web-ai-api-check-results.png" alt="web-ai-api-check-results" style="width:100%; height:auto;"/>
+      <div><b>Test APIs Directly on Any Webpage</b><br/>Model discovery, text generation, tool calls, structured output, and drawing tests</div>
+    </td>
+  </tr>
+</table>
+
+### Check-in, balance and usage
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/docs/static/image/en/auto-check-in.png" alt="auto-check-in" style="width:100%; height:auto;"/>
+      <div><b>Automated Daily Check-in</b><br/>Multi-account scheduled polling, smart retry, and reward tracking</div>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/docs/static/image/en/balance-history.png" alt="balance-history" style="width:100%; height:auto;"/>
+      <div><b>Balance History & Spending Trends</b><br/>Account balance trends, spending distribution, and income/expense summaries</div>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/docs/static/image/en/account-model-usage-overview.png" alt="account-model-usage-overview" style="width:100%; height:auto;"/>
+      <div><b>Multi-Dimensional Usage Analytics</b><br/>Token consumption insights, account share breakdown, and cost estimates</div>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/docs/static/image/en/account-model-latency-overview.png" alt="account-model-latency-overview" style="width:100%; height:auto;"/>
+      <div><b>Response Latency & Slow Query Analysis</b><br/>Model latency benchmarks, long-request diagnostics, and timeout alerts</div>
+    </td>
+  </tr>
+</table>
+
+### Self-hosted gateways and model sync
+
+<div align="center">
+      <img src="docs/docs/static/image/en/new-api-channel-manage.png" alt="new-api-channel-manage" style="width:100%; height:auto;"/>
+      <div><b>Self-Hosted Gateway Channel Management</b><br/>Supported gateways, channel status, testing, and cross-site migration</div>
+    </div>
+
+<div align="center">
+      <img src="docs/docs/static/image/en/new-api-channel-sync.png" alt="new-api-channel-sync" style="width:100%; height:auto;"/>
+      <div><b>Upstream Model Auto-Sync</b><br/>Channel model retrieval, diff comparison, and one-click synchronization</div>
+    </div>
+
+<a id="development-guide"></a>
+
+## 🛠️ Development Guide
+
+Please refer to the [CONTRIBUTING](CONTRIBUTING.md) for more information.
+
+<a id="license"></a>
+
+## 📜 License and Commercial Licensing
+
+All API Hub is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+
+Commercial licenses are available for organizations or individuals who need terms not provided by AGPL-3.0, including proprietary distribution, closed-source modifications, white-label redistribution, or other private commercial integration use cases.
+
+For commercial licensing, contact: <street-anime-olive@duck.com>
+
+Commercial licenses apply only to code and assets for which the All API Hub maintainers have the right to grant commercial terms. Third-party dependencies and historical MIT-licensed portions derived from [One API Hub](https://github.com/fxaxg/one-api-hub) remain subject to their own copyright and license notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+<a id="tech-stack"></a>
+
+## 🏗️ Tech Stack
+
+- **Framework**: [WXT](https://wxt.dev) powers the multi-browser extension tooling and build pipeline
+- **UI Layer**: [React](https://react.dev) drives the options UI and popup experiences
+- **Language**: [TypeScript](https://www.typescriptlang.org) keeps the entire codebase type-safe
+- **Styling**: [Tailwind CSS](https://tailwindcss.com) supplies utility-first theming primitives
+- **Components**: [Radix UI](https://www.radix-ui.com/) provides accessible primitives for our design system
+
+<a id="community-ecosystem"></a>
+
+## 🔗 Ecosystem Projects
+
+Community extensions and integrations around All API Hub:
+
+| Project                                                     | Description                             | Features                                                                                    |
+| ----------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------- |
+| [Metapi](https://github.com/cita-777/metapi)                | Self-hosted meta-aggregation gateway    | Combine multiple relay accounts behind one API entry; originally inspired by All API Hub.   |
+| [Fl API Hub](https://github.com/RebornQ/fl_api_hub)         | Cross-platform native management client | Manage accounts, balances, and keys with quick check-in support; inspired by All API Hub.   |
+| [APIManager](https://github.com/zhalice2011/api-manager)    | Local AI API aggregation proxy          | Sync accounts from All API Hub and provide unified proxying, routing, and usage dashboards. |
+
+> If you have developed a project based on, integrated with, or inspired by All API Hub, please open a PR to add it to this list.
+
+<a id="acknowledgements"></a>
+
+## 🙏 Acknowledgements
+
+- Thanks to [@AngleNaris](https://github.com/AngleNaris) for designing the project logo 🎨
+- Thanks to the [Linux.do community](https://linux.do) for feedback, testing, and visibility support, especially the continued discussion and suggestions in the [All API Hub thread on Linux.do](https://linux.do/t/topic/2395800)
+- [WXT](https://wxt.dev) - The modern browser extension development framework
+
+<div align="center">
+  <strong>⭐ If you find this project helpful, please consider giving it a star!</strong>
+</div>

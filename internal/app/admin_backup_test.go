@@ -147,8 +147,8 @@ func TestWebDAVBackupUsesBasicAuthAndMasksStoredPassword(t *testing.T) {
 	if _, _, err = srv.importFromWebDAV(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(methods) != 2 || methods[0] != http.MethodPut || methods[1] != http.MethodGet {
-		t.Fatalf("methods=%v, want [PUT GET]", methods)
+	if len(methods) != 3 || methods[0] != http.MethodPut || methods[1] != http.MethodGet || methods[2] != http.MethodGet {
+		t.Fatalf("methods=%v, want [PUT GET GET] (readback then restore)", methods)
 	}
 
 	c, recorder := newTestContext(t, newRequest(http.MethodGet, "/admin/backup/webdav", nil))

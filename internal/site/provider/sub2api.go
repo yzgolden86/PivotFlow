@@ -66,8 +66,8 @@ func (p *Sub2API) RefreshAccount(ctx context.Context, req RefreshAccountRequest)
 	if err != nil {
 		return AccountSnapshot{}, err
 	}
-	userID, ok := numberValue(data, "id")
-	if !ok || userID <= 0 {
+	userID := profileUserID(data)
+	if userID <= 0 {
 		return AccountSnapshot{}, &Error{Code: CodeInvalidResponse, Message: "Sub2API identity is missing a valid user ID"}
 	}
 	username, _ := stringValue(data, "username")
@@ -80,7 +80,7 @@ func (p *Sub2API) RefreshAccount(ctx context.Context, req RefreshAccountRequest)
 	if balanceOK {
 		balance = &balanceValue
 	}
-	return AccountSnapshot{Username: username, Balance: balance, Currency: "USD", Status: model.SiteAccountStatusHealthy}, nil
+	return AccountSnapshot{Username: username, UserID: userID, Balance: balance, Currency: "USD", Status: model.SiteAccountStatusHealthy}, nil
 }
 
 func (p *Sub2API) ResolveManagementCredentials(ctx context.Context, req AccountRequest) (Credentials, error) {
@@ -495,6 +495,10 @@ func (p *Sub2API) probe(ctx context.Context, baseURL, path string) (sub2Envelope
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
+		var providerErr *Error
+		if errors.As(err, &providerErr) {
+			return sub2Envelope{}, "", providerErr
+		}
 		return sub2Envelope{}, "", &Error{Code: CodeRequestFailed, Message: "provider request failed"}
 	}
 	defer func() { _ = resp.Body.Close() }()

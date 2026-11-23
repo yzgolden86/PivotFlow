@@ -56,20 +56,13 @@ func (l *channelRPMLimiter) snapshot(channelID int64) int {
 	cutoff := now.Add(-time.Minute)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	events := l.requests[channelID]
-	kept := 0
-	for _, ts := range events {
+	count := 0
+	for _, ts := range l.requests[channelID] {
 		if ts.After(cutoff) {
-			events[kept] = ts
-			kept++
+			count++
 		}
 	}
-	if kept == 0 {
-		delete(l.requests, channelID)
-		return 0
-	}
-	l.requests[channelID] = events[:kept]
-	return kept
+	return count
 }
 
 func (l *channelRPMLimiter) RemoveChannel(channelID int64) {
@@ -208,6 +201,7 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 	if err != nil {
 		return nil, err
 	}
+	markTraceUpstream(req.Context(), "http")
 	resp, err := s.getClientForChannel(cfg).Do(req)
 	if err != nil {
 		release()

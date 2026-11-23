@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, BarChart3, ChevronDown, CircleDollarSign, Clock3, Gauge, LineChart, List, PieChart, RefreshCw, WalletCards, Zap } from 'lucide-react'
 import { getDashboard, getStats, getStatsFilterOptions } from '../api'
-import type { DashboardRange, DashboardSnapshot, MetricPoint, SiteBalanceHistoryPoint, StatsEntry, StatsFilterOptions, StatsSnapshot } from '../types'
+import type { CostBasis, CostSource, CostStatus, DashboardRange, DashboardSnapshot, MetricPoint, SiteBalanceHistoryPoint, StatsEntry, StatsFilterOptions, StatsSnapshot } from '../types'
 import { donutSlicePath, donutSlices } from './donutGeometry'
 import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, PageHeader, successTone } from './shared'
+import { analyzeCostSummary, COST_BASIS_FILTER_OPTIONS, COST_SOURCE_FILTER_OPTIONS, COST_STATUS_FILTER_OPTIONS } from '../costSemantics.ts'
+import { moneyDigits } from '../format.ts'
+import CostSummaryPanel from './CostSummaryPanel'
 
 export default function StatsPage() {
   const [snapshot, setSnapshot] = useState<StatsSnapshot | null>(null)
@@ -12,6 +15,9 @@ export default function StatsPage() {
   const [range, setRange] = useState<DashboardRange>('today')
   const [channel, setChannel] = useState('')
   const [model, setModel] = useState('')
+  const [costSource, setCostSource] = useState<CostSource | ''>('')
+  const [costStatus, setCostStatus] = useState<CostStatus | ''>('')
+  const [costBasis, setCostBasis] = useState<CostBasis | ''>('')
   const [chartMode, setChartMode] = useState<TrendChartMode>('curve')
   const [detailsOpen, setDetailsOpen] = useState(false)
   const loadSequence = useRef(0)
@@ -24,25 +30,38 @@ export default function StatsPage() {
   const load = useCallback(async (signal?: AbortSignal) => {
     const sequence = ++loadSequence.current
     setLoading(true); setError('')
+    setSnapshot(null)
+    setDashboard(null)
     try {
       const [data, filterOptions, dashboardData] = await Promise.all([
-        getStats({ range, channel_name: channel, model }, signal),
+        getStats({ range, channel_name: channel, model, cost_source: costSource, cost_status: costStatus, cost_basis: costBasis }, signal),
         getStatsFilterOptions(range, signal),
-        getDashboard({ range, channel_name: channel, model }, signal),
+        getDashboard({ range, channel_name: channel, model, cost_source: costSource, cost_status: costStatus, cost_basis: costBasis }, signal),
       ])
-      if (sequence !== loadSequence.current) return
+      if (signal?.aborted || sequence !== loadSequence.current) return
       setSnapshot(data)
       setOptions(filterOptions)
       setDashboard(dashboardData)
     }
     catch (reason) { if (!signal?.aborted && sequence === loadSequence.current) setError(reason instanceof Error ? reason.message : '数据面板加载失败') }
     finally { if (!signal?.aborted && sequence === loadSequence.current) setLoading(false) }
-  }, [channel, model, range])
+  }, [channel, costBasis, costSource, costStatus, model, range])
 
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
   const entries = snapshot?.stats || []
   const totals = useMemo(() => sumStats(entries), [entries])
   const totalTokens = (dashboard?.totals.input_tokens || 0) + (dashboard?.totals.output_tokens || 0)
+  const costSummary = snapshot?.cost_summary ?? dashboard?.cost_summary ?? null
+  const costMoney = [
+    costSummary?.recorded_cost_usd,
+    costSummary?.estimated_cost_usd,
+    costSummary?.partial_cost_usd,
+    costSummary?.historical_cost_usd,
+  ]
+  const costView = analyzeCostSummary(costSummary, moneyDigits(costMoney))
+  const costMeta = costView.status === 'ready' && costView.summary
+    ? `完整估算 ${costView.knownRequests}/${costView.summary.successful_requests} · 未对账`
+    : '费用依据未提供'
 
   return (
     <div className="workspace-page data-dashboard-page">
@@ -52,7 +71,7 @@ export default function StatsPage() {
         tone="coral"
         actions={<>
           <div className="range-control" role="radiogroup" aria-label="数据面板时间范围">
-            {([['today', '今日'], ['this_week', '本周'], ['this_month', '本月']] as const).map(([value, label]) => <button className={range === value ? 'is-active' : ''} type="button" role="radio" aria-checked={range === value} onClick={() => { setChannel(''); setModel(''); setRange(value) }} key={value}>{label}</button>)}
+            {([['today', '今日'], ['this_week', '本周'], ['this_month', '本月']] as const).map(([value, label]) => <button className={range === value ? 'is-active' : ''} type="button" role="radio" aria-checked={range === value} onClick={() => { setChannel(''); setModel(''); setCostSource(''); setCostStatus(''); setCostBasis(''); setRange(value) }} key={value}>{label}</button>)}
           </div>
           <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新数据面板"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
         </>}
@@ -61,15 +80,20 @@ export default function StatsPage() {
       <div className="filter-bar">
         <select value={channel} onChange={(event) => setChannel(event.target.value)} aria-label="数据面板渠道"><option value="">全部渠道</option>{options.channel_names.map((item) => <option key={item}>{item}</option>)}</select>
         <select value={model} onChange={(event) => setModel(event.target.value)} aria-label="数据面板模型"><option value="">全部模型</option>{options.models.map((item) => <option key={item}>{item}</option>)}</select>
-        {(channel || model) && <button className="icon-button icon-button--surface" type="button" onClick={() => { setChannel(''); setModel('') }} aria-label="清除数据面板筛选" title="清除筛选"><RefreshCw size={15} /></button>}
+        <select value={costSource} onChange={(event) => setCostSource(event.target.value as CostSource | '')} aria-label="数据面板费用估算来源">{COST_SOURCE_FILTER_OPTIONS.map((item) => <option value={item.value} key={item.value || 'all'}>{item.label}</option>)}</select>
+        <select value={costStatus} onChange={(event) => setCostStatus(event.target.value as CostStatus | '')} aria-label="数据面板费用状态">{COST_STATUS_FILTER_OPTIONS.map((item) => <option value={item.value} key={item.value || 'all'}>{item.label}</option>)}</select>
+        <select value={costBasis} onChange={(event) => setCostBasis(event.target.value as CostBasis | '')} aria-label="数据面板费用计费方式">{COST_BASIS_FILTER_OPTIONS.map((item) => <option value={item.value} key={item.value || 'all'}>{item.label}</option>)}</select>
+        {(channel || model || costSource || costStatus || costBasis) && <button className="icon-button icon-button--surface" type="button" onClick={() => { setChannel(''); setModel(''); setCostSource(''); setCostStatus(''); setCostBasis('') }} aria-label="清除数据面板筛选" title="清除筛选"><RefreshCw size={15} /></button>}
       </div>
 
       {snapshot && dashboard && <section className="stat-kpis">
         <MiniKPI icon={Zap} label="请求总量" value={formatNumber(totals.total)} meta={`${formatNumber(totals.success)} 成功`} />
         <MiniKPI icon={Gauge} label="成功率" value={totals.total ? `${(totals.success / totals.total * 100).toFixed(1)}%` : '—'} meta={`${formatNumber(totals.error)} 失败`} />
         <MiniKPI icon={Activity} label="Token 总量" value={formatNumber(totalTokens)} meta={`${formatNumber(dashboard.totals.cache_read_tokens)} 缓存命中`} />
-        <MiniKPI icon={CircleDollarSign} label="有效费用" value={formatMoney(totals.cost)} meta={`标准成本 ${formatMoney(totals.standardCost)}`} />
+        <MiniKPI icon={CircleDollarSign} label="已记录费用" value={costView.amountText} meta={costMeta} />
       </section>}
+
+      {snapshot && dashboard && <CostSummaryPanel summary={costSummary} />}
 
       {dashboard ? <section className="trend-workbench data-dashboard-trend">
         <header>
@@ -94,10 +118,10 @@ export default function StatsPage() {
         <section className={`stats-records-wrap${detailsOpen ? ' is-open' : ''}`}>
           <button className="stats-records-toggle" type="button" aria-expanded={detailsOpen} onClick={() => setDetailsOpen((open) => !open)}>
             <span><List size={16} /><strong>渠道 / 模型明细</strong><em>{entries.length} 项</em></span>
-            <span>成功率、延迟、RPM 与费用<ChevronDown size={16} /></span>
+            <span>成功率、延迟、RPM 与已记录费用<ChevronDown size={16} /></span>
           </button>
           {detailsOpen && <div className="records-panel stats-records">
-            <div className="record-head stats-grid"><span>渠道 / 模型</span><span>健康</span><span>成功 / 失败</span><span>首字 / 总耗时</span><span>RPM</span><span>Token</span><span>费用</span></div>
+            <div className="record-head stats-grid"><span>渠道 / 模型</span><span>健康</span><span>成功 / 失败</span><span>首字 / 总耗时</span><span>RPM</span><span>Token</span><span>已记录费用</span></div>
             {entries.map((entry, index) => <StatsRow entry={entry} key={`${entry.channel_id}-${entry.model}-${index}`} />)}
           </div>}
         </section>
@@ -125,13 +149,13 @@ const PIE_COLORS = [
 ]
 
 function StatsDistribution({ entries }: { entries: StatsEntry[] }) {
-  const costTotal = entries.reduce((sum, entry) => sum + (entry.effective_cost ?? entry.total_cost ?? 0), 0)
-  const mode: DistributionMode = costTotal > 0 ? 'cost' : 'requests'
+  const hasCostData = entries.some((entry) => entry.effective_cost != null || entry.total_cost != null)
+  const mode: DistributionMode = hasCostData ? 'cost' : 'requests'
   const channelItems = buildDistribution(entries, (entry) => entry.channel_name, mode)
   const modelItems = buildDistribution(entries, (entry) => entry.model, mode)
-  return <section className="stats-distribution" aria-label="用量分布">
-    <DistributionPanel icon={BarChart3} title="渠道用量" items={channelItems} mode={mode} />
-    <DistributionPanel icon={Activity} title="模型用量" items={modelItems} mode={mode} />
+  return <section className="stats-distribution" aria-label="已记录费用与请求分布">
+    <DistributionPanel icon={BarChart3} title={mode === 'cost' ? '渠道已记录费用' : '渠道请求量'} items={channelItems} mode={mode} />
+    <DistributionPanel icon={Activity} title={mode === 'cost' ? '模型已记录费用' : '模型请求量'} items={modelItems} mode={mode} />
   </section>
 }
 
@@ -236,9 +260,9 @@ function CombinedTrendChart({ points, mode }: { points: MetricPoint[]; mode: Tre
     <div className="combined-trend-legend" aria-label="趋势指标图例">
       <span><i className="combined-trend-dot combined-trend-dot--requests" />请求量 <b>峰值 {formatMetric(maxima.requests, 'requests')}</b></span>
       <span><i className="combined-trend-dot combined-trend-dot--tokens" />Token <b>峰值 {formatMetric(maxima.tokens, 'tokens')}</b></span>
-      <span><i className="combined-trend-dot combined-trend-dot--cost" />费用 <b>峰值 {formatMetric(maxima.cost, 'cost')}</b></span>
+      <span><i className="combined-trend-dot combined-trend-dot--cost" />已记录费用 <b>峰值 {formatMetric(maxima.cost, 'cost')}</b></span>
     </div>
-    <div className={`combined-trend-plot${mode === 'curve' ? ' combined-trend-plot--curve' : ''}`} role="img" aria-label="请求量、Token 与费用组合趋势图">
+    <div className={`combined-trend-plot${mode === 'curve' ? ' combined-trend-plot--curve' : ''}`} role="img" aria-label="请求量、Token 与已记录费用组合趋势图">
       <div className="combined-trend-grid" aria-hidden="true">
         {[100, 75, 50, 25, 0].map((level) => <span key={level} style={{ bottom: `${level}%` }} />)}
       </div>
@@ -264,7 +288,7 @@ function CombinedTrendChart({ points, mode }: { points: MetricPoint[]; mode: Tre
             className={`combined-trend-hover-column${hovered === index ? ' is-active' : ''}`}
             key={`${entry.point.ts}-${index}`}
             tabIndex={0}
-            aria-label={`${formatPointTime(entry.point.ts)}，请求量 ${formatMetric(entry.requests, 'requests')} 次，Token ${formatMetric(entry.tokens, 'tokens')}，费用 ${formatMetric(entry.cost, 'cost')}`}
+            aria-label={`${formatPointTime(entry.point.ts)}，请求量 ${formatMetric(entry.requests, 'requests')} 次，Token ${formatMetric(entry.tokens, 'tokens')}，已记录费用 ${formatMetric(entry.cost, 'cost')}`}
             onMouseEnter={() => setHovered(index)}
             onMouseLeave={() => setHovered(null)}
             onFocus={() => setHovered(index)}
@@ -276,7 +300,7 @@ function CombinedTrendChart({ points, mode }: { points: MetricPoint[]; mode: Tre
           className={`combined-trend-bucket${hovered === index ? ' is-active' : ''}`}
           key={`${entry.point.ts}-${index}`}
           tabIndex={0}
-          aria-label={`${formatPointTime(entry.point.ts)}，请求量 ${formatMetric(entry.requests, 'requests')} 次，Token ${formatMetric(entry.tokens, 'tokens')}，费用 ${formatMetric(entry.cost, 'cost')}`}
+          aria-label={`${formatPointTime(entry.point.ts)}，请求量 ${formatMetric(entry.requests, 'requests')} 次，Token ${formatMetric(entry.tokens, 'tokens')}，已记录费用 ${formatMetric(entry.cost, 'cost')}`}
           onMouseEnter={() => setHovered(index)}
           onMouseLeave={() => setHovered(null)}
           onFocus={() => setHovered(index)}
@@ -291,7 +315,7 @@ function CombinedTrendChart({ points, mode }: { points: MetricPoint[]; mode: Tre
         <strong>{formatPointTime(hoveredEntry.point.ts)}</strong>
         <span><i className="combined-trend-dot combined-trend-dot--requests" />请求量<b>{formatMetric(hoveredEntry.requests, 'requests')} 次</b></span>
         <span><i className="combined-trend-dot combined-trend-dot--tokens" />Token<b>{formatMetric(hoveredEntry.tokens, 'tokens')}</b></span>
-        <span><i className="combined-trend-dot combined-trend-dot--cost" />费用<b>{formatMetric(hoveredEntry.cost, 'cost')}</b></span>
+        <span><i className="combined-trend-dot combined-trend-dot--cost" />已记录费用<b>{formatMetric(hoveredEntry.cost, 'cost')}</b></span>
       </div>}
     </div>
     <div className="combined-trend-axis"><span>{formatPointTime(points[0].ts)}</span><span>{formatPointTime(points[points.length - 1].ts)}</span></div>
@@ -414,6 +438,7 @@ function formatDay(day: string): string {
 function StatsRow({ entry }: { entry: StatsEntry }) {
   const rate = entry.total ? entry.success / entry.total : 0
   const multiplierLabel = actualMultiplierLabel(entry)
+  const recordedCost = entry.effective_cost ?? entry.total_cost
   return <article className="record-row stats-grid">
     <div><strong>{entry.channel_name}</strong><span title={entry.model}>{entry.model}</span></div>
     <div className="health-cell"><HealthMeter rate={rate} hasData={entry.total > 0} /></div>
@@ -421,7 +446,7 @@ function StatsRow({ entry }: { entry: StatsEntry }) {
     <div><strong>{entry.avg_first_byte_time_seconds ? `${entry.avg_first_byte_time_seconds.toFixed(2)}s` : '—'}</strong><span>{entry.avg_duration_seconds ? `${entry.avg_duration_seconds.toFixed(2)}s` : '—'}</span></div>
     <div><strong>{formatNumber(entry.peak_rpm, 1)}</strong><span>均值 {formatNumber(entry.avg_rpm, 1)}</span></div>
     <div><strong>{formatNumber(entry.total_input_tokens)} / {formatNumber(entry.total_output_tokens)}</strong><span>输入 / 输出</span></div>
-    <div><strong>{formatMoney(entry.effective_cost ?? entry.total_cost)}</strong><span>{multiplierLabel}</span></div>
+    <div><strong title="本地已记录费用，未与上游账单对账">{recordedCost == null ? '—' : formatMoney(recordedCost)}</strong><span>{multiplierLabel}</span></div>
   </article>
 }
 
@@ -429,12 +454,12 @@ function actualMultiplierLabel(entry: StatsEntry): string {
   const minimum = entry.actual_cost_multiplier_min
   const maximum = entry.actual_cost_multiplier_max
   if (minimum !== undefined && maximum !== undefined) {
-    if (minimum === 0 && maximum === 0) return '免费'
-    if (minimum === maximum) return minimum === 1 ? '标准倍率' : `${formatMultiplier(minimum)}x 实际倍率`
-    return `${formatMultiplier(minimum)}x–${formatMultiplier(maximum)}x 实际倍率`
+    if (minimum === 0 && maximum === 0) return '本地倍率为零'
+    if (minimum === maximum) return minimum === 1 ? '标准倍率' : `${formatMultiplier(minimum)}x 记录倍率`
+    return `${formatMultiplier(minimum)}x–${formatMultiplier(maximum)}x 记录倍率`
   }
   const configured = entry.cost_multiplier
-  if (configured === 0) return '免费'
+  if (configured === 0) return '本地倍率为零'
   if (configured !== undefined && configured !== 1) return `${formatMultiplier(configured)}x 倍率`
   return '标准倍率'
 }
