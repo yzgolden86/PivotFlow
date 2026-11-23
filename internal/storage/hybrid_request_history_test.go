@@ -118,6 +118,7 @@ func assertBoundedTracePayload(t testing.TB, trace *model.RequestTrace, source s
 	t.Helper()
 	if trace == nil {
 		t.Fatalf("%s trace is nil", source)
+		return
 	}
 	if len(trace.Attempts) != 128 || !trace.Truncated {
 		t.Fatalf("%s attempts=%d truncated=%v, want 128/true", source, len(trace.Attempts), trace.Truncated)
