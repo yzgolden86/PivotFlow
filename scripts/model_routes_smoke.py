@@ -999,8 +999,11 @@ def boundary_cases(runner):
         before = len(boundary_calls)
         model_input = page.get_by_label('请求模型', exact=True)
         model_input.fill(BOUNDARY_MODEL + '超')
+        expect(model_input).to_have_value(BOUNDARY_MODEL)
         page.get_by_role('button', name='查看路由', exact=True).click()
-        expect(page.get_by_role('alert')).to_contain_text('512')
+        invalid_path = '/routing?' + urlencode({'model': BOUNDARY_MODEL + '超', 'client_protocol': 'openai'})
+        page.goto(f'{runner.base}/web/console/#{invalid_path}', wait_until='networkidle')
+        expect(page.locator('.model-route-alert')).to_contain_text('512')
         after = sum(
             call['path'] == '/admin/routing/diagnostics'
             and call['query'].get('model') == [BOUNDARY_MODEL + '超']

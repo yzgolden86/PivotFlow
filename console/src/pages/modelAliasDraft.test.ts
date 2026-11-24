@@ -7,6 +7,7 @@ import {
   canonicalKey,
   parseAliasDraft,
   serializeAliasDraft,
+  validateAliasDraft,
   withMembers,
   type AliasDraft,
 } from './modelAliasDraft.ts'
@@ -142,4 +143,41 @@ test('非法 JSON 安全降级为空数组', () => {
 test('withMembers 去重且保序', () => {
   const group = withMembers(draft('gpt-5'), ['b', 'a', 'b', 'c'])
   assert.deepEqual(aliasMembers(group), ['b', 'a', 'c'])
+})
+
+test('统一映射结构校验定位空白统一名', () => {
+  const issues = validateAliasDraft([draft('gpt-5'), draft('   ', ['gpt-5'])])
+  assert.deepEqual(issues.map(({ index, kind }) => ({ index, kind })), [{ index: 1, kind: 'blank' }])
+  assert.match(issues[0].message, /不能为空/)
+})
+
+test('统一映射结构校验按后端口径定位所有大小写和空白重复行', () => {
+  const groups = [
+    draft('GPT-5'),
+    draft('  gpt-5  '),
+    draft('glm-5.2'),
+    draft(' GLM-5.2 ', [], false),
+  ]
+  const issues = validateAliasDraft(groups)
+  assert.deepEqual(
+    issues.map(({ index, kind }) => ({ index, kind })),
+    [
+      { index: 0, kind: 'duplicate' },
+      { index: 1, kind: 'duplicate' },
+      { index: 2, kind: 'duplicate' },
+      { index: 3, kind: 'duplicate' },
+    ],
+  )
+  assert.match(issues[0].message, /第 2 行/)
+  assert.match(issues[1].message, /第 1 行/)
+  assert.match(issues[2].message, /第 4 行/)
+  assert.match(issues[3].message, /第 3 行/)
+})
+
+test('统一映射结构校验不修改草稿或停用状态', () => {
+  const groups = [draft('GLM-5.2', ['z.ai/glm-5.2'], false), draft('', ['gpt-5'])]
+  const snapshot = JSON.stringify(groups)
+  validateAliasDraft(groups)
+  assert.equal(JSON.stringify(groups), snapshot)
+  assert.equal(groups[0].enabled, false)
 })

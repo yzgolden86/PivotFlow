@@ -22,12 +22,27 @@ import type { Channel, ChannelTestResult, Site, SiteAccount, SiteAccountModel, S
 import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, PageHeader } from './shared'
 import { useLocation } from 'react-router-dom'
 import { VendorMark } from './vendorMarks'
+import {
+  catalogFactForStatus,
+  catalogTestDisabledReason,
+  catalogTestSelection,
+  channelSiteId,
+  channelsForSite,
+  eligibleAccountTestTargets,
+  eligibleChannelTestTargets,
+  eligibleModelNames,
+  factsForSite,
+  representativeCatalogFact,
+  type CatalogStatusFilter,
+  type ModelTestTarget,
+} from './modelTestEligibility'
 
 type ModelsView = 'catalog' | 'probe'
 type ProbeTarget = 'site_account' | 'channel'
 type ProbeResult = ChannelTestResult & { source_label: string; requested_model: string }
 type CatalogModel = {
   model: string
+  facts: SiteAccountModel[]
   fact?: SiteAccountModel
   channels: Channel[]
 }
@@ -102,9 +117,14 @@ export default function ModelTestPage() {
       ])
       const availableChannels = channelResponse.data
       const enabledAccounts = inventory.accounts.filter((item) => item.enabled)
+      const nextChannelTargets = eligibleChannelTestTargets(availableChannels)
+      const nextAccountTargets = eligibleAccountTestTargets(enabledAccounts, inventory.sites, modelResponse.data)
       setChannels(availableChannels)
       setSites(inventory.sites)
-      setAccounts(enabledAccounts)
+      // Keep every inventory account so channel ownership still resolves for
+      // disabled accounts whose channels remain intentionally direct-testable.
+      // Account selectors consume accountTargets, which filters enabled accounts.
+      setAccounts(inventory.accounts)
       setSiteModels(modelResponse.data)
       setChannelBindings(bindingResponse)
 
@@ -115,45 +135,66 @@ export default function ModelTestPage() {
         // 只处理当前页签对应的那一项：另一项失效与用户正在做的事无关，
         // 动它会把用户已选好的模型无故清掉。
         const kept = selectionRef.current
-        const keptChannel = availableChannels.find((item) => item.id === kept.channelId)
-        const nextChannel = kept.channelId > 0 && !keptChannel ? availableChannels[0] : keptChannel
-        if (kept.channelId > 0 && !keptChannel) setChannelId(nextChannel?.id || 0)
-        const accountGone = kept.accountId > 0 && !enabledAccounts.some((item) => item.id === kept.accountId)
-        const nextAccountId = accountGone ? 0 : kept.accountId
-        if (accountGone) setAccountId(0)
+        const keptChannel = nextChannelTargets.find((item) => item.id === kept.channelId)
+        const nextChannelId = keptChannel?.id || nextChannelTargets[0]?.id || 0
+        if (kept.channelId !== nextChannelId) setChannelId(nextChannelId)
+        const keptAccount = nextAccountTargets.find((item) => item.id === kept.accountId)
+        const nextAccountId = keptAccount?.id || (kept.target === 'site_account' ? nextAccountTargets[0]?.id || 0 : 0)
+        if (kept.accountId !== nextAccountId) setAccountId(nextAccountId)
+        const nextTarget = kept.target === 'channel'
+          ? (keptChannel || nextChannelTargets.length ? 'channel' : nextAccountTargets.length ? 'site_account' : 'channel')
+          : (keptAccount || nextAccountTargets.length ? 'site_account' : nextChannelTargets.length ? 'channel' : 'site_account')
+        if (nextTarget !== kept.target) setTarget(nextTarget)
         // 模型同样要校验：它可能被上游从清单里停用或删除。原来的参数重放路径
         // 用 selectedModels.includes(...) 兜底，keepSelection 不能把这层丢掉，
         // 否则下拉显示空白但「开始测试」仍可点，会把已停用的模型发给后端。
-        const models = kept.target === 'channel'
-          ? nextChannel?.models.filter((item) => !item.disabled).map((item) => item.model) || []
-          : modelResponse.data.filter((item) => item.site_account_id === nextAccountId && !item.disabled).map((item) => item.model)
+        const models = nextTarget === 'channel'
+          ? nextChannelTargets.find((item) => item.id === nextChannelId)?.models || []
+          : nextAccountTargets.find((item) => item.id === nextAccountId)?.models || []
         setModel((current) => models.includes(current) ? current : (models[0] || ''))
       } else {
         const requestedChannel = Number(params.get('channel'))
         const requestedAccount = Number(params.get('account'))
         const requestedModel = (params.get('model') || '').trim()
-        const selectedChannel = availableChannels.find((item) => item.id === requestedChannel) || (!requestedChannel ? availableChannels[0] : undefined)
-        const selectedAccount = enabledAccounts.find((item) => item.id === requestedAccount) || enabledAccounts.find((item) => modelResponse.data.some((fact) => fact.site_account_id === item.id && !fact.disabled))
-        setChannelId(selectedChannel?.id || (requestedChannel > 0 ? requestedChannel : 0))
+        const requestedChannelTarget = nextChannelTargets.find((item) => item.id === requestedChannel)
+        const requestedAccountTarget = nextAccountTargets.find((item) => item.id === requestedAccount)
+        const selectedChannel = requestedChannelTarget || nextChannelTargets[0]
+        const selectedAccount = requestedAccountTarget || nextAccountTargets[0]
+        const nextTarget: ProbeTarget = params.has('account') && requestedAccountTarget
+          ? 'site_account'
+          : params.has('channel') && requestedChannelTarget
+            ? 'channel'
+            : nextChannelTargets.length
+              ? 'channel'
+              : nextAccountTargets.length
+                ? 'site_account'
+                : 'channel'
+        setChannelId(selectedChannel?.id || 0)
         setAccountId(selectedAccount?.id || 0)
-        if (params.has('account')) {
-          setView('probe')
-          setTarget('site_account')
-          const selectedModels = modelResponse.data.filter((item) => item.site_account_id === selectedAccount?.id && !item.disabled).map((item) => item.model)
-          setModel(requestedModel && selectedModels.includes(requestedModel) ? requestedModel : firstSiteModel(modelResponse.data, selectedAccount?.id || 0))
+        if (params.has('account') || params.has('channel')) setView('probe')
+        setTarget(nextTarget)
+        if (nextTarget === 'site_account') {
+          const selectedModels = selectedAccount?.models || []
+          setModel(requestedModel && selectedModels.includes(requestedModel) ? requestedModel : (selectedModels[0] || ''))
         } else {
-          if (params.has('channel')) {
-            setView('probe')
-            setTarget('channel')
-          }
-          const selectedModels = selectedChannel?.models.filter((item) => !item.disabled).map((item) => item.model) || []
-          setModel(requestedModel && selectedModels.includes(requestedModel) ? requestedModel : selectedChannel ? firstChannelModel(selectedChannel) : '')
+          const selectedModels = selectedChannel?.models || []
+          setModel(requestedModel && selectedModels.includes(requestedModel) ? requestedModel : (selectedModels[0] || ''))
         }
       }
-      const siteByAccount = new Map(enabledAccounts.map((account) => [account.id, account.site_id]))
+      // Pricing discovery must resolve owners through all inventory accounts so
+      // disabled owners still map to a site, and must add direct channel owners
+      // using the same direct-then-binding priority as the catalog rows.
+      const inventoryAccountsByID = new Map(inventory.accounts.map((account) => [account.id, account]))
+      const siteByAccount = new Map(inventory.accounts.map((account) => [account.id, account.site_id]))
+      const bindingByChannel = new Map(
+        bindingResponse
+          .filter((binding) => Boolean(binding.channel_id))
+          .map((binding) => [binding.channel_id as number, binding]),
+      )
       const pricingSiteIds = [
         ...bindingResponse.map((binding) => siteByAccount.get(binding.site_account_id)),
         ...modelResponse.data.map((fact) => siteByAccount.get(fact.site_account_id)),
+        ...availableChannels.map((channel) => channelSiteId(channel, bindingByChannel.get(channel.id), inventoryAccountsByID)),
       ].filter((siteId): siteId is number => Boolean(siteId))
       void loadPricing(pricingSiteIds, signal, options.force)
     } catch (reason) {
@@ -173,16 +214,33 @@ export default function ModelTestPage() {
 
   const siteMap = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites])
   const accountMap = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts])
+  const channelMap = useMemo(() => new Map(channels.map((item) => [item.id, item])), [channels])
   const channel = useMemo(() => channels.find((item) => item.id === channelId) || null, [channelId, channels])
   const account = useMemo(() => accounts.find((item) => item.id === accountId) || null, [accountId, accounts])
-  const accountModels = useMemo(() => siteModels.filter((item) => item.site_account_id === accountId && !item.disabled), [accountId, siteModels])
-  const channelModels = useMemo(() => channel?.models.filter((item) => !item.disabled) || [], [channel])
-  const availableAccounts = useMemo(() => accounts.filter((item) => siteModels.some((fact) => fact.site_account_id === item.id && !fact.disabled)), [accounts, siteModels])
-  const ready = target === 'channel' ? Boolean(channel && channelModels.length) : Boolean(account && accountModels.length)
+  const channelTargets = useMemo(() => eligibleChannelTestTargets(channels), [channels])
+  const accountTargets = useMemo(() => eligibleAccountTestTargets(accounts, sites, siteModels), [accounts, siteModels, sites])
+  const selectedChannelTarget = useMemo(() => channelTargets.find((item) => item.id === channelId), [channelId, channelTargets])
+  const selectedAccountTarget = useMemo(() => accountTargets.find((item) => item.id === accountId), [accountId, accountTargets])
+  const accountModels = useMemo(() => {
+    const eligible = new Set(selectedAccountTarget?.models || [])
+    return siteModels.filter((item) => item.site_account_id === accountId && eligible.has(item.model))
+  }, [accountId, selectedAccountTarget, siteModels])
+  const channelModels = useMemo(() => {
+    const eligible = new Set(selectedChannelTarget?.models || [])
+    return channel?.models.filter((item) => !item.disabled && eligible.has(item.model.trim())) || []
+  }, [channel, selectedChannelTarget])
+  const availableAccounts = useMemo(() => accountTargets.map((item) => accountMap.get(item.id)).filter((item): item is SiteAccount => Boolean(item)), [accountMap, accountTargets])
+  const ready = target === 'channel'
+    ? Boolean(selectedChannelTarget && model && selectedChannelTarget.models.includes(model))
+    : Boolean(selectedAccountTarget && model && selectedAccountTarget.models.includes(model))
 
   const changeTarget = (next: ProbeTarget) => {
     setTarget(next)
-    const options = next === 'channel' ? channelModels.map((item) => item.model) : accountModels.map((item) => item.model)
+    const nextChannelTarget = channelTargets.find((item) => item.id === channelId) || channelTargets[0]
+    const nextAccountTarget = accountTargets.find((item) => item.id === accountId) || accountTargets[0]
+    if (next === 'channel' && nextChannelTarget?.id !== channelId) setChannelId(nextChannelTarget?.id || 0)
+    if (next === 'site_account' && nextAccountTarget?.id !== accountId) setAccountId(nextAccountTarget?.id || 0)
+    const options = next === 'channel' ? nextChannelTarget?.models || [] : nextAccountTarget?.models || []
     if (!options.includes(model)) {
       setModel(options[0] || '')
       setResults({})
@@ -190,15 +248,16 @@ export default function ModelTestPage() {
   }
 
   const changeChannel = (nextId: number) => {
-    const next = channels.find((item) => item.id === nextId)
-    setChannelId(nextId)
-    setModel(next ? firstChannelModel(next) : '')
+    const next = channelTargets.find((item) => item.id === nextId)
+    setChannelId(next?.id || 0)
+    setModel(next?.models[0] || '')
     setResults({})
   }
 
   const changeAccount = (nextId: number) => {
-    setAccountId(nextId)
-    setModel(firstSiteModel(siteModels, nextId))
+    const next = accountTargets.find((item) => item.id === nextId)
+    setAccountId(next?.id || 0)
+    setModel(next?.models[0] || '')
     setResults({})
   }
 
@@ -207,17 +266,18 @@ export default function ModelTestPage() {
     setResults({})
   }
 
-  const openProbe = (item: CatalogModel) => {
+  const openProbe = (item: CatalogModel, fact: SiteAccountModel | undefined = item.fact, rowChannels: readonly Channel[] = item.channels) => {
+    const selection = catalogTestSelection(item.model, fact, rowChannels, accountMap, siteMap)
+    if (!selection) return
     setView('probe')
-    if (item.fact) {
+    if (selection.kind === 'site_account') {
       setTarget('site_account')
-      setAccountId(item.fact.site_account_id)
+      setAccountId(selection.id)
       setModel(item.model)
-      setProtocol(protocolForRoute(item.fact.route_type))
+      setProtocol(protocolForRoute(fact?.route_type || ''))
     } else {
-      const channel = item.channels[0]
       setTarget('channel')
-      setChannelId(channel?.id || 0)
+      setChannelId(selection.id)
       setModel(item.model)
       setProtocol('openai')
     }
@@ -269,22 +329,22 @@ export default function ModelTestPage() {
       </div>
 
       {loading ? <LoadingState label="正在汇总站点与渠道模型" /> : error && !channels.length && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : view === 'catalog' ? (
-        <ModelCatalog models={siteModels} sites={sites} accounts={accounts} channels={channels} channelBindings={channelBindings} sitePricing={sitePricing} siteMap={siteMap} accountMap={accountMap} probe={openProbe} />
+        <ModelCatalog models={siteModels} sites={sites} accounts={accounts} channels={channels} channelTargets={channelTargets} accountTargets={accountTargets} channelBindings={channelBindings} sitePricing={sitePricing} siteMap={siteMap} accountMap={accountMap} probe={openProbe} />
       ) : (
         <div className="test-layout">
           <section className="test-composer">
             <div className="section-heading"><div><div className="heading-with-hint"><h2>测试请求</h2><HelpTip label="测试请求" text="站点直测不创建渠道，也不改变冷却状态" /></div></div><span className="composer-channel-state"><i className={ready ? 'is-ready' : ''} />{ready ? '测试目标已就绪' : '没有可测试模型'}</span></div>
             <div className="probe-target-control" role="group" aria-label="测试目标">
-              <button type="button" className={target === 'site_account' ? 'is-active' : ''} onClick={() => changeTarget('site_account')}><Server size={15} />站点账号直测</button>
-              <button type="button" className={target === 'channel' ? 'is-active' : ''} onClick={() => changeTarget('channel')}><GitCompareArrows size={15} />路由渠道</button>
+              <button type="button" className={target === 'site_account' ? 'is-active' : ''} disabled={!accountTargets.length} onClick={() => changeTarget('site_account')}><Server size={15} />站点账号直测</button>
+              <button type="button" className={target === 'channel' ? 'is-active' : ''} disabled={!channelTargets.length} onClick={() => changeTarget('channel')}><GitCompareArrows size={15} />路由渠道</button>
             </div>
             <div className="form-grid">
               {target === 'channel' ? (
-                <label><span>渠道</span><select value={channelId} onChange={(event) => changeChannel(Number(event.target.value))}>{channels.map((item) => <option value={item.id} key={item.id}>{item.name} · P{item.priority}{item.enabled ? '' : ' · 已停用'}</option>)}</select></label>
+                <label><span>渠道</span><select value={channelId} onChange={(event) => changeChannel(Number(event.target.value))}>{!channelTargets.length && <option value={0}>没有可测试渠道</option>}{channelTargets.map((target) => { const item = channelMap.get(target.id); return <option value={target.id} key={target.id}>{item?.name || `渠道 #${target.id}`} · P{item?.priority ?? 0}{item?.enabled ? '' : ' · 已停用，可直测'}</option> })}</select></label>
               ) : (
-                <label><span>站点账号</span><select value={accountId} onChange={(event) => changeAccount(Number(event.target.value))}>{availableAccounts.map((item) => <option value={item.id} key={item.id}>{siteMap.get(item.site_id)?.name || `站点 #${item.site_id}`} · {item.label}</option>)}</select></label>
+                <label><span>站点账号</span><select value={accountId} onChange={(event) => changeAccount(Number(event.target.value))}>{!availableAccounts.length && <option value={0}>没有可测试账号</option>}{availableAccounts.map((item) => <option value={item.id} key={item.id}>{siteMap.get(item.site_id)?.name || `站点 #${item.site_id}`} · {item.label}</option>)}</select></label>
               )}
-              <label><span>模型</span><select value={model} onChange={(event) => changeModel(event.target.value)}>{(target === 'channel' ? channelModels : accountModels).map((item) => <option value={item.model} key={item.model}>{'redirect_model' in item && item.redirect_model && item.redirect_model !== item.model ? `${item.model} → ${item.redirect_model}` : item.model}</option>)}</select></label>
+              <label><span>模型</span><select value={model} onChange={(event) => changeModel(event.target.value)}>{!(target === 'channel' ? channelModels : accountModels).length && <option value="">没有可测试模型</option>}{(target === 'channel' ? channelModels : accountModels).map((item) => <option value={item.model} key={item.model}>{'redirect_model' in item && item.redirect_model && item.redirect_model !== item.model ? `${item.model} → ${item.redirect_model}` : item.model}</option>)}</select></label>
               <label><span>客户端协议</span><select value={protocol} onChange={(event) => setProtocol(event.target.value)}>{protocols.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
               <label className="toggle-field"><span>流式响应</span><button className={`switch ${stream ? 'switch--on' : ''}`} type="button" role="switch" aria-checked={stream} onClick={() => setStream((value) => !value)}><i /></button></label>
             </div>
@@ -303,59 +363,76 @@ export default function ModelTestPage() {
   )
 }
 
-function ModelCatalog({ models: siteModels, sites, accounts, channels, channelBindings, sitePricing, siteMap, accountMap, probe }: {
+function ModelCatalog({ models: siteModels, sites, accounts, channels, channelTargets, accountTargets, channelBindings, sitePricing, siteMap, accountMap, probe }: {
   models: SiteAccountModel[]
   sites: Site[]
   accounts: SiteAccount[]
   channels: Channel[]
+  channelTargets: ModelTestTarget[]
+  accountTargets: ModelTestTarget[]
   channelBindings: SiteChannelBinding[]
   sitePricing: Record<number, SitePricingSnapshot>
   siteMap: Map<number, Site>
   accountMap: Map<number, SiteAccount>
-  probe: (model: CatalogModel) => void
+  probe: (model: CatalogModel, fact?: SiteAccountModel, channels?: readonly Channel[]) => void
 }) {
   const [search, setSearch] = useState('')
   const [siteId, setSiteId] = useState(0)
   const [vendorKey, setVendorKey] = useState('all')
   // The catalog is a current snapshot by default. Historical stale facts stay
   // available through the explicit “过期” filter when a refresh was partial.
-  const [status, setStatus] = useState<'all' | 'available' | 'stale' | 'disabled'>('available')
+  const [status, setStatus] = useState<CatalogStatusFilter>('available')
   const [layout, setLayout] = useState<'cards' | 'table'>('cards')
   const catalogModels = useMemo(() => {
     const byModel = new Map<string, CatalogModel>()
     for (const fact of siteModels) {
-      byModel.set(fact.model, { model: fact.model, fact, channels: [] })
+      const current = byModel.get(fact.model) || { model: fact.model, facts: [], channels: [] }
+      current.facts.push(fact)
+      byModel.set(fact.model, current)
     }
+    for (const current of byModel.values()) {
+      current.fact = representativeCatalogFact(current.facts, accountMap, siteMap)
+    }
+    const targetByChannel = new Map(channelTargets.map((target) => [target.id, target]))
     for (const channel of channels) {
-      if (!channel.enabled) continue
+      const eligibleModels = new Set(targetByChannel.get(channel.id)?.models || [])
+      if (!eligibleModels.size) continue
       for (const entry of channel.models) {
-        if (entry.disabled) continue
-        const current = byModel.get(entry.model) || { model: entry.model, channels: [] }
+        if (entry.disabled || !eligibleModels.has(entry.model.trim())) continue
+        const current = byModel.get(entry.model) || { model: entry.model, facts: [], channels: [] }
         current.channels.push(channel)
         byModel.set(entry.model, current)
       }
     }
     return Array.from(byModel.values()).sort((a, b) => a.model.localeCompare(b.model))
-  }, [channels, siteModels])
-  const baseVisible = useMemo(() => catalogModels.filter((item) => {
-    const account = item.fact ? accountMap.get(item.fact.site_account_id) : undefined
-    const channelMatchesSite = siteId === 0 || item.channels.some((channel) => {
-      const channelAccount = channel.site_account_id ? accountMap.get(channel.site_account_id) : undefined
-      return channelAccount?.site_id === siteId
-    })
-    if (!channelMatchesSite) return false
-    if (account && siteId && account.site_id !== siteId) return false
-    if (!account && !item.channels.length) return false
-    if (status === 'available' && item.fact && !item.channels.length && (item.fact.disabled || item.fact.stale)) return false
-    if (status === 'stale' && (!item.fact?.stale || item.fact.disabled)) return false
-    if (status === 'disabled' && !item.fact?.disabled) return false
+  }, [accountMap, channelTargets, channels, siteMap, siteModels])
+  const rows = useMemo(() => catalogModels.map((item) => {
+    const rowChannels = channelsForSite(item.channels, siteId, channelBindings, accountMap)
+    return {
+      item,
+      // Scope facts and channel fallbacks to the selected site so site A never
+      // borrows site B's channel for its stale or disabled fact.
+      fact: catalogFactForStatus(factsForSite(item.facts, siteId, accountMap), status, accountMap, siteMap),
+      channels: rowChannels,
+      channelMatchesSite: siteId === 0 || rowChannels.length > 0,
+    }
+  }), [accountMap, catalogModels, channelBindings, siteId, siteMap, status])
+  const baseVisible = useMemo(() => rows.filter(({ item, fact, channels: rowChannels, channelMatchesSite }) => {
+    const account = fact ? accountMap.get(fact.site_account_id) : undefined
+    if (!channelMatchesSite && account?.site_id !== siteId) return false
+    if (!account && !rowChannels.length) return false
+    if ((status === 'stale' || status === 'disabled') && !fact) return false
+    const selection = catalogTestSelection(item.model, fact, rowChannels, accountMap, siteMap)
+    if (status === 'available' && !selection) return false
+    if (status === 'stale' && (!fact?.stale || fact.disabled)) return false
+    if (status === 'disabled' && !fact?.disabled) return false
     const site = account ? siteMap.get(account.site_id) : undefined
     const query = search.trim().toLowerCase()
-    return !query || [item.model, item.fact?.route_type || '', site?.name || '', account?.label || '', ...item.channels.map((channel) => channel.name)].some((value) => value.toLowerCase().includes(query))
-  }), [accountMap, catalogModels, search, siteId, siteMap, status])
+    return !query || [item.model, fact?.route_type || '', site?.name || '', account?.label || '', ...rowChannels.map((channel) => channel.name)].some((value) => value.toLowerCase().includes(query))
+  }), [accountMap, rows, search, siteId, siteMap, status])
   const vendorOptions = useMemo(() => {
     const counts = new Map<string, number>()
-    for (const item of baseVisible) {
+    for (const { item } of baseVisible) {
       const vendor = modelVendor(item.model)
       counts.set(vendor.key, (counts.get(vendor.key) || 0) + 1)
     }
@@ -364,12 +441,11 @@ function ModelCatalog({ models: siteModels, sites, accounts, channels, channelBi
       count,
     })).sort((a, b) => modelVendorOrder(a.vendor.key) - modelVendorOrder(b.vendor.key))
   }, [baseVisible])
-  const visible = useMemo(() => baseVisible.filter((item) => {
+  const visible = useMemo(() => baseVisible.filter(({ item }) => {
     if (vendorKey !== 'all' && modelVendor(item.model).key !== vendorKey) return false
     return true
   }), [baseVisible, vendorKey])
-  const currentModels = siteModels.filter((item) => !item.disabled && !item.stale)
-  const unique = new Set(catalogModels.map((item) => item.model)).size
+  const unique = eligibleModelNames(channelTargets, accountTargets).size
   const projected = new Set(catalogModels.filter((item) => item.channels.length > 0).map((item) => item.model)).size
   const channelOnly = catalogModels.filter((item) => !item.fact && item.channels.length > 0).length
 
@@ -395,40 +471,42 @@ function ModelCatalog({ models: siteModels, sites, accounts, channels, channelBi
         <span>{vendor.name}</span><b>{count}</b>
       </button>)}
     </div>
-    {!visible.length ? <EmptyState label={catalogModels.length ? '没有符合条件的模型' : '暂无站点模型或启用渠道模型'} /> : layout === 'cards' ? <div className="model-card-grid">{visible.map((item) => <ModelCard key={`${item.fact ? `${item.fact.site_account_id}:` : 'channel:'}${item.model}`} item={item} siteMap={siteMap} accountMap={accountMap} channelBindings={channelBindings} sitePricing={sitePricing} probe={probe} />)}</div> : <div className="records-panel model-records"><div className="record-head model-grid"><span>模型</span><span>站点 / 账号</span><span>路由协议</span><span>来源</span><span>最近发现</span><span>状态 / 操作</span></div>{visible.map((item) => {
-      const fact = item.fact
+    {!visible.length ? <EmptyState label={catalogModels.length ? '没有符合条件的模型' : '暂无可用测试目标'} /> : layout === 'cards' ? <div className="model-card-grid">{visible.map(({ item, fact, channels: rowChannels }) => <ModelCard key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`} item={item} fact={fact} channels={rowChannels} siteMap={siteMap} accountMap={accountMap} channelBindings={channelBindings} sitePricing={sitePricing} probe={probe} />)}</div> : <div className="records-panel model-records"><div className="record-head model-grid"><span>模型</span><span>站点 / 账号</span><span>路由协议</span><span>来源</span><span>最近发现</span><span>状态 / 操作</span></div>{visible.map(({ item, fact, channels: rowChannels }) => {
       const account = fact ? accountMap.get(fact.site_account_id) : undefined
       const site = siteMap.get(account?.site_id || 0)
-      const channelLabel = item.channels.length > 2 ? `${item.channels[0].name}、${item.channels[1].name} 等 ${item.channels.length} 个渠道` : item.channels.map((channel) => channel.name).join('、') || '尚未投影到渠道'
-      const pricing = modelPricingSummary(item, sitePricing, channelBindings, accountMap)
-      return <article className="record-row model-grid" key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`}><div><strong title={item.model}>{item.model}</strong><span>{item.channels.length ? `${item.channels.length} 个渠道可路由` : '尚未投影到渠道'}</span>{pricing ? <em className="model-price-line" title={pricingSourceTitle(pricing)}>{modelPricingLine(pricing)}</em> : null}</div><div>{fact ? <>{account?.site_id ? <a className="entity-link model-entity-link model-entity-link--site" href={`#/sites?focus_site_id=${account.site_id}`}><strong>{site?.name || `站点 #${account.site_id}`}</strong></a> : <strong>{site?.name || '未知站点'}</strong>}{fact.site_account_id ? <a className="entity-link model-entity-link model-entity-link--account" href={`#/accounts?focus_account_id=${fact.site_account_id}`}><span>{account?.label || `账号 #${fact.site_account_id}`}</span></a> : <span>未知账号</span>}</> : <strong title={channelLabel}>{channelLabel}</strong>}</div><div><strong>{fact ? routeLabel(fact.route_type) : '自动识别'}</strong><span>{fact ? fact.route_type : '按渠道协议转换'}</span></div><div><strong>{fact ? sourceLabel(fact.source) : '渠道配置'}</strong><span>{fact ? fact.source : 'channel_models'}</span></div><div><strong>{fact?.last_seen_at ? formatTime(fact.last_seen_at) : '—'}</strong><span>{fact ? (fact.stale ? '需要重新刷新' : '当前快照') : '渠道当前配置'}</span></div><div className="model-row-action"><span className={`status-badge status-badge--${fact?.disabled ? 'muted' : fact?.stale && !item.channels.length ? 'warning' : 'success'}`}>{fact?.disabled && !item.channels.length ? '停用' : fact?.stale && !item.channels.length ? '过期' : '可用'}</span><button className="icon-button icon-button--surface" type="button" disabled={Boolean(fact?.disabled) && item.channels.length === 0} onClick={() => probe(item)} aria-label={fact ? `直测 ${item.model}` : `渠道测试 ${item.model}`} title={fact ? '站点账号直测' : '渠道路由测试'}><Play size={15} /></button></div></article>
+      const channelLabel = rowChannels.length > 2 ? `${rowChannels[0].name}、${rowChannels[1].name} 等 ${rowChannels.length} 个渠道` : rowChannels.map((channel) => channel.name).join('、') || '尚未投影到渠道'
+      const pricing = modelPricingSummary(item, fact, rowChannels, sitePricing, channelBindings, accountMap)
+      const selection = catalogTestSelection(item.model, fact, rowChannels, accountMap, siteMap)
+      const reason = catalogTestDisabledReason(fact, rowChannels, accountMap, siteMap)
+      return <article className="record-row model-grid" key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`}><div><strong title={item.model}>{item.model}</strong><span>{rowChannels.length ? `${rowChannels.length} 个渠道可直测` : '尚未投影到渠道'}</span>{pricing ? <em className="model-price-line" title={pricingSourceTitle(pricing)}>{modelPricingLine(pricing)}</em> : null}</div><div>{fact ? <>{account?.site_id ? <a className="entity-link model-entity-link model-entity-link--site" href={`#/sites?focus_site_id=${account.site_id}`}><strong>{site?.name || `站点 #${account.site_id}`}</strong></a> : <strong>{site?.name || '未知站点'}</strong>}{fact.site_account_id ? <a className="entity-link model-entity-link model-entity-link--account" href={`#/accounts?focus_account_id=${fact.site_account_id}`}><span>{account?.label || `账号 #${fact.site_account_id}`}</span></a> : <span>未知账号</span>}</> : <strong title={channelLabel}>{channelLabel}</strong>}</div><div><strong>{fact ? routeLabel(fact.route_type) : '自动识别'}</strong><span>{fact ? fact.route_type : '按渠道协议转换'}</span></div><div><strong>{fact ? sourceLabel(fact.source) : '渠道配置'}</strong><span>{fact ? fact.source : 'channel_models'}</span></div><div><strong>{fact?.last_seen_at ? formatTime(fact.last_seen_at) : '—'}</strong><span>{fact ? (fact.stale ? '需要重新刷新' : '当前快照') : '渠道当前配置'}</span></div><div className="model-row-action"><span className={`status-badge status-badge--${selection ? 'success' : fact?.disabled ? 'muted' : 'warning'}`}>{selection ? '可测试' : fact?.disabled ? '停用' : '无测试目标'}</span><button className="icon-button icon-button--surface" type="button" disabled={!selection} onClick={() => probe(item, fact, rowChannels)} aria-label={selection?.kind === 'site_account' ? `直测 ${item.model}` : `渠道测试 ${item.model}`} title={selection ? (selection.kind === 'site_account' ? '站点账号直测' : '渠道路由测试') : reason}><Play size={15} /></button></div></article>
     })}</div>}
   </>
 }
 
-function ModelCard({ item, siteMap, accountMap, channelBindings, sitePricing, probe }: {
+function ModelCard({ item, fact, channels, siteMap, accountMap, channelBindings, sitePricing, probe }: {
   item: CatalogModel
+  fact?: SiteAccountModel
+  channels: Channel[]
   siteMap: Map<number, Site>
   accountMap: Map<number, SiteAccount>
   channelBindings: SiteChannelBinding[]
   sitePricing: Record<number, SitePricingSnapshot>
-  probe: (model: CatalogModel) => void
+  probe: (model: CatalogModel, fact?: SiteAccountModel, channels?: readonly Channel[]) => void
 }) {
-  const fact = item.fact
   const account = fact ? accountMap.get(fact.site_account_id) : undefined
   const site = siteMap.get(account?.site_id || 0)
   const vendor = modelVendor(item.model)
-  const disabled = Boolean(fact?.disabled) && item.channels.length === 0
-  const stale = Boolean(fact?.stale) && item.channels.length === 0
-  const tone = disabled ? 'muted' : stale ? 'warning' : 'success'
-  const statusLabel = disabled ? '停用' : stale ? '过期' : '可用'
-  const channelLabel = item.channels.length > 2 ? `${item.channels[0].name}、${item.channels[1].name} 等 ${item.channels.length} 个渠道` : item.channels.map((channel) => channel.name).join('、') || '尚未投影到渠道'
-  const pricing = modelPricingSummary(item, sitePricing, channelBindings, accountMap)
+  const selection = catalogTestSelection(item.model, fact, channels, accountMap, siteMap)
+  const disabledReason = catalogTestDisabledReason(fact, channels, accountMap, siteMap)
+  const tone = selection ? 'success' : fact?.disabled ? 'muted' : 'warning'
+  const statusLabel = selection ? '可测试' : fact?.disabled ? '停用' : fact?.stale ? '过期' : '无测试目标'
+  const channelLabel = channels.length > 2 ? `${channels[0].name}、${channels[1].name} 等 ${channels.length} 个渠道` : channels.map((channel) => channel.name).join('、') || '尚未投影到渠道'
+  const pricing = modelPricingSummary(item, fact, channels, sitePricing, channelBindings, accountMap)
   return <article className={`model-card model-card--${tone} model-vendor--${vendor.key}`} key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`}>
     <header>
       <span className="model-vendor" aria-hidden="true" title={vendor.name}><VendorMark vendor={vendor.key} size={26} /></span>
       <div><strong title={item.model}>{displayModelName(item.model, vendor)}</strong><code title={item.model}>{item.model}</code></div>
-      <button type="button" disabled={disabled} onClick={() => probe(item)} aria-label={fact ? `直测 ${item.model}` : `渠道测试 ${item.model}`} title={fact ? '站点账号直测' : '渠道路由测试'}><Play size={14} /><span>测试</span></button>
+      <button type="button" disabled={!selection} onClick={() => probe(item, fact, channels)} aria-label={selection?.kind === 'site_account' ? `直测 ${item.model}` : `渠道测试 ${item.model}`} title={selection ? (selection.kind === 'site_account' ? '站点账号直测' : '渠道路由测试') : disabledReason}><Play size={14} /><span>测试</span></button>
     </header>
     <div className="model-card-badges">
       <span className={`status-badge status-badge--${tone}`}><ShieldCheck size={12} />{statusLabel}</span>
@@ -455,9 +533,9 @@ function ModelCard({ item, siteMap, accountMap, channelBindings, sitePricing, pr
       </>}
     </div> : null}
     <footer>
-      {item.channels.slice(0, 3).map((channel) => <span key={channel.id}>{channel.name}</span>)}
-      {item.channels.length > 3 ? <span>+{item.channels.length - 3}</span> : null}
-      {!item.channels.length ? <span>尚未投影到渠道</span> : null}
+      {channels.slice(0, 3).map((channel) => <span key={channel.id}>{channel.name}</span>)}
+      {channels.length > 3 ? <span>+{channels.length - 3}</span> : null}
+      {!channels.length ? <span>尚未投影到渠道</span> : null}
     </footer>
   </article>
 }
@@ -504,6 +582,8 @@ type ModelPricingSummary = {
 
 function modelPricingSummary(
   item: CatalogModel,
+  fact: SiteAccountModel | undefined,
+  channels: readonly Channel[],
   sitePricing: Record<number, SitePricingSnapshot>,
   channelBindings: SiteChannelBinding[],
   accountMap: Map<number, SiteAccount>,
@@ -519,13 +599,13 @@ function modelPricingSummary(
   }
   const bindingByChannel = new Map(channelBindings.filter((binding) => binding.channel_id).map((binding) => [binding.channel_id as number, binding]))
   const candidates: Array<{ siteId: number; group: string }> = []
-  for (const channel of item.channels) {
+  for (const channel of channels) {
     const binding = bindingByChannel.get(channel.id)
-    const account = accountMap.get(channel.site_account_id || binding?.site_account_id || 0)
-    if (account?.site_id) candidates.push({ siteId: account.site_id, group: binding?.pricing_group || 'default' })
+    const siteId = channelSiteId(channel, binding, accountMap)
+    if (siteId) candidates.push({ siteId, group: binding?.pricing_group || 'default' })
   }
-  if (item.fact) {
-    const account = accountMap.get(item.fact.site_account_id)
+  if (fact) {
+    const account = accountMap.get(fact.site_account_id)
     if (account?.site_id) candidates.push({ siteId: account.site_id, group: 'default' })
   }
 
@@ -653,8 +733,6 @@ function modelFamilyLabel(token: string): string {
   return labels[token] || token.replace(/\b[a-z]/g, (char) => char.toUpperCase())
 }
 
-function firstChannelModel(channel: Channel): string { return channel.models.find((item) => !item.disabled)?.model || '' }
-function firstSiteModel(models: SiteAccountModel[], accountId: number): string { return models.find((item) => item.site_account_id === accountId && !item.disabled)?.model || '' }
 function protocolLabel(value: string): string { return protocols.find((item) => item.value === value)?.label || value }
 function protocolForRoute(route: string): string { if (route === 'anthropic') return 'anthropic'; if (route === 'gemini') return 'gemini'; if (route === 'openai_response') return 'codex'; return 'openai' }
 function routeLabel(route: string): string { if (route === 'anthropic') return 'Anthropic'; if (route === 'gemini') return 'Gemini'; if (route === 'openai_response') return 'OpenAI Responses'; if (route === 'openai_chat') return 'OpenAI Chat'; return '自动识别' }

@@ -5,7 +5,7 @@
 | 文档 | 解决的问题 |
 | --- | --- |
 | [快速开始](getting-started.md) | 第一次启动、登录和验证 |
-| [客户端接入与配置生成](client-connection.md) | 五步接入、四类客户端模板、下游令牌权限与真实代理验证 |
+| [接入配置与客户端验证](client-connection.md) | 令牌与模型配置、四类客户端模板、可展开步骤与真实代理验证 |
 | [核心概念](concepts.md) | 站点、账号、渠道、访问令牌的边界 |
 | [站点与账号管理](site-management.md) | 凭证、余额、签到、公告和 Provider 能力 |
 | [浏览器辅助与账号导入](browser-import.md) | 页面助手、All API Hub 账号、来源／目标核对、固定预览与结果恢复 |

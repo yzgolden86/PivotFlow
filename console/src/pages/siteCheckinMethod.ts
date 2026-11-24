@@ -1,4 +1,5 @@
 import type { Site, SiteAccount } from '../types.ts'
+import { platformSupportsCheckin } from '../siteCredentials.ts'
 
 // 站点签到能力的展示与判定。放在 .ts 而不是页面里，是为了能被 node --test 直接跑到
 // （测试运行器不做 JSX 转译，import 不了 .tsx）。
@@ -27,4 +28,50 @@ export function needsBrowserCheckin(
   if (site?.checkin_method === 'turnstile') return true
   if (site?.checkin_method === 'disabled' || site?.checkin_method === 'unavailable') return false
   return ['browser_required', 'failed', 'unsupported'].includes(account.last_checkin_status)
+}
+
+const browserCheckinPaths: Record<string, string> = {
+  'new-api-family': '/console/personal',
+  veloera: '/app/me',
+}
+
+type CheckinSite = Pick<Site, 'enabled' | 'platform' | 'base_url' | 'external_checkin_url' | 'checkin_method'>
+type CheckinAccount = Pick<SiteAccount, 'enabled' | 'credential_type' | 'last_checkin_status'>
+
+export interface CheckinActionAvailability {
+  canRunServer: boolean
+  manualURL: string
+  reason: string
+}
+
+export function checkinActionAvailability(account: CheckinAccount, site?: CheckinSite): CheckinActionAvailability {
+  const configuredURL = site?.external_checkin_url?.trim() || ''
+  const methodUnavailable = site?.checkin_method === 'disabled' || site?.checkin_method === 'unavailable'
+  const fallbackURL = !configuredURL && site && !methodUnavailable && needsBrowserCheckin(account, site)
+    ? browserCheckinFallbackURL(site)
+    : ''
+  const manualURL = configuredURL || fallbackURL
+
+  if (!account.enabled) return { canRunServer: false, manualURL, reason: '账号已停用' }
+  if (account.credential_type === 'api_key') return { canRunServer: false, manualURL, reason: '模型 API Key 不支持服务端签到' }
+  if (!site) return { canRunServer: false, manualURL, reason: '账号关联的站点不存在' }
+  if (!site.enabled) return { canRunServer: false, manualURL, reason: '站点已停用' }
+  if (site.checkin_method === 'disabled') return { canRunServer: false, manualURL, reason: '站点已关闭签到' }
+  if (site.checkin_method === 'unavailable') return { canRunServer: false, manualURL, reason: '站点没有签到接口' }
+  if (!platformSupportsCheckin(site.platform)) return { canRunServer: false, manualURL, reason: '该平台不支持服务端签到' }
+  return { canRunServer: true, manualURL, reason: '' }
+}
+
+function browserCheckinFallbackURL(site: Pick<Site, 'base_url' | 'platform'>): string {
+  const path = browserCheckinPaths[site.platform]
+  if (!site.base_url || !path) return ''
+  try {
+    const target = new URL(site.base_url)
+    target.pathname = path
+    target.search = ''
+    target.hash = ''
+    return target.toString()
+  } catch {
+    return ''
+  }
 }

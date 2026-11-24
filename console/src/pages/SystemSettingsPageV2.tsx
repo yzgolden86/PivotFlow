@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, ArrowRight, BellRing, CalendarClock, Check, CheckCircle2, ChevronRight, Clock3, ExternalLink, FileClock, Gauge, Network,
@@ -14,8 +14,16 @@ import { BackupSettingsPanel } from './BackupSettingsPanel'
 import RequestCachePanel from './RequestCachePanel'
 import { Modal } from './siteShared'
 import HelpTip from '../components/HelpTip'
-import { adoptSuggestions, aliasMembers, parseAliasDraft, serializeAliasDraft, withMembers } from './modelAliasDraft'
-import type { AliasDraft } from './modelAliasDraft'
+import { adoptSuggestions, aliasMembers, parseAliasDraft, serializeAliasDraft, validateAliasDraft, withMembers } from './modelAliasDraft'
+import type { AliasDraft, AliasDraftIssue } from './modelAliasDraft'
+import {
+  byteSettingUnit,
+  formatByteSettingValue,
+  isByteSettingKey,
+  parseByteSettingValue,
+  validateWallpaperInput,
+} from '../settingsFields'
+import type { ByteSettingKey } from '../settingsFields'
 import {
   applyThemeCustomization, backgroundDimRange, glassPresetValues, readThemeCustomization, rerollWallpaper,
   resetThemeCustomization, surfaceBlurRange, surfaceOpacityRange, themeFontOptions,
@@ -24,6 +32,7 @@ import type {
   ThemeBackgroundFit, ThemeContentWidth, ThemeCustomization, ThemeFont, ThemeMotion, ThemePreference, ThemePreset,
   ThemeRadius, ThemeSidebarWidth,
 } from '../theme'
+import './settingsRefinement.css'
 
 // 分组只留名字：副标题（如外观→“主题与显示偏好”）是对标题的复述，纯噪音。
 const groups = [
@@ -46,7 +55,7 @@ type GroupKey = typeof groups[number]['key']
 const sections = [
   { key: 'runtime', label: '运行设置', icon: SlidersHorizontal },
   { key: 'notifications', label: '通知设置', icon: BellRing },
-  { key: 'backup', label: '导入导出', icon: DatabaseBackup },
+  { key: 'backup', label: '配置备份与恢复', icon: DatabaseBackup },
   { key: 'system-access', label: '系统访问', icon: KeyRound },
 ] as const
 
@@ -82,6 +91,8 @@ export default function SystemSettingsPageV2() {
   const [checkingVersion, setCheckingVersion] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [aliasRefreshTick, setAliasRefreshTick] = useState(0)
+  const [aliasFocusTick, setAliasFocusTick] = useState(0)
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
 
   useEffect(() => { setQuery(''); setOnlyModified(false) }, [location.search])
 
@@ -105,6 +116,7 @@ export default function SystemSettingsPageV2() {
       setSettings(data)
       setValues(Object.fromEntries(data.map((setting) => [setting.key, setting.value])))
       setDirty(new Set())
+      setFieldErrors({})
     } catch (reason) {
       if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '系统设置加载失败')
     } finally {
@@ -144,12 +156,27 @@ export default function SystemSettingsPageV2() {
   }, [dirty, group, onlyModified, query, settings])
   const showAliases = (!onlyModified || dirty.has('model_alias_groups')) && (query.trim()
     ? '模型统一映射 别名 model_alias_groups'.includes(query.trim().toLowerCase()) : onlyModified || group === 'routing')
+  const aliasIssues = useMemo(
+    () => validateAliasDraft(parseAliasDraft(values.model_alias_groups || '[]')),
+    [values.model_alias_groups],
+  )
+
+  const reportFieldError = useCallback((key: string, message: string) => {
+    setFieldErrors((current) => {
+      if ((current[key] || '') === message) return current
+      const next = { ...current }
+      if (message) next[key] = message
+      else delete next[key]
+      return next
+    })
+  }, [])
 
   const discard = () => {
     if (!window.confirm(`放弃 ${dirty.size} 项未保存的修改？`)) return
     setValues(Object.fromEntries(settings.map((setting) => [setting.key, setting.value])))
     setDirty(new Set())
     setOnlyModified(false)
+    setFieldErrors({})
   }
 
   const change = (key: string, value: string) => {
@@ -165,6 +192,27 @@ export default function SystemSettingsPageV2() {
 
   const save = async () => {
     if (!dirty.size || saving || refreshing) return
+    const fieldErrorEntries = Object.entries(fieldErrors)
+    if (fieldErrorEntries.length) {
+      const [firstKey, firstError] = fieldErrorEntries[0]
+      setNotice('')
+      setError(`无法保存：${firstError}`)
+      const firstSetting = settings.find((setting) => setting.key === firstKey)
+      if (firstSetting) setGroup(settingGroup(firstSetting.key))
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>(`[data-setting-key="${CSS.escape(firstKey)}"] input`)?.focus()
+      })
+      return
+    }
+    if (aliasIssues.length) {
+      setNotice('')
+      setError(`模型统一映射有 ${aliasIssues.length} 处结构错误，请修正高亮行后再保存。`)
+      setQuery('')
+      setOnlyModified(false)
+      setGroup('routing')
+      setAliasFocusTick((tick) => tick + 1)
+      return
+    }
     if (!window.confirm(`保存 ${dirty.size} 项设置？`)) return
     setSaving(true)
     setError('')
@@ -175,6 +223,7 @@ export default function SystemSettingsPageV2() {
       setSettings((current) => current.map((setting) => Object.prototype.hasOwnProperty.call(updates, setting.key) ? { ...setting, value: updates[setting.key] } : setting))
       setNotice(result.message)
       setDirty(new Set())
+      setFieldErrors({})
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '保存失败')
     } finally {
@@ -196,6 +245,7 @@ export default function SystemSettingsPageV2() {
         next.delete(setting.key)
         return next
       })
+      reportFieldError(setting.key, '')
       setNotice(result.message)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '重置失败')
@@ -204,12 +254,12 @@ export default function SystemSettingsPageV2() {
     }
   }
 
-  const changeAppearance = (patch: Partial<ThemeCustomization>, label: string) => {
+  const changeAppearance = (patch: Partial<ThemeCustomization>, label: string, successMessage?: string) => {
     const next = { ...appearance, ...patch }
     setAppearance(next)
     applyThemeCustomization(next)
     window.dispatchEvent(new CustomEvent('fusion:theme-changed', { detail: next.preference }))
-    setNotice(`已应用${label}`)
+    setNotice(successMessage || `已应用${label}`)
   }
 
   const resetAppearance = () => {
@@ -283,15 +333,21 @@ export default function SystemSettingsPageV2() {
           </div>
 
           <fieldset className="settings-fields" disabled={saving || refreshing}>
-          {group === 'appearance' && !query.trim() && !onlyModified ? <AppearancePanel customization={appearance} change={changeAppearance} reset={resetAppearance} /> : <>
-          {showAliases && <ModelAliasPanel value={values.model_alias_groups || '[]'} change={(value) => change('model_alias_groups', value)} refreshTick={aliasRefreshTick} />}
+          {group === 'appearance' && !query.trim() && !onlyModified ? <AppearancePanel customization={appearance} change={changeAppearance} reset={resetAppearance} clearNotice={() => setNotice('')} /> : <>
+          {showAliases && <ModelAliasPanel value={values.model_alias_groups || '[]'} change={(value) => change('model_alias_groups', value)} refreshTick={aliasRefreshTick} validationIssues={aliasIssues} focusIssuesTick={aliasFocusTick} />}
           {group === 'advanced' && !query.trim() && <div className="settings-risk-note"><ShieldAlert size={17} /><span>这些设置用于特殊兼容场景。不了解具体影响时请保持默认值。</span></div>}
 
           {!visible.length && !showAliases ? <EmptyState label={onlyModified ? '没有未保存的修改' : '没有符合条件的设置'} /> : <div className="setting-list">
-            {visible.map((setting) => <article className={`setting-row${dirty.has(setting.key) ? ' setting-row--dirty' : ''}`} key={setting.key} data-setting-key={setting.key}>
+            {visible.map((setting) => <article className={`setting-row${dirty.has(setting.key) ? ' setting-row--dirty' : ''}${fieldErrors[setting.key] ? ' setting-row--invalid' : ''}`} key={setting.key} data-setting-key={setting.key}>
               <div className="setting-copy"><strong title={setting.key}>{settingLabel(setting)}{helps[setting.key] && <HelpTip label={settingLabel(setting)} text={helps[setting.key]} code={setting.key} />}</strong></div>
               <div className="setting-control">
-                <SettingInput setting={setting} value={values[setting.key] ?? ''} change={(value) => change(setting.key, value)} />
+                <SettingInput
+                  setting={setting}
+                  value={values[setting.key] ?? ''}
+                  change={(value) => change(setting.key, value)}
+                  error={fieldErrors[setting.key] || ''}
+                  reportError={(message) => reportFieldError(setting.key, message)}
+                />
                 {setting.value_type !== 'bool' && settingUnit(setting.key) && <span>{settingUnit(setting.key)}</span>}
               </div>
               <div className="setting-actions">
@@ -409,7 +465,13 @@ function toDateTimeLocal(value: number): string { const date = new Date(value - 
 // refreshTick 由页面右上角的刷新按钮递增。清单（候选模型与可合并建议）是独立
 // 拉取的，不跟着 getSystemSettings 走，不接这个信号的话刷新后建议仍是旧的，
 // 在渠道分发同步完模型后回到这里会看不到新建议。
-function ModelAliasPanel({ value, change, refreshTick = 0 }: { value: string; change: (value: string) => void; refreshTick?: number }) {
+function ModelAliasPanel({ value, change, refreshTick = 0, validationIssues, focusIssuesTick = 0 }: {
+  value: string
+  change: (value: string) => void
+  refreshTick?: number
+  validationIssues: AliasDraftIssue[]
+  focusIssuesTick?: number
+}) {
   const groups = useMemo(() => parseAliasDraft(value), [value])
   const [inventory, setInventory] = useState<ModelAliasInventory | null>(null)
   const [loading, setLoading] = useState(true)
@@ -418,6 +480,11 @@ function ModelAliasPanel({ value, change, refreshTick = 0 }: { value: string; ch
   const [filter, setFilter] = useState('')
   const [expanded, setExpanded] = useState<number | null>(null)
   const [transferOpen, setTransferOpen] = useState(false)
+  const rowRefs = useRef(new Map<number, HTMLElement>())
+  const issuesByIndex = useMemo(
+    () => new Map(validationIssues.map((issue) => [issue.index, issue])),
+    [validationIssues],
+  )
 
   const reload = useCallback((signal?: AbortSignal) => {
     setLoading(true)
@@ -432,6 +499,21 @@ function ModelAliasPanel({ value, change, refreshTick = 0 }: { value: string; ch
     reload(controller.signal)
     return () => controller.abort()
   }, [reload, refreshTick])
+
+  useEffect(() => {
+    if (!focusIssuesTick || !validationIssues.length) return
+    const firstIndex = validationIssues[0].index
+    setFilter('')
+    setExpanded(firstIndex)
+    const frame = requestAnimationFrame(() => {
+      const row = rowRefs.current.get(firstIndex)
+      row?.querySelector<HTMLInputElement>(`#alias-canonical-${firstIndex}`)?.focus()
+      row?.scrollIntoView({ block: 'nearest' })
+    })
+    return () => cancelAnimationFrame(frame)
+    // 只在显式保存失败时定位；实时输入导致的错误数组更新不应抢走焦点。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusIssuesTick])
 
   const commit = (next: AliasDraft[]) => change(serializeAliasDraft(next))
   const update = (index: number, patch: Partial<AliasDraft>) => commit(groups.map((group, itemIndex) => itemIndex === index ? { ...group, ...patch } : group))
@@ -473,7 +555,10 @@ function ModelAliasPanel({ value, change, refreshTick = 0 }: { value: string; ch
 
   return <section className="model-alias-panel" aria-label="模型统一映射">
     <header>
-      <div className="heading-with-hint"><strong>模型统一映射</strong><HelpTip label="模型统一映射" text="给多个上游名称设置一个稳定入口。请求统一名称时，系统会按渠道实际存在的模型名发送。" /></div>
+      <div className="model-alias-header-copy">
+        <div className="heading-with-hint"><strong>模型统一映射</strong><HelpTip label="模型统一映射" text="给多个上游名称设置一个稳定入口。请求统一名称时，系统会按渠道实际存在的模型名发送。统一名称按首尾空白和大小写判定是否重复，与后端一致；停用组会保留配置，但不参与路由。" /></div>
+        <p>统一名称是客户端入口，上游名称保持原始大小写。结构错误会在保存前定位，已停用组仍会保留。</p>
+      </div>
       <div className="model-alias-header-actions">
         <button className="icon-button icon-button--surface" type="button" onClick={() => reload()} disabled={loading} title="重新读取渠道模型清单" aria-label="刷新模型清单"><RefreshCw size={15} className={loading ? 'is-spinning' : undefined} /></button>
         <button className="secondary-button" type="button" onClick={add}><Plus size={15} />新增映射</button>
@@ -481,6 +566,9 @@ function ModelAliasPanel({ value, change, refreshTick = 0 }: { value: string; ch
     </header>
 
     {error && <div className="model-alias-inline-error" role="alert">读取渠道模型清单失败：{error}</div>}
+    {validationIssues.length > 0 && <div className="model-alias-inline-error model-alias-validation-summary" role="alert">
+      有 {validationIssues.length} 行统一名称需要修正：{validationIssues[0].kind === 'blank' ? '名称不能为空' : '名称不能与另一行重复'}。这些修改尚未提交。
+    </div>}
 
     {/* 建议只在这里给一个入口：展开的清单动辄上百行，放进二级弹窗里慢慢挑。 */}
     {!!usableSuggestions.length && <div className="model-alias-suggestions">
@@ -497,13 +585,25 @@ function ModelAliasPanel({ value, change, refreshTick = 0 }: { value: string; ch
     {!groups.length ? <div className="model-alias-empty">暂未配置统一模型名称。可直接套用上方建议，或新增映射后从渠道模型清单中挑选。</div> : <div className="model-alias-list">
       {visibleGroups.map(({ group, index }) => {
         const members = aliasMembers(group)
+        const issue = issuesByIndex.get(index)
+        const issueId = `model-alias-error-${index}`
         // 默认折叠成一行：映射条数多时全部展开会把设置页拖得很长。
         // 展开态由 index 记录，新增的那条自动展开。
         const open = expanded === index
         // key 必须只用稳定的原始 index。把 group.canonical 拼进 key 会让每敲一个字
         // 就换一个 key，React 卸载重建整行，输入框随即丢失焦点——表现为「只能粘贴，
         // 手打一个字符就中断」。行内所有输入都是受控的，index 作 key 不会串数据。
-        return <article className={`model-alias-row${open ? ' is-open' : ''}`} key={index}>
+        return <article
+          className={`model-alias-row${open ? ' is-open' : ''}${issue ? ' is-invalid' : ''}`}
+          key={index}
+          ref={(node) => {
+            if (node) rowRefs.current.set(index, node)
+            else rowRefs.current.delete(index)
+          }}
+          tabIndex={issue ? -1 : undefined}
+          aria-invalid={issue ? true : undefined}
+          aria-describedby={issue ? issueId : undefined}
+        >
           <div className="model-alias-summary">
             <button className="model-alias-disclosure" type="button" aria-expanded={open} onClick={() => setExpanded(open ? null : index)}>
               <ChevronRight size={15} className="model-alias-caret" />
@@ -515,12 +615,23 @@ function ModelAliasPanel({ value, change, refreshTick = 0 }: { value: string; ch
               <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => remove(index)} aria-label={`删除 ${group.canonical || '未命名映射'}`} title="删除映射"><Trash2 size={15} /></button>
             </div>
           </div>
+          {issue && <p className="model-alias-row-error" id={issueId} role="alert">{issue.message}</p>}
           {open && <div className="model-alias-fields">
             {/* 两列结构对称：各自都是 head + body，标题行等高，输入框顶边才对得齐。
                 中间的箭头列说明映射方向（对外名 → 上游名），窄屏由 CSS 转成竖排。 */}
             <div className="model-alias-field">
               <div className="model-alias-field-head"><label htmlFor={`alias-canonical-${index}`}>统一名称</label></div>
-              <input id={`alias-canonical-${index}`} value={group.canonical} onChange={(event) => update(index, { canonical: event.target.value })} placeholder="例如 glm-5.2" list="model-alias-known-names" autoComplete="off" spellCheck={false} />
+              <input
+                id={`alias-canonical-${index}`}
+                value={group.canonical}
+                onChange={(event) => update(index, { canonical: event.target.value })}
+                placeholder="例如 glm-5.2"
+                list="model-alias-known-names"
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={Boolean(issue)}
+                aria-describedby={issue ? issueId : undefined}
+              />
               <p className="model-alias-field-hint">客户端请求时使用的对外名称</p>
             </div>
             <div className="model-alias-arrow" aria-hidden="true"><ArrowRight size={15} /></div>
@@ -595,14 +706,39 @@ function ModelPickerModal({ candidates, selected, close, apply }: { candidates: 
   </Modal>
 }
 
-function AppearancePanel({ customization, change, reset }: { customization: ThemeCustomization; change: (patch: Partial<ThemeCustomization>, label: string) => void; reset: () => void }) {
+function AppearancePanel({ customization, change, reset, clearNotice }: {
+  customization: ThemeCustomization
+  change: (patch: Partial<ThemeCustomization>, label: string, successMessage?: string) => void
+  reset: () => void
+  clearNotice: () => void
+}) {
   // 两个自由文本框用草稿 + 失焦提交：`change` 每次都会写 localStorage 并弹一条
   // 「已应用…」提示，逐键调用会刷屏；而且自定义 CSS 逐键生效会边打字边闪。
   const [backgroundDraft, setBackgroundDraft] = useState(customization.backgroundImage)
+  const [backgroundError, setBackgroundError] = useState('')
   const [cssDraft, setCssDraft] = useState(customization.customCss)
   // 「恢复默认」等外部改动要把草稿一起拉回来，否则输入框会停在旧文本上。
-  useEffect(() => { setBackgroundDraft(customization.backgroundImage) }, [customization.backgroundImage])
+  useEffect(() => {
+    setBackgroundDraft(customization.backgroundImage)
+    const validation = validateWallpaperInput(customization.backgroundImage)
+    setBackgroundError(validation.ok ? '' : `当前壁纸未生效：${validation.error}`)
+  }, [customization.backgroundImage])
   useEffect(() => { setCssDraft(customization.customCss) }, [customization.customCss])
+  const applyBackground = () => {
+    const validation = validateWallpaperInput(backgroundDraft)
+    if (!validation.ok) {
+      clearNotice()
+      setBackgroundError(validation.error)
+      return
+    }
+    setBackgroundError('')
+    if (validation.value === customization.backgroundImage) return
+    if (validation.action === 'clear') {
+      change({ backgroundImage: '' }, '背景壁纸', '背景壁纸已清除')
+      return
+    }
+    change({ backgroundImage: validation.value }, '背景壁纸', '背景壁纸已应用')
+  }
   const modes: Array<[ThemePreference, string, typeof Sun]> = [
     ['system', '跟随系统', Monitor],
     ['light', '亮色', Sun],
@@ -694,8 +830,24 @@ function AppearancePanel({ customization, change, reset }: { customization: Them
           <header><span><ImageIcon size={17} /></span><strong>背景壁纸</strong><HelpTip label="背景壁纸" text="只接受 http/https 地址，图片由浏览器直接向该地址请求（图床因此能看出你在用这个控制台）。「压暗」是用当前主题底色叠在壁纸上，调高可保住前景文字的可读性。" /></header>
           <label className="appearance-field">
             <span>图片地址（留空 = 不用壁纸）</span>
-            <input type="url" inputMode="url" spellCheck={false} placeholder="https://example.com/wallpaper.jpg" value={backgroundDraft} onChange={(event) => setBackgroundDraft(event.target.value)} onBlur={() => { if (backgroundDraft !== customization.backgroundImage) change({ backgroundImage: backgroundDraft }, '背景壁纸') }} aria-label="背景壁纸图片地址" />
+            <input
+              type="url"
+              inputMode="url"
+              spellCheck={false}
+              placeholder="https://example.com/wallpaper.jpg"
+              value={backgroundDraft}
+              onChange={(event) => {
+                setBackgroundDraft(event.target.value)
+                clearNotice()
+                if (backgroundError) setBackgroundError('')
+              }}
+              onBlur={applyBackground}
+              aria-label="背景壁纸图片地址"
+              aria-invalid={Boolean(backgroundError)}
+              aria-describedby={backgroundError ? 'appearance-wallpaper-error' : undefined}
+            />
           </label>
+          {backgroundError && <p className="settings-field-error" id="appearance-wallpaper-error" role="alert">{backgroundError} 未应用。</p>}
           <div className="appearance-segmented">{backgroundFits.map(([value, label]) => <button className={customization.backgroundFit === value ? 'is-selected' : ''} type="button" aria-pressed={customization.backgroundFit === value} onClick={() => change({ backgroundFit: value }, label)} key={value}>{label}</button>)}</div>
           <label className="appearance-field appearance-field--range">
             <span>压暗 {customization.backgroundDim}%</span>
@@ -757,8 +909,15 @@ function UpdatePanel({ info, checking, check }: { info: { version: string; lates
   </div>
 }
 
-function SettingInput({ setting, value, change }: { setting: SystemSetting; value: string; change: (value: string) => void }) {
+function SettingInput({ setting, value, change, error, reportError }: {
+  setting: SystemSetting
+  value: string
+  change: (value: string) => void
+  error: string
+  reportError: (message: string) => void
+}) {
   if (setting.value_type === 'bool') return <button className={`setting-switch${normalizeBool(value) === 'true' ? ' is-on' : ''}`} type="button" role="switch" aria-label={settingLabel(setting)} aria-checked={normalizeBool(value) === 'true'} onClick={() => change(normalizeBool(value) === 'true' ? 'false' : 'true')} disabled={!setting.editable}><span>{normalizeBool(value) === 'true' ? '已启用' : '已停用'}</span><i /></button>
+  if (isByteSettingKey(setting.key)) return <ByteCapacityInput setting={setting} value={value} change={change} error={error} reportError={reportError} />
   if (setting.key === 'site_daily_checkin_time' || setting.key === 'site_daily_announcement_time') return <input type="time" step="60" aria-label={settingLabel(setting)} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
   const options = settingOptions(setting.key)
   const tips = optionTips[setting.key]
@@ -783,6 +942,53 @@ function SettingInput({ setting, value, change }: { setting: SystemSetting; valu
   const type = ['int', 'float', 'duration'].includes(setting.value_type) ? 'number' : 'text'
   const bounds = settingBounds(setting.key)
   return <input type={type} min={bounds.min} max={bounds.max} aria-label={settingLabel(setting)} step={setting.value_type === 'float' ? '0.1' : '1'} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
+}
+
+function ByteCapacityInput({ setting, value, change, error, reportError }: {
+  setting: SystemSetting
+  value: string
+  change: (value: string) => void
+  error: string
+  reportError: (message: string) => void
+}) {
+  const key = setting.key as ByteSettingKey
+  const [draft, setDraft] = useState(() => formatByteSettingValue(key, value))
+  const errorId = `setting-error-${setting.key}`
+
+  useEffect(() => {
+    const parsed = parseByteSettingValue(key, draft)
+    if (!parsed.ok || parsed.bytes !== Number(value)) setDraft(formatByteSettingValue(key, value))
+    // 只在外部值（保存、重置或刷新）变化时同步；用户输入合法的等值文本时保留草稿。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, value])
+
+  const updateDraft = (next: string) => {
+    setDraft(next)
+    const parsed = parseByteSettingValue(key, next)
+    if (!parsed.ok) {
+      reportError(parsed.error)
+      return
+    }
+    reportError('')
+    if (String(parsed.bytes) !== value) change(String(parsed.bytes))
+  }
+
+  return <div className="byte-capacity-control">
+    <input
+      type="text"
+      inputMode="decimal"
+      value={draft}
+      onChange={(event) => updateDraft(event.target.value)}
+      onBlur={() => updateDraft(draft)}
+      disabled={!setting.editable}
+      aria-label={`${settingLabel(setting)}（${byteSettingUnit(key)}）`}
+      aria-invalid={Boolean(error)}
+      aria-describedby={error ? errorId : undefined}
+      autoComplete="off"
+      spellCheck={false}
+    />
+    {error && <p className="settings-field-error" id={errorId} role="alert">{error}</p>}
+  </div>
 }
 
 function normalizeBool(value: string): string { return value === 'true' || value === '1' ? 'true' : 'false' }
@@ -858,7 +1064,7 @@ const optionTips: Record<string, Record<string, string>> = {
 function settingUnit(key: string): string {
   if (key === 'request_cache_ttl_seconds') return '秒'
   if (key === 'request_cache_max_entries') return '条'
-  if (key === 'request_cache_max_bytes' || key === 'request_cache_max_entry_bytes') return '字节'
+  if (isByteSettingKey(key)) return byteSettingUnit(key)
   if (key === 'max_body_bytes' || key === 'max_image_body_bytes' || key === 'responses_ws_max_transcript_bytes') return '字节'
   if (/interval_hours/.test(key)) return '小时'
   if (/minutes/.test(key)) return '分钟'
@@ -879,6 +1085,9 @@ function settingBounds(key: string): { min?: number; max?: number } {
 function formatDefault(setting: SystemSetting): string {
   if (setting.value_type === 'bool') return normalizeBool(setting.default_value) === 'true' ? '启用' : '停用'
   const option = settingOptions(setting.key)?.find(([value]) => value === setting.default_value)
+  if (isByteSettingKey(setting.key)) {
+    return `${formatByteSettingValue(setting.key, setting.default_value)} ${byteSettingUnit(setting.key)}`
+  }
   const unit = settingUnit(setting.key)
   return option?.[1] || `${setting.default_value || '空'}${unit ? ` ${unit}` : ''}`
 }

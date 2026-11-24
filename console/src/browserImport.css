@@ -9,6 +9,13 @@
 .browser-import-card-header > span { display: grid; flex: none; place-items: center; width: 31px; height: 31px; color: var(--blue-text); background: var(--blue-soft); border-radius: 6px; font: 12px var(--font-numeric); }
 .browser-import-card-header h2 { margin: 0 0 5px; font-size: 16px; font-weight: 650; }
 .browser-import-card-header p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.7; }
+.browser-import-methods { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 18px 20px 0; }
+.browser-import-methods button { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 12px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border); border-radius: var(--radius-control); text-align: left; cursor: pointer; }
+.browser-import-methods button.is-selected { border-color: var(--blue); background: var(--blue-soft); color: var(--blue-text); }
+.browser-import-methods button:disabled { opacity: .65; cursor: default; }
+.browser-import-methods strong { font-size: 13px; line-height: 1.6; font-weight: 600; overflow-wrap: anywhere; }
+.browser-import-methods svg { flex: none; }
+.browser-import-method-hint { margin: 10px 20px 0; font-size: 12px; line-height: 1.7; color: var(--text-secondary); }
 .browser-import-file { display: grid; gap: 9px; margin: 18px 20px 0; padding: 18px; border: 1px dashed var(--border-strong); border-radius: 6px; background: var(--surface-muted); color: var(--text-secondary); }
 .browser-import-file > svg { color: var(--blue-text); }
 .browser-import-file > span { color: var(--text); font-size: 14px; font-weight: 600; }
@@ -81,3 +88,4 @@
 @media (max-width: 1080px) { .browser-import-intro { align-items: start; flex-direction: column; gap: 12px; } }
 @media (max-width: 880px) { .browser-import-columns { grid-template-columns: minmax(0, 1fr); } .browser-import-verification { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 520px) { .browser-import-page { gap: 13px; } .browser-import-card-header, .browser-import-source-facts, .browser-import-helper { padding: 15px; } .browser-import-file { margin: 15px 15px 0; padding: 14px; } .browser-import-source-actions { margin: 14px 15px; } .browser-import-form { padding: 3px 15px 15px; } .browser-import-entry { padding: 12px 15px; } .browser-import-inventory > header { padding: 13px 15px 9px; } .browser-import-page .pagination { padding: 12px 15px; } .browser-import-source-facts > div { grid-template-columns: minmax(0, 1fr); gap: 3px; } .browser-import-intro ol { flex-wrap: wrap; } .browser-import-file input { font-size: 11px; } .browser-import-preview-actions { align-items: stretch; } .browser-import-preview-actions button { flex: 1 1 auto; justify-content: center; } .browser-import-verification { padding: 15px; } }
+@media (max-width: 520px) { .browser-import-methods { margin: 15px 15px 0; } .browser-import-methods button { flex-direction: column; align-items: start; padding: 10px; } .browser-import-method-hint { margin-inline: 15px; } }

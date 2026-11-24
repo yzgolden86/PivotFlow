@@ -1,12 +1,47 @@
 import type { ModelAliasSuggestion } from '../types'
 
 export type AliasDraft = { canonical: string; aliases: string; enabled: boolean }
+export type AliasDraftIssue = {
+  index: number
+  kind: 'blank' | 'duplicate'
+  message: string
+}
 
 // 统一名的身份口径必须与后端一致：NormalizeModelAliasGroups 按小写去重，
 // 草稿里出现两个只差大小写的统一名会让 admin_settings 整批拒绝保存
 // （报错只说 duplicate canonical names，不指出是哪一行）。
 export function canonicalKey(name: string): string {
   return name.trim().toLowerCase()
+}
+
+export function validateAliasDraft(groups: AliasDraft[]): AliasDraftIssue[] {
+  const issues: AliasDraftIssue[] = []
+  const indexesByKey = new Map<string, number[]>()
+
+  groups.forEach((group, index) => {
+    const key = canonicalKey(group.canonical)
+    if (!key) {
+      issues.push({ index, kind: 'blank', message: '统一名称不能为空。' })
+      return
+    }
+    const indexes = indexesByKey.get(key)
+    if (indexes) indexes.push(index)
+    else indexesByKey.set(key, [index])
+  })
+
+  for (const indexes of indexesByKey.values()) {
+    if (indexes.length < 2) continue
+    for (const index of indexes) {
+      const peer = indexes.find((candidate) => candidate !== index)
+      issues.push({
+        index,
+        kind: 'duplicate',
+        message: `统一名称与第 ${(peer ?? index) + 1} 行重复；比较时会忽略大小写和首尾空白。`,
+      })
+    }
+  }
+
+  return issues.sort((left, right) => left.index - right.index)
 }
 
 export function parseAliasDraft(value: string): AliasDraft[] {

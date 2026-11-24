@@ -17,6 +17,7 @@ import {
   getConfigPreview, markPreviewObservationUnknown, mergePreviewApplyResult, type ConfigPreview,
 } from '../configPreview'
 import type { Site } from '../types'
+import HelpTip from '../components/HelpTip'
 import ConfigPreviewPanel from './ConfigPreviewPanel'
 import { PageHeader, Pagination, SecretInput, formatTime } from './shared'
 import '../browserImport.css'
@@ -49,6 +50,7 @@ export default function BrowserImportPage() {
   const [rechecking, setRechecking] = useState(false), [removing, setRemoving] = useState(false)
   const [applyMessage, setApplyMessage] = useState(''), [acknowledged, setAcknowledged] = useState(false)
   const [helperOpen, setHelperOpen] = useState(new URLSearchParams(location.search).get('helper') === '1')
+  const [sourceChoice, setSourceChoice] = useState<'all-api-hub' | 'browser'>(() => new URLSearchParams(location.search).get('helper') === '1' ? 'browser' : 'all-api-hub')
   const [expectedOrigin, setExpectedOrigin] = useState(''), [helperPlatform, setHelperPlatform] = useState('new-api-family')
   const [helperNotice, setHelperNotice] = useState(''), [bookmarkText, setBookmarkText] = useState('')
   const [sites, setSites] = useState<Site[]>([])
@@ -172,7 +174,9 @@ export default function BrowserImportPage() {
     try {
       const value = await decodeBrowserImportFile(file)
       if (!mounted.current || sequence !== generation.current) return
-      setText(value); documentRef.current = value; setFileSummary(validateBrowserImportText(value))
+      const summary = validateBrowserImportText(value)
+      setText(value); documentRef.current = value; setFileSummary(summary)
+      setSourceChoice(summary.format === 'all-api-hub' ? 'all-api-hub' : 'browser')
       setNotice('文件已选择。请点击服务器检查，读取当前目标匹配。')
     } catch (reason) { if (mounted.current && sequence === generation.current) setFailure(browserImportFailureState(reason)) }
   }
@@ -281,11 +285,11 @@ export default function BrowserImportPage() {
   const metadata = preview?.browser_import
 
   return <div className="browser-import-page">
-    <PageHeader icon={FolderInput} title="浏览器导入" tone="blue" actions={<>
+    <PageHeader icon={FolderInput} title="导入账号" tone="blue" actions={<>
       <a className="secondary-button" href="#/accounts">账号管理<ArrowRight size={14} /></a>
-      <button className="secondary-button" type="button" onClick={() => { setHelperOpen(true); helperSection.current?.scrollIntoView({ block: 'nearest' }) }}>获取页面助手<Download size={14} /></button>
+      <button className="secondary-button" type="button" onClick={() => { setSourceChoice('browser'); setHelperOpen(true); helperSection.current?.scrollIntoView({ block: 'nearest' }) }}>获取页面助手<Download size={14} /></button>
     </>} />
-    <div className="browser-import-intro"><p>把已登录浏览器或 All API Hub 的账号资料带入网关。核对来源和目标，确认实际差异后再保存。</p><ol aria-label="导入步骤"><li>1 来源</li><li>2 目标</li><li>3 确认</li></ol></div>
+    <div className="browser-import-intro"><p>从 All API Hub 或已登录的上游页面导入账号，核对差异后保存。</p><ol aria-label="导入步骤"><li>1 来源</li><li>2 目标</li><li>3 确认</li></ol></div>
     {failure && <div ref={errorRegion} tabIndex={-1} className="browser-import-error" role="alert"><strong>{failure.label}</strong><div>
       {failure.code === 'browser_required' && selected && <><a className="text-button" href={selected.source_origin} target="_blank" rel="noopener noreferrer">打开来源站点<ExternalLink size={14} /></a><button className="text-button" type="button" onClick={() => void submitPreview('verify')} disabled={!canPreview}>重新验证</button></>}
       {failure.pendingPreviewId && <button className="text-button" type="button" onClick={() => void reloadPreview(failure.pendingPreviewId)}>读取原预览</button>}
@@ -294,7 +298,12 @@ export default function BrowserImportPage() {
 
     <div className="browser-import-columns">
       <section className="browser-import-source browser-import-card" aria-labelledby="browser-import-source-title">
-        <header className="browser-import-card-header"><span>01</span><div><h2 id="browser-import-source-title">选择来源资料</h2><p>仅导入账号认证资料，余额、模型和签到事实由服务端另行读取。</p></div></header>
+        <header className="browser-import-card-header"><span>01</span><div><div className="heading-with-hint"><h2 id="browser-import-source-title">选择来源资料</h2><HelpTip label="账号导入范围" text="只导入账号认证资料。余额、模型和签到事实由服务端另行读取；All API Hub 的其他备份部分不会恢复到 PivotFlow。" /></div></div></header>
+        <div className="browser-import-methods" role="group" aria-label="账号资料来源">
+          <button type="button" className={sourceChoice === 'all-api-hub' ? 'is-selected' : ''} aria-pressed={sourceChoice === 'all-api-hub'} disabled={frozen} onClick={() => { setSourceChoice('all-api-hub'); setHelperOpen(false) }}><FileInput size={16} /><strong>All API Hub 文件</strong></button>
+          <button type="button" className={sourceChoice === 'browser' ? 'is-selected' : ''} aria-pressed={sourceChoice === 'browser'} disabled={frozen} onClick={() => { setSourceChoice('browser'); setHelperOpen(true) }}><Download size={16} /><strong>浏览器页面助手</strong></button>
+        </div>
+        <p className="browser-import-method-hint">{sourceChoice === 'all-api-hub' ? '在 All API Hub 导出明文账号备份，再选择 JSON 文件。' : '在已登录的上游页面运行助手，导出账号 JSON 后选择文件。'}</p>
         <label className="browser-import-file"><FileInput size={22} /><span>导入账号文件</span><input type="file" accept=".json,application/json,text/plain" disabled={frozen} onChange={(event) => void chooseFile(event.target.files?.[0])} /><small>轻量 JSON / All API Hub 2.0–4.0 明文备份 · 最多 2 MiB、64 条</small></label>
         {filename && <p className="browser-import-file-state">{filename}{fileSummary && <span>{fileSummary.format === 'all-api-hub' ? 'All API Hub 账号' : 'PivotFlow 轻量资料'} · {fileSummary.count} 条</span>}</p>}
         <div className="browser-import-source-actions"><button className="primary-button" type="button" disabled={!text || Boolean(phase) || frozen} onClick={() => void inspect()}>{phase === 'inspect' ? <RefreshCw className="spin" size={15} /> : <CheckCircle2 size={15} />}{phase === 'inspect' ? '正在检查' : '服务器检查'}</button><span>检查只读，不修改账号</span></div>
@@ -315,7 +324,7 @@ export default function BrowserImportPage() {
       </section>
 
       <section className="browser-import-target browser-import-card" aria-labelledby="browser-import-target-title">
-        <header className="browser-import-card-header"><span>02</span><div><h2 id="browser-import-target-title">核对来源与目标</h2><p>每次处理一条资料。既有开关、历史与渠道配置保留，新账号默认停用。</p></div></header>
+        <header className="browser-import-card-header"><span>02</span><div><div className="heading-with-hint"><h2 id="browser-import-target-title">核对来源与目标</h2><HelpTip label="账号保存方式" text="每次处理一条资料。更新凭证时保留既有开关、历史和渠道配置；新账号默认停用。请核对预览后再应用。" /></div><p>新账号默认停用</p></div></header>
         {selected ? <>
           <dl className="browser-import-source-facts"><div><dt>浏览器来源</dt><dd><a href={selected.source_origin} target="_blank" rel="noopener noreferrer">{selected.source_origin}<ExternalLink size={13} /></a></dd></div><div><dt>完整 API 地址</dt><dd>{selected.base_url}</dd></div><div><dt>平台 / 资料</dt><dd>{platformNames[selected.platform] || selected.platform} · {credentialNames[selected.credential_type]}</dd></div><div><dt>导出时间</dt><dd>{inspection?.captured_at ? formatTime(inspection.captured_at) : '原文件未提供'}</dd></div></dl>
           {seedNotice && <p className="browser-import-caution" role="status">{seedNotice}</p>}

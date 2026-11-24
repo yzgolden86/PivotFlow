@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ClipboardPaste, Copy, FileUp, FlaskConical, Layers3, Pencil, Plus, Power, RefreshCw, Route, Search, Settings2, Sparkles, Trash2 } from 'lucide-react'
+import { ClipboardPaste, Copy, FileUp, FlaskConical, GitFork, Layers3, Pencil, Plus, Power, RefreshCw, Route, Search, Settings2, Sparkles, Trash2 } from 'lucide-react'
 import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, fetchOAuthUsage, getAuthTokens, getChannelEditor, getChannelRouteDiagnostics, getChannels, importOAuthCredentials, peekChannels, restoreChannelSiteSync, setChannelsEnabled, updateChannel } from '../api'
 import type { AuthToken, Channel, ChannelBodyRuleAction, ChannelEditorSnapshot, ChannelHeaderRuleAction, ChannelModel, ChannelMutation, ChannelRequestRules, ChannelRouteDiagnostic, ChannelURL, OAuthUsageSummary } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
@@ -15,6 +15,8 @@ import SiteTaskProgress, { useSiteTaskCompletion } from './SiteTaskProgress'
 import SiteSyncPreviewModal from './SiteSyncPreviewModal'
 import ResourceDetails, { DetailList, DetailURL, detailDate } from './ResourceDetails'
 import { browserImportId } from '../browserImportTypes'
+import { applyPageSelection, countSelected, withoutSelectedIDs } from './channelSelection'
+import { batchNoticeTone, countBatchOutcomes, type NoticeTone } from './batchOutcome'
 
 const routeDiagnosticProtocols = [
   { value: 'openai', label: 'OpenAI' },
@@ -44,6 +46,7 @@ export default function ChannelsPage() {
   const [loading, setLoading] = useState(!initialResult)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [noticeTone, setNoticeTone] = useState<NoticeTone>('success')
   const [busyId, setBusyId] = useState<number | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [batchBusy, setBatchBusy] = useState(false)
@@ -83,7 +86,6 @@ export default function ChannelsPage() {
       setTotal(result.count)
       setEnabledTotal(result.enabled_count ?? 0)
       loadedOnceRef.current = true
-      setSelected((current) => new Set([...current].filter((id) => result.data.some((channel) => channel.id === id))))
     } catch (reason) {
       if (!stale()) setError(reason instanceof Error ? reason.message : '渠道加载失败')
     } finally {
@@ -154,7 +156,11 @@ export default function ChannelsPage() {
   const removeChannel = async (channel: Channel) => {
     if (!window.confirm(`删除渠道"${channel.name}"？该渠道将立即退出路由。`)) return
     setBusyId(channel.id); setError('')
-    try { await deleteChannel(channel.id); await load(undefined, { silent: true, force: true }) }
+    try {
+      await deleteChannel(channel.id)
+      setSelected((current) => withoutSelectedIDs(current, [channel.id]))
+      await load(undefined, { silent: true, force: true })
+    }
     catch (reason) { setError(reason instanceof Error ? reason.message : '渠道删除失败') }
     finally { setBusyId(null) }
   }
@@ -165,7 +171,11 @@ export default function ChannelsPage() {
     return next
   })
   const allPageSelected = channels.length > 0 && channels.every((channel) => selected.has(channel.id))
-  const toggleAllPage = () => setSelected(allPageSelected ? new Set() : new Set(channels.map((channel) => channel.id)))
+  const pageSelectedCount = countSelected(selected, channels.map((channel) => channel.id))
+  const toggleAllPage = () => setSelected((current) => {
+    const allSelected = channels.length > 0 && channels.every((channel) => current.has(channel.id))
+    return applyPageSelection(current, channels.map((channel) => channel.id), !allSelected)
+  })
 
   const runBatch = async (action: 'enable' | 'disable' | 'delete') => {
     const ids = [...selected]
@@ -176,6 +186,7 @@ export default function ChannelsPage() {
       if (action === 'delete') await deleteChannels(ids)
       else await setChannelsEnabled(ids, action === 'enable')
       setNotice(action === 'delete' ? `已删除 ${ids.length} 个渠道` : `已${action === 'enable' ? '启用' : '禁用'} ${ids.length} 个渠道`)
+      setNoticeTone('success')
       setSelected(new Set())
       await load(undefined, { silent: true, force: true })
     } catch (reason) { setError(reason instanceof Error ? reason.message : '批量操作失败') }
@@ -189,6 +200,7 @@ export default function ChannelsPage() {
       const payload = snapshotToMutation(snapshot, `${channel.name} 副本`)
       await createChannel(payload)
       setNotice(`已复制渠道"${channel.name}"`)
+      setNoticeTone('success')
       await load(undefined, { silent: true, force: true })
     } catch (reason) { setError(reason instanceof Error ? reason.message : '渠道复制失败') }
     finally { setBusyId(null) }
@@ -200,6 +212,7 @@ export default function ChannelsPage() {
     try {
       await restoreChannelSiteSync(channel.id)
       setNotice(`已恢复"${channel.name}"的自动同步`)
+      setNoticeTone('success')
       await load(undefined, { silent: true, force: true })
     } catch (reason) { setError(reason instanceof Error ? reason.message : '恢复自动同步失败') }
     finally { setBusyId(null) }
@@ -211,6 +224,10 @@ export default function ChannelsPage() {
     try {
       const result = await importOAuthCredentials(Array.from(files))
       setNotice(`凭证导入完成：新建 ${result.created || 0}，跳过 ${result.skipped || 0}，失败 ${result.failed || 0}`)
+      setNoticeTone(batchNoticeTone(countBatchOutcomes([
+        ...Array.from({ length: (result.created || 0) + (result.skipped || 0) }, () => 'success'),
+        ...Array.from({ length: result.failed || 0 }, () => 'failed'),
+      ])))
       await load(undefined, { silent: true, force: true })
     } catch (reason) { setError(reason instanceof Error ? reason.message : '凭证导入失败') }
     finally { if (importInput.current) importInput.current.value = '' }
@@ -219,7 +236,7 @@ export default function ChannelsPage() {
   return (
     <div className="workspace-page">
       <PageHeader
-      icon={Route}
+      icon={GitFork}
       title="渠道分发"
       tone="amber"
         actions={<>
@@ -240,7 +257,7 @@ export default function ChannelsPage() {
       />
 
       {!syncOpen && <SiteTaskProgress />}
-      {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
+      {notice && <OperationNotice tone={noticeTone} onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
 
       <section className="compact-summary channels-summary" aria-label="渠道摘要">
         <span><strong>{total}</strong>渠道总数</span><span><strong>{enabledTotal}</strong>全部启用</span><span><strong>{summary.enabled}</strong>本页启用</span><span><strong>{summary.cooldown}</strong>冷却中</span><span><strong>{summary.models}</strong>可用模型映射</span>
@@ -260,7 +277,7 @@ export default function ChannelsPage() {
         </select>
       </div>
 
-      {selected.size > 0 && <div className="batch-toolbar" aria-label="渠道批量操作"><strong>已选择 {selected.size} 项</strong><div><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
+      {selected.size > 0 && <div className="batch-toolbar" aria-label="渠道批量操作"><div className="batch-selection-summary"><div><strong>已选择 {selected.size} 项</strong><span>当前页 {pageSelectedCount} 项{selected.size > pageSelectedCount ? ` · 另外 ${selected.size - pageSelectedCount} 项` : ''}</span></div><button className="text-button" type="button" onClick={() => setSelected(new Set())}>清空选择</button></div><div><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
 
       {error && channels.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
       {loading ? <LoadingState label="正在加载渠道" /> : error && channels.length === 0 ? <ErrorState message={error} retry={() => void load()} /> : channels.length === 0 ? <EmptyState label="没有符合条件的渠道" /> : (

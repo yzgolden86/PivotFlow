@@ -96,6 +96,7 @@ export type CostSummaryStatus = 'ready' | 'missing' | 'unknown_version' | 'inval
 
 export interface CostSummaryView {
   status: CostSummaryStatus
+  coverageState: 'complete' | 'incomplete' | 'empty' | 'missing'
   summary: CostSummary | null
   amountText: string
   statusLabel: string
@@ -213,10 +214,10 @@ export function analyzeCostSummary(value: unknown, digits?: number): CostSummary
   const unknownOrPartialRequests = summary.unknown_requests
   const completeCoverage = summary.successful_requests > 0 && unknownOrPartialRequests === 0 && knownRequests === summary.successful_requests
   const coverageText = summary.successful_requests === 0
-    ? '暂无成功请求 · 尚未与上游账单对账'
+    ? '暂无成功请求'
     : completeCoverage
-      ? `完整估算 ${knownRequests}/${summary.successful_requests} · 尚未与上游账单对账`
-      : `完整估算 ${knownRequests}/${summary.successful_requests} · ${unknownOrPartialRequests} 条未知/部分 · 尚未与上游账单对账`
+      ? `完整估算 ${knownRequests}/${summary.successful_requests}`
+      : `完整估算 ${knownRequests}/${summary.successful_requests} · ${unknownOrPartialRequests} 条待核对`
   const recordedBreakdown = [
     `完整估算 ${formatMoney(summary.estimated_cost_usd, digits)}`,
     `部分 ${formatMoney(summary.partial_cost_usd, digits)}`,
@@ -225,6 +226,7 @@ export function analyzeCostSummary(value: unknown, digits?: number): CostSummary
 
   return {
     status: 'ready',
+    coverageState: summary.successful_requests === 0 ? 'empty' : completeCoverage ? 'complete' : 'incomplete',
     summary,
     amountText: formatMoney(summary.recorded_cost_usd, digits),
     statusLabel: '费用汇总已读取',
@@ -245,10 +247,11 @@ export function analyzeCostSummary(value: unknown, digits?: number): CostSummary
 function unavailableSummary(status: Exclude<CostSummaryStatus, 'ready'>, statusLabel: string): CostSummaryView {
   return {
     status,
+    coverageState: 'missing',
     summary: null,
     amountText: '—',
     statusLabel,
-    coverageText: '无法判断完整估算覆盖 · 尚未与上游账单对账',
+    coverageText: '无法判断完整估算覆盖',
     recordedBreakdown: '',
     knownRequests: 0,
     unknownOrPartialRequests: 0,

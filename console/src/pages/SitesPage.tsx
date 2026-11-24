@@ -10,6 +10,7 @@ import { credentialLabel, credentialOptions, normalizeCredentialType, platformSu
 import { buildSiteAccountIndex } from './siteAccountIndex'
 import ResourceDetails, { DetailList, DetailURL, detailDate } from './ResourceDetails'
 import { listWindow } from './listWindow'
+import { batchNoticeTone, countBatchOutcomes, probeNotice, type NoticeTone } from './batchOutcome'
 
 type SiteForm = {
   name: string; base_url: string; platform: string; timezone: string; use_system_proxy: boolean; proxy_url: string; external_checkin_url: string; enabled: boolean
@@ -42,6 +43,7 @@ export default function SitesPage() {
   const [loading, setLoading] = useState(!initialInventory)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [noticeTone, setNoticeTone] = useState<NoticeTone>('success')
   const [busyId, setBusyId] = useState<number | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [batchBusy, setBatchBusy] = useState(false)
@@ -145,7 +147,7 @@ export default function SitesPage() {
 			} } : {}),
 		})
       }
-		setEditing(undefined); setNotice(editing ? '站点已更新' : form.addAccount ? '站点和主账号已添加' : '站点已添加'); await load(undefined, { silent: true, force: true })
+		setEditing(undefined); setNotice(editing ? '站点已更新' : form.addAccount ? '站点和主账号已添加' : '站点已添加'); setNoticeTone('success'); await load(undefined, { silent: true, force: true })
     } catch (reason) {
       setError(siteErrorMessage(reason))
     }
@@ -168,12 +170,18 @@ export default function SitesPage() {
     if (action === 'delete' && !window.confirm(`永久删除站点“${site.name}”、全部账号及同步生成的渠道？手工渠道不受影响，此操作无法撤销。`)) return
     setBusyId(site.id); setError(''); setNotice('')
     try {
-      if (action === 'probe') { const result = await probeSite(site.id); setNotice(result.matched ? '站点探测成功' : '未识别到受支持的平台') }
+      if (action === 'probe') {
+        const result = await probeSite(site.id)
+        const nextNotice = probeNotice(result)
+        setNotice(nextNotice.message)
+        setNoticeTone(nextNotice.tone)
+      }
       if (action === 'toggle') {
         const updated = await updateSite(site.id, { enabled: !site.enabled })
         setNotice(siteToggleNotice(site.enabled, updated.cascade))
+        setNoticeTone('success')
       }
-      if (action === 'delete') { await deleteSite(site.id); setNotice('站点已删除') }
+      if (action === 'delete') { await deleteSite(site.id); setNotice('站点已删除'); setNoticeTone('success') }
       await load(undefined, { silent: true, force: true })
     } catch (reason) { setError(siteErrorMessage(reason)) }
     finally { setBusyId(null) }
@@ -196,7 +204,7 @@ export default function SitesPage() {
     if (!targets.length) return
     if (action === 'delete' && !window.confirm(`永久删除选中的 ${targets.length} 个站点、全部账号及同步生成的渠道？手工渠道不受影响，此操作无法撤销。`)) return
     setBatchBusy(true); setError(''); setNotice('')
-    let failed = 0
+    const outcomes: string[] = []
     let cascadeAccounts = 0
     let cascadeChannels = 0
     await runLimited(targets, async (site) => {
@@ -208,9 +216,11 @@ export default function SitesPage() {
           cascadeAccounts += updated.cascade?.accounts || 0
           cascadeChannels += updated.cascade?.channels || 0
         }
-      } catch { failed++ }
+        outcomes.push('success')
+      } catch { outcomes.push('failed') }
     })
-    let summary = failed ? `批量操作完成，${targets.length - failed} 个成功，${failed} 个失败` : `已处理 ${targets.length} 个站点`
+    const counts = countBatchOutcomes(outcomes)
+    let summary = counts.failed ? `批量操作完成，${counts.success} 个成功，${counts.failed} 个失败` : `已处理 ${counts.success} 个站点`
     if (cascadeAccounts || cascadeChannels) {
       const verb = action === 'enable' ? '恢复' : '停用'
       const parts: string[] = []
@@ -219,13 +229,14 @@ export default function SitesPage() {
       summary += `，已连带${verb} ${parts.join('、')}`
     }
     setNotice(summary)
+    setNoticeTone(batchNoticeTone(counts))
     if (action === 'delete') setSelected(new Set())
     await load(undefined, { silent: true, force: true })
     setBatchBusy(false)
   }
 
   const copySite = async (site: Site) => {
-    try { await navigator.clipboard.writeText(site.base_url); setNotice(`已复制 ${site.name} 的站点地址`) }
+    try { await navigator.clipboard.writeText(site.base_url); setNotice(`已复制 ${site.name} 的站点地址`); setNoticeTone('success') }
     catch { setError('复制失败，请检查浏览器剪贴板权限') }
   }
 
@@ -234,12 +245,12 @@ export default function SitesPage() {
       icon={Globe2}
       title="站点管理"
       tone="blue"
-      actions={<><a className="secondary-button" href="#/browser-import"><FileInput size={16} />浏览器导入</a><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新站点"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></>}
+      actions={<><a className="secondary-button" href="#/browser-import"><FileInput size={16} />导入账号</a><button className="primary-button" type="button" onClick={() => openForm()}><Plus size={16} />添加站点</button><button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新站点"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button></>}
     />
     <section className="compact-summary"><span><strong>{sites.length}</strong>站点总数</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>已启用</span><span><strong>{accounts.length}</strong>账号总数</span><span><strong>{healthy}</strong>健康账号</span></section>
     <div className="filter-bar"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前页站点" /><span>本页全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索站点、地址或平台" aria-label="搜索站点" /></label><select value={sort} onChange={(event) => { setSort(event.target.value); setPage(1) }} aria-label="站点排序"><option value="newest">新建优先</option><option value="name">名称 A-Z</option><option value="enabled">启用优先</option><option value="health">健康账号数</option></select><span className="filter-count"><Globe2 size={14} />{visible.length} 个站点</span></div>
     {selected.size > 0 && <div className="batch-toolbar" aria-label="站点批量操作"><SelectionSummary selected={selected.size} matching={visible.filter((site) => selected.has(site.id)).length} clear={() => setSelected(new Set())} /><div><button type="button" onClick={() => void runBatch('proxy_on')} disabled={batchBusy}><Network size={14} />开启系统代理</button><button type="button" onClick={() => void runBatch('proxy_off')} disabled={batchBusy}><Network size={14} />关闭系统代理</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
-    {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}{error && sites.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
+    {notice && <OperationNotice tone={noticeTone} onDismiss={() => setNotice('')}>{notice}</OperationNotice>}{error && sites.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
     {loading ? <LoadingState label="正在加载站点资产" /> : error && !sites.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={sites.length ? '没有匹配的站点' : '尚未添加站点'} /> : <div className="site-list">{pagedVisible.map((site) => <SiteRow key={site.id} site={site} accounts={accountIndex.get(site.id)?.accounts ?? []} healthyCount={accountIndex.get(site.id)?.healthy ?? 0} selected={selected.has(site.id)} busy={busyId === site.id || (batchBusy && selected.has(site.id))} focused={site.id === focusSiteId} rowRef={(node) => { if (node) rowRefs.current.set(site.id, node); else rowRefs.current.delete(site.id) }} select={() => toggleSelected(site.id)} copy={() => void copySite(site)} edit={() => openForm(site)} details={() => setDetails(site)} execute={(action) => void execute(site, action)} />)}</div>}
     <Pagination label="站点分页" page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
     {editing !== undefined && <Modal title={editing ? '编辑站点' : '添加站点'} close={() => setEditing(undefined)}>{error && <div className="inline-error modal-error">{error}</div>}<SiteFormView form={form} setForm={setForm} saving={saving} submit={save} editing={Boolean(editing)} /></Modal>}
@@ -271,7 +282,7 @@ function SiteRow({ site, accounts, healthyCount, selected, busy, focused, rowRef
     <div className="site-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${site.name}`} /><span className={`status-dot ${site.enabled ? 'status-dot--success' : 'status-dot--muted'}`} /><div><a className="entity-link" href={`#/sites?focus_site_id=${site.id}`}><strong>{site.name}</strong></a><span>#{site.id} · {site.timezone || 'Asia/Shanghai'}</span><button className="resource-details-trigger" type="button" onClick={details} aria-label={`查看 ${site.name} 详情`}>详情</button></div></div>
     <div className="site-address"><a className="site-base-link" href={site.base_url} target="_blank" rel="noreferrer" title={`在新标签页打开 ${site.base_url}`}><strong>{site.base_url}</strong></a><span>{site.platform || 'unknown'} · {site.proxy_url ? '自定义代理' : site.use_system_proxy ? '系统代理' : '直连'}</span></div>
     <div className="site-account-summary"><strong>{healthyCount}/{accounts.length}</strong><div className="site-account-links">{accounts.length ? accounts.slice(0, 2).map((account) => <a className="entity-chip" key={account.id} href={`#/accounts?focus_account_id=${account.id}${['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}>{account.label}</a>) : <span>暂无账号</span>}</div></div>
-    <div className="site-probe"><StatusBadge status={site.last_probe_status} /><span title={site.last_error}>{site.last_error || '最近探测状态'}{siteCheckinMethodHint(site) ? ` · ${siteCheckinMethodHint(site)}` : ''}</span></div>
+    <div className="site-probe"><StatusBadge status={site.last_probe_status} />{(site.last_error || siteCheckinMethodHint(site)) && <span title={site.last_error}>{site.last_error}{site.last_error && siteCheckinMethodHint(site) ? ' · ' : ''}{siteCheckinMethodHint(site)}</span>}</div>
     <div className="row-actions">
       {checkinURL && <a className="icon-button icon-button--surface" href={checkinURL} target="_blank" rel="noreferrer" aria-label={`打开 ${site.name} 签到页`} title="浏览器辅助签到页"><ExternalLink size={16} /></a>}
       <button className="icon-button icon-button--surface" type="button" onClick={() => execute('probe')} disabled={busy} aria-label={`探测 ${site.name}`} title="探测站点"><Radar className={busy ? 'spin' : ''} size={16} /></button>

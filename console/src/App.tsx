@@ -7,8 +7,8 @@ import {
   Bell,
   CalendarCheck2,
   FlaskConical,
-  FolderInput,
   Gauge,
+  GitFork,
   Globe2,
   KeyRound,
   LogOut,
@@ -115,9 +115,9 @@ const navigation: NavGroup[] = [
   {
     label: '路由',
     entries: [
-      { label: '渠道分发', href: '/channels', icon: RouteIcon },
+      { label: '渠道分发', href: '/channels', icon: GitFork },
       { label: '模型路由', href: '/routing', icon: RouteIcon },
-      { label: '客户端接入', href: '/connect', icon: PlugZap },
+      { label: '接入配置', href: '/connect', icon: PlugZap },
       { label: '令牌管理', href: '/tokens', icon: KeyRound },
     ],
   },
@@ -133,7 +133,6 @@ const navigation: NavGroup[] = [
     label: '工具',
     entries: [
       { label: '模型测试', href: '/models', icon: FlaskConical },
-      { label: '浏览器导入', href: '/browser-import', icon: FolderInput },
 	  { label: '系统设置', href: '/system', icon: Settings },
     ],
   },
@@ -156,7 +155,7 @@ function App() {
   // 会整块被推出侧栏左边界），收起态则要贴着操作栏右侧外挂。详见 popoverPosition。
   const themePickerAnchor = useRef<HTMLDivElement>(null)
   const showLabels = !collapsed || mobileOpen
-  const currentPage = navigation.flatMap((group) => group.entries).find((entry) => entry.href === location.pathname)?.label || '控制台'
+  const currentPage = navigation.flatMap((group) => group.entries).find((entry) => entry.href === location.pathname)?.label || (location.pathname === '/browser-import' ? '导入账号' : '控制台')
   useFocusLayer(sidebar, {
     open: mobileOpen, modal: true, close: () => setMobileOpen(false),
     initialFocus: () => sidebar.current?.querySelector<HTMLButtonElement>('.sidebar-mobile-close'),

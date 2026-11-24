@@ -9,6 +9,10 @@ export function validRouteText(value: string, maximum: number): boolean {
   return Array.from(value).length <= maximum && !/[\p{Cc}\p{Cs}]/u.test(value)
 }
 
+export function boundedRouteText(value: string, maximum: number): string {
+  return Array.from(value).slice(0, maximum).join('')
+}
+
 export function validObjectId(value: string): boolean {
   return /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value))
 }
@@ -50,6 +54,13 @@ export function weightReferenceLabel(value: { candidate: boolean; estimated_traf
   if (!value.candidate) return '未进入候选池'
   const percent = Number.isFinite(value.estimated_traffic_share) ? `${(value.estimated_traffic_share * 100).toFixed(1)}%` : '未知'
   return `${value.higher_priority_count > 0 ? '条件' : '同层'}权重参考 ${percent}`
+}
+
+export function modelInventoryStatus(value: { kind: 'model' | 'group' | 'wildcard'; alias_count: number; enabled_channels: number }): string {
+  const channels = `${value.enabled_channels} 个启用渠道`
+  if (value.kind === 'group') return `统一组 · ${value.alias_count} 个别名 · ${channels}`
+  if (value.kind === 'wildcard') return `通配 · ${channels}`
+  return channels
 }
 
 export function healthObservationLabel(value: { health_sample_count: number; success_rate: number }): string {

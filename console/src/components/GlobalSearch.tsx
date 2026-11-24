@@ -24,7 +24,8 @@ const staticEntries: SearchEntry[] = [
   { id: 'page-checkins', label: '签到中心', detail: '批量签到与结果历史', href: '#/checkins', kind: 'page' },
   { id: 'page-announcements', label: '公告中心', detail: '统一查看站点公告', href: '#/announcements', kind: 'page' },
   { id: 'page-channels', label: '渠道分发', detail: '路由候选、协议与冷却', href: '#/channels', kind: 'page' },
-  { id: 'page-connect', label: '客户端接入', detail: '接入引导、配置生成与真实网关验证', href: '#/connect', kind: 'page', keywords: '新手 onboarding Codex Claude Gemini SDK 配置' },
+  { id: 'page-routing', label: '模型路由', detail: '统一名称、候选渠道与排除原因', href: '#/routing', kind: 'page', keywords: '模型映射 统一 别名 诊断' },
+  { id: 'page-connect', label: '接入配置', detail: '生成客户端配置，并测试一次网关调用', href: '#/connect', kind: 'page', keywords: '客户端接入 新手 onboarding Codex Claude Gemini SDK 配置' },
   { id: 'page-logs', label: '请求日志', detail: '路由结果、响应时延与费用', href: '#/logs', kind: 'page' },
   { id: 'page-stats', label: '数据面板', detail: '趋势、渠道与模型消耗总览', href: '#/stats', kind: 'page' },
   { id: 'page-health', label: '运行健康', detail: '结算、写入、同步、清理与恢复状态', href: '#/health', kind: 'page', keywords: 'health 队列 积压 故障 恢复' },
@@ -34,6 +35,8 @@ const staticEntries: SearchEntry[] = [
   { id: 'advanced-active', label: '活动请求与调试日志', detail: '实时请求与调试快照', href: '#/logs?view=active', kind: 'advanced' },
   { id: 'advanced-settings', label: '冷却规则与系统设置', detail: '路由、冷却、日志与运行参数', href: '#/system', kind: 'advanced' },
   { id: 'advanced-token', label: '令牌管理', detail: '访问令牌、限额与用量', href: '#/tokens', kind: 'advanced' },
+  { id: 'advanced-account-import', label: '导入账号', detail: 'All API Hub 账号文件或浏览器页面助手', href: '#/browser-import', kind: 'advanced', keywords: '浏览器导入 插件账号' },
+  { id: 'advanced-backup', label: '配置备份与恢复', detail: 'PivotFlow 配置文件与 WebDAV', href: '#/system?section=backup', kind: 'advanced', keywords: '导入导出 迁移 备份' },
 
 ]
 

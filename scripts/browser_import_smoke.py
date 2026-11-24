@@ -48,7 +48,7 @@ SOURCE_PLATFORM = 'openai-compatible'
 SOURCE_ACCOUNT_LABEL = 'demo'
 
 ROUTE_PATH = '/browser-import'
-NAV_LABEL = '浏览器导入'
+NAV_LABEL = '导入账号'
 PREVIEW_REGION = '配置差异预览'
 
 
@@ -673,7 +673,7 @@ class BrowserImportRunner(Runner):
 
 def route_cases(runner):
     def route_exists(page, data):
-        expect(page.get_by_role('link', name=NAV_LABEL, exact=True)).to_be_visible()
+        expect(page.get_by_role('navigation', name='主导航', exact=True)).not_to_contain_text(NAV_LABEL)
         expect(page.locator('h1')).to_have_text(NAV_LABEL)
         runner.record('route-exists', url=page.url, h1=page.locator('h1').inner_text())
 

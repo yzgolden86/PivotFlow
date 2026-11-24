@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  attemptStateLabel, healthObservationLabel, keyMultiplierLabel, modelRouteURL,
+  attemptStateLabel, boundedRouteText, healthObservationLabel, keyMultiplierLabel, modelInventoryStatus, modelRouteURL,
   parseModelRouteScope, requestHistoryLink, routeWarningLabel, stickyForwardLabel,
   tokenOptions, weightReferenceLabel,
 } from './modelRoutes.ts'
@@ -20,6 +20,19 @@ test('invalid or repeated selected scope never silently becomes global', () => {
   }
   assert.notEqual(parseModelRouteScope(`?model=${'模'.repeat(513)}`).error, '')
   assert.equal(parseModelRouteScope(`?model=${'🚦'.repeat(512)}`).error, '')
+})
+
+test('bounded route text clamps by Unicode code point and preserves 512 emoji', () => {
+  const emoji = '🚦'
+  const atLimit = emoji.repeat(512)
+  const overflow = emoji.repeat(513)
+  assert.equal(boundedRouteText(atLimit, 512), atLimit)
+  assert.equal(boundedRouteText(overflow, 512), atLimit)
+  assert.equal(Array.from(boundedRouteText(overflow, 512)).length, 512)
+  const mixed = `${'a'.repeat(511)}${emoji}b`
+  const mixedBounded = boundedRouteText(mixed, 512)
+  assert.equal(mixedBounded, `${'a'.repeat(511)}${emoji}`)
+  assert.equal(Array.from(mixedBounded).at(-1), emoji)
 })
 
 test('history links preserve original model/protocol/token and disclose 191-character limit', () => {
@@ -43,6 +56,12 @@ test('weight labels report conditional references and never claim hit probabilit
   assert.equal(weightReferenceLabel({ candidate: true, estimated_traffic_share: .25, higher_priority_count: 2 }), '条件权重参考 25.0%')
   assert.equal(weightReferenceLabel({ candidate: true, estimated_traffic_share: .75, higher_priority_count: 0 }), '同层权重参考 75.0%')
   assert.equal(weightReferenceLabel({ candidate: false, estimated_traffic_share: 0, higher_priority_count: 0 }), '未进入候选池')
+})
+
+test('inventory rows keep one status that distinguishes groups, wildcards and ordinary models', () => {
+  assert.equal(modelInventoryStatus({ kind: 'group', alias_count: 12, enabled_channels: 8 }), '统一组 · 12 个别名 · 8 个启用渠道')
+  assert.equal(modelInventoryStatus({ kind: 'wildcard', alias_count: 0, enabled_channels: 2 }), '通配 · 2 个启用渠道')
+  assert.equal(modelInventoryStatus({ kind: 'model', alias_count: 0, enabled_channels: 0 }), '0 个启用渠道')
 })
 
 test('unknown health, attempts and Key fee range retain their distinct meanings', () => {

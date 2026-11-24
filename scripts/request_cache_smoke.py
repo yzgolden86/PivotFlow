@@ -819,8 +819,11 @@ def setting_cases(runner):
         expect(page.locator('.request-cache-contract')).to_contain_text(
             '默认关闭，客户端必须显式选择。'
         )
-        expect(page.locator('.request-cache-contract')).to_contain_text('temperature=0')
-        expect(page.locator('.request-cache-contract')).to_contain_text('不新增上游用量或费用')
+        contract_details = page.locator('.request-cache-contract details')
+        runner.check(not contract_details.evaluate('(element) => element.open'), 'Static cache scope should start collapsed')
+        contract_details.locator(':scope > summary').click()
+        expect(contract_details).to_contain_text('temperature=0')
+        expect(contract_details).to_contain_text('不新增上游用量或费用')
 
         help_trigger = page.get_by_role(
             'button',
@@ -837,8 +840,15 @@ def setting_cases(runner):
 
         assert_number_range(runner, page, '缓存有效期', 5, 3_600)
         assert_number_range(runner, page, '最大缓存条目', 1, 4_096)
-        assert_number_range(runner, page, '缓存正文总容量', 1_048_576, 134_217_728)
-        assert_number_range(runner, page, '单条响应容量', 4_096, 1_048_576)
+        for key, label, unit, value in (
+            ('request_cache_max_bytes', '缓存正文总容量', 'MiB', '32'),
+            ('request_cache_max_entry_bytes', '单条响应容量', 'KiB', '1024'),
+        ):
+            control = page.get_by_label(f'{label}（{unit}）', exact=True)
+            expect(control).to_have_attribute('type', 'text')
+            expect(control).to_have_attribute('inputmode', 'decimal')
+            expect(control).to_have_value(value)
+            expect(page.locator(f'[data-setting-key="{key}"]')).to_contain_text(unit)
 
         initial_values = cache_config_values(page)
         runner.check(initial_values['有效期'] == '60 秒', 'Current TTL was not 60 seconds')
@@ -900,6 +910,9 @@ def setting_cases(runner):
         expect(alert).to_have_count(0)
         expect(page.get_by_role('heading', name='请求缓存运行状态', exact=True)).to_be_focused()
         expect(page.get_by_role('button', name='刷新观察', exact=True)).to_be_enabled()
+        page.keyboard.press('Tab')
+        expect(page.get_by_role('button', name='请求缓存运行状态 的说明', exact=True)).to_be_focused()
+        expect(page.get_by_role('tooltip')).to_be_visible()
         page.keyboard.press('Tab')
         expect(page.get_by_role('button', name='刷新观察', exact=True)).to_be_focused()
         expect(panel).not_to_contain_text('下方仍是上次成功读取的快照')
@@ -983,7 +996,14 @@ def clear_cases(runner):
         expect(panel.get_by_role('status')).to_contain_text(
             '请求缓存已清空；进程累计计数保留。'
         )
-        expect(panel).to_contain_text('其中过期但仍驻留 0 条')
+
+        def expect_empty_resident_snapshot():
+            expect(panel.get_by_role('progressbar', name='驻留条目', exact=True)).to_have_attribute('value', '0')
+            panel.get_by_role('button', name='驻留条目计量 的说明', exact=True).click()
+            expect(page.get_by_role('tooltip')).to_contain_text('其中过期但仍驻留 0 条')
+            page.keyboard.press('Escape')
+
+        expect_empty_resident_snapshot()
         reads_after_clear = data.read_count
         page.wait_for_timeout(600)
         runner.check(data.delete_count == 1, 'Confirmed clear must issue exactly one DELETE')
@@ -992,9 +1012,7 @@ def clear_cases(runner):
 
         click_setting_group(page, '路由策略')
         click_setting_group(page, '请求缓存')
-        expect(page.locator('.request-cache-panel')).to_contain_text(
-            '其中过期但仍驻留 0 条'
-        )
+        expect_empty_resident_snapshot()
         runner.check(data.delete_count == 1, 'Remounting after clear repeated the DELETE')
         runner.record(
             'clear-confirmed-success',

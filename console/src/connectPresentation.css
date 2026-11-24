@@ -1,0 +1,353 @@
+.connect-page .connect-intro {
+  max-width: 72rem;
+  margin-bottom: 14px;
+}
+
+.connect-page .connect-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.connect-page .connect-guide {
+  position: static;
+  overflow: hidden;
+}
+
+.connect-guide > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 50px;
+  padding: 10px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.connect-guide > summary::-webkit-details-marker {
+  display: none;
+}
+
+.connect-guide > summary:hover {
+  background: var(--surface-muted);
+}
+
+.connect-guide > summary:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+}
+
+.connect-guide > summary > svg {
+  color: var(--text-muted);
+  transition: transform 160ms ease;
+}
+
+.connect-guide[open] > summary > svg {
+  transform: rotate(180deg);
+}
+
+.connect-guide-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px 12px;
+  min-width: 0;
+}
+
+.connect-guide-summary strong {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.connect-guide-body {
+  padding: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.connect-page .connect-guide ol {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 20px;
+  padding: 0;
+}
+
+.connect-page .connect-guide li {
+  padding: 12px 0;
+}
+
+.connect-page .connect-guide li + li {
+  border-top: 0;
+}
+
+.connect-guide li header,
+.connect-guide-verification header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px 10px;
+}
+
+.connect-page .connect-guide h3,
+.connect-guide-verification h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.connect-step-status {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.connect-guide li.is-ready .connect-step-status,
+.connect-guide-verification.is-ready .connect-step-status {
+  background: var(--blue-soft);
+  color: var(--blue-text);
+}
+
+.connect-page .connect-guide li.is-ready .connect-step-number,
+.connect-guide-verification.is-ready .connect-step-number {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue-text);
+}
+
+.connect-page .connect-guide li p {
+  margin-top: 5px;
+}
+
+.connect-page .connect-guide-note {
+  margin: 6px 0 14px;
+}
+
+.connect-guide-verification {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 11px;
+  padding: 14px;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-control) var(--radius-control);
+  background: var(--surface-muted);
+}
+
+.connect-guide-verification p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.connect-page .connect-workspace {
+  display: grid;
+  grid-template-columns: minmax(340px, .9fr) minmax(0, 1.3fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.connect-selection {
+  align-self: start;
+  padding: 18px;
+}
+
+.connect-selection .connect-token-controls {
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+
+.connect-selection .connect-token-controls > .connect-field {
+  flex-basis: 100%;
+}
+
+.connect-selection .connect-token-controls > button {
+  flex: 1 1 128px;
+  justify-content: center;
+}
+
+.connect-next-step {
+  margin: 9px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.connect-page .connect-permissions {
+  display: block;
+  margin: 12px 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-muted);
+}
+
+.connect-permissions > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.connect-permissions > summary::-webkit-details-marker {
+  display: none;
+}
+
+.connect-permissions > summary:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+}
+
+.connect-permissions > summary span:first-child {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.connect-permissions > summary span:nth-child(2) {
+  min-width: 0;
+  margin-left: auto;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.connect-permissions > summary svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 160ms ease;
+}
+
+.connect-permissions[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+.connect-permissions-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px 14px;
+  padding: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.connect-choice-heading,
+.connect-field-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.connect-choice-heading {
+  margin: 16px 0 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.connect-field-label {
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.connect-input-grid {
+  margin-top: 14px;
+}
+
+.connect-selection .connect-client-options {
+  margin: 0;
+}
+
+.connect-selection .connect-model-controls {
+  margin-top: 14px;
+}
+
+.connect-output {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.connect-billing-warning {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--amber-soft);
+  color: var(--amber-text);
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+.connect-billing-warning .help-tip {
+  flex-shrink: 0;
+}
+
+.connect-probe .connect-probe-actions {
+  margin-top: 14px;
+}
+
+@media (max-width: 1100px) {
+  .connect-page .connect-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .connect-selection {
+    order: 1;
+  }
+
+  .connect-output {
+    order: 2;
+  }
+}
+
+@media (max-width: 600px) {
+  .connect-page .connect-guide ol {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .connect-guide > summary {
+    padding: 10px 12px;
+  }
+
+  .connect-guide-summary {
+    display: grid;
+    gap: 3px;
+  }
+
+  .connect-guide-body {
+    padding: 12px;
+  }
+
+  .connect-page .connect-guide li {
+    padding: 10px 0;
+  }
+
+  .connect-page .connect-code {
+    font-size: 12px;
+  }
+
+  .connect-billing-warning {
+    align-items: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connect-guide > summary > svg,
+  .connect-permissions > summary svg {
+    transition: none;
+  }
+}

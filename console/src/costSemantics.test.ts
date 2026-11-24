@@ -231,8 +231,8 @@ test('summary exposes recorded cost and explicit incomplete coverage without dou
   assert.equal(view.unknownOrPartialRequests, 2)
   assert.equal(view.completeCoverage, false)
   assert.match(view.coverageText, /完整估算 8\/10/)
-  assert.match(view.coverageText, /2 条未知\/部分/)
-  assert.match(view.coverageText, /尚未与上游账单对账/)
+  assert.match(view.coverageText, /2 条待核对/)
+  assert.equal(view.reconciliation, 'not_reconciled')
   assert.match(view.recordedBreakdown, /完整估算 \$0\.0140/)
   assert.match(view.recordedBreakdown, /部分 \$0\.0040/)
   assert.match(view.recordedBreakdown, /历史 \$0\.0030/)
@@ -280,7 +280,7 @@ test('a fully covered summary can say complete, but still never says reconciled'
   assert.equal(view.completeCoverage, true)
   assert.match(view.coverageText, /完整估算 4\/4/)
   assert.doesNotMatch(view.coverageText, /已与上游账单对账/)
-  assert.match(view.coverageText, /尚未与上游账单对账/)
+  assert.equal(view.reconciliation, 'not_reconciled')
 })
 
 test('missing, unknown-version, and inconsistent summaries never imply complete coverage', () => {
@@ -288,7 +288,7 @@ test('missing, unknown-version, and inconsistent summaries never imply complete 
   assert.equal(missing.status, 'missing')
   assert.equal(missing.completeCoverage, false)
   assert.match(missing.statusLabel, /费用依据未提供/)
-  assert.match(missing.coverageText, /尚未与上游账单对账/)
+  assert.equal(missing.reconciliation, 'not_reconciled')
 
   const unknownVersion = analyzeCostSummary({ ...summary(), version: 2 })
   assert.equal(unknownVersion.status, 'unknown_version')
@@ -325,5 +325,16 @@ test('a valid empty summary says there are no successful requests without claimi
   assert.equal(view.status, 'ready')
   assert.equal(view.completeCoverage, false)
   assert.match(view.coverageText, /暂无成功请求/)
-  assert.match(view.coverageText, /尚未与上游账单对账/)
+  assert.equal(view.reconciliation, 'not_reconciled')
+})
+
+test('coverage presentation distinguishes incomplete evidence, complete evidence, no requests and missing data', () => {
+  assert.equal(analyzeCostSummary(summary()).coverageState, 'incomplete')
+  assert.equal(analyzeCostSummary(summary({ successful_requests: 2, estimated_requests: 1, zero_requests: 1,
+    partial_requests: 0, unknown_requests: 0, historical_requests: 0 })).coverageState, 'complete')
+  assert.equal(analyzeCostSummary(summary({ successful_requests: 0, estimated_requests: 0, zero_requests: 0,
+    local_free_requests: 0, partial_requests: 0, unknown_requests: 0, historical_requests: 0 })).coverageState, 'empty')
+  assert.equal(analyzeCostSummary(null).coverageState, 'missing')
+  assert.equal(analyzeCostSummary({ ...summary(), version: 2 }).coverageState, 'missing')
+  assert.equal(analyzeCostSummary(summary({ successful_requests: 1 })).coverageState, 'missing')
 })

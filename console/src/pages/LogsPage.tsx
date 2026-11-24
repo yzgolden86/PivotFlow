@@ -9,6 +9,7 @@ import { modelRedirectTitle } from './modelRedirect'
 import RequestHistoryView from './RequestHistoryView'
 import { compactRequestId, requestDetailHref } from './requestHistory'
 import { buildCostEntryView, COST_BASIS_FILTER_OPTIONS, COST_SOURCE_FILTER_OPTIONS, COST_STATUS_FILTER_OPTIONS } from '../costSemantics.ts'
+import HelpTip from '../components/HelpTip'
 import '../costSemantics.css'
 
 const PAGE_SIZE = 20
@@ -160,11 +161,9 @@ export default function LogsPage() {
         {(channel || token || model || searchQuery || status || source !== 'proxy' || costSource || costStatus || costBasis || range !== 'today') && <button className="icon-button icon-button--surface" type="button" title="清除筛选" aria-label="清除日志筛选" onClick={() => { setChannel(''); setToken(''); setModel(''); setSearch(''); setSearchQuery(''); setStatus(''); setSource('proxy'); setCostSource(''); setCostStatus(''); setCostBasis(''); setRange('today'); setPage(1) }}><RotateCcw size={16} /></button>}
       </div>
 
-      <p className="cost-log-note">费用为请求发生时冻结的本地记录；未知金额显示为“—”，尚未与上游账单对账。</p>
-
       {loading ? <LoadingState label="正在加载请求日志" /> : error ? <ErrorState message={error} retry={() => void load()} /> : logs.length === 0 ? <EmptyState label="当前筛选条件下暂无请求日志" /> : (
         <div className="records-panel log-records" role="table" aria-label="请求日志列表">
-          <div className="record-head log-grid" role="row"><span>时间 / 来源</span><span>渠道</span><span>状态</span><span>模型与协议</span><span>时延</span><span>访问令牌</span><span>Token 用量</span><span>费用口径</span></div>
+          <div className="record-head log-grid" role="row"><span>时间 / 来源</span><span>渠道</span><span>状态</span><span>模型与协议</span><span>时延</span><span>访问令牌</span><span>Token 用量</span><span className="heading-with-hint">费用<HelpTip label="日志费用" text="费用使用请求发生时的本地记录，尚未与上游账单对账。未知金额显示为“—”；各行保留实际的费用依据和异常状态。" /></span></div>
           {logs.map((entry) => <LogRow entry={entry} key={entry.id} />)}
         </div>
       )}

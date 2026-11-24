@@ -19,6 +19,7 @@ import { executeSiteAccountTask, siteTaskRunner, siteTaskTarget } from '../siteT
 import SiteTaskProgress, { useSiteTaskCompletion, useSiteTasks } from './SiteTaskProgress'
 import { listWindow } from './listWindow'
 import { browserImportHref } from '../browserImport'
+import { batchNoticeTone, countBatchOutcomes, type NoticeTone } from './batchOutcome'
 
 type CredentialForm = {
   credential_type: CredentialType
@@ -93,7 +94,9 @@ export default function AccountsPage() {
   const [pageSize, setPageSize] = useState(50)
   const [loading, setLoading] = useState(!initialInventory)
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
+  const [notice, setNoticeText] = useState('')
+  const [noticeTone, setNoticeTone] = useState<NoticeTone>('success')
+  const setNotice = useCallback((message: string, tone: NoticeTone = 'success') => { setNoticeText(message); setNoticeTone(tone) }, [])
   const [busy, setBusy] = useState<Map<number, AccountTaskKind>>(new Map())
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [batchBusy, setBatchBusy] = useState(false)
@@ -381,7 +384,7 @@ export default function AccountsPage() {
         ? `模型已刷新，渠道未同步：${siteErrorMessage(result.error)}`
         : kind === 'checkin' && balanceDelta > 0.000001
           ? `签到完成，余额增加 +${balanceDelta.toFixed(2)} ${latestCheckin?.balance_currency || updated?.balance_currency || account.balance_currency}`
-          : kind === 'checkin' ? '签到任务已完成，余额已复核' : kind === 'refresh' ? '余额已刷新' : '模型和路由渠道已同步')
+          : kind === 'checkin' ? '签到任务已完成，余额已复核' : kind === 'refresh' ? '余额已刷新' : '模型和路由渠道已同步', result.status === 'partial' ? 'warning' : 'success')
     } catch (reason) {
       setError(siteErrorMessage(reason))
     } finally {
@@ -425,8 +428,8 @@ export default function AccountsPage() {
     if (action === 'refresh' || action === 'model_refresh') {
       try {
         const results = await siteTaskRunner.run(targets.map((account) => siteTaskTarget(action, account.site_id, account.id, account.label, siteMap.get(account.site_id)?.name || `站点 #${account.site_id}`)))
-        const count = (status: string) => results.filter((item) => item.status === status).length
-        setNotice(`批量${action === 'refresh' ? '刷新余额' : '同步路由'}完成：成功 ${count('success')}，部分成功 ${count('partial')}，失败 ${count('failed')}，取消 ${count('cancelled')}，待确认 ${count('unknown')}${skipped ? `，跳过 ${skipped} 个纯 API Key 账号` : ''}`)
+        const counts = countBatchOutcomes(results.map((item) => item.status))
+        setNotice(`批量${action === 'refresh' ? '刷新余额' : '同步路由'}完成：成功 ${counts.success}，部分成功 ${counts.partial}，失败 ${counts.failed}，取消 ${counts.cancelled}，待确认 ${counts.unknown}${skipped ? `，跳过 ${skipped} 个纯 API Key 账号` : ''}`, batchNoticeTone(counts))
         await load(undefined, { silent: true, force: true })
       } finally { setBatchBusy(false) }
       return
@@ -444,7 +447,7 @@ export default function AccountsPage() {
       finally { setBusy((current) => { const next = new Map(current); next.delete(account.id); return next }) }
     })
     const succeeded = targets.length - failed
-    setNotice(`批量操作完成：成功 ${succeeded}${failed ? `，失败 ${failed}` : ''}`)
+    setNotice(`批量操作完成：成功 ${succeeded}${failed ? `，失败 ${failed}` : ''}`, batchNoticeTone({ success: succeeded, failed, partial: 0, cancelled: 0, unknown: 0 }))
     if (action === 'delete') setSelected(new Set())
     await load(undefined, { silent: true, force: true })
     setBatchBusy(false)
@@ -462,7 +465,7 @@ export default function AccountsPage() {
       title="账号管理"
       tone="blue"
       actions={<>
-        <a className="secondary-button" href={browserImportHref({ siteId: siteFilter })}><FileInput size={16} />浏览器导入</a>
+        <a className="secondary-button" href={browserImportHref({ siteId: siteFilter })}><FileInput size={16} />导入账号</a>
         <button className="primary-button" type="button" onClick={() => void openCreate(siteFilter)} disabled={!sites.length || openingCreate}><Plus size={16} />添加账号</button>
         <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load(undefined, { silent: true, force: true }) } finally { setRefreshing(false) } }} aria-label="刷新账号"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
       </>}
@@ -471,7 +474,7 @@ export default function AccountsPage() {
     <div className="filter-bar filter-bar--wide"><label className="selection-toggle"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前页账号" /><span>本页全选</span></label><label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索账号或站点" aria-label="搜索账号" /></label><select value={siteFilter} onChange={(event) => setSiteFilter(Number(event.target.value))} aria-label="账号站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="账号状态"><option value="all">全部状态</option><option value="healthy">正常</option><option value="error">异常</option><option value="expired">已过期</option><option value="unknown">未知</option></select><select value={sort} onChange={(event) => chooseSort(event.target.value as AccountSort)} aria-label="账号排序"><option value="newest">新建优先</option><option value="name">账号名称</option><option value="site">站点名称</option><option value="status">状态</option><option value="balance">余额</option><option value="checkin">最近签到</option><option value="updated">最近更新</option></select></div>
     {selected.size > 0 && <div className="batch-toolbar" aria-label="账号批量操作"><SelectionSummary selected={selected.size} matching={visible.filter((account) => selected.has(account.id)).length} clear={() => setSelected(new Set())} /><div><button type="button" onClick={() => void runBatch('refresh')} disabled={batchBusy}><WalletCards size={14} />刷新余额</button><button type="button" onClick={() => void runBatch('model_refresh')} disabled={batchBusy}><RefreshCw size={14} />同步路由</button><button type="button" onClick={() => void runBatch('enable')} disabled={batchBusy}><Power size={14} />启用</button><button type="button" onClick={() => void runBatch('disable')} disabled={batchBusy}><Power size={14} />禁用</button><button className="danger-button" type="button" onClick={() => void runBatch('delete')} disabled={batchBusy}><Trash2 size={14} />删除</button></div></div>}
     <SiteTaskProgress />
-    {notice && <OperationNotice onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
+    {notice && <OperationNotice tone={noticeTone} persistent={noticeTone !== 'success'} onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
     {error && accounts.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
     {loading ? <LoadingState label="正在加载账号" /> : error && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? accounts.length ? <EmptyState label="没有匹配的账号" /> : <div className="content-state content-state--empty"><strong>还没有账号</strong><button className="secondary-button" type="button" onClick={() => void openCreate()} disabled={!sites.length}><Plus size={15} />添加账号</button></div> : <div className="account-records records-panel"><div className="record-head account-grid"><SortableHead label="账号 / 站点" sortKey="name" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="状态" sortKey="status" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="余额" sortKey="balance" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="最近签到" sortKey="checkin" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="自动任务" sortKey="automation" active={sort} direction={sortDirection} choose={toggleSort} /><span>操作</span></div>{pagedVisible.map((account) => <AccountRow key={account.id} account={account} site={siteMap.get(account.site_id)} latestCheckin={latestCheckins[account.id]} selected={selected.has(account.id)} busyKind={busy.get(account.id) || maintenanceBusy.get(account.id)} focused={account.id === focusAccountId} rowRef={(node) => { if (node) rowRefs.current.set(account.id, node); else rowRefs.current.delete(account.id) }} select={() => toggleSelected(account.id)} task={(kind) => void task(account, kind)} copy={() => void copyAccount(account)} edit={() => openMetadata(account)} credential={() => openCredential(account)} remove={() => void remove(account)} />)}</div>}
     <Pagination label="账号分页" page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
@@ -502,7 +505,7 @@ function AccountRow({ account, site, latestCheckin, selected, busyKind, focused,
   const busy = Boolean(busyKind)
   return <article ref={rowRef} data-account-id={account.id} className={`record-row account-grid${selected ? ' row-selected' : ''}${focused ? ' row-focus-highlight' : ''}`}>
     <div className="account-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${account.label}`} /><div><a className="entity-link" href={`#/accounts?focus_account_id=${account.id}`}><strong>{account.label}</strong></a><a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a><span>{credentialLabel(account.credential_type, site?.platform)}{site?.platform === 'sub2api' && account.credential_refresh_configured ? ` · 自动续期${account.credential_expires_at ? `至 ${formatTime(account.credential_expires_at)}` : ''}` : ''}</span></div></div>
-    <div><StatusBadge status={account.enabled ? account.status : 'disabled'} />{needsCredential ? <button className="inline-entity-action" type="button" onClick={credential} title={account.last_error}>{account.last_error ? siteErrorMessage(account.last_error) : '需要更新凭证'}</button> : <span>{account.consecutive_failures} 次连续失败</span>}</div>
+    <div><StatusBadge status={account.enabled ? account.status : 'disabled'} />{needsCredential ? <button className="inline-entity-action" type="button" onClick={credential} title={account.last_error}>{account.last_error ? siteErrorMessage(account.last_error) : '需要更新凭证'}</button> : account.consecutive_failures > 0 && <span>{account.consecutive_failures} 次连续失败</span>}</div>
     <div><strong className="account-balance-amount">{formatAccountBalance(account)}</strong>{latestCheckin?.balance_delta !== undefined && Math.abs(latestCheckin.balance_delta) > 0.000001 && <em className={latestCheckin.balance_delta > 0 ? 'balance-delta balance-delta--gain' : 'balance-delta balance-delta--loss'}>{latestCheckin.balance_delta > 0 ? '+' : ''}{latestCheckin.balance_delta.toFixed(2)} {latestCheckin.balance_currency || account.balance_currency}</em>}<span>{apiKeyOnly ? 'API Key 不读取余额' : account.balance_updated_at ? formatTime(account.balance_updated_at) : '尚未同步'}</span></div>
     <div><StatusBadge status={apiKeyOnly ? 'unsupported' : account.last_checkin_status} /><span>{apiKeyOnly ? '需要登录凭证' : account.last_checkin_at ? formatTime(account.last_checkin_at) : '尚无记录'}</span></div>
     <div><strong>{account.auto_checkin ? '签到' : '—'} / {account.auto_refresh ? '刷新' : '—'}</strong><span>{account.timezone || site?.timezone || '站点时区'}</span></div>

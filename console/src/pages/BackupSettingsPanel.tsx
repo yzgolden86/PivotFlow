@@ -375,7 +375,7 @@ export function BackupSettingsPanel() {
     {notice && <OperationNotice className="backup-operation-notice" tone={noticeTone} persistent={noticeTone === 'warning'} onDismiss={() => setNotice('')}>{noticeTone === 'success' ? <CheckCircle2 size={15} /> : <CircleAlert size={15} />}<span>{notice}</span></OperationNotice>}
     {error && <OperationNotice className="backup-operation-notice" tone="error" onDismiss={() => setError('')}>{error}</OperationNotice>}
 
-    <div className="backup-security-note"><ShieldAlert size={18} /><div><strong>备份包含敏感凭证</strong><p>全部配置和连接备份包含账号凭证、上游密钥与下游令牌。请仅保存到可信设备或受保护的 WebDAV 空间。</p></div></div>
+    <div className="backup-security-note"><ShieldAlert size={18} /><div><div className="heading-with-hint"><strong>备份包含敏感凭证</strong><HelpTip label="备份凭证" text="全部配置和连接备份包含账号凭证、上游密钥与下游令牌。配置备份不包含日志或结算回执，恢复整台实例需要按部署文档备份数据库与主密钥。" /></div><p>请保存到可信设备或受保护的 WebDAV 空间。</p></div></div>
 
     <section className="backup-block">
       <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--green"><DatabaseBackup size={20} /></span><div><div className="heading-with-hint"><h2>导出配置</h2><HelpTip label="导出配置" text="用于配置迁移，不包含请求日志、计费日志、结算回执、余额观察和运行统计。恢复整台实例需要成组备份数据库及主密钥。" /></div></div></header>
@@ -385,7 +385,7 @@ export function BackupSettingsPanel() {
     </section>
 
     <section className="backup-block">
-      <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--blue"><Upload size={20} /></span><div><h2>从文件导入</h2></div></header>
+      <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--blue"><Upload size={20} /></span><div><h2>从配置文件恢复</h2></div></header>
       <div className={`backup-dropzone${pendingFile ? ' has-file' : ''}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void inspectFile(event.dataTransfer.files[0]) }}>
         <input ref={inputRef} type="file" accept="application/json,.json" onChange={(event) => void inspectFile(event.target.files?.[0])} />
         <FileJson size={28} />
@@ -411,8 +411,8 @@ export function BackupSettingsPanel() {
           <div>{verification.state === 'verified' ? <ShieldCheck size={19} /> : <Clock3 size={19} />}<strong>已保存的校验记录</strong><HelpTip label="回读校验" text="上传后读取同一目标，核对完整字节数及 SHA-256。内容校验不等于所有配置均可恢复；请核对备份范围和遗漏警告。" /></div>
           <span className={`backup-verification-badge${verification.proof?.warning_count ? ' has-warnings' : ''}`}>{verificationStateLabels[verification.state]}</span>
         </header>
-        <p className="backup-verification-description">{verificationStateDetails[verification.state]}</p>
-        {verification.lastUploadAt && <p className="backup-verification-upload">最近上传记录 {formatTime(verification.lastUploadAt)}</p>}
+        {verification.state !== 'verified' && <p className="backup-verification-description">{verificationStateDetails[verification.state]}</p>}
+        {verification.lastUploadAt && verification.state !== 'verified' && <p className="backup-verification-upload">最近上传记录 {formatTime(verification.lastUploadAt)}</p>}
         {verification.proof && <VerificationDetails proof={verification.proof} historical={verification.state !== 'verified'} />}
         {verification.warnings.map((warning) => <p className="backup-verification-warning" key={warning}><CircleAlert size={15} /><span>{warning}</span></p>)}
         {config?.last_error && <p className="backup-verification-error"><CircleAlert size={15} /><span><strong>最近操作失败：</strong>{backupErrorMessage(config.last_error)}</span></p>}
@@ -466,12 +466,12 @@ const verificationStateDetails: Record<BackupRecordState, string> = {
 
 function VerificationDetails({ proof, historical = false }: { proof: BackupVerification; historical?: boolean }) {
   return <div className="backup-verification-details">
-    <dl className="backup-verification-facts">
+    <details className="backup-verification-proof"><summary>{historical ? '历史校验详情' : '查看校验详情'}</summary><dl className="backup-verification-facts">
       <div><dt>备份范围</dt><dd>{backupTypeLabel(proof.type)}</dd></div>
       <div><dt>文件大小</dt><dd>{formatBytes(proof.bytes)}</dd></div>
       <div><dt>{historical ? '历史校验时间' : '校验时间'}</dt><dd>{formatTime(proof.verified_at)}</dd></div>
     </dl>
-    <div className="backup-verification-digest"><span>SHA-256</span><code>{proof.sha256}</code></div>
+    <div className="backup-verification-digest"><span>SHA-256</span><code>{proof.sha256}</code></div></details>
     {proof.warning_count > 0 && <p className="backup-verification-warning"><ShieldAlert size={15} /><span>导出有 {proof.warning_count} 条不可恢复或遗漏记录，请核对 JSON 警告和恢复预览。</span></p>}
   </div>
 }

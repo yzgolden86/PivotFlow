@@ -7,6 +7,7 @@ import {
   Cpu,
   Database,
   Gauge,
+  GitFork,
   RefreshCw,
   RotateCcw,
   Route,
@@ -27,6 +28,7 @@ import type {
   MetricPoint,
 } from '../types'
 import { donutSlicePath, donutSlices } from './donutGeometry'
+import { modelCostDistribution } from './costDistribution'
 import RuntimeHealthSummary from './RuntimeHealthSummary'
 import { formatMoney, formatNumber, formatPercent, moneyDigits, OperationNotice, PageHeader } from './shared'
 import { analyzeCostSummary, COST_BASIS_FILTER_OPTIONS, COST_SOURCE_FILTER_OPTIONS, COST_STATUS_FILTER_OPTIONS } from '../costSemantics.ts'
@@ -267,7 +269,7 @@ export default function DashboardPage() {
           href="#/sites"
         />
         <ResourceStatus
-          icon={Route}
+          icon={GitFork}
           label="路由渠道"
           value={`${snapshot.enabled_channels}/${snapshot.channel_count}`}
           suffix="启用"
@@ -292,7 +294,7 @@ export default function DashboardPage() {
       <section className="dashboard-grid dashboard-grid--primary">
         <div className="data-panel usage-panel">
           <PanelHeader title="模型已记录费用" caption="按已记录费用排序" icon={Cpu} />
-          <DistributionPanel items={snapshot.model_usage.slice(0, 7)} emptyLabel="暂无模型费用记录" />
+          <DistributionPanel items={snapshot.model_usage} emptyLabel="暂无模型费用记录" />
         </div>
         <div className="data-panel trend-panel">
           <PanelHeader title="已记录费用走势" caption={rangeLabel(range)} icon={ArrowUpRight} />
@@ -463,9 +465,11 @@ function UsageList({ items, emptyLabel }: { items: DashboardUsage[]; emptyLabel:
 
 function DistributionPanel({ items, emptyLabel }: { items: DashboardUsage[]; emptyLabel: string }) {
   if (!items.length) return <EmptyData label={emptyLabel} />
+  const distribution = modelCostDistribution(items)
+  const visible = distribution.items
   const colors = ['var(--green)', 'var(--blue)', 'var(--amber)', 'var(--coral)', '#6f7d77', '#9aa59f', '#c2cbc6']
-  const digits = moneyDigits(items.map((item) => item.effective_cost))
-  const segments = donutSlices(items, (item) => Math.min(1, item.share || 0)).map((segment, index) => ({
+  const digits = moneyDigits([distribution.total, ...visible.map((item) => item.effective_cost)])
+  const segments = donutSlices(visible, (item) => Math.min(1, item.share || 0)).map((segment, index) => ({
     item: segment.item,
     color: colors[index] || 'var(--graphite)',
     start: segment.start,
@@ -477,9 +481,9 @@ function DistributionPanel({ items, emptyLabel }: { items: DashboardUsage[]; emp
         <circle className="donut-chart-track" cx="50" cy="50" r="38" pathLength="100" />
         {segments.map(({ item, color, start, share }) => <path className="donut-chart-segment" d={donutSlicePath(start, share, 38)} stroke={color} key={item.key}><title>{`${item.label} · ${formatPercent(item.share)} · ${formatMoney(item.effective_cost, digits)}`}</title></path>)}
       </svg>
-      <div><strong>{formatMoney(items.reduce((sum, item) => sum + item.effective_cost, 0), digits)}</strong><span>已记录费用</span></div>
+      <div><strong>{formatMoney(distribution.total, digits)}</strong><span>已记录费用</span></div>
     </div>
-    <div className="distribution-legend">{items.slice(0, 5).map((item, index) => <div key={item.key} title={`${item.label} · ${formatPercent(item.share)}`}><i style={{ background: colors[index] }} /><strong>{item.label}</strong><span>{formatPercent(item.share)}</span></div>)}</div>
+    <div className="distribution-legend">{visible.map((item, index) => <div key={item.key} title={`${item.label} · ${formatPercent(item.share)} · ${formatMoney(item.effective_cost, digits)}`}><i style={{ background: colors[index] }} /><strong>{item.label}</strong><span>{formatPercent(item.share)}</span></div>)}</div>
   </div>
 }
 

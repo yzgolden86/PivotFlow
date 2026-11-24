@@ -16,6 +16,7 @@ import {
   cacheReasonLabel,
   createRequestCacheCoordinator,
 } from './requestCache'
+import HelpTip from '../components/HelpTip'
 import type {
   RequestCacheCoordinator,
   RequestCacheCoordinatorState,
@@ -56,8 +57,10 @@ export default function RequestCachePanel({ unsavedCount }: { unsavedCount: numb
     <header className="request-cache-panel-head">
       <div>
         <span className="request-cache-eyebrow"><i aria-hidden="true" />当前进程观察</span>
-        <h3 id="request-cache-observation-title" ref={observationTitleRef} tabIndex={-1}>请求缓存运行状态</h3>
-        <p>这里读取后端当前生效的只读快照，不会因为上方设置尚未保存而改变。</p>
+        <div className="request-cache-heading">
+          <h3 id="request-cache-observation-title" ref={observationTitleRef} tabIndex={-1}>请求缓存运行状态</h3>
+          <HelpTip label="请求缓存运行状态" text="下方只显示后端进程当前生效的配置与本次进程累计观察，不会主动探测数据库或上游。读取、刷新和清空都不会应用上方尚未保存的设置。" />
+        </div>
       </div>
       <div className="request-cache-actions">
         <button className="secondary-button" type="button" disabled={busy} onClick={() => coordinatorRef.current?.refresh()}>
@@ -71,17 +74,23 @@ export default function RequestCachePanel({ unsavedCount }: { unsavedCount: numb
       </div>
     </header>
 
-    <div className="request-cache-distinction">
+    {unsavedCount > 0 && <div className="request-cache-distinction">
       <Database size={18} aria-hidden="true" />
       <div>
         <strong>上方设置与下方快照属于两个时刻</strong>
-        <span>{unsavedCount > 0 ? `上方有 ${unsavedCount} 项未保存修改。` : '上方没有未保存的缓存设置。'}保存并重启后，下方才会显示新的当前配置。</span>
+        <span>上方有 {unsavedCount} 项未保存修改。保存并重启后，下方才会显示新的当前配置。</span>
       </div>
-    </div>
+    </div>}
 
     <div className="request-cache-contract">
       <ShieldCheck size={18} aria-hidden="true" />
-      <p><strong>默认关闭，客户端必须显式选择。</strong>仅复用非流式、<code>temperature=0</code>、单候选且只含文本的 OpenAI Chat 与 Anthropic Messages 成功响应。工具、媒体、会话、Responses、WebSocket、协议转换和语义请求改写会绕过；命中成功时不新增上游用量或费用。启用后，请求头使用 <code>X-PivotFlow-Cache: use</code> 复用、<code>refresh</code> 强制刷新或 <code>bypass</code> 跳过。</p>
+      <div>
+        <p><strong>默认关闭，客户端必须显式选择。</strong>发送 <code>X-PivotFlow-Cache: use</code> 才会复用；<code>refresh</code> 强制刷新，<code>bypass</code> 跳过。</p>
+        <details className="settings-disclosure">
+          <summary>可复用范围与不缓存条件</summary>
+          <p>仅复用非流式、<code>temperature=0</code>、单候选且只含文本的 OpenAI Chat 与 Anthropic Messages 成功响应。工具、媒体、会话、Responses、WebSocket、协议转换和语义请求改写会绕过；命中成功时不新增上游用量或费用。</p>
+        </details>
+      </div>
     </div>
 
     {state.error && <div className="request-cache-message request-cache-message--error" role="alert">
@@ -175,11 +184,14 @@ function RequestCacheObservationView({ observation, stale }: { observation: Requ
       <ReasonList title="缓存原因分布" entries={reasonEntries} label={cacheReasonLabel} empty="本进程尚未记录缓存决策原因。" />
     </div>
 
-    <footer className="request-cache-footnote">
+    <details className="settings-disclosure">
+      <summary>统计与计量口径</summary>
+      <footer className="request-cache-footnote">
       <span>统计计数器只表示当前进程；重启后清零。</span>
       <span>条目数包含仍驻留的过期项；正文与捕获容量分开计量。</span>
       <span>管理读取不会触发清理、探测数据库或执行维护。</span>
-    </footer>
+      </footer>
+    </details>
   </div>
 }
 
@@ -192,9 +204,8 @@ function CapacityMeter({ label, value, capacity, format, detail }: {
 }) {
   const percent = capacity > 0 ? Math.min(100, value / capacity * 100) : 0
   return <article>
-    <div><span>{label}</span><strong>{format(value)} <small>/ {format(capacity)}</small></strong></div>
+    <div><span>{label}<HelpTip label={`${label}计量`} text={detail} /></span><strong>{format(value)} <small>/ {format(capacity)}</small></strong></div>
     <progress aria-label={label} value={Math.min(value, capacity)} max={capacity} />
-    <p>{detail}</p>
   </article>
 }
 
@@ -207,7 +218,7 @@ function CacheMetric({ label, value, detail, icon: Icon, tone = 'default' }: {
 }) {
   return <article className={`request-cache-metric request-cache-metric--${tone}`}>
     <span aria-hidden="true"><Icon size={15} /></span>
-    <div><small>{label}</small><strong>{formatNumber(value)}</strong><p>{detail}</p></div>
+    <div><small>{label}<HelpTip label={`缓存${label}`} text={detail} /></small><strong>{formatNumber(value)}</strong></div>
   </article>
 }
 
@@ -218,7 +229,7 @@ function ReasonList({ title, entries, label, empty }: {
   empty: string
 }) {
   return <section className="request-cache-reasons">
-    <div className="request-cache-section-title"><div><Gauge size={17} /><h4>{title}</h4></div><span>固定原因码，不展示原始值</span></div>
+    <div className="request-cache-section-title"><div><Gauge size={17} /><h4>{title}</h4></div></div>
     {entries.length ? <dl>{entries.map(([code, count]) => <div key={code}><dt>{label(code)}</dt><dd>{formatNumber(count)}</dd></div>)}</dl> : <p className="request-cache-empty-copy">{empty}</p>}
   </section>
 }

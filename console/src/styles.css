@@ -1,15 +1,18 @@
 :root {
   color-scheme: light;
-  --font-ui: "Segoe UI Variable Text", "Segoe UI", "Noto Sans SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
-  --font-display: "Segoe UI Variable Display", "Segoe UI Variable Text", "Noto Sans SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
-  --font-numeric: "Cascadia Mono", "SFMono-Regular", Consolas, "Noto Sans SC", monospace;
-  --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  --font-ui: "Inter", "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-display: "Inter", "Segoe UI Variable Display", "Segoe UI Variable Text", "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-numeric: "Inter", "Cascadia Code", "Cascadia Mono", "SFMono-Regular", Consolas, "Noto Sans SC", monospace;
+  --font-mono: "Cascadia Code", "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   --radius-control: 6px;
   --radius-panel: 8px;
   --radius-large: 10px;
   font-family: var(--font-ui);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   letter-spacing: 0;
   --bg: #f4f6f8;
   /* 「表面」色的**基础值**与语义令牌分开。
@@ -332,28 +335,28 @@
 }
 
 :root[data-theme-font="system"] {
-  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
-  --font-display: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-ui: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-display: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI Variable Text", "PingFang SC", "Hiragino Sans GB", "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
 }
 
 :root[data-theme-font="yahei"] {
-  --font-ui: "Microsoft YaHei UI", "微软雅黑", "PingFang SC", "Heiti SC", sans-serif;
-  --font-display: "Microsoft YaHei UI", "微软雅黑", "PingFang SC", "Heiti SC", sans-serif;
+  --font-ui: "Inter", "Microsoft YaHei UI", "微软雅黑", "PingFang SC", "Heiti SC", sans-serif;
+  --font-display: "Inter", "Microsoft YaHei UI", "微软雅黑", "PingFang SC", "Heiti SC", sans-serif;
 }
 
 :root[data-theme-font="pingfang"] {
-  --font-ui: "PingFang SC", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
-  --font-display: "PingFang SC", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-ui: "Inter", "PingFang SC", "Source Han Sans SC", "Noto Sans SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", sans-serif;
+  --font-display: "Inter", "PingFang SC", "Source Han Sans SC", "Noto Sans SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", sans-serif;
 }
 
 :root[data-theme-font="dengxian"] {
-  --font-ui: DengXian, "等线", Aptos, "Avenir Next", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  --font-display: DengXian, "等线", "Aptos Display", "Avenir Next", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-ui: "Inter", DengXian, "等线", Aptos, "Avenir Next", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-display: "Inter", DengXian, "等线", "Aptos Display", "Avenir Next", "Microsoft YaHei UI", "PingFang SC", sans-serif;
 }
 
 :root[data-theme-font="harmony"] {
-  --font-ui: "HarmonyOS Sans SC", "HarmonyOS Sans", "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  --font-display: "HarmonyOS Sans SC", "HarmonyOS Sans", "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-ui: "Inter", "HarmonyOS Sans SC", "HarmonyOS Sans", "MiSans", "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-display: "Inter", "HarmonyOS Sans SC", "HarmonyOS Sans", "MiSans", "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
 }
 
 /* 思源宋体优先：现代衬线，比 SimSun 精致得多。恢复自最初的「人文宋体」。 */
@@ -1967,8 +1970,8 @@ a:focus-visible {
   box-shadow: 0 0 0 4px var(--surface-strong);
 }
 
-.status-dot--success { background: var(--green); box-shadow: 0 0 0 4px var(--green-soft); }
-.status-dot--warning { background: var(--amber); box-shadow: 0 0 0 4px var(--amber-soft); }
+.status-dot--success { background: var(--green); box-shadow: 0 0 0 4px var(--green-soft); animation: pf-radar 2.8s cubic-bezier(0.2, 0.8, 0.2, 1) infinite; }
+.status-dot--warning { background: var(--amber); box-shadow: 0 0 0 4px var(--amber-soft); animation: pf-radar-amber 2.8s cubic-bezier(0.2, 0.8, 0.2, 1) infinite; }
 .status-dot--muted { background: var(--text-muted); }
 
 .channel-routing { display: grid; grid-template-columns: repeat(2, minmax(0, max-content)); justify-content: start; gap: 2px 12px; }
@@ -5485,6 +5488,9 @@ body { font-size: 14px; line-height: 1.5; }
 .backup-verification-description, .backup-verification-upload { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .backup-verification-upload { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .backup-verification-details { display: grid; min-width: 0; gap: 10px; }
+.backup-verification-proof { min-width: 0; }
+.backup-verification-proof > summary { padding: 5px 0; color: var(--text-secondary); font-size: 12px; font-weight: 600; cursor: pointer; }
+.backup-verification-proof[open] .backup-verification-digest { margin-top: 10px; }
 .backup-verification-facts { display: grid; min-width: 0; grid-template-columns: minmax(0, .8fr) minmax(0, .7fr) minmax(0, 1.5fr); gap: 12px; margin: 0; padding-top: 10px; border-top: 1px solid var(--border); }
 .backup-verification-facts > div { display: grid; min-width: 0; align-content: start; gap: 5px; }
 .backup-verification-facts dt { color: var(--text-muted); font-size: 11px; }
@@ -5799,10 +5805,10 @@ details.route-diagnostic-reasons summary, details.route-diagnostic-callout summa
 
 :root {
   /* 字体栈：Inter 只管数字与拉丁，中文继续走系统字体。 */
-  --font-ui: "Inter", "Segoe UI Variable Text", "Segoe UI", "Noto Sans SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
-  --font-display: "Inter", "Segoe UI Variable Display", "Segoe UI Variable Text", "Noto Sans SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
-  --font-numeric: "Inter", "Cascadia Mono", "SFMono-Regular", Consolas, "Noto Sans SC", monospace;
-  --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  --font-ui: "Inter", "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-display: "Inter", "Segoe UI Variable Display", "Segoe UI Variable Text", "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-numeric: "Inter", "Cascadia Code", "Cascadia Mono", "SFMono-Regular", Consolas, "Noto Sans SC", monospace;
+  --font-mono: "Cascadia Code", "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
 
   /* 字阶：命名按用途不按大小，调比例只动这里。 */
   --fs-micro: 11px;
@@ -6624,6 +6630,30 @@ body {
 .channel-row:hover {
   background: color-mix(in srgb, var(--surface-strong) 88%, transparent);
   box-shadow: inset 2px 0 0 var(--nav-tone, var(--coral));
+}
+
+@keyframes pf-radar {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 45%, transparent);
+  }
+  65% {
+    box-shadow: 0 0 0 5px transparent, 0 0 8px 1px color-mix(in srgb, var(--green) 30%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@keyframes pf-radar-amber {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--amber) 45%, transparent);
+  }
+  65% {
+    box-shadow: 0 0 0 5px transparent, 0 0 8px 1px color-mix(in srgb, var(--amber) 30%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
 }
 
 .status-dot-live {
