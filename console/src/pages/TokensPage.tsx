@@ -9,6 +9,7 @@ import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, Operat
 import { Modal } from './siteShared'
 import { tokenMetadata } from './clientConnection'
 import './tokensPresentation.css'
+import './resourceListRefinement.css'
 import { listWindow } from './listWindow'
 import ResourceDetails, { DetailList, detailDate } from './ResourceDetails'
 
@@ -166,10 +167,10 @@ export default function TokensPage() {
     </section>
 
     {error && tokens.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
-    {loading ? <LoadingState label="正在加载令牌" /> : error && !tokens.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={query.trim() ? '没有符合搜索条件的令牌' : '创建一个令牌，开始配置客户端接入'} /> : <div className="token-table-wrap" role="region" aria-label="令牌列表" tabIndex={0}><div className="token-table-head"><span aria-hidden="true" /><span>名称</span><span>令牌</span><span className="token-number-cell">{rangeName}请求</span><span className="token-number-cell">{rangeName}日志费用</span><span>限制</span><span>创建时间</span><span>最后使用</span><span>操作</span></div><div className="token-list">
+    {loading ? <LoadingState label="正在加载令牌" /> : error && !tokens.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={query.trim() ? '没有符合搜索条件的令牌' : '创建一个令牌，开始配置客户端接入'} /> : <div className="token-table-wrap" role="region" aria-label="令牌列表" tabIndex={0}><div className="token-table-head"><span aria-hidden="true" /><span>名称</span><span>令牌</span><span className="token-number-cell">{rangeName}请求</span><span className="token-number-cell">{rangeName}费用</span><span>限制</span><span>创建时间</span><span>最后使用</span><span>操作</span></div><div className="token-list">
       {pagedTokens.map((token) => <article className="token-row" key={token.id}>
         <span className={`token-icon${token.is_active ? '' : ' token-icon--off'}`}><KeyRound size={17} /></span>
-        <div className="token-identity"><strong title={token.description}>{token.description}</strong><span>令牌 #{token.id} · {token.is_active ? '已启用' : '已停用'}</span><span className="token-mobile-stats">{rangeName} {formatNumber(token.success_count + token.failure_count)} 次请求 · 日志费用 {formatMoney(token.effective_cost_usd)}</span><button className="resource-details-trigger" type="button" onClick={() => setDetails(token)} aria-label={`查看 ${token.description} 详情`}>详情</button></div>
+        <div className="token-identity"><strong title={token.description}>{token.description}</strong><span>令牌 #{token.id} · {token.is_active ? '已启用' : '已停用'}</span><span className="token-mobile-stats">{rangeName} {formatNumber(token.success_count + token.failure_count)} 次请求 · 费用 {formatMoney(token.effective_cost_usd)}</span><button className="resource-details-trigger" type="button" onClick={() => setDetails(token)} aria-label={`查看 ${token.description} 详情`}>详情</button></div>
         <div className="token-secret-cell"><code>{token.token_hint || token.token || '****'}</code><button className="icon-button icon-button--surface" type="button" onClick={() => void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={token.token_recoverable ? '复制令牌' : '历史令牌不可恢复'}>{copiedId === token.id ? <Check size={15} /> : <Copy size={15} />}</button></div>
         <div className="token-number-cell"><strong>{formatNumber(token.success_count + token.failure_count)}</strong><span>{token.failure_count} 次失败</span></div>
         <div className="token-number-cell"><strong title={`${rangeName}归属此令牌的代理日志费用，尚未与上游账单对账`}>{formatMoney(token.effective_cost_usd)}</strong><span>{formatNumber((token.prompt_tokens_total || 0) + (token.completion_tokens_total || 0))} tokens</span></div>
@@ -178,7 +179,7 @@ export default function TokensPage() {
         <div><strong>{token.last_used_at ? formatDate(token.last_used_at) : '未使用'}</strong>{token.expires_at != null && token.expires_at > 0 && <span>到期 {formatDate(token.expires_at)}</span>}</div>
         <div className="row-actions">
           <a className="icon-button icon-button--surface" href={`#/connect?token=${token.id}`} aria-label={`配置客户端 ${token.description}`} title="配置客户端"><PlugZap size={16} /></a>
-          <button className={`icon-button icon-button--surface${token.is_active ? ' is-on' : ''}`} type="button" onClick={() => void toggle(token)} disabled={busyId === token.id} aria-label={token.is_active ? `停用 ${token.description}` : `启用 ${token.description}`} title={token.is_active ? '停用' : '启用'}>{token.is_active ? <Power size={16} /> : <Play size={16} />}</button>
+          <button className={`icon-button icon-button--surface resource-power-button${token.is_active ? ' is-on' : ''}`} type="button" onClick={() => void toggle(token)} disabled={busyId === token.id} aria-label={token.is_active ? `停用 ${token.description}` : `启用 ${token.description}`} aria-pressed={token.is_active} title={token.is_active ? '停用' : '启用'}>{token.is_active ? <Power size={16} /> : <Play size={16} />}</button>
           <button className="icon-button icon-button--surface" type="button" onClick={() => setEditing(token)} aria-label={`编辑 ${token.description}`} title="编辑"><Pencil size={16} /></button>
           <button className="icon-button icon-button--surface danger-button" type="button" onClick={() => void remove(token)} disabled={busyId === token.id} aria-label={`删除 ${token.description}`} title="删除"><Trash2 size={16} /></button>
         </div>
@@ -203,7 +204,7 @@ export default function TokensPage() {
       { label: '渠道范围', value: <DetailList empty="未选择渠道，不限制范围" values={(details.allowed_channel_ids ?? []).map((id) => `渠道 #${id}`)} /> },
       { label: '最大并发', value: details.max_concurrency || '不限' },
       { label: '费用软限额', value: details.cost_limit_usd ? `${details.cost_limit_usd.toFixed(2)} USD` : '未设置' },
-      { label: `${rangeName}日志费用`, value: `${formatMoney(details.effective_cost_usd)} · 尚未与上游账单对账` },
+      { label: `${rangeName}费用`, value: `${formatMoney(details.effective_cost_usd)} · 尚未与上游账单对账` },
       { label: '限额使用金额', value: `${formatMoney(details.cost_used_usd)} · 本地费用回执口径` },
       { label: '请求统计', value: `${formatNumber(details.success_count + details.failure_count)} 次 · 成功 ${formatNumber(details.success_count)} · 失败 ${formatNumber(details.failure_count)}` },
       { label: 'Token 统计', value: `输入 ${formatNumber(details.prompt_tokens_total)} · 输出 ${formatNumber(details.completion_tokens_total)}` },

@@ -206,8 +206,8 @@
     display: flex;
     min-height: 0;
     flex-direction: column;
-    gap: 2px;
-    padding: 5px;
+    gap: 4px;
+    padding: 6px;
     overflow: auto;
     scroll-padding-block: 5px;
     scrollbar-width: thin;
@@ -215,16 +215,16 @@
   }
 
   .system-settings-page--v2 .settings-groups button {
-    min-height: 36px;
-    flex: 0 0 auto;
-    grid-template-columns: 24px minmax(0, 1fr) auto;
-    gap: 7px;
-    padding: 4px 7px;
+    min-height: 40px;
+    flex: 0 1 46px;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    gap: 9px;
+    padding: 6px 9px;
   }
 
   .system-settings-page--v2 .settings-group-icon {
-    width: 24px;
-    height: 24px;
+    width: 28px;
+    height: 28px;
   }
 
   .system-settings-page--v2 .settings-groups em {

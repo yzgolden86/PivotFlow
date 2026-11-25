@@ -8,18 +8,15 @@ import (
 	"github.com/yzgolden86/PivotFlow/internal/site/provider"
 )
 
-// routingModelsEmptyKeyAdapter models a single-key site whose key-scoped model
-// endpoint answers with an empty list while the management credential is
-// rejected. The empty-but-successful key call is the point: it records no error,
-// so the management failure is the only remaining explanation for the empty
-// result and must therefore be the one that gets reported.
+// An unsupported key endpoint still needs management fallback. Unlike a valid
+// empty array, the missing endpoint provides no authoritative model snapshot.
 type routingModelsEmptyKeyAdapter struct {
 	projectionTestAdapter
 }
 
 func (routingModelsEmptyKeyAdapter) ListModels(_ context.Context, req provider.AccountRequest) ([]provider.ModelSnapshot, error) {
 	if req.Credentials.APIKey != "" {
-		return []provider.ModelSnapshot{}, nil
+		return nil, &provider.Error{Code: provider.CodeUnsupported, Message: "model endpoint unavailable"}
 	}
 	return nil, &provider.Error{Code: provider.CodeRateLimited, Message: "management credential was rate limited"}
 }
@@ -35,7 +32,7 @@ func TestRoutingModelsReportsTheFallbackCauseWhenNothingElseExplainsIt(t *testin
 		t.Fatal("routingModels reported no error for a key whose models could not be discovered")
 	}
 	if code := provider.ErrorCode(err); code != provider.CodeRateLimited {
-		t.Fatalf("error code=%q, want %q: an unexplained empty result must not be flattened into %q", code, provider.CodeRateLimited, provider.CodeUnsupported)
+		t.Fatalf("error code=%q, want management fallback rate limit", code)
 	}
 	if !strings.Contains(err.Error(), "management credential was rate limited") {
 		t.Fatalf("error=%q, want the upstream cause preserved", err.Error())

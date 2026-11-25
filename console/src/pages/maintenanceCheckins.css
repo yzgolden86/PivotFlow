@@ -5,17 +5,41 @@
   width: 100%;
   max-width: none;
   margin: 0 0 14px;
-  align-items: flex-start;
+  align-items: center;
+  gap: 12px;
 }
 .maintenance-page-notice > .operation-notice__content {
   flex: 1 1 auto;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 10px 16px;
+  min-width: 0;
 }
-.maintenance-page-notice__text { display: grid; min-width: 0; flex: 1 1 320px; gap: 4px; }
+.maintenance-page-notice__text { display: grid; min-width: 0; flex: 1 1 auto; line-height: 20px; }
+.maintenance-page-notice__text > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.maintenance-page-notice > button { flex: 0 0 auto; white-space: nowrap; }
 .maintenance-page-notice__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .maintenance-page-notice .secondary-button { flex: 0 0 auto; white-space: nowrap; }
+.maintenance-page-notice__results { display: grid; gap: 8px; max-height: 260px; margin: 4px 0 0; padding: 0 6px 0 0; overflow-y: auto; list-style: none; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.maintenance-page-notice__results > li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.maintenance-page-notice__results > li > span { flex: 1 1 320px; min-width: 0; overflow-wrap: anywhere; }
+.maintenance-page-notice__route-errors { color: var(--coral-text); }
+.maintenance-page-notice__results a { flex: 0 0 auto; min-height: 32px; color: var(--green-text); white-space: nowrap; }
+.operation-details-trigger { display: block; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.operation-details-popover { position: fixed; z-index: 140; width: min(540px, calc(100vw - 24px)); max-height: min(480px, calc(100dvh - 24px)); overflow: auto; padding: 16px; color: var(--text-secondary); background: var(--surface-base); border: 1px solid var(--border-strong); border-radius: var(--radius-panel); box-shadow: var(--shadow); font-size: 12px; line-height: 20px; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.operation-details-popover > div { display: grid; min-width: 0; gap: 12px; }
+.operation-details-popover .operation-details-summary { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.operation-details-popover .maintenance-page-notice__results { max-height: none; margin: 0; overflow: visible; }
+.operation-details-popover .text-button { color: var(--green-text); }
+.operation-details-popover .account-route-breakdown ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.operation-details-popover .account-route-breakdown li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; gap: 14px; overflow-wrap: anywhere; }
+.operation-details-popover .account-route-breakdown em { color: var(--text-muted); font-style: normal; }
+.operation-details-popover .account-route-breakdown li[data-status="failed"] > em { color: var(--coral-text); }
+.accounts-maintenance-workspace .account-status > .account-status-detail { display: block; width: 100%; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 18px; text-align: left; }
+.accounts-maintenance-workspace .account-route-result { display: block; min-width: 0; max-width: 100%; color: var(--text-secondary); }
+.accounts-maintenance-workspace .account-route-result > .operation-details-trigger { padding: 0; color: inherit; font-size: 11px; line-height: 18px; }
+.accounts-maintenance-workspace .account-route-result[data-status="success"] { color: var(--green-text); }
+.accounts-maintenance-workspace .account-route-result:is([data-status="failed"], [data-status="partial"], [data-status="unknown"]) { color: var(--amber-text); }
+.credential-import-option { padding: 0 0 8px; color: var(--text-secondary); font-size: 12px; }
+.credential-import-option > summary { cursor: pointer; }
+.credential-import-option > a { margin-top: 10px; }
 
 .checkin-workspace .records-panel > .checkin-account-grid {
   min-width: 1110px;
@@ -75,22 +99,24 @@
   overflow-wrap: anywhere;
   line-height: 1.6;
 }
-.checkin-workspace .records-panel .record-head > span:last-child,
-.accounts-maintenance-workspace .account-records .record-head > span:last-child { text-align: left; }
+.checkin-workspace .records-panel .record-head > span:last-child { text-align: left; }
+.accounts-maintenance-workspace .account-records .record-head > span:last-child { text-align: center; }
 .checkin-workspace .records-panel > .record-head,
 .accounts-maintenance-workspace .account-records > .record-head { display: grid; }
 
 .accounts-maintenance-workspace .account-records > .account-grid {
-  min-width: 1280px;
-  grid-template-columns: minmax(240px, 1.1fr) minmax(120px, .65fr) minmax(130px, .7fr) minmax(140px, .75fr) minmax(140px, .75fr) minmax(380px, 1.2fr);
+  min-width: 1240px;
+  grid-template-columns: minmax(220px, 1.1fr) minmax(140px, .75fr) minmax(120px, .7fr) minmax(130px, .75fr) minmax(130px, .75fr) 406px;
 }
 .accounts-maintenance-workspace .account-actions {
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: 8px;
+  flex-wrap: nowrap;
+  justify-content: center;
+  gap: 6px;
   grid-column: auto;
 }
 .accounts-maintenance-workspace .account-actions > button { flex: 0 0 auto; white-space: nowrap; }
+.accounts-maintenance-workspace .account-actions > .account-task-button { min-width: 56px; }
+.accounts-maintenance-workspace .account-actions > .account-task-button--route { min-width: 88px; }
 
 @media (max-width: 880px) {
   .checkin-workspace .records-panel > .record-head,
@@ -105,6 +131,8 @@
   }
   .checkin-workspace .record-row > .checkin-actions,
   .accounts-maintenance-workspace .record-row > .account-actions { grid-column: 1 / -1; gap: 10px; }
+  .accounts-maintenance-workspace .account-actions { flex-wrap: wrap; justify-content: flex-start; }
+  .accounts-maintenance-workspace .account-route-result > .operation-details-trigger { min-height: 32px; }
   .checkin-workspace .checkin-actions > a,
   .checkin-workspace .checkin-actions > button,
   .accounts-maintenance-workspace .account-actions > button:not(.icon-button) { min-height: 40px; padding: 8px 12px; }
@@ -123,7 +151,6 @@
   .checkin-workspace .records-panel > .record-row.checkin-account-grid,
   .checkin-workspace .records-panel > .record-row.checkin-grid,
   .accounts-maintenance-workspace .account-records > .record-row.account-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .maintenance-page-notice.operation-notice { flex-wrap: wrap; }
-  .maintenance-page-notice__text { flex-basis: 100%; }
-  .maintenance-page-notice__actions { width: 100%; }
+  .maintenance-page-notice.operation-notice { gap: 8px; }
+  .maintenance-page-notice > .secondary-button { padding-inline: 7px; font-size: 11px; }
 }

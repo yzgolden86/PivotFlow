@@ -1,3 +1,21 @@
+.request-filter-bar > .request-model-controls { display: flex; min-width: 0; max-width: 620px; flex: 1 1 340px; align-items: center; gap: 8px; }
+.request-model-controls > .request-model-filter { flex: 1 1 auto; max-width: none; }
+.request-filter-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+
+@media (min-width: 1440px) {
+  .request-filter-bar {
+    display: grid;
+    grid-template-columns: 70px minmax(86px, .65fr) minmax(108px, .85fr) 100px 92px max-content minmax(130px, 1fr) minmax(292px, 1.7fr);
+    gap: 8px;
+  }
+  .request-filter-bar > select { width: 100%; min-width: 0; }
+  .request-filter-bar > :is(.request-token-search, .request-search, .request-model-controls) { width: auto; min-width: 0; max-width: none; }
+}
+
+@media (max-width: 640px) {
+  .request-filter-bar > .request-model-controls { flex-basis: 100%; }
+}
+
 .request-summary-error {
   display: flex;
   align-items: center;
@@ -103,10 +121,10 @@
   .request-filter-bar .request-filter-count { margin-inline: auto; }
   .request-filter-bar > select,
   .request-filter-bar .request-token-search,
-  .request-filter-bar .request-search,
-  .request-filter-bar .request-model-filter {
+  .request-filter-bar .request-search {
     width: 100%;
     max-width: none;
     flex: 0 0 auto;
   }
+  .request-filter-bar .request-model-controls > .request-model-filter { width: 0; flex: 1 1 0; }
 }

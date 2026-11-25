@@ -166,6 +166,61 @@ func newSiteTask(kind string, siteID, accountID int64, total int) *model.SiteTas
 	return &model.SiteTask{ID: newSiteTaskID(), Kind: kind, Status: model.SiteTaskStatusQueued, SiteID: siteID, SiteAccountID: accountID, ProgressJSON: string(progress), CreatedAt: time.Now().UnixMilli()}
 }
 
+// RouteSyncOutcome contains only configured channel identity and safe codes.
+type RouteSyncOutcome struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+func setSiteTaskRoutes(task *model.SiteTask, routes []RouteSyncOutcome) {
+	progress := make(map[string]json.RawMessage)
+	_ = json.Unmarshal([]byte(task.ProgressJSON), &progress)
+	if progress == nil {
+		progress = make(map[string]json.RawMessage)
+	}
+	if routes == nil {
+		routes = []RouteSyncOutcome{}
+	}
+	progress["routes"], _ = json.Marshal(routes)
+	data, _ := json.Marshal(progress)
+	task.ProgressJSON = string(data)
+}
+
+// Discovery retains a separate cause for each unresolved projection; a single
+// aggregate error cannot safely be attributed to every routing key.
+type routingModelDiscoveryError struct {
+	cause        error
+	byProjection map[string]error
+}
+
+func (e *routingModelDiscoveryError) Error() string { return e.cause.Error() }
+func (e *routingModelDiscoveryError) Unwrap() error { return e.cause }
+
+func routeProgressErrorCode(err error) string {
+	code := provider.ErrorCode(err)
+	switch code {
+	case provider.CodeUnsupported, provider.CodeBrowserRequired, provider.CodeExpired,
+		provider.CodeUserIDRequired, provider.CodeTimeout, provider.CodeRateLimited,
+		provider.CodeInvalidResponse, provider.CodeRequestFailed, provider.CodeRoutingKeyUnavailable:
+		return code
+	default:
+		return provider.CodeRequestFailed
+	}
+}
+
+func appendRouteProgress(routes *[]RouteSyncOutcome, name, status string, err error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	outcome := RouteSyncOutcome{Name: name, Status: status}
+	if err != nil {
+		outcome.Error = routeProgressErrorCode(err)
+	}
+	*routes = append(*routes, outcome)
+}
+
 func (s *siteControlService) updateTask(ctx context.Context, task *model.SiteTask, status, resultRef, message string) {
 	if ctx != nil && ctx.Err() != nil && status != model.SiteTaskStatusSuccess && status != model.SiteTaskStatusPartial {
 		if errors.Is(context.Cause(ctx), errSiteTaskLeaseLost) {
@@ -186,7 +241,13 @@ func (s *siteControlService) updateTask(ctx context.Context, task *model.SiteTas
 	if status == model.SiteTaskStatusSuccess || status == model.SiteTaskStatusPartial || status == model.SiteTaskStatusFailed || status == model.SiteTaskStatusCancelled || status == "unknown" {
 		task.FinishedAt = now
 		if task.SiteAccountID > 0 || task.SiteID > 0 {
-			task.ProgressJSON = `{"completed":1,"total":1}`
+			var progress map[string]json.RawMessage
+			_ = json.Unmarshal([]byte(task.ProgressJSON), &progress)
+			if _, hasRoutes := progress["routes"]; !hasRoutes {
+				if _, hasItems := progress["items"]; !hasItems {
+					task.ProgressJSON = `{"completed":1,"total":1}`
+				}
+			}
 		}
 	}
 	if status == model.SiteTaskStatusCancelled {
@@ -729,6 +790,9 @@ func (s *siteControlService) refreshAccountWithOptions(ctx context.Context, task
 		return
 	}
 	if modelRefresh {
+		// Keep the route progress shape even when discovery fails before any
+		// routing key is available; terminal task updates preserve it.
+		setSiteTaskRoutes(task, nil)
 		defer func() {
 			if ctx.Err() != nil {
 				return
@@ -782,13 +846,28 @@ func (s *siteControlService) refreshAccountWithOptions(ctx context.Context, task
 				s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(mergeErr))
 				return
 			}
+			routes := make([]RouteSyncOutcome, 0, len(keys))
+			routeNames := s.siteProjectionNames(ctx, account.ID)
+			var discoveryErr *routingModelDiscoveryError
+			if errors.As(modelErr, &discoveryErr) {
+				for index, item := range keys {
+					projectionKey := stableProjectionKey(item, index)
+					name := routeNames[projectionKey]
+					if name == "" {
+						name = routeDisplayName(site, account, item)
+					}
+					if cause := discoveryErr.byProjection[projectionKey]; cause != nil {
+						appendRouteProgress(&routes, name, "failed", cause)
+					}
+				}
+			}
+			setSiteTaskRoutes(task, routes)
 			s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(modelErr))
 			return
 		}
 		var previousFacts []model.SiteAccountModel
-		authoritativeFacts := false
 		aliasSnapshotOK := true
-		if modelErr == nil && len(facts) > 0 {
+		if modelErr == nil {
 			snapshot, snapshotErr := s.store.ListSiteAccountModels(ctx, model.SiteModelFilter{SiteAccountID: account.ID})
 			if snapshotErr != nil {
 				// Without the pre-replace snapshot there is no positive evidence
@@ -807,7 +886,6 @@ func (s *siteControlService) refreshAccountWithOptions(ctx context.Context, task
 				s.updateTask(ctx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
 				return
 			}
-			authoritativeFacts = len(facts) > 0
 		} else {
 			// A partial refresh must not erase evidence from unresolved keys; keep
 			// those older facts marked stale until a complete refresh succeeds.
@@ -820,6 +898,12 @@ func (s *siteControlService) refreshAccountWithOptions(ctx context.Context, task
 		_, _ = s.store.UpdateSiteAccount(ctx, account.ID, account)
 		activeProjectionKeys := make([]string, 0, len(keys))
 		syncErrors := make([]string, 0)
+		// Keep the configured channel identity beside each projection key so the
+		// result can explain which route was updated or removed without exposing
+		// routing keys, credentials, or upstream response bodies.
+		existingRouteNames := s.siteProjectionNames(ctx, account.ID)
+		projectionOwnership := s.siteProjectionOwnership(ctx, account.ID)
+		routeOutcomes := make([]RouteSyncOutcome, 0, len(keys)+len(existingRouteNames))
 		if !aliasSnapshotOK {
 			syncErrors = append(syncErrors, "model_alias_snapshot_failed")
 		}
@@ -828,34 +912,95 @@ func (s *siteControlService) refreshAccountWithOptions(ctx context.Context, task
 		}
 		for index, item := range keys {
 			projectionKey := stableProjectionKey(item, index)
+			routeName := existingRouteNames[projectionKey]
+			if routeName == "" {
+				routeName = routeDisplayName(site, account, item)
+			}
 			pricingGroup := strings.TrimSpace(item.Group)
-			activeProjectionKeys = append(activeProjectionKeys, projectionKey)
 			models, resolved := modelsByProjection[projectionKey]
-			if !resolved || len(models) == 0 {
+			if resolved && len(models) == 0 {
+				activeProjectionKeys = append(activeProjectionKeys, projectionKey)
+				if projectionOwnership[projectionKey] == "manual" {
+					routeOutcomes = append(routeOutcomes, RouteSyncOutcome{Name: routeName, Status: "unchanged"})
+					continue
+				}
+				result, err := s.clearEmptySiteProjection(ctx, account.ID, projectionKey)
+				if err != nil {
+					syncErrors = append(syncErrors, siteTaskError(err))
+					routeOutcomes = append(routeOutcomes, RouteSyncOutcome{Name: routeName, Status: "failed", Error: safeSiteTaskError(siteTaskError(err))})
+				} else if result != nil {
+					status := "unchanged"
+					if result.Action == "deactivated" {
+						status = "deactivated"
+					}
+					if result.Channel != nil && result.Channel.Name != "" {
+						routeName = result.Channel.Name
+					}
+					routeOutcomes = append(routeOutcomes, RouteSyncOutcome{Name: routeName, Status: status})
+				}
+				continue
+			}
+			activeProjectionKeys = append(activeProjectionKeys, projectionKey)
+			if !resolved {
+				discoveryErr := modelErr
+				var typed *routingModelDiscoveryError
+				if errors.As(modelErr, &typed) {
+					discoveryErr = typed.byProjection[projectionKey]
+				}
+				code := provider.ErrorCode(discoveryErr)
+				if code == provider.CodeExpired {
+					code = provider.CodeRequestFailed
+				}
+				if code == "" {
+					code = provider.CodeUnsupported
+				}
+				routeOutcomes = append(routeOutcomes, RouteSyncOutcome{Name: routeName, Status: "failed", Error: safeSiteTaskError(code)})
 				continue
 			}
 			keyCreds := creds
 			keyCreds.APIKey = item.Key
-			name := fmt.Sprintf("%s / %s", site.Name, account.Label)
-			if strings.TrimSpace(item.Group) != "" {
-				name += " / " + strings.TrimSpace(item.Group)
-			}
-			if strings.TrimSpace(item.Name) != "" && strings.TrimSpace(item.Name) != strings.TrimSpace(item.Group) && !strings.EqualFold(strings.TrimSpace(item.Name), strings.TrimSpace(account.Label)) {
-				name += " / " + strings.TrimSpace(item.Name)
-			}
+			name := routeDisplayName(site, account, item)
 			// Automatic account refresh reconciles generated projected channels,
 			// but never overrides a binding that an administrator has taken over.
-			if _, err := s.projectAccountWithModelsForProtocolsOwnership(ctx, account, site, keyCreds, projectionKey, name, item.Protocols, models, true, false, pricingGroup); err != nil {
+			result, err := s.projectAccountWithModelsForProtocolsOwnership(ctx, account, site, keyCreds, projectionKey, name, item.Protocols, models, true, false, pricingGroup)
+			if err != nil {
 				syncErrors = append(syncErrors, fmt.Sprintf("%s: %s", routingKeyLabel(item, projectionKey), siteTaskError(err)))
+				routeOutcomes = append(routeOutcomes, RouteSyncOutcome{Name: routeName, Status: "failed", Error: safeSiteTaskError(siteTaskError(err))})
+			} else {
+				status := "unchanged"
+				if result != nil {
+					if result.Channel != nil && result.Channel.Name != "" {
+						routeName = result.Channel.Name
+					}
+					switch result.Action {
+					case "created", "updated", "recreated":
+						status = "updated"
+					case "deactivated":
+						status = "deactivated"
+					}
+				}
+				routeOutcomes = append(routeOutcomes, RouteSyncOutcome{Name: routeName, Status: status})
 			}
 		}
-		if err := s.store.PruneSiteProjectionsExcept(ctx, account.ID, activeProjectionKeys); err != nil {
+		if err := s.store.DeactivateSiteProjectionsExcept(ctx, account.ID, activeProjectionKeys); err != nil {
+			setSiteTaskRoutes(task, routeOutcomes)
 			s.updateTask(ctx, task, model.SiteTaskStatusPartial, fmt.Sprintf("site_account:%d", accountID), siteTaskError(err))
 			return
 		}
+		for projectionKey, name := range existingRouteNames {
+			if slices.Contains(activeProjectionKeys, projectionKey) {
+				continue
+			}
+			status := "deactivated"
+			if projectionOwnership[projectionKey] == "manual" {
+				status = "unchanged"
+			}
+			routeOutcomes = append(routeOutcomes, RouteSyncOutcome{Name: name, Status: status})
+		}
+		setSiteTaskRoutes(task, routeOutcomes)
 		s.projectionChanged()
 		aliasReconcileOK := true
-		if modelErr == nil && authoritativeFacts && len(previousFacts) > 0 {
+		if modelErr == nil && len(previousFacts) > 0 {
 			if err := s.reconcileModelAliasesAfterSiteRefresh(ctx, previousFacts, facts); err != nil {
 				aliasReconcileOK = false
 				log.Printf("[WARN] model alias cleanup after account %d model refresh failed", accountID)
@@ -864,7 +1009,7 @@ func (s *siteControlService) refreshAccountWithOptions(ctx context.Context, task
 		}
 		if modelErr == nil && aliasReconcileOK && len(syncErrors) == 0 {
 			// Only discard the positive disappearance evidence after all cleanup
-			// has settled. A failed prune also leaves it available for the next sync.
+			// has settled. A failed deactivation leaves it available for the next sync.
 			if err := s.store.ReplaceSiteAccountModels(ctx, account.ID, facts); err != nil {
 				syncErrors = append(syncErrors, "model_snapshot_finalize_failed")
 			}
@@ -966,6 +1111,79 @@ func (s *siteControlService) routingSnapshots(ctx context.Context, account *mode
 	return filtered, nil
 }
 
+// Empty model discovery clears only generated routing state. The channel,
+// credential metadata, logs and traces remain available as historical records.
+func (s *siteControlService) clearEmptySiteProjection(ctx context.Context, accountID int64, projectionKey string) (*model.SiteProjectionResult, error) {
+	bindings, err := s.store.ListSiteChannelBindings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, binding := range bindings {
+		if binding.SiteAccountID != accountID || binding.ProjectionKey != projectionKey || binding.Ownership != "projected" || binding.ChannelID == 0 {
+			continue
+		}
+		channel, err := s.store.GetConfig(ctx, binding.ChannelID)
+		if err != nil {
+			return nil, err
+		}
+		keys, err := s.store.GetAPIKeys(ctx, channel.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(keys) == 0 || len(channel.URLs) == 0 {
+			return nil, errors.New("invalid projection input")
+		}
+		return s.store.UpsertSiteProjection(ctx, model.SiteProjectionInput{SiteAccountID: accountID,
+			ProjectionKey: projectionKey, BaseURL: channel.URLs[0].URL, Protocols: channel.URLs[0].Protocols,
+			APIKey: keys[0].APIKey, Force: true})
+	}
+	return nil, nil
+}
+
+func (s *siteControlService) siteProjectionNames(ctx context.Context, accountID int64) map[string]string {
+	names := make(map[string]string)
+	bindings, err := s.store.ListSiteChannelBindings(ctx)
+	if err != nil {
+		return names
+	}
+	for _, binding := range bindings {
+		if binding == nil || binding.SiteAccountID != accountID || binding.ChannelID <= 0 {
+			continue
+		}
+		channel, err := s.store.GetConfig(ctx, binding.ChannelID)
+		if err != nil || channel == nil || strings.TrimSpace(channel.Name) == "" {
+			continue
+		}
+		names[binding.ProjectionKey] = strings.TrimSpace(channel.Name)
+	}
+	return names
+}
+
+func (s *siteControlService) siteProjectionOwnership(ctx context.Context, accountID int64) map[string]string {
+	ownership := make(map[string]string)
+	bindings, err := s.store.ListSiteChannelBindings(ctx)
+	if err != nil {
+		return ownership
+	}
+	for _, binding := range bindings {
+		if binding != nil && binding.SiteAccountID == accountID {
+			ownership[binding.ProjectionKey] = binding.Ownership
+		}
+	}
+	return ownership
+}
+
+func routeDisplayName(site *model.Site, account *model.SiteAccount, item provider.RoutingKeySnapshot) string {
+	name := fmt.Sprintf("%s / %s", site.Name, account.Label)
+	if group := strings.TrimSpace(item.Group); group != "" {
+		name += " / " + group
+	}
+	if keyName := strings.TrimSpace(item.Name); keyName != "" && keyName != strings.TrimSpace(item.Group) && !strings.EqualFold(keyName, strings.TrimSpace(account.Label)) {
+		name += " / " + keyName
+	}
+	return name
+}
+
 func stableProjectionKey(item provider.RoutingKeySnapshot, index int) string {
 	identity := strings.TrimSpace(item.ID)
 	if identity == "" {
@@ -1011,9 +1229,6 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 		}
 		names = modelSnapshotNames(items)
 		keyNames[index] = names
-		if len(names) == 0 {
-			continue
-		}
 		signature := modelNamesSignature(names)
 		if !endpointSnapshotKnown {
 			endpointSignature = signature
@@ -1024,6 +1239,11 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 	}
 	if modelProvider, ok := adapter.(provider.RoutingModelProvider); ok {
 		for index, item := range keys {
+			if names, known := keyNames[index]; known && len(names) == 0 {
+				// A successful exact-key empty list is already scoped. Neither a
+				// token snapshot nor a management-wide list may repopulate it.
+				continue
+			}
 			// A missing endpoint needs a management fallback. An identical model
 			// list across grouped keys is ambiguous even when the token snapshot
 			// also contains models: several New API forks serialize the site-wide
@@ -1048,6 +1268,14 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 	}
 	for index, item := range keys {
 		projectionKey := stableProjectionKey(item, index)
+		if names, known := keyNames[index]; known && len(names) == 0 {
+			modelsByProjection[projectionKey] = names
+			continue
+		}
+		if names, known := managementNames[index]; known && len(names) == 0 {
+			modelsByProjection[projectionKey] = names
+			continue
+		}
 		// Always ask the upstream model endpoint with this exact routing key.
 		// Some management APIs return a shared model list on every key, which
 		// would otherwise leak one group's models into all projected channels.
@@ -1087,7 +1315,11 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 				})
 				if err == nil {
 					names = modelSnapshotNames(items)
-				} else if keyErrors[index] == nil {
+					if len(names) == 0 {
+						modelsByProjection[projectionKey] = names
+						continue
+					}
+				} else if keyErrors[index] == nil || provider.ErrorCode(keyErrors[index]) == provider.CodeUnsupported {
 					// Nothing else explained the empty result, so this is the only
 					// real cause. Dropping it reported a rejected credential as
 					// "the site does not support this", which sends the operator
@@ -1103,6 +1335,17 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 		modelsByProjection[projectionKey] = names
 	}
 	if len(unresolved) > 0 {
+		byProjection := make(map[string]error, len(unresolved))
+		for _, item := range unresolved {
+			cause := item.err
+			if cause == nil {
+				cause = &provider.Error{Code: provider.CodeUnsupported, Message: "routing key returned no models"}
+			}
+			if provider.ErrorCode(cause) == provider.CodeExpired {
+				cause = &provider.Error{Code: provider.CodeRequestFailed, Message: provider.ErrorMessage(cause)}
+			}
+			byProjection[item.projectionKey] = cause
+		}
 		first := unresolved[0]
 		detail := routingKeyLabel(first.item, first.projectionKey)
 		if first.err != nil {
@@ -1112,9 +1355,11 @@ func (s *siteControlService) routingModels(ctx context.Context, account *model.S
 			if code == provider.CodeExpired {
 				code = provider.CodeRequestFailed
 			}
-			return modelsByProjection, siteAccountModelsFromProjection(account.ID, modelsByProjection), &provider.Error{Code: code, Message: fmt.Sprintf("unable to discover models for routing key %s: %s", detail, provider.ErrorMessage(first.err))}
+			cause := &provider.Error{Code: code, Message: fmt.Sprintf("unable to discover models for routing key %s: %s", detail, provider.ErrorMessage(first.err))}
+			return modelsByProjection, siteAccountModelsFromProjection(account.ID, modelsByProjection), &routingModelDiscoveryError{cause: cause, byProjection: byProjection}
 		}
-		return modelsByProjection, siteAccountModelsFromProjection(account.ID, modelsByProjection), &provider.Error{Code: provider.CodeUnsupported, Message: fmt.Sprintf("routing key %s returned no models", detail)}
+		cause := &provider.Error{Code: provider.CodeUnsupported, Message: fmt.Sprintf("routing key %s returned no models", detail)}
+		return modelsByProjection, siteAccountModelsFromProjection(account.ID, modelsByProjection), &routingModelDiscoveryError{cause: cause, byProjection: byProjection}
 	}
 
 	return modelsByProjection, siteAccountModelsFromProjection(account.ID, modelsByProjection), nil

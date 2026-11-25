@@ -881,17 +881,24 @@ def metric_cases(runner, root):
     }
 
     def resources(page, data):
-        page.wait_for_function("""prefixes => prefixes.every(prefix => performance.getEntriesByType('resource')
-          .some(e => e.name.includes('/web/console/assets/' + prefix) && e.name.endsWith('.js')))""", arg=route_prefixes)
+        page.wait_for_function("""() => performance.getEntriesByType('resource')
+          .some(e => e.name.includes('/web/console/assets/SitesPage-') && e.name.endsWith('.js'))""")
         page.wait_for_load_state('networkidle')
         runner.metrics['session'] = page.evaluate("""() => {
           const entries = performance.getEntriesByType('resource').filter(e => e.name.includes('/web/console/'));
           return {resources: entries.length, encoded_bytes: entries.reduce((s,e) => s+e.encodedBodySize,0),
-            decoded_bytes: entries.reduce((s,e) => s+e.decodedBodySize,0), dom_nodes: document.querySelectorAll('*').length};
+            decoded_bytes: entries.reduce((s,e) => s+e.decodedBodySize,0), dom_nodes: document.querySelectorAll('*').length,
+            page_chunks: entries.filter(e => e.name.endsWith('.js')).map(e => e.name.split('/').pop())};
         }""")
         session = runner.metrics['session']
         runner.check(session['encoded_bytes'] <= 400000, 'Console session exceeds 400000 encoded bytes')
         runner.check(session['resources'] <= 45, 'Console session exceeds the existing 45-resource budget')
+        runner.check(not any(name.startswith(('ChannelsPage-', 'LogsPage-', 'StatsPage-', 'SystemSettingsPageV2-')) for name in session['page_chunks']),
+                     'Initial Sites view eagerly loads unrelated page code')
+        page.get_by_role('link', name='账号管理', exact=True).hover()
+        page.wait_for_function("""() => performance.getEntriesByType('resource')
+          .some(e => e.name.includes('/web/console/assets/AccountsPageV2-') && e.name.endsWith('.js'))""")
+        runner.metrics['intent_preload'] = {'trigger': 'navigation_hover', 'page': '/accounts', 'loaded': True}
         for name, sizes in {**runner.metrics['build']['route_chunks'], **runner.metrics['build']['non_prefetched_detail']}.items():
             runner.check(sizes['gzip_bytes'] <= 150000 and sizes['decoded_bytes'] <= 450000,
                          f'Route {name} exceeds gzip/decoded budget')

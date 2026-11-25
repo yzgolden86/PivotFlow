@@ -374,6 +374,12 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 			return err
 		}
 
+		if existing.Enabled != upd.Enabled {
+			if err := s.updateInactiveProjectionEnabledIntentTx(ctx, tx, id, upd.Enabled, updatedAtUnix); err != nil {
+				return err
+			}
+		}
+
 		// 更新 channel_models 表（先删后插）
 		if err := s.saveModelEntriesTx(ctx, tx, id, upd.ModelEntries); err != nil {
 			return fmt.Errorf("save model entries: %w", err)
@@ -482,22 +488,18 @@ func (s *SQLStore) UpdateOAuthCredential(ctx context.Context, id int64, credenti
 // explicit intent, which must survive the next site enable/disable cycle.
 func (s *SQLStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error) {
 	updatedAtUnix := timeToUnix(time.Now())
-	result, err := s.ExecContext(ctx, `
-		UPDATE channels
-		SET enabled = ?, suspended_by_site = 0, updated_at = ?
-		WHERE id = ?
-	`, enabled, updatedAtUnix, id)
-	if err != nil {
-		return nil, fmt.Errorf("update channel enabled: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err == nil && rowsAffected == 0 {
-		cfg, getErr := s.GetConfig(ctx, id)
-		if getErr != nil {
-			return nil, getErr
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if _, err := s.execTx(ctx, tx, `
+			UPDATE channels
+			SET enabled = ?, suspended_by_site = 0, updated_at = ?
+			WHERE id = ?
+		`, enabled, updatedAtUnix, id); err != nil {
+			return fmt.Errorf("update channel enabled: %w", err)
 		}
-		return cfg, nil
+		return s.updateInactiveProjectionEnabledIntentTx(ctx, tx, id, enabled, updatedAtUnix)
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	config, err := s.GetConfig(ctx, id)
@@ -505,6 +507,28 @@ func (s *SQLStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled b
 		return nil, err
 	}
 	return config, nil
+}
+
+// Only explicit enabled updates replace restoration intent. Metadata updates
+// retain it, and manually owned bindings never participate in rehydration.
+func (s *SQLStore) updateInactiveProjectionEnabledIntentTx(ctx context.Context, tx *sql.Tx, id int64, enabled bool, updatedAtUnix int64) error {
+	removedMarker, emptyMarker := "upstream_removed_keep_disabled", "upstream_empty_keep_disabled"
+	if enabled {
+		removedMarker, emptyMarker = "upstream_removed_restore_enabled", "upstream_empty_restore_enabled"
+	}
+	_, err := s.execTx(ctx, tx, `
+		UPDATE site_channel_bindings
+		SET last_sync_error = CASE last_sync_error
+			WHEN 'upstream_removed_restore_enabled' THEN ?
+			WHEN 'upstream_removed_keep_disabled' THEN ?
+			WHEN 'upstream_empty_restore_enabled' THEN ?
+			WHEN 'upstream_empty_keep_disabled' THEN ?
+			ELSE last_sync_error END,
+			updated_at = ?
+		WHERE channel_id = ? AND ownership = 'projected' AND status = 'inactive'
+		  AND last_sync_error IN ('upstream_removed_restore_enabled','upstream_removed_keep_disabled','upstream_empty_restore_enabled','upstream_empty_keep_disabled')
+	`, removedMarker, removedMarker, emptyMarker, emptyMarker, updatedAtUnix, id)
+	return err
 }
 
 // BatchPatchConfigs atomically changes only the explicitly requested channel fields.

@@ -1101,7 +1101,7 @@ export interface SiteTask {
 	site_id?: number
 	site_account_id?: number
   status: 'queued' | 'running' | 'success' | 'partial' | 'failed' | 'cancelled' | 'unknown'
-  progress?: { completed?: number; total?: number; items?: { site_id: number; task_id?: string; status: string; error?: string }[] }
+  progress?: { completed?: number; total?: number; items?: { site_id: number; task_id?: string; status: string; error?: string }[]; routes?: { name: string; status: 'updated' | 'unchanged' | 'failed' | 'deactivated'; error?: string }[] }
   budget?: { active: number; waiting: number; cooldown_until?: number; next_request_at?: number } | null
   result_ref?: string
   error?: string

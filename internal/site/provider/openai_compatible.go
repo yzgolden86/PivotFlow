@@ -76,9 +76,6 @@ func (p *OpenAICompatible) ListModels(ctx context.Context, req AccountRequest) (
 	if !shapeOK {
 		return nil, &Error{Code: CodeInvalidResponse, StatusCode: status, Message: "models endpoint did not return an OpenAI-compatible response"}
 	}
-	if len(names) == 0 {
-		return nil, &Error{Code: CodeUnsupported, StatusCode: status, Message: "models endpoint returned no models"}
-	}
 	out := make([]ModelSnapshot, 0, len(names))
 	for _, name := range names {
 		out = append(out, ModelSnapshot{Model: name, RouteType: "openai_chat", Source: "models_endpoint"})
@@ -164,6 +161,12 @@ func openAIModelNames(raw []byte) ([]string, bool) {
 	if !ok {
 		return nil, false
 	}
+	if value, exists := root["error"]; exists && value != nil {
+		return nil, false
+	}
+	if value, exists := root["success"]; exists && value != true {
+		return nil, false
+	}
 	var collection any
 	for _, key := range []string{"data", "models", "items"} {
 		if value, exists := root[key]; exists {
@@ -176,6 +179,9 @@ func openAIModelNames(raw []byte) ([]string, bool) {
 	}
 	items, ok := collection.([]any)
 	if !ok {
+		return nil, false
+	}
+	if !modelListComplete(root, len(items)) {
 		return nil, false
 	}
 	seen := make(map[string]struct{}, len(items))
@@ -195,7 +201,7 @@ func openAIModelNames(raw []byte) ([]string, bool) {
 		}
 		name = strings.TrimPrefix(strings.TrimSpace(name), "models/")
 		if name == "" {
-			continue
+			return nil, false
 		}
 		if _, exists := seen[name]; exists {
 			continue
@@ -204,6 +210,88 @@ func openAIModelNames(raw []byte) ([]string, bool) {
 		names = append(names, name)
 	}
 	return names, true
+}
+
+// Model lists feed authoritative synchronization. Reject explicit evidence of
+// pagination while retaining the existing metadata-free provider shapes.
+func modelListComplete(root map[string]any, count int) bool {
+	collectionFields := []string{"data", "models", "items", "list", "allowed_models", "model_list", "modelList", "model_limits"}
+	// Totals count response entries, before model-name normalization/deduping.
+	var collectionCount func(map[string]any) (int, bool)
+	collectionCount = func(current map[string]any) (int, bool) {
+		for _, field := range collectionFields {
+			switch child := current[field].(type) {
+			case []any:
+				return len(child), true
+			case map[string]any:
+				if n, found := collectionCount(child); found {
+					return n, true
+				}
+			}
+		}
+		return 0, false
+	}
+	if n, found := collectionCount(root); found {
+		count = n
+	}
+	var complete func(map[string]any) bool
+	complete = func(meta map[string]any) bool {
+		for _, field := range []string{"total", "total_count", "totalCount"} {
+			if _, exists := meta[field]; exists {
+				n, ok := newAPIRoutingCount(meta, field)
+				if !ok || n != count {
+					return false
+				}
+			}
+		}
+		for _, field := range []string{"has_more", "hasMore", "has_next_page", "hasNextPage"} {
+			if _, exists := meta[field]; exists {
+				more, ok := boolValue(meta, field)
+				if !ok || more {
+					return false
+				}
+			}
+		}
+		for _, field := range []string{"next", "next_page", "nextPage", "next_cursor", "nextCursor", "next_page_token", "nextPageToken", "next_page_url", "nextPageUrl"} {
+			if value := meta[field]; value != nil && value != false && value != float64(0) && value != "" {
+				return false
+			}
+		}
+		for _, field := range []string{"page", "current_page", "currentPage", "p", "offset", "total_pages", "totalPages", "last_page", "lastPage"} {
+			if _, exists := meta[field]; exists {
+				n, ok := newAPIRoutingCount(meta, field)
+				maxValue := 1
+				if field == "p" || field == "offset" {
+					maxValue = 0
+				}
+				if !ok || n > maxValue || count > 0 && n == 0 && (field == "total_pages" || field == "totalPages" || field == "last_page" || field == "lastPage") {
+					return false
+				}
+			}
+		}
+		for _, field := range []string{"page_size", "pageSize", "per_page", "limit", "size"} {
+			if _, exists := meta[field]; exists {
+				n, ok := newAPIRoutingCount(meta, field)
+				if !ok || n == 0 || count > n {
+					return false
+				}
+			}
+		}
+		for _, field := range []string{"pagination", "paging", "meta", "links"} {
+			if child, ok := meta[field].(map[string]any); ok && !complete(child) {
+				return false
+			}
+		}
+		for _, field := range collectionFields {
+			if child, ok := meta[field].(map[string]any); ok {
+				if _, wrapped := collectionCount(child); wrapped && !complete(child) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return complete(root)
 }
 
 func openAIEndpointError(contentType string, raw []byte) bool {

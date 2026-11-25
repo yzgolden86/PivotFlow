@@ -347,7 +347,12 @@ func (s *SQLStore) UpdateSiteAccount(ctx context.Context, id int64, account *mod
 		if _, err := s.execTx(ctx, tx, "UPDATE channels SET enabled=0, updated_at=? WHERE id IN (SELECT channel_id FROM site_channel_bindings WHERE site_account_id=? AND channel_id IS NOT NULL)", now, id); err != nil {
 			return err
 		}
-		_, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET status='disabled', updated_at=? WHERE site_account_id=?", now, id)
+		// Account suspension is separate from upstream disappearance. Keep the
+		// lifecycle state so recovery and explicit channel toggles retain intent.
+		_, err := s.execTx(ctx, tx, `UPDATE site_channel_bindings SET status=CASE
+			WHEN ownership='projected' AND status='inactive' AND last_sync_error IN
+				('upstream_removed_restore_enabled','upstream_removed_keep_disabled','upstream_empty_restore_enabled','upstream_empty_keep_disabled')
+			THEN status ELSE 'disabled' END, updated_at=? WHERE site_account_id=?`, now, id)
 		return err
 	})
 	if err != nil {
@@ -1331,9 +1336,7 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 	if input.SiteAccountID <= 0 || strings.TrimSpace(input.ProjectionKey) == "" || strings.TrimSpace(input.BaseURL) == "" || strings.TrimSpace(input.APIKey) == "" {
 		return nil, errors.New("invalid projection input")
 	}
-	if len(input.Models) == 0 {
-		return nil, errors.New("projection requires at least one model")
-	}
+	emptyModels := len(input.Models) == 0
 	input.SourceHash = model.SiteProjectionSourceHash(input.BaseURL, input.Protocols, input.Models, input.APIKey, input.Enabled)
 	now := siteNow()
 	channelName := strings.TrimSpace(input.Name)
@@ -1366,6 +1369,11 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 				return err
 			}
 			if binding.Ownership == "manual" {
+				if emptyModels {
+					channel.ID = binding.ChannelID
+					action = "preserved"
+					return nil
+				}
 				if !input.OverrideManual {
 					action = "conflict"
 					binding.LastSyncStatus = "conflict"
@@ -1377,7 +1385,57 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 			}
 			channel.ID = binding.ChannelID
 		}
+		if emptyModels {
+			if channel.ID == 0 || binding.Ownership != "projected" {
+				return errors.New("empty projection requires an existing projected channel")
+			}
+			var enabled, suspendedBySite bool
+			if err := s.queryRowTx(ctx, tx, "SELECT enabled,suspended_by_site FROM channels WHERE id=?", channel.ID).Scan(&enabled, &suspendedBySite); err != nil {
+				return err
+			}
+			// A site cascade temporarily disables the channel. Transfer its saved
+			// enabled intent before clearing the cascade mark: only returning supply
+			// may restore an upstream-inactive projection.
+			restoreEnabled := enabled || suspendedBySite || binding.Status == "inactive" &&
+				(binding.LastSyncError == "upstream_empty_restore_enabled" || binding.LastSyncError == "upstream_removed_restore_enabled")
+			marker := "upstream_empty_keep_disabled"
+			if restoreEnabled {
+				marker = "upstream_empty_restore_enabled"
+			}
+			if err := s.saveModelEntriesTx(ctx, tx, channel.ID, nil); err != nil {
+				return err
+			}
+			if _, err := s.execTx(ctx, tx, "UPDATE channels SET enabled=0,suspended_by_site=0,updated_at=? WHERE id=?", now, channel.ID); err != nil {
+				return err
+			}
+			if _, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET status='inactive',last_sync_status='success',last_sync_error=?,updated_at=? WHERE id=? AND ownership='projected'", marker, now, binding.ID); err != nil {
+				return err
+			}
+			binding.Status, binding.LastSyncStatus, binding.LastSyncError = "inactive", "success", marker
+			binding.SiteAccountID, binding.ProjectionKey = input.SiteAccountID, input.ProjectionKey
+			action = "deactivated"
+			return nil
+		}
 		if channel.ID > 0 {
+			if binding.Ownership == "projected" && binding.Status == "inactive" &&
+				(binding.LastSyncError == "upstream_empty_restore_enabled" || binding.LastSyncError == "upstream_removed_restore_enabled" ||
+					binding.LastSyncError == "upstream_empty_keep_disabled" || binding.LastSyncError == "upstream_removed_keep_disabled") {
+				var accountEnabled, siteEnabled bool
+				if err := s.queryRowTx(ctx, tx, `SELECT a.enabled AND a.status NOT IN ('expired','disabled'),s.enabled
+					FROM site_accounts a JOIN sites s ON s.id=a.site_id
+					WHERE a.id=? AND a.deleted_at=0 AND s.deleted_at=0`, input.SiteAccountID).Scan(&accountEnabled, &siteEnabled); err != nil {
+					return err
+				}
+				if !accountEnabled || !siteEnabled {
+					// Supply returning while the account is blocked must neither
+					// enable routing nor consume the pending restoration marker.
+					if _, err := s.execTx(ctx, tx, "UPDATE channels SET enabled=0,updated_at=? WHERE id=?", now, channel.ID); err != nil {
+						return err
+					}
+					action = "preserved"
+					return nil
+				}
+			}
 			actualHash, exists, err := s.projectionSourceHashTx(ctx, tx, channel.ID)
 			if err != nil {
 				return err
@@ -1393,15 +1451,23 @@ func (s *SQLStore) UpsertSiteProjection(ctx context.Context, input model.SitePro
 				if err := s.queryRowTx(ctx, tx, "SELECT enabled FROM channels WHERE id=?", channel.ID).Scan(&channel.Enabled); err != nil {
 					return err
 				}
+				if binding.Ownership == "projected" && binding.Status == "inactive" &&
+					(binding.LastSyncError == "upstream_empty_restore_enabled" || binding.LastSyncError == "upstream_removed_restore_enabled") {
+					var accountEnabled, siteEnabled bool
+					if err := s.queryRowTx(ctx, tx, "SELECT a.enabled,s.enabled FROM site_accounts a JOIN sites s ON s.id=a.site_id WHERE a.id=? AND a.deleted_at=0 AND s.deleted_at=0", input.SiteAccountID).Scan(&accountEnabled, &siteEnabled); err != nil {
+						return err
+					}
+					channel.Enabled = input.Enabled && accountEnabled && siteEnabled
+				}
 				input.Enabled = channel.Enabled
 				input.SourceHash = model.SiteProjectionSourceHash(input.BaseURL, input.Protocols, input.Models, input.APIKey, input.Enabled)
-				if actualHash != binding.LastProjectedHash && !input.Force {
+				if actualHash != binding.LastProjectedHash && !input.Force && binding.Status != "inactive" {
 					action = "conflict"
 					binding.LastSyncStatus = "conflict"
 					binding.LastSyncError = "projected channel changed outside site control"
 					_, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET last_sync_status='conflict',last_sync_error=?,updated_at=? WHERE id=?", binding.LastSyncError, now, binding.ID)
 					return err
-				} else if actualHash == binding.LastProjectedHash && input.SourceHash == binding.LastProjectedHash && !input.Force {
+				} else if actualHash == binding.LastProjectedHash && input.SourceHash == binding.LastProjectedHash && !input.Force && binding.Status != "inactive" {
 					action = "unchanged"
 					binding.LastSyncStatus = "success"
 					binding.LastSyncError = ""
@@ -1554,9 +1620,38 @@ func (s *SQLStore) DeactivateSiteProjectionsExcept(ctx context.Context, siteAcco
 				continue
 			}
 			if v.channelID > 0 {
-				if _, err := s.execTx(ctx, tx, "UPDATE channels SET enabled=0,updated_at=? WHERE id=?", now, v.channelID); err != nil {
+				var enabled, suspendedBySite bool
+				var status, marker string
+				if err := s.queryRowTx(ctx, tx, "SELECT c.enabled,c.suspended_by_site,b.status,b.last_sync_error FROM channels c JOIN site_channel_bindings b ON b.channel_id=c.id WHERE b.id=?", v.id).Scan(&enabled, &suspendedBySite, &status, &marker); err != nil {
 					return err
 				}
+				if status != "inactive" {
+					marker = "upstream_removed_keep_disabled"
+					if enabled || suspendedBySite {
+						marker = "upstream_removed_restore_enabled"
+					}
+				} else if suspendedBySite {
+					// Older syncs could leave an inactive binding with only the
+					// cascade flag recording that its channel was enabled.
+					switch marker {
+					case "upstream_empty_keep_disabled", "upstream_empty_restore_enabled":
+						marker = "upstream_empty_restore_enabled"
+					default:
+						marker = "upstream_removed_restore_enabled"
+					}
+				}
+				// Remove routing topology, not the historical channel or its keys.
+				// Alias reconciliation can then discard confirmed vanished models.
+				if err := s.saveModelEntriesTx(ctx, tx, v.channelID, nil); err != nil {
+					return err
+				}
+				if _, err := s.execTx(ctx, tx, "UPDATE channels SET enabled=0,suspended_by_site=0,updated_at=? WHERE id=?", now, v.channelID); err != nil {
+					return err
+				}
+				if _, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET status='inactive',last_sync_status='success',last_sync_error=?,updated_at=? WHERE id=?", marker, now, v.id); err != nil {
+					return err
+				}
+				continue
 			}
 			if _, err := s.execTx(ctx, tx, "UPDATE site_channel_bindings SET status='inactive',last_sync_status='success',last_sync_error='upstream key removed or disabled',updated_at=? WHERE id=?", now, v.id); err != nil {
 				return err

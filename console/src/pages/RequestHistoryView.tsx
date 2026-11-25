@@ -154,12 +154,14 @@ export default function RequestHistoryView() {
         <Search size={14} />
         <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索请求 ID / 模型" aria-label="搜索完整请求" />
       </label>
-      <form className="request-model-filter" onSubmit={(event) => { event.preventDefault(); setFilters({ model: modelDraft }) }}>
+      <div className="request-model-controls"><form className="request-model-filter" onSubmit={(event) => { event.preventDefault(); setFilters({ model: modelDraft }) }}>
         <input value={modelDraft} onChange={(event) => setModelDraft(event.target.value)} placeholder="完整请求模型（精确匹配）" aria-label="精确请求模型" spellCheck={false} />
         <button type="submit" className="secondary-button">筛选模型</button>
       </form>
+      <div className="request-filter-actions">
       {hasFilters && <button className="icon-button icon-button--surface" type="button" title="清除筛选" aria-label="清除完整请求筛选" onClick={clearFilters}><RotateCcw size={16} /></button>}
       <button className="icon-button icon-button--surface" type="button" disabled={history.loading || Boolean(scope.error)} onClick={() => { history.refresh(); summary.refresh() }} aria-label="刷新完整请求" title="刷新完整请求"><RefreshCw className={refreshing ? 'spin' : undefined} size={16} /></button>
+      </div></div>
     </div>
 
     {tokenSnapshot.error && <p className="inline-error" role="alert">令牌清单读取失败，当前历史范围保持。<button className="text-button" type="button" onClick={tokenSnapshot.refresh}>重试令牌清单</button></p>}

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { SiteTaskRunner, type TaskItem, type TaskSnapshot } from '../siteTaskRunner.ts'
-import { createSiteTaskDiscovery, siteTaskCompletionKey, siteTaskFeedback, siteTaskBlocker } from './siteTaskObservation.ts'
+import { accountRouteTask, createSiteTaskDiscovery, routeTaskSummary, siteTaskCompletionKey, siteTaskFeedback, siteTaskBlocker, siteTaskRecovery } from './siteTaskObservation.ts'
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
 const snapshot = (status: TaskSnapshot['status'] = 'running'): TaskSnapshot => ({ id: 'st_recovered', kind: 'checkin', site_id: 2, site_account_id: 7, status, created_at: 1 })
@@ -126,4 +126,41 @@ test('unknown completion refreshes originating pages without becoming a confirme
   assert.notEqual(siteTaskCompletionKey([item('unknown')]), '')
   assert.notEqual(siteTaskCompletionKey([item('unknown')]), siteTaskCompletionKey([item('success')]))
   assert.equal(siteTaskCompletionKey([item('unknown')], 'refresh'), '')
+})
+
+test('account routing feedback keeps the newest identity and a pending resubmission instead of a recovered old result', () => {
+  const routeTarget = { ...target, kind: 'model_refresh' as const }
+  const old = { ...item('success'), target: routeTarget, task: { ...snapshot('success'), created_at: 50 } }
+  const newest = { ...item('failed'), target: routeTarget, task: { ...snapshot('failed'), created_at: 100 } }
+  const queued = { ...item('submitting'), target: routeTarget, taskId: undefined }
+  const running = { ...old, status: 'running' as const, task: { ...snapshot('running'), created_at: 25 } }
+  const unrelated = { ...newest, target: { ...routeTarget, accountId: 8 } }
+  assert.equal(accountRouteTask([newest, old, unrelated], 7), newest)
+  assert.equal(accountRouteTask([newest, queued, old], 7), queued)
+  assert.equal(accountRouteTask([newest, running, old], 7), running)
+  assert.equal(accountRouteTask([item('success'), unrelated], 7), undefined)
+})
+
+test('credential and browser challenge outcomes recover through their native account or site context', () => {
+  const failed = { ...item('failed'), target: { ...target, kind: 'model_refresh' as const } }
+  assert.deepEqual(siteTaskRecovery({ ...failed, message: 'expired' }), {
+    text: '更新凭证', href: '#/accounts?focus_account_id=7&open_credential=1',
+  })
+  assert.deepEqual(siteTaskRecovery({ ...failed, message: 'user_id_required: invalid identity' }), {
+    text: '更新凭证', href: '#/accounts?focus_account_id=7&open_credential=1',
+  })
+  assert.deepEqual(siteTaskRecovery({ ...failed, message: 'browser_required' }), {
+    text: '查看上游站点', href: '#/sites?focus_site_id=2',
+  })
+  const routeSummary = { ...failed, task: { ...snapshot('failed'), progress: { routes: [
+    { name: '合成站点 / 合成 Key A', status: 'updated' as const },
+    { name: '合成站点 / 合成 Key B', status: 'failed' as const, error: 'request_failed' },
+  ] } } }
+  assert.deepEqual(routeTaskSummary(routeSummary), [
+    { name: '合成站点 / 合成 Key A', status: 'updated' },
+    { name: '合成站点 / 合成 Key B', status: 'failed', error: 'request_failed' },
+  ])
+  assert.deepEqual(routeTaskSummary(failed), [])
+  assert.equal(siteTaskRecovery({ ...failed, message: 'provider_timeout' }), null)
+  assert.equal(siteTaskRecovery({ ...failed, target: { ...failed.target, accountId: -1 }, message: 'expired' }), null)
 })

@@ -44,6 +44,11 @@ export interface CheckinActionAvailability {
   reason: string
 }
 
+export function needsCredentialRecovery(account: Pick<SiteAccount, 'status' | 'credential_configured' | 'last_error'>): boolean {
+  const code = (account.last_error || '').split(':', 1)[0].trim()
+  return account.status === 'expired' || !account.credential_configured || ['expired', 'credential_required', 'user_id_required'].includes(code)
+}
+
 export function checkinActionAvailability(account: CheckinAccount, site?: CheckinSite): CheckinActionAvailability {
   const configuredURL = site?.external_checkin_url?.trim() || ''
   const methodUnavailable = site?.checkin_method === 'disabled' || site?.checkin_method === 'unavailable'

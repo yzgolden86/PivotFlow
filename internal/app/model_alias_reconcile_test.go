@@ -228,6 +228,8 @@ func TestSiteModelRefreshPartialOrEmptyDiscoveryKeepsAliases(t *testing.T) {
 			[]provider.RoutingKeySnapshot{{ID: "empty", Key: emptyKey, Enabled: true}},
 			map[string][]string{emptyKey: {}},
 		)
+		adapter.errorsByKey[emptyKey] = &provider.Error{Code: provider.CodeUnsupported, Message: "model discovery unavailable"}
+		adapter.errorsByKey[""] = &provider.Error{Code: provider.CodeUnsupported, Message: "management model discovery unavailable"}
 		srv, _, account := newSiteSyncPreviewFixture(t, adapter)
 		setModelAliasGroupsForReconcileTest(t, srv, []model.ModelAliasGroup{{
 			Canonical: reconcileTestCanonical,
@@ -251,6 +253,80 @@ func TestSiteModelRefreshPartialOrEmptyDiscoveryKeepsAliases(t *testing.T) {
 			t.Fatalf("empty discovery changed aliases: %+v", groups)
 		}
 	})
+}
+
+func TestSiteModelRefreshAuthoritativeEmptyKeySetRemovesStaleModels(t *testing.T) {
+	const upstreamKey = "sk-authoritative-empty-keys"
+	const removedModel = "vendor/vanishing-model"
+	const grantedModel = "vendor/historical-grant"
+	adapter := siteSyncPreviewAdapter(
+		[]provider.RoutingKeySnapshot{{ID: "primary", Key: upstreamKey, Enabled: true}},
+		map[string][]string{upstreamKey: {grantedModel}},
+	)
+	srv, _, account := newSiteSyncPreviewFixture(t, adapter)
+	ctx := context.Background()
+	setModelAliasGroupsForReconcileTest(t, srv, []model.ModelAliasGroup{{
+		Canonical: reconcileTestCanonical,
+		Aliases:   []string{removedModel, grantedModel, "vendor/manual-never-observed"},
+		Enabled:   true,
+	}})
+
+	initial := newSiteTask("model_refresh", account.SiteID, account.ID, 30)
+	srv.siteControl.refreshAccount(ctx, initial, account.ID, true)
+	if initial.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("initial refresh status=%q error=%q", initial.Status, initial.Error)
+	}
+	// Durable evidence from an earlier removed model survives until cleanup.
+	// It has no remaining configured channel, unlike the historical grant.
+	if err := srv.store.MergeSiteAccountModels(ctx, account.ID, []model.SiteAccountModel{
+		{SiteAccountID: account.ID, Model: removedModel, Source: "routing_key_models"},
+		{SiteAccountID: account.ID, Model: grantedModel, Source: "routing_key_models"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.CreateAuthToken(ctx, &model.AuthToken{
+		Token:         model.HashToken("authoritative-empty-model-whitelist"),
+		Description:   "retain historical model grant",
+		IsActive:      true,
+		AllowedModels: []string{grantedModel},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.authService.ReloadAuthTokens(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The provider successfully reports no enabled keys. This is an
+	// authoritative empty result, distinct from a failed or partial lookup.
+	adapter.keys = []provider.RoutingKeySnapshot{}
+	final := newSiteTask("model_refresh", account.SiteID, account.ID, 31)
+	srv.siteControl.refreshAccount(ctx, final, account.ID, true)
+	if final.Status != model.SiteTaskStatusSuccess {
+		t.Fatalf("empty authoritative refresh status=%q error=%q", final.Status, final.Error)
+	}
+
+	facts, err := srv.store.ListSiteAccountModels(ctx, model.SiteModelFilter{SiteAccountID: account.ID, IncludeDisabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 0 {
+		t.Fatalf("site model snapshot retained stale facts after authoritative empty sync: %+v", facts)
+	}
+	if got := visibleModelsForReconcileTest(t, srv); len(got) != 0 {
+		t.Fatalf("public models after authoritative empty sync=%v, want none", got)
+	}
+	inventory, err := srv.modelRouteInventory(ctx, "", 50, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inventory.Total != 0 {
+		t.Fatalf("enabled model inventory after authoritative empty sync=%+v, want empty", inventory)
+	}
+	groups := persistedModelAliasGroupsForReconcileTest(t, srv)
+	wantAliases := []string{grantedModel, "vendor/manual-never-observed"}
+	if len(groups) != 1 || !slices.Equal(groups[0].Aliases, wantAliases) {
+		t.Fatalf("alias grants/manual entries after empty sync=%+v, want %v", groups, wantAliases)
+	}
 }
 
 func TestSiteModelRefreshLeavesConfiguredEmptyAliasGroupAndHidesCanonical(t *testing.T) {

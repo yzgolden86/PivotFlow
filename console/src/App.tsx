@@ -201,8 +201,7 @@ function App() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      // 预载全部路由 chunk：首次点击导航时不出现载入闪烁
-      void Promise.allSettled(Object.values(pageLoaders).map((load) => load()))
+      // 页面代码由导航悬停和聚焦时预载，避免首屏集中下载全部路由。
       void Promise.allSettled([
         getSiteInventory(),
         getCheckinAttemptsBatch(100),

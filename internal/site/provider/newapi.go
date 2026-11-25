@@ -384,26 +384,17 @@ func (p *NewAPI) ListRoutingKeys(ctx context.Context, req AccountRequest) ([]Rou
 	if req.Credentials.AccessToken == "" && req.Credentials.Cookie == "" {
 		return nil, &Error{Code: CodeUnsupported, Message: "routing key discovery requires a management session"}
 	}
-	var payload envelope
+	var payload any
 	if err := p.doJSON(ctx, req, http.MethodGet, "/api/token/?p=0&size=100", nil, &payload); err != nil {
 		return nil, err
 	}
-	if !payload.Success {
-		return nil, responseError(payload, http.StatusOK)
-	}
-	items := collectionItems(payload.Data)
-	if len(items) == 0 {
-		if direct, ok := payload.Data.([]any); ok {
-			items = direct
-		}
+	items, err := newAPIRoutingKeyItems(payload)
+	if err != nil {
+		return nil, err
 	}
 	maskedIDs := make([]int, 0)
-	for _, raw := range items {
-		item, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		key, _ := stringValue(item, "key")
+	for _, item := range items {
+		key := strings.TrimSpace(item["key"].(string))
 		id, err := strconv.Atoi(strings.TrimSpace(fmt.Sprint(item["id"])))
 		if isMaskedRoutingKey(key) && err == nil && id > 0 {
 			maskedIDs = append(maskedIDs, id)
@@ -411,15 +402,8 @@ func (p *NewAPI) ListRoutingKeys(ctx context.Context, req AccountRequest) ([]Rou
 	}
 	resolvedKeys := p.resolveRoutingKeysBatch(ctx, req, maskedIDs)
 	out := make([]RoutingKeySnapshot, 0, len(items))
-	for index, raw := range items {
-		item, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		key, _ := stringValue(item, "key")
-		if key == "" {
-			continue
-		}
+	for index, item := range items {
+		key := strings.TrimSpace(item["key"].(string))
 		name, _ := stringValue(item, "name")
 		if name == "" {
 			name = fmt.Sprintf("token-%d", index+1)
@@ -456,6 +440,111 @@ func (p *NewAPI) ListRoutingKeys(ctx context.Context, req AccountRequest) ([]Rou
 		out = append(out, RoutingKeySnapshot{ID: id, Name: name, Group: group, Models: models, Key: key, Enabled: enabled})
 	}
 	return out, nil
+}
+
+// Discovery is authoritative for synchronization: an invalid or partial list
+// must never look like all prior keys disappeared. Validate before any reveal.
+func newAPIRoutingKeyItems(payload any) ([]map[string]any, error) {
+	invalid := func(message string) error {
+		return &Error{Code: CodeInvalidResponse, Message: "routing key discovery " + message}
+	}
+	data := payload
+	var metadata []map[string]any
+	if root, ok := payload.(map[string]any); ok {
+		success, ok := root["success"].(bool)
+		if !ok {
+			return nil, invalid("returned no valid success flag")
+		}
+		if !success || root["error"] != nil {
+			message, _ := root["message"].(string)
+			return nil, responseError(envelope{Message: message}, http.StatusOK)
+		}
+		data = root["data"]
+		metadata = append(metadata, root)
+	}
+	if collection, ok := data.(map[string]any); ok {
+		metadata = append(metadata, collection)
+		var found bool
+		for _, field := range []string{"items", "list", "data", "records", "rows"} {
+			if child, exists := collection[field]; exists {
+				if found {
+					return nil, invalid("returned ambiguous collections")
+				}
+				found = true
+				data = child
+			}
+		}
+	}
+	rows, ok := data.([]any)
+	if !ok {
+		return nil, invalid("returned no valid key array")
+	}
+	// One bounded request is supported. A full page without an exact total is
+	// ambiguous, even if the server silently capped our requested page size.
+	pageSize := 100
+	completeTotal := false
+	for _, meta := range metadata {
+		if _, exists := meta["total"]; exists {
+			total, ok := newAPIRoutingCount(meta, "total")
+			if !ok || total != len(rows) {
+				return nil, invalid("returned an inconsistent or incomplete total")
+			}
+			completeTotal = true
+		}
+		for _, field := range []string{"page_size", "size", "limit"} {
+			if _, exists := meta[field]; exists {
+				count, ok := newAPIRoutingCount(meta, field)
+				if !ok || count == 0 {
+					return nil, invalid("returned an invalid page size")
+				}
+				if count < pageSize {
+					pageSize = count
+				}
+			}
+		}
+		for _, field := range []string{"page", "p", "offset", "total_pages"} {
+			if _, exists := meta[field]; exists {
+				count, ok := newAPIRoutingCount(meta, field)
+				maxCount := 0
+				if field == "page" || field == "total_pages" {
+					maxCount = 1
+				}
+				if !ok || count > maxCount {
+					return nil, invalid("returned incomplete pagination")
+				}
+			}
+		}
+		if _, exists := meta["has_more"]; exists {
+			more, ok := boolValue(meta, "has_more")
+			if !ok || more {
+				return nil, invalid("returned incomplete pagination")
+			}
+		}
+	}
+	if len(rows) > 100 || !completeTotal && len(rows) >= pageSize {
+		return nil, invalid("exceeds the complete single-page discovery bound")
+	}
+	items := make([]map[string]any, 0, len(rows))
+	for index, row := range rows {
+		item, ok := row.(map[string]any)
+		if !ok {
+			return nil, invalid(fmt.Sprintf("returned an invalid item at position %d", index+1))
+		}
+		key, ok := item["key"].(string)
+		if !ok || strings.TrimSpace(key) == "" {
+			return nil, invalid(fmt.Sprintf("returned no valid key at position %d", index+1))
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func newAPIRoutingCount(meta map[string]any, field string) (int, bool) {
+	count, ok := numberValue(meta, field)
+	if !ok || count < 0 || count > 1<<31-1 || count != float64(int(count)) {
+		return 0, false
+	}
+	return int(count), true
 }
 
 func isMaskedRoutingKey(value string) bool {
@@ -601,14 +690,34 @@ func (p *NewAPI) ListModels(ctx context.Context, req AccountRequest) ([]ModelSna
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
+		Success *bool `json:"success"`
+		Error   any   `json:"error"`
 	}
-	endpointErr := p.doJSON(ctx, req, http.MethodGet, "/v1/models", nil, &openAI)
-	if endpointErr == nil && len(openAI.Data) > 0 {
+	var raw json.RawMessage
+	endpointErr := p.doJSON(ctx, req, http.MethodGet, "/v1/models", nil, &raw)
+	if endpointErr == nil {
+		var payload map[string]any
+		if json.Unmarshal(raw, &payload) == nil && !modelListComplete(payload, 0) {
+			// Explicit partial results must not be reinterpreted as a complete
+			// management snapshot, particularly a confirmed empty list.
+			return nil, &Error{Code: CodeInvalidResponse, Message: "models endpoint returned incomplete pagination"}
+		}
+		if err := json.Unmarshal(raw, &openAI); err != nil {
+			endpointErr = &Error{Code: CodeInvalidResponse, Message: "models endpoint returned an invalid model list"}
+		}
+	}
+	if endpointErr == nil && (openAI.Error != nil || openAI.Success != nil && !*openAI.Success) {
+		endpointErr = &Error{Code: CodeRequestFailed, Message: "models endpoint rejected the request"}
+	}
+	if endpointErr == nil && openAI.Data != nil && (len(openAI.Data) > 0 || req.Credentials.AccessToken == "" && req.Credentials.Cookie == "") {
 		out := make([]ModelSnapshot, 0, len(openAI.Data))
 		for _, m := range openAI.Data {
 			if strings.TrimSpace(m.ID) != "" {
 				out = append(out, ModelSnapshot{Model: m.ID, RouteType: "openai_chat", Source: "models_endpoint"})
 			}
+		}
+		if len(openAI.Data) > 0 && len(out) == 0 {
+			return nil, &Error{Code: CodeInvalidResponse, Message: "models endpoint returned no valid model names"}
 		}
 		return out, nil
 	}
@@ -636,10 +745,18 @@ func (p *NewAPI) ListModelsForRoutingKey(ctx context.Context, req AccountRequest
 
 func (p *NewAPI) listManagementModels(ctx context.Context, req AccountRequest, path, source string) ([]ModelSnapshot, error) {
 	var payload envelope
-	if err := p.doJSON(ctx, req, http.MethodGet, path, nil, &payload); err != nil {
+	var raw json.RawMessage
+	if err := p.doJSON(ctx, req, http.MethodGet, path, nil, &raw); err != nil {
 		return nil, err
 	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, &Error{Code: CodeInvalidResponse, Message: "models endpoint returned an invalid model list"}
+	}
 	models := modelNames(payload.Data)
+	var root map[string]any
+	if json.Unmarshal(raw, &root) == nil && !modelListComplete(root, len(models)) {
+		return nil, &Error{Code: CodeInvalidResponse, Message: "models endpoint returned incomplete pagination"}
+	}
 	// A few New API forks omit the success flag while still returning a valid
 	// data array. Preserve that compatibility, but keep upstream error messages
 	// when the response contains no usable model list.
@@ -647,6 +764,9 @@ func (p *NewAPI) listManagementModels(ctx context.Context, req AccountRequest, p
 		return nil, responseError(payload, http.StatusOK)
 	}
 	if len(models) == 0 {
+		if data, ok := payload.Data.([]any); ok && len(data) == 0 && payload.Success && payload.Error == nil {
+			return []ModelSnapshot{}, nil
+		}
 		return nil, &Error{Code: CodeUnsupported, Message: "models endpoint returned no supported model list"}
 	}
 	out := make([]ModelSnapshot, 0, len(models))

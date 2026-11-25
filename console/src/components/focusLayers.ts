@@ -3,6 +3,8 @@ export interface FocusLayerOptions {
   modal: boolean
   /** Read-only hints own Escape, but do not take focus or change Tab order. */
   passive?: boolean
+  /** Interactive nonmodal panels keep Tab inside until the first/last control. */
+  tabThrough?: boolean
   close: () => void
   initialFocus?: () => HTMLElement | null | undefined
   returnFocus?: () => HTMLElement | null | undefined
@@ -115,6 +117,17 @@ function onKeyDown(event: KeyboardEvent) {
           : (current + 1) % items.length
       focus(items[index], true)
     } else if (event.key === 'Tab') {
+      if (top.tabThrough) {
+        const controls = tabbable(top.element)
+        const current = controls.indexOf(document.activeElement as HTMLElement)
+        const next = current + (event.shiftKey ? -1 : 1)
+        if (next >= 0 && next < controls.length) {
+          event.preventDefault()
+          event.stopImmediatePropagation()
+          focus(controls[next], true)
+          return
+        }
+      }
       event.preventDefault()
       event.stopImmediatePropagation()
       const opener = top.returnFocus?.() ?? top.opener

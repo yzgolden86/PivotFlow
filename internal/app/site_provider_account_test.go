@@ -875,7 +875,7 @@ func TestModelRefreshDoesNotRepeatManagementModelProbeWithRoutingKey(t *testing.
 	}
 }
 
-func TestModelRefreshProjectsEachRoutingKeyAndPrunesRemovedKeys(t *testing.T) {
+func TestModelRefreshProjectsEachRoutingKeyAndDeactivatesRemovedKeys(t *testing.T) {
 	srv := newInMemoryServer(t)
 	cipher, err := credential.New([]byte("0123456789abcdef0123456789abcdef"), "multi-key-projection-test")
 	if err != nil {
@@ -974,11 +974,8 @@ func TestModelRefreshProjectsEachRoutingKeyAndPrunesRemovedKeys(t *testing.T) {
 		t.Fatalf("removal refresh task=%+v", task)
 	}
 	bindingsAfterRemoval, err := srv.store.ListSiteChannelBindings(ctx)
-	if err != nil || len(bindingsAfterRemoval) != 1 {
-		t.Fatalf("after removal bindings=%+v err=%v, want only the active projection", bindingsAfterRemoval, err)
-	}
-	if bindingsAfterRemoval[0].ProjectionKey != "key:alpha" {
-		t.Fatalf("remaining binding=%+v", bindingsAfterRemoval[0])
+	if err != nil || len(bindingsAfterRemoval) != 2 {
+		t.Fatalf("after removal bindings=%+v err=%v, want active and historical projections", bindingsAfterRemoval, err)
 	}
 	var removedChannelID int64
 	for _, binding := range bindings {
@@ -989,8 +986,8 @@ func TestModelRefreshProjectsEachRoutingKeyAndPrunesRemovedKeys(t *testing.T) {
 	if removedChannelID == 0 {
 		t.Fatal("removed key channel was not recorded")
 	}
-	if channel, getErr := srv.store.GetConfig(ctx, removedChannelID); getErr == nil {
-		t.Fatalf("removed key channel still exists: %+v", channel)
+	if channel, getErr := srv.store.GetConfig(ctx, removedChannelID); getErr != nil || channel.Enabled {
+		t.Fatalf("removed key channel=%+v err=%v, want retained disabled", channel, getErr)
 	}
 
 	adapter.keys = nil
@@ -998,11 +995,14 @@ func TestModelRefreshProjectsEachRoutingKeyAndPrunesRemovedKeys(t *testing.T) {
 		t.Fatalf("empty upstream refresh task=%+v", task)
 	}
 	bindingsAfterEmpty, err := srv.store.ListSiteChannelBindings(ctx)
-	if err != nil || len(bindingsAfterEmpty) != 0 {
-		t.Fatalf("after empty upstream bindings=%+v err=%v, want no projected channels", bindingsAfterEmpty, err)
+	if err != nil || len(bindingsAfterEmpty) != 2 {
+		t.Fatalf("after empty upstream bindings=%+v err=%v, want historical projections", bindingsAfterEmpty, err)
 	}
-	if channel, getErr := srv.store.GetConfig(ctx, bindingsAfterRemoval[0].ChannelID); getErr == nil {
-		t.Fatalf("last removed key channel still exists: %+v", channel)
+	for _, binding := range bindingsAfterEmpty {
+		channel, getErr := srv.store.GetConfig(ctx, binding.ChannelID)
+		if getErr != nil || channel.Enabled || binding.Status != "inactive" {
+			t.Fatalf("removed channel=%+v binding=%+v err=%v", channel, binding, getErr)
+		}
 	}
 }
 

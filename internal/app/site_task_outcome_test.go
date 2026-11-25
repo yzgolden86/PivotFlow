@@ -144,6 +144,42 @@ func TestSiteTaskOutcomePayloadDoesNotExposeRawError(t *testing.T) {
 	}
 }
 
+func TestSiteTaskOutcomePayloadProjectsSafeChannelResults(t *testing.T) {
+	service, site, account := newSiteRefreshTestService(t, &checkinMethodTestAdapter{})
+	task := newSiteTask("model_refresh", site.ID, account.ID, 1)
+	task.Status = model.SiteTaskStatusPartial
+	task.ProgressJSON = `{"completed":1,"total":1,"private":"synthetic-private-progress","routes":[{"name":"Configured channel A","status":"updated","api_key":"synthetic-private-key"},{"name":"Configured channel B","status":"failed","error":"provider_rate_limited: synthetic-private-body"},{"name":"Configured channel C","status":"failed","error":"synthetic-private-error"},{"name":"Configured channel D","status":"deactivated"},{"name":"synthetic-private-unknown-status","status":"synthetic-private-status"}]}`
+	data, err := json.Marshal(service.siteTaskPayload(context.Background(), task))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Progress struct {
+			Completed int `json:"completed"`
+			Total     int `json:"total"`
+			Routes    []struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+				Error  string `json:"error"`
+			} `json:"routes"`
+		} `json:"progress"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Progress.Completed != 1 || payload.Progress.Total != 1 || len(payload.Progress.Routes) != 4 {
+		t.Fatalf("known channel results missing: %s", data)
+	}
+	if payload.Progress.Routes[0].Name != "Configured channel A" || payload.Progress.Routes[0].Status != "updated" ||
+		payload.Progress.Routes[1].Error != provider.CodeRateLimited || payload.Progress.Routes[2].Error != provider.CodeRequestFailed ||
+		payload.Progress.Routes[3].Status != "deactivated" {
+		t.Fatalf("channel result projection lost identity or safe outcome: %s", data)
+	}
+	if strings.Contains(string(data), "synthetic-private") || strings.Contains(string(data), "api_key") {
+		t.Fatalf("channel result projection exposed private fields: %s", data)
+	}
+}
+
 func TestSiteTaskOutcomeActiveListToleratesDeletedTarget(t *testing.T) {
 	service, site, account := newSiteRefreshTestService(t, &checkinMethodTestAdapter{})
 	var wg sync.WaitGroup

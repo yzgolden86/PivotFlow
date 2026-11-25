@@ -20,6 +20,7 @@ func (s *siteControlService) siteTaskPayload(ctx context.Context, task *model.Si
 		Completed int                 `json:"completed"`
 		Total     int                 `json:"total"`
 		Items     []siteTaskBatchItem `json:"items,omitempty"`
+		Routes    []RouteSyncOutcome  `json:"routes,omitempty"`
 	}
 	_ = json.Unmarshal([]byte(task.ProgressJSON), &progress)
 	for i := range progress.Items {
@@ -28,6 +29,7 @@ func (s *siteControlService) siteTaskPayload(ctx context.Context, task *model.Si
 			progress.Items[i].Error = "observation_interrupted"
 		}
 	}
+	progress.Routes = safeRouteSyncOutcomes(progress.Routes)
 	status, message := task.Status, safeSiteTaskError(task.Error)
 	if status == "unknown" {
 		message = "observation_interrupted"
@@ -42,6 +44,26 @@ func (s *siteControlService) siteTaskPayload(ctx context.Context, task *model.Si
 		}
 	}
 	return gin.H{"id": task.ID, "kind": task.Kind, "site_id": task.SiteID, "site_account_id": task.SiteAccountID, "status": status, "progress": progress, "budget": budget, "result_ref": task.ResultRef, "error": message, "created_at": task.CreatedAt, "started_at": task.StartedAt, "finished_at": task.FinishedAt}
+}
+
+func safeRouteSyncOutcomes(routes []RouteSyncOutcome) []RouteSyncOutcome {
+	if len(routes) == 0 {
+		return nil
+	}
+	allowed := map[string]bool{"updated": true, "unchanged": true, "failed": true, "deactivated": true}
+	out := make([]RouteSyncOutcome, 0, len(routes))
+	for _, route := range routes {
+		name := strings.TrimSpace(route.Name)
+		if name == "" || !allowed[route.Status] {
+			continue
+		}
+		item := RouteSyncOutcome{Name: name, Status: route.Status}
+		if route.Status == "failed" {
+			item.Error = safeSiteTaskError(route.Error)
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func safeSiteTaskError(message string) string {

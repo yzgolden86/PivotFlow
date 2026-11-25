@@ -26,8 +26,9 @@ func (s *SQLStore) ClearSiteAccountSuspendMark(ctx context.Context, accountID in
 // Rows already disabled are left alone and stay unmarked, so a manual stop is
 // distinguishable from a cascade stop.
 //
-// Enabling: only rows carrying the mark are turned back on, and the mark is
-// cleared. Anything the user disabled by hand before the cascade stays off.
+// Enabling: rows carrying the mark are restored unless their generated supply
+// became inactive, and the mark is cleared. Anything the user disabled by hand
+// before the cascade stays off.
 //
 // Both directions run in one transaction: a half-applied cascade would leave
 // channels routing traffic to a site the user believes is off.
@@ -42,7 +43,10 @@ func (s *SQLStore) CascadeSiteSuspend(ctx context.Context, siteID int64, enable 
 	if enable {
 		channelSQL = `
 			UPDATE channels
-			SET enabled = 1, suspended_by_site = 0, updated_at = ?
+			SET enabled = CASE WHEN id IN (
+				SELECT channel_id FROM site_channel_bindings
+				WHERE ownership = 'projected' AND status = 'inactive'
+			) THEN 0 ELSE 1 END, suspended_by_site = 0, updated_at = ?
 			WHERE suspended_by_site = 1
 			  AND id IN (
 			    SELECT b.channel_id FROM site_channel_bindings b
@@ -71,6 +75,24 @@ func (s *SQLStore) CascadeSiteSuspend(ctx context.Context, siteID int64, enable 
 
 	var channelRows, accountRows int64
 	if err := s.withTx(ctx, func(tx *sql.Tx) error {
+		if enable {
+			// Preserve older inactive projections' enabled intent before the
+			// channel update consumes their remaining cascade flags. Explicit
+			// channel toggles clear that flag and are excluded from this transfer.
+			if _, err := tx.ExecContext(ctx, s.q(`
+				UPDATE site_channel_bindings
+				SET last_sync_error = CASE last_sync_error
+					WHEN 'upstream_empty_keep_disabled' THEN 'upstream_empty_restore_enabled'
+					WHEN 'upstream_empty_restore_enabled' THEN 'upstream_empty_restore_enabled'
+					ELSE 'upstream_removed_restore_enabled' END,
+					updated_at = ?
+				WHERE ownership = 'projected' AND status = 'inactive'
+				  AND channel_id IN (SELECT id FROM channels WHERE suspended_by_site = 1)
+				  AND site_account_id IN (SELECT id FROM site_accounts WHERE site_id = ?)
+			`), nowUnix, siteID); err != nil {
+				return fmt.Errorf("preserve inactive projection intent: %w", err)
+			}
+		}
 		// Channels first: while disabling, this stops traffic before the
 		// accounts that own them disappear from the enabled set.
 		channelResult, err := tx.ExecContext(ctx, s.q(channelSQL), nowUnix, siteID)

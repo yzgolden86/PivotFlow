@@ -75,6 +75,39 @@ func TestOpenAICompatibleMapsRejectedKeyToExpired(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleAuthoritativeEmptyModelsRequireValidArray(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		ok   bool
+	}{
+		{`{"data":[]}`, true},
+		{`{"models":[]}`, true},
+		{`{"data":null}`, false},
+		{`{"data":{}}`, false},
+		{`{"data":""}`, false},
+		{`{}`, false},
+		{`{"data":[{}]}`, false},
+		{`{"data":[{"id":" "}]}`, false},
+		{`{"success":false,"data":[]}`, false},
+		{`{"error":{"message":"invalid token"},"data":[]}`, false},
+		{`{"data":[]`, false},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			models, err := NewOpenAICompatible(ClientFactory{AllowPrivate: true}).ListModels(context.Background(), AccountRequest{
+				BaseURL: server.URL, Credentials: Credentials{APIKey: "sk-empty"},
+			})
+			if tc.ok && (err != nil || len(models) != 0) || !tc.ok && err == nil {
+				t.Fatalf("models=%v err=%v, authoritative empty=%t", models, err, tc.ok)
+			}
+		})
+	}
+}
+
 func TestRegistryPrefersManagementProviderOverOpenAICompatibleFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

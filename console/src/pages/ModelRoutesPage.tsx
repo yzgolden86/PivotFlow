@@ -49,7 +49,7 @@ export default function ModelRoutesPage() {
     return () => window.clearTimeout(timer)
   }, [searchDraft])
 
-  const readInventory = useCallback((signal: AbortSignal) => getModelRouteInventory({ search, limit: INVENTORY_SIZE, offset: (inventoryPage - 1) * INVENTORY_SIZE }, signal), [inventoryPage, search])
+  const readInventory = useCallback((signal: AbortSignal) => getModelRouteInventory({ search, limit: INVENTORY_SIZE, offset: (inventoryPage - 1) * INVENTORY_SIZE, enabled_only: true }, signal), [inventoryPage, search])
   const inventory = useReadSnapshot(`inventory:${search}:${inventoryPage}`, readInventory, validRouteText(search, 512))
   const readTokens = useCallback((signal: AbortSignal) => getAuthTokens('today', signal), [])
   const tokens = useReadSnapshot('routing-tokens', readTokens)
@@ -93,7 +93,7 @@ export default function ModelRoutesPage() {
     </>} />
     <div className="model-routes-layout">
       <aside className={`model-route-inventory${inventoryExpanded ? ' is-expanded' : ' is-collapsed'}`} role="region" aria-label="模型清单">
-        <header><span><Layers3 size={17} /><strong>对外模型</strong><HelpTip label="对外模型清单" text="统一组使用稳定的对外名称；启用渠道按当前渠道配置覆盖计算。清单反映配置覆盖，不代表某次请求一定成功。" /></span><small>{inventory.data?.total ?? '—'} 项</small></header>
+        <header><span><Layers3 size={17} /><strong>对外模型</strong><HelpTip label="对外模型清单" text="只显示当前启用渠道提供的模型，统一组折叠为稳定名称。渠道或模型停用、成功同步后上游模型移除时，无其他启用渠道提供的名称会消失。冷却、限流和令牌权限仍可能影响实际调用。" /></span><small>{inventory.data?.total ?? '—'} 项</small></header>
         <div className="model-route-mobile-choice">
           <div><span>当前模型</span><strong>{scope.model || '尚未选择'}</strong></div>
           <button className="secondary-button" type="button" aria-expanded={inventoryExpanded} aria-controls="model-route-inventory-browser" onClick={() => setInventoryExpanded((current) => !current)}>

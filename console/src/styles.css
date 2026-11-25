@@ -1985,9 +1985,9 @@ a:focus-visible {
 
 
 .row-selector {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
   margin: 0;
   accent-color: var(--green);
   cursor: pointer;
@@ -2783,7 +2783,44 @@ a:focus-visible {
   font-weight: 600;
   cursor: pointer;
 }
-.selection-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--green); }
+/* Row and page selection share an explicit outline, fill and keyboard ring. */
+.row-selector,
+.selection-toggle input[type="checkbox"] {
+  appearance: none;
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  place-content: center;
+  box-sizing: border-box;
+  margin: 0;
+  color: var(--surface-base);
+  background: var(--surface-base);
+  border: 2px solid var(--text-muted);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.row-selector::before,
+.selection-toggle input[type="checkbox"]::before {
+  content: '';
+  width: 5px;
+  height: 9px;
+  margin-top: -2px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) scale(0);
+}
+:is(.row-selector, .selection-toggle input[type="checkbox"]):checked {
+  background: var(--green-text);
+  border-color: var(--green-text);
+}
+:is(.row-selector, .selection-toggle input[type="checkbox"]):checked::before { transform: rotate(45deg) scale(1); }
+:is(.row-selector, .selection-toggle input[type="checkbox"]):hover { border-color: var(--green-text); }
+:is(.row-selector, .selection-toggle input[type="checkbox"]):focus-visible { outline: 2px solid var(--green-text); outline-offset: 3px; }
+@media (forced-colors: active) {
+  .row-selector, .selection-toggle input[type="checkbox"] { appearance: auto; }
+  .row-selector::before, .selection-toggle input[type="checkbox"]::before { display: none; }
+}
 
 .batch-toolbar {
   display: flex;

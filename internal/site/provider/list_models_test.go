@@ -30,10 +30,9 @@ func TestListModelsPreservesRejectedKeyInsteadOfReportingUnsupported(t *testing.
 	}
 }
 
-// The legitimate "cannot enumerate" case must survive the fix: the endpoint
-// answered successfully but listed nothing, and there is no session credential
-// to fall back on.
-func TestListModelsStillReportsUnsupportedWhenEndpointListsNothing(t *testing.T) {
+// An explicit successful model array with no entries is an authoritative
+// empty list; a missing collection remains unsupported.
+func TestListModelsAcceptsAuthoritativeEmptyArray(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path != "/v1/models" {
@@ -45,15 +44,13 @@ func TestListModelsStillReportsUnsupportedWhenEndpointListsNothing(t *testing.T)
 	defer server.Close()
 
 	adapter := NewNewAPI(ClientFactory{AllowPrivate: true})
-	_, err := adapter.ListModels(context.Background(), AccountRequest{BaseURL: server.URL, Credentials: Credentials{APIKey: "sk-only"}})
-	if ErrorCode(err) != CodeUnsupported {
-		t.Fatalf("error=%v code=%q, want %q", err, ErrorCode(err), CodeUnsupported)
+	models, err := adapter.ListModels(context.Background(), AccountRequest{BaseURL: server.URL, Credentials: Credentials{APIKey: "sk-only"}})
+	if err != nil || len(models) != 0 {
+		t.Fatalf("models=%+v err=%v, want authoritative empty list", models, err)
 	}
 }
 
-// With a session credential the management endpoint is still the fallback when
-// the key endpoint answers but lists nothing.
-func TestListModelsFallsBackToManagementEndpointWhenKeyEndpointIsEmpty(t *testing.T) {
+func TestListModelsFallsBackToManagementEndpointForManagementCredential(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -69,10 +66,44 @@ func TestListModelsFallsBackToManagementEndpointWhenKeyEndpointIsEmpty(t *testin
 
 	adapter := NewNewAPI(ClientFactory{AllowPrivate: true})
 	models, err := adapter.ListModels(context.Background(), AccountRequest{BaseURL: server.URL, Credentials: Credentials{AccessToken: "session"}})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(models) != 2 || models[0].Model != "gpt-5" {
+		t.Fatalf("models=%+v err=%v, want management fallback", models, err)
 	}
-	if len(models) != 2 || models[0].Model != "gpt-5" || models[0].Source != "models_endpoint" {
-		t.Fatalf("models=%+v", models)
+}
+
+func TestListModelsDoesNotTreatMissingOrMalformedCollectionsAsEmpty(t *testing.T) {
+	for _, body := range []string{`{"success":true}`, `{"data":null}`, `{"data":{}}`} {
+		t.Run(body, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			_, err := NewNewAPI(ClientFactory{AllowPrivate: true}).ListModels(context.Background(), AccountRequest{
+				BaseURL: server.URL, Credentials: Credentials{APIKey: "sk-only"},
+			})
+			if ErrorCode(err) != CodeUnsupported && ErrorCode(err) != CodeInvalidResponse {
+				t.Fatalf("error=%v code=%q, want unsupported or invalid response", err, ErrorCode(err))
+			}
+		})
+	}
+}
+
+func TestListModelsForRoutingKeyAcceptsExplicitSuccessfulEmptyGroup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/user/models" || r.URL.Query().Get("group") != "empty" {
+			t.Fatalf("request=%s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":[]}`))
+	}))
+	defer server.Close()
+
+	models, err := NewNewAPI(ClientFactory{AllowPrivate: true}).ListModelsForRoutingKey(context.Background(), AccountRequest{
+		BaseURL: server.URL, Credentials: Credentials{AccessToken: "session"},
+	}, RoutingKeySnapshot{Group: "empty", Key: "sk-empty"})
+	if err != nil || len(models) != 0 {
+		t.Fatalf("models=%+v err=%v, want authoritative empty scoped group", models, err)
 	}
 }

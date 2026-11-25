@@ -17,11 +17,13 @@ import { formatAccountBalance, Modal, siteErrorMessage, StatusBadge } from './si
 import { credentialLabel, credentialOptions, normalizeCredentialType, platformSupportsCheckin, type CredentialType } from '../siteCredentials'
 import { executeSiteAccountTask, siteTaskRunner, siteTaskTarget } from '../siteTasks'
 import { SiteTaskNotice, useSiteTaskCompletion, useSiteTasks } from './SiteTaskProgress'
-import { siteTaskBlocker } from './siteTaskObservation'
-import { checkinActionAvailability } from './siteCheckinMethod'
+import { accountRouteTask, routeTaskSummary, siteTaskBlocker, siteTaskRecovery } from './siteTaskObservation'
+import type { TaskItem } from '../siteTaskRunner'
+import { checkinActionAvailability, needsCredentialRecovery } from './siteCheckinMethod'
 import { listWindow } from './listWindow'
 import { browserImportHref } from '../browserImport'
 import { batchNoticeTone, countBatchOutcomes, type NoticeTone } from './batchOutcome'
+import OperationDetails from '../components/OperationDetails'
 
 type CredentialForm = {
   credential_type: CredentialType
@@ -451,6 +453,8 @@ export default function AccountsPage() {
         const counts = countBatchOutcomes(results.map((item) => item.status))
         setNotice(`批量${action === 'refresh' ? '刷新余额' : '同步路由'}结果：成功 ${counts.success}，部分成功 ${counts.partial}，失败 ${counts.failed}，取消 ${counts.cancelled}，待确认 ${counts.unknown}${skipped ? `，跳过 ${skipped} 个纯 API Key 账号` : ''}${blocked ? `，跳过 ${blocked} 个进行中或待确认账号` : ''}`, blocked ? 'warning' : batchNoticeTone(counts))
         await load(undefined, { silent: true, force: true })
+      } catch (reason) {
+        setError(siteErrorMessage(reason))
       } finally { setBatchBusy(false) }
       return
     }
@@ -496,7 +500,7 @@ export default function AccountsPage() {
     <SiteTaskNotice kinds={['checkin', 'refresh', 'model_refresh']} siteId={siteFilter} />
     {notice && <OperationNotice tone={noticeTone} persistent={noticeTone !== 'success'} onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
     {error && accounts.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
-    {loading ? <LoadingState label="正在加载账号" /> : error && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? accounts.length ? <EmptyState label="没有匹配的账号" /> : <div className="content-state content-state--empty"><strong>还没有账号</strong><button className="secondary-button" type="button" onClick={() => void openCreate()} disabled={!sites.length}><Plus size={15} />添加账号</button></div> : <div className="account-records records-panel"><div className="record-head account-grid"><SortableHead label="账号 / 站点" sortKey="name" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="状态" sortKey="status" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="余额" sortKey="balance" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="最近签到" sortKey="checkin" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="自动任务" sortKey="automation" active={sort} direction={sortDirection} choose={toggleSort} /><span>操作</span></div>{pagedVisible.map((account) => <AccountRow key={account.id} account={account} site={siteMap.get(account.site_id)} latestCheckin={latestCheckins[account.id]} selected={selected.has(account.id)} busyKind={busy.get(account.id) || maintenanceBusy.get(account.id)} taskUnconfirmed={unconfirmed.has(account.id)} focused={account.id === focusAccountId} rowRef={(node) => { if (node) rowRefs.current.set(account.id, node); else rowRefs.current.delete(account.id) }} select={() => toggleSelected(account.id)} task={(kind) => void task(account, kind)} copy={() => void copyAccount(account)} edit={() => openMetadata(account)} credential={() => openCredential(account)} remove={() => void remove(account)} />)}</div>}
+    {loading ? <LoadingState label="正在加载账号" /> : error && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? accounts.length ? <EmptyState label="没有匹配的账号" /> : <div className="content-state content-state--empty"><strong>还没有账号</strong><button className="secondary-button" type="button" onClick={() => void openCreate()} disabled={!sites.length}><Plus size={15} />添加账号</button></div> : <div className="account-records records-panel"><div className="record-head account-grid"><SortableHead label="账号 / 站点" sortKey="name" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="状态" sortKey="status" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="余额" sortKey="balance" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="最近签到" sortKey="checkin" active={sort} direction={sortDirection} choose={toggleSort} /><SortableHead label="自动任务" sortKey="automation" active={sort} direction={sortDirection} choose={toggleSort} /><span>操作</span></div>{pagedVisible.map((account) => <AccountRow key={account.id} account={account} site={siteMap.get(account.site_id)} latestCheckin={latestCheckins[account.id]} routeTask={accountRouteTask(maintenanceTasks, account.id)} selected={selected.has(account.id)} busyKind={busy.get(account.id) || maintenanceBusy.get(account.id)} taskUnconfirmed={unconfirmed.has(account.id)} focused={account.id === focusAccountId} rowRef={(node) => { if (node) rowRefs.current.set(account.id, node); else rowRefs.current.delete(account.id) }} select={() => toggleSelected(account.id)} task={(kind) => void task(account, kind)} copy={() => void copyAccount(account)} edit={() => openMetadata(account)} credential={() => openCredential(account)} remove={() => void remove(account)} />)}</div>}
     <Pagination label="账号分页" page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
 
     {creating && <Modal title="添加账号" close={() => setCreating(false)}>{error && <div className="inline-error modal-error">{error}</div>}<CreateAccountFormView form={createForm} setForm={setCreateForm} sites={sites} saving={openingCreate} submit={saveCreate} /></Modal>}
@@ -505,10 +509,11 @@ export default function AccountsPage() {
   </div>
 }
 
-function AccountRow({ account, site, latestCheckin, selected, busyKind, taskUnconfirmed, focused, rowRef, select, task, copy, edit, credential, remove }: {
+function AccountRow({ account, site, latestCheckin, routeTask, selected, busyKind, taskUnconfirmed, focused, rowRef, select, task, copy, edit, credential, remove }: {
   account: SiteAccount
   site?: Site
   latestCheckin?: CheckinAttempt
+  routeTask?: TaskItem
   selected: boolean
   busyKind?: AccountTaskKind
   taskUnconfirmed: boolean
@@ -523,16 +528,34 @@ function AccountRow({ account, site, latestCheckin, selected, busyKind, taskUnco
 }) {
   const apiKeyOnly = account.credential_type === 'api_key'
   const checkinAvailability = checkinActionAvailability(account, site)
-  const needsCredential = ['expired', 'error'].includes(account.status) || Boolean(account.last_error)
+  const needsCredential = needsCredentialRecovery(account)
   const busy = Boolean(busyKind)
   return <article ref={rowRef} data-account-id={account.id} className={`record-row account-grid${selected ? ' row-selected' : ''}${focused ? ' row-focus-highlight' : ''}`}>
     <div className="account-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${account.label}`} /><div><a className="entity-link" href={`#/accounts?focus_account_id=${account.id}`}><strong>{account.label}</strong></a><a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a><span>{credentialLabel(account.credential_type, site?.platform)}{site?.platform === 'sub2api' && account.credential_refresh_configured ? ` · 自动续期${account.credential_expires_at ? `至 ${formatTime(account.credential_expires_at)}` : ''}` : ''}</span></div></div>
-    <div><StatusBadge status={account.enabled ? account.status : 'disabled'} />{needsCredential ? <button className="inline-entity-action" type="button" onClick={credential} title={account.last_error}>{account.last_error ? siteErrorMessage(account.last_error) : '需要更新凭证'}</button> : account.consecutive_failures > 0 && <span>{account.consecutive_failures} 次连续失败</span>}</div>
+    <div className="account-status"><StatusBadge status={account.enabled ? account.status : 'disabled'} />{routeTask ? <AccountRouteResult item={routeTask} /> : needsCredential ? <button className="inline-entity-action account-status-detail" type="button" onClick={credential} title={account.last_error ? siteErrorMessage(account.last_error) : '需要更新凭证'}>{account.last_error ? siteErrorMessage(account.last_error) : '需要更新凭证'}</button> : account.last_error ? <OperationDetails className="account-status-detail" label={siteErrorMessage(account.last_error)} ariaLabel={`查看 ${account.label} 状态说明`} title={siteErrorMessage(account.last_error)}><p className="operation-details-summary">{siteErrorMessage(account.last_error)}</p></OperationDetails> : account.consecutive_failures > 0 && <span>{account.consecutive_failures} 次连续失败</span>}</div>
     <div><strong className="account-balance-amount">{formatAccountBalance(account)}</strong>{latestCheckin?.balance_delta !== undefined && Math.abs(latestCheckin.balance_delta) > 0.000001 && <em className={latestCheckin.balance_delta > 0 ? 'balance-delta balance-delta--gain' : 'balance-delta balance-delta--loss'}>{latestCheckin.balance_delta > 0 ? '+' : ''}{latestCheckin.balance_delta.toFixed(2)} {latestCheckin.balance_currency || account.balance_currency}</em>}<span>{apiKeyOnly ? 'API Key 不读取余额' : account.balance_updated_at ? formatTime(account.balance_updated_at) : '尚未同步'}</span></div>
     <div><StatusBadge status={apiKeyOnly ? 'unsupported' : account.last_checkin_status} /><span>{apiKeyOnly ? '需要登录凭证' : account.last_checkin_at ? formatTime(account.last_checkin_at) : '尚无记录'}</span></div>
     <div><strong>{account.auto_checkin ? '签到' : '—'} / {account.auto_refresh ? '刷新' : '—'}</strong><span>{account.timezone || site?.timezone || '站点时区'}</span></div>
     <div className="account-actions"><button className="account-task-button" type="button" onClick={() => task('checkin')} disabled={busy || taskUnconfirmed || !checkinAvailability.canRunServer} title={taskUnconfirmed ? '原操作结果待确认，请先重新观察或核实上游结果' : checkinAvailability.reason || undefined}>{busyKind === 'checkin' && <RefreshCw className="spin" size={14} />}签到</button><button className="account-task-button" type="button" onClick={() => task('refresh')} disabled={busy || taskUnconfirmed || apiKeyOnly} title={taskUnconfirmed ? '原操作结果待确认，请先重新观察或核实上游结果' : undefined}>{busyKind === 'refresh' ? <RefreshCw className="spin" size={14} /> : <WalletCards size={14} />}余额</button><button className="account-task-button account-task-button--route" type="button" onClick={() => task('model_refresh')} disabled={busy || taskUnconfirmed} title={taskUnconfirmed ? '原操作结果待确认，请先重新观察或核实上游结果' : '刷新模型并更新对应路由渠道'}><RefreshCw className={busyKind === 'model_refresh' ? 'spin' : ''} size={14} />同步路由</button><button type="button" onClick={credential} disabled={busy}><KeyRound size={14} />凭证</button><button className="icon-button icon-button--surface" type="button" onClick={copy} aria-label={`复制 ${account.label} 信息`} title="复制账号信息"><Copy size={15} /></button><button className="icon-button icon-button--surface" type="button" onClick={edit} disabled={busy} aria-label={`编辑 ${account.label}`}><Pencil size={15} /></button><button className="icon-button icon-button--surface danger-button" type="button" onClick={remove} disabled={busy} aria-label={`删除 ${account.label}`}><Trash2 size={15} /></button></div>
   </article>
+}
+
+function AccountRouteResult({ item }: { item: TaskItem }) {
+  const recovery = siteTaskRecovery(item)
+  const labels: Record<TaskItem['status'], string> = {
+    queued: '路由等待同步', submitting: '路由正在提交', running: '路由同步中',
+    success: '路由已同步', partial: '路由部分完成', failed: '路由同步失败',
+    cancelled: '路由同步已取消', unknown: '路由结果待确认',
+  }
+  const routes = routeTaskSummary(item)
+  const title = [labels[item.status], item.message && siteErrorMessage(item.message), ...routes.map((route) => `${route.name}：${route.status === 'failed' ? siteErrorMessage(route.error || 'request_failed') : route.status === 'updated' ? '已更新' : route.status === 'deactivated' ? '已停用' : '已确认'}`)].filter(Boolean).join('\n')
+  return <span className="account-route-result" data-status={item.status} title={title}>
+    <OperationDetails label={labels[item.status]} ariaLabel={`查看 ${item.target.title} 渠道结果`} title={title}>
+      <p className="operation-details-summary">{labels[item.status]}{item.message && `：${siteErrorMessage(item.message)}`}</p>
+      {recovery && <a className="text-button" href={recovery.href}>{recovery.text}</a>}
+      {routes.length > 0 && <div className="account-route-breakdown"><ul>{routes.map((route) => <li key={`${route.name}:${route.status}`} data-status={route.status}><span>{route.name}</span><em>{route.status === 'updated' ? '已更新' : route.status === 'unchanged' ? '已确认' : route.status === 'deactivated' ? '已停用' : `失败${route.error ? ` · ${siteErrorMessage(route.error)}` : ''}`}</em></li>)}</ul></div>}
+    </OperationDetails>
+  </span>
 }
 
 function SortableHead({ label, sortKey, active, direction, choose }: { label: string; sortKey: AccountSort; active: AccountSort; direction: SortDirection; choose: (key: AccountSort) => void }) {
@@ -590,7 +613,7 @@ function CredentialUpdateView({ account, site, form, change, verification, verif
   const ready = credentialComplete(form)
   return <div className="credential-update">
     <div className="credential-alert"><KeyRound size={17} /><div><strong>{account.label}</strong><span>{site?.name || `站点 #${account.site_id}`} · 当前为 {credentialLabel(account.credential_type, site?.platform)}</span>{account.credential_configured && <small>已保存的凭证经加密存储、无法读回，下方留空表示保持不变；填入内容即整体替换。</small>}{account.last_error && <small>{siteErrorMessage(account.last_error)}</small>}</div></div>
-    <a className="secondary-button" href={browserImportHref({ accountId: account.id, siteId: account.site_id })}><FileInput size={15} />从浏览器资料修复此账号</a>
+    <details className="credential-import-option"><summary>使用浏览器或插件资料（可选）</summary><a className="secondary-button" href={browserImportHref({ accountId: account.id, siteId: account.site_id })}><FileInput size={15} />导入已有账号资料</a></details>
     <div className="console-form credential-update-form"><CredentialFields form={form} field={change} platform={site?.platform || ''} />
       {verification && <div className="credential-verification"><div className="credential-verification-title"><CheckCircle2 size={16} /><strong>凭证验证通过</strong></div><dl><div><dt>用户</dt><dd>{verification.username || '已验证'}{verification.user_id ? ` · ID ${verification.user_id}` : ''}</dd></div><div><dt>余额</dt><dd>{verification.balance == null ? '未提供' : `${verification.balance.toFixed(2)} ${verification.currency || ''}`}</dd></div><div><dt>模型</dt><dd>{verification.model_count} 个</dd></div><div><dt>路由 Key</dt><dd>{verification.routing_key_available ? '已发现' : '未发现'}</dd></div></dl></div>}
       <footer className="credential-update-actions"><button className="secondary-button" type="button" onClick={verify} disabled={!ready || verifying || saving}>{verifying && <RefreshCw className="spin" size={15} />}{verifying ? '验证中' : '验证凭证'}</button><button className="primary-button" type="button" onClick={save} disabled={!verification || verifying || saving}>{saving && <RefreshCw className="spin" size={15} />}{saving ? '保存中' : '保存新凭证'}</button></footer>

@@ -5,7 +5,7 @@ export type TaskSnapshot = {
   id: string; kind: string; status: TaskStatus; created_at: number; error?: string
   site_id?: number; site_account_id?: number
   budget?: { active: number; waiting: number; cooldown_until?: number; next_request_at?: number } | null
-  progress?: { completed?: number; total?: number; items?: { site_id: number; task_id?: string; status: string; error?: string }[] }
+  progress?: { completed?: number; total?: number; items?: { site_id: number; task_id?: string; status: string; error?: string }[]; routes?: { name: string; status: 'updated' | 'unchanged' | 'failed' | 'deactivated'; error?: string }[] }
 }
 export type TaskItem = {
   target: TaskTarget; taskId?: string; status: TaskStatus | 'submitting' | 'unknown'

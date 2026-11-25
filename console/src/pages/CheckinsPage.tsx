@@ -4,13 +4,15 @@ import { getCheckinAttemptsBatch, getSiteInventory, peekCheckinAttempts, peekSit
 import type { CheckinAttempt, Site, SiteAccount } from '../types'
 import { currencySymbol, EmptyState, ErrorState, formatMoneyIn, formatNumber, formatTime, LoadingState, moneyDigits, OperationNotice, PageHeader } from './shared'
 import { siteErrorMessage, StatusBadge } from './siteShared'
-import { checkinActionAvailability, siteCheckinMethodHint } from './siteCheckinMethod'
+import { checkinActionAvailability, needsCredentialRecovery, siteCheckinMethodHint } from './siteCheckinMethod'
 import { browserTimezone, checkinScheduleDetail, checkinScheduleTitle } from './siteCheckinSchedule'
 import { executeSiteAccountTask, siteTaskRunner, siteTaskTarget } from '../siteTasks'
 import { SiteTaskNotice, useSiteTaskCompletion, useSiteTasks } from './SiteTaskProgress'
-import { checkinBlockerRecovery, siteTaskBlocker, siteTaskFeedback } from './siteTaskObservation'
+import { checkinBlockerRecovery, siteTaskBlocker } from './siteTaskObservation'
 import type { TaskItem } from '../siteTaskRunner'
 import { batchNoticeTone, countBatchOutcomes, type NoticeTone } from './batchOutcome'
+import './checkinActionLayout.css'
+import OperationDetails from '../components/OperationDetails'
 
 type CheckinView = 'accounts' | 'history'
 
@@ -76,14 +78,20 @@ export default function CheckinsPage() {
     setBusy((current) => new Set(current).add(account.id)); setError(''); setNotice('')
     try {
       const result = await executeSiteAccountTask(account, 'checkin', siteMap.get(account.site_id)?.name || `站点 #${account.site_id}`)
-      // Pending, failed, partial and unknown results already have one scoped
-      // inline notice with recovery. Toasts are only for confirmed completion.
+      // Keep the compact row/page summary and the original top-right feedback.
+      // Unknown results keep their task identity and never become retryable.
       if (result.status === 'cancelled') {
         setNotice(`${account.label} 签到已取消`)
         setNoticeTone('warning')
       } else if (result.status === 'success') {
         setNotice(`${account.label} 签到完成`)
         setNoticeTone('success')
+      } else if (result.status === 'failed' || result.status === 'partial') {
+        setNotice(`${account.label}：${checkinFailure(result.error || result.status, account)}`)
+        setNoticeTone(result.status === 'partial' ? 'warning' : 'error')
+      } else if (result.status === 'unknown') {
+        setNotice(`${account.label}：签到结果待确认，请先核实上游结果；已阻止重复操作`)
+        setNoticeTone('warning')
       }
       await load(undefined, { silent: true, force: true })
       return result.status === 'success'
@@ -97,11 +105,8 @@ export default function CheckinsPage() {
     try {
       const results = await siteTaskRunner.run(admitted.map((account) => siteTaskTarget('checkin', account.site_id, account.id, account.label, siteMap.get(account.site_id)?.name || `站点 #${account.site_id}`)))
       const counts = countBatchOutcomes(results.map((item) => item.status))
-      const feedback = siteTaskFeedback(results, { kinds: ['checkin'] })
-      if (!feedback.failed.length && !feedback.unknown.length) {
-        setNotice(`签到结果：成功 ${counts.success}，取消 ${counts.cancelled}${eligible.length > admitted.length ? `，跳过 ${eligible.length - admitted.length} 个进行中或待确认账号` : ''}`)
-        setNoticeTone(batchNoticeTone(counts))
-      }
+      setNotice(`签到结果：成功 ${counts.success}，部分完成 ${counts.partial}，失败 ${counts.failed}，取消 ${counts.cancelled}，待确认 ${counts.unknown}${eligible.length > admitted.length ? `，跳过 ${eligible.length - admitted.length} 个进行中或待确认账号` : ''}`)
+      setNoticeTone(batchNoticeTone(counts))
       await load(undefined, { silent: true, force: true })
     } catch (reason) {
       setError(`批量签到未完成：${siteErrorMessage(reason)}；请刷新后核实各账号结果`)
@@ -126,7 +131,23 @@ export default function CheckinsPage() {
 
 function AccountCheckinList({ accounts, siteMap, busy, unconfirmed, tasks, run }: { accounts: SiteAccount[]; siteMap: Map<number, Site>; busy: Set<number>; unconfirmed: Set<number>; tasks: TaskItem[]; run: (account: SiteAccount) => void }) {
   if (!accounts.length) return <EmptyState label="当前站点没有账号" />
-  return <div className="records-panel checkin-account-records"><div className="record-head checkin-account-grid"><span>账号 / 站点</span><span>账号状态</span><span>最近签到</span><span>自动签到</span><span>操作</span></div>{accounts.map((account) => { const site = siteMap.get(account.site_id); const apiKeyOnly = account.credential_type === 'api_key'; const needsCredential = ['expired', 'error'].includes(account.status) || Boolean(account.last_error); const availability = checkinActionAvailability(account, site); return <article className="record-row checkin-account-grid" key={account.id}><div><a className="entity-link" href={`#/accounts?focus_account_id=${account.id}`}><strong>{account.label}</strong></a><a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a></div><div><StatusBadge status={account.enabled ? account.status : 'disabled'} />{needsCredential ? <a className="inline-entity-action" href={`#/accounts?focus_account_id=${account.id}&open_credential=1`} title={account.last_error}>{account.last_error ? siteErrorMessage(account.last_error) : '更新凭证'}</a> : <span className="account-error-message">凭证已配置</span>}</div><div className="checkin-recent"><StatusBadge status={apiKeyOnly ? 'unsupported' : account.last_checkin_status} /><span>{apiKeyOnly ? '模型 API Key 不支持签到' : account.last_checkin_at ? formatTime(account.last_checkin_at) : '尚未签到'}</span></div><div className="checkin-schedule"><strong>{apiKeyOnly ? '不支持' : account.auto_checkin ? '已开启' : '未开启'}</strong><span title={checkinScheduleTitle(siteCheckinMethodHint(site), account.timezone || site?.timezone, LOCAL_TIMEZONE)}>{checkinScheduleDetail(siteCheckinMethodHint(site), account.timezone || site?.timezone, LOCAL_TIMEZONE)}</span></div><div className="checkin-actions">{availability.manualURL && <a className="secondary-button" href={availability.manualURL} target="_blank" rel="noreferrer" title="在上游站点手动完成签到或验证">打开签到页<ExternalLink size={12} /></a>}{availability.canRunServer ? <button className="primary-button" type="button" onClick={() => run(account)} disabled={busy.has(account.id) || unconfirmed.has(account.id)} title={unconfirmed.has(account.id) ? '原操作结果待确认，请先重新观察或核实上游结果' : undefined}>{busy.has(account.id) ? <RefreshCw className="spin" size={13} /> : <Play size={13} />}立即签到</button> : <span className="checkin-unsupported" title={availability.reason}><Info size={13} />{availability.reason}</span>}{availability.canRunServer && <CheckinRecoveryLink tasks={tasks} account={account} />}</div></article> })}</div>
+  return <div className="records-panel checkin-account-records">
+    <div className="record-head checkin-account-grid"><span>账号 / 站点</span><span>账号状态</span><span>最近签到</span><span>自动签到</span><span>操作</span></div>
+    {accounts.map((account) => {
+      const site = siteMap.get(account.site_id)
+      const apiKeyOnly = account.credential_type === 'api_key'
+      const accountReason = account.last_error ? siteErrorMessage(account.last_error) : account.status === 'expired' ? '登录凭证已过期' : account.status === 'error' ? '请核对账号凭证' : account.credential_configured ? '凭证已配置' : '尚未配置凭证'
+      return <article className="record-row checkin-account-grid" key={account.id}>
+        <div><a className="entity-link" href={`#/accounts?focus_account_id=${account.id}`}><strong>{account.label}</strong></a><a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a></div>
+        <div><StatusBadge status={account.enabled ? account.status : 'disabled'} />{account.last_error || ['expired', 'error'].includes(account.status)
+          ? <OperationDetails className="account-error-message" label={accountReason} ariaLabel={`查看 ${account.label} 状态说明`} title={accountReason}><p className="operation-details-summary">{accountReason}</p></OperationDetails>
+          : <span className="account-error-message" title={accountReason}>{accountReason}</span>}</div>
+        <div className="checkin-recent"><StatusBadge status={apiKeyOnly ? 'unsupported' : account.last_checkin_status} /><span>{apiKeyOnly ? '模型 API Key 不支持签到' : account.last_checkin_at ? formatTime(account.last_checkin_at) : '尚未签到'}</span></div>
+        <div className="checkin-schedule"><strong>{apiKeyOnly ? '不支持' : account.auto_checkin ? '已开启' : '未开启'}</strong><span title={checkinScheduleTitle(siteCheckinMethodHint(site), account.timezone || site?.timezone, LOCAL_TIMEZONE)}>{checkinScheduleDetail(siteCheckinMethodHint(site), account.timezone || site?.timezone, LOCAL_TIMEZONE)}</span></div>
+        <CheckinActions account={account} site={site} busy={busy.has(account.id)} unconfirmed={unconfirmed.has(account.id)} tasks={tasks} run={() => run(account)} />
+      </article>
+    })}
+  </div>
 }
 
 function CheckinRow({ attempt, account, site, busy, unconfirmed, tasks, rerun }: { attempt: CheckinAttempt; account?: SiteAccount; site?: Site; busy: boolean; unconfirmed: boolean; tasks: TaskItem[]; rerun: () => void }) {
@@ -135,11 +156,44 @@ function CheckinRow({ attempt, account, site, busy, unconfirmed, tasks, rerun }:
   // 「+< ¥0.0001」这种读不通的东西。余额那两个才用 formatMoneyIn。
   const reward = delta != null && delta > 0.000001 ? `+${currencySymbol(currency) || '$'}${formatNumber(delta, digits)}` : attempt.reward_text || attempt.message || attempt.error_code || '—'
   const balanceDetail = attempt.balance_before != null && attempt.balance_after != null ? `${formatMoneyIn(attempt.balance_before, currency, digits)} → ${formatMoneyIn(attempt.balance_after, currency, digits)}` : attempt.error_code || '无余额变化数据'
-  const actionAvailability = account ? checkinActionAvailability({ ...account, last_checkin_status: attempt.status }, site) : null
-  return <article className="record-row checkin-grid"><div><a className="entity-link" href={`#/accounts?focus_account_id=${attempt.site_account_id}${account && ['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}><strong>{account?.label || `账号 #${attempt.site_account_id}`}</strong></a>{account ? <a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || '未知站点'}</a> : <span>未知站点</span>}<span>{attempt.provider_id}</span></div><div><StatusBadge status={attempt.status} /><span>第 {attempt.attempt_no} 次尝试</span></div><div><strong>{attempt.local_day || '—'}</strong><span>{attempt.trigger_scope || 'manual'}</span></div><div><strong className={delta != null && delta > 0.000001 ? 'balance-delta' : ''} title={reward}>{reward}</strong><span>{balanceDetail}</span></div><div><strong>{attempt.finished_at ? formatTime(attempt.finished_at) : '进行中'}</strong><span>{attempt.started_at ? `开始 ${formatTime(attempt.started_at)}` : '—'}</span></div><div className="checkin-actions">{actionAvailability?.manualURL && <a className="secondary-button" href={actionAvailability.manualURL} target="_blank" rel="noreferrer" title="在上游站点手动完成签到或验证">打开签到页<ExternalLink size={12} /></a>}<button className="secondary-button" type="button" onClick={rerun} disabled={!actionAvailability?.canRunServer || busy || unconfirmed} title={unconfirmed ? '原操作结果待确认，请先重新观察或核实上游结果' : actionAvailability?.reason || undefined}>{busy ? <RefreshCw className="spin" size={13} /> : null}重试</button>{account && actionAvailability?.canRunServer && <CheckinRecoveryLink tasks={tasks} account={account} />}</div></article>
+  return <article className="record-row checkin-grid"><div><a className="entity-link" href={`#/accounts?focus_account_id=${attempt.site_account_id}`}><strong>{account?.label || `账号 #${attempt.site_account_id}`}</strong></a>{account ? <a className="entity-chip" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || '未知站点'}</a> : <span>未知站点</span>}<span>{attempt.provider_id}</span></div><div><StatusBadge status={attempt.status} /><span>第 {attempt.attempt_no} 次尝试</span></div><div><strong>{attempt.local_day || '—'}</strong><span>{attempt.trigger_scope || 'manual'}</span></div><div><strong className={delta != null && delta > 0.000001 ? 'balance-delta' : ''} title={reward}>{reward}</strong><span>{balanceDetail}</span></div><div><strong>{attempt.finished_at ? formatTime(attempt.finished_at) : '进行中'}</strong><span>{attempt.started_at ? `开始 ${formatTime(attempt.started_at)}` : '—'}</span></div><CheckinActions account={account} site={site} attempt={attempt} busy={busy} unconfirmed={unconfirmed} tasks={tasks} run={rerun} /></article>
 }
 
-function CheckinRecoveryLink({ tasks, account }: { tasks: TaskItem[]; account: SiteAccount }) {
+function CheckinActions({ account, site, attempt, busy, unconfirmed, tasks, run }: { account?: SiteAccount; site?: Site; attempt?: CheckinAttempt; busy: boolean; unconfirmed: boolean; tasks: TaskItem[]; run: () => void }) {
+  const availability = account ? checkinActionAvailability(attempt ? { ...account, last_checkin_status: attempt.status } : account, site) : null
+  const blocker = account ? siteTaskBlocker(tasks, account.site_id, account.id) : undefined
+  // An older history failure must not force a repaired account back into recovery.
+  const credentialRejected = Boolean(account && needsCredentialRecovery(account))
+  // A historical attempt can remain expired after the account has been fixed.
+  // Only current account state/error may open the credential editor; otherwise
+  // an old row would make a healthy account look broken again.
+  const needsCredential = credentialRejected
+  const browserRequired = site?.checkin_method === 'turnstile' || (attempt?.status || account?.last_checkin_status) === 'browser_required'
+  const recoveryInPrimary = credentialRejected && availability?.canRunServer && !busy && !unconfirmed && !blocker
+  const reason = availability?.reason || '账号已不存在，无法重试'
+  const reasonLabel = reason === '模型 API Key 不支持服务端签到' ? 'API Key 不支持签到' : reason === '该平台不支持服务端签到' ? '平台不支持签到' : reason
+  const lockedReason = unconfirmed || blocker?.status === 'unknown' ? '原操作结果待确认，请先重新观察或核实上游结果' : busy || blocker ? '账号有维护操作进行中，请等待完成后重试' : ''
+  const blockerRecovery = account ? checkinBlockerRecovery(tasks, account.site_id, account.id) : null
+  return <div className="checkin-actions checkin-action-layout">
+    {availability?.manualURL
+      ? <a className="secondary-button checkin-action-open" href={availability.manualURL} target="_blank" rel="noreferrer" title="在上游站点手动完成签到或验证">打开签到页<ExternalLink size={12} /></a>
+      : <span className="checkin-action-open checkin-action-empty" aria-hidden="true" />}
+    {!availability?.canRunServer
+      ? <span className="checkin-unsupported checkin-action-primary" title={reason}><Info size={13} /><span>{reasonLabel}</span></span>
+      : recoveryInPrimary && account
+        ? <CheckinRecoveryLink tasks={tasks} account={account} credential primary />
+        : <button className={`${attempt ? 'secondary-button' : 'primary-button'} checkin-action-primary`} type="button" onClick={run} disabled={busy || unconfirmed || Boolean(blocker)} title={lockedReason || (browserRequired ? '完成上游浏览器验证后可重试，系统会识别今日已签到' : undefined)}>{busy ? <RefreshCw className="spin" size={13} /> : <Play size={13} />}{attempt ? '重试' : '立即签到'}</button>}
+    {lockedReason && (needsCredential || !blockerRecovery)
+      ? <span className="checkin-action-help" title={lockedReason}><Info size={13} /><span>{unconfirmed || blocker?.status === 'unknown' ? '结果待确认，请先核实' : '维护操作进行中'}</span></span>
+      : browserRequired && availability?.canRunServer && !recoveryInPrimary
+        ? <span className="checkin-action-help"><Info size={13} /><span>{availability.manualURL ? '需浏览器验证后重试' : '需在上游完成浏览器验证后重试'}</span></span>
+        : null}
+    {account && !recoveryInPrimary && (needsCredential || blockerRecovery) && <CheckinRecoveryLink tasks={tasks} account={account} credential={needsCredential} />}
+  </div>
+}
+
+function CheckinRecoveryLink({ tasks, account, credential = false, primary = false }: { tasks: TaskItem[]; account: SiteAccount; credential?: boolean; primary?: boolean }) {
   const recovery = checkinBlockerRecovery(tasks, account.site_id, account.id)
-  return recovery ? <a className="checkin-blocker-recovery" href={recovery.href}><Info size={13} /><span>{recovery.text}</span></a> : null
+  if (credential) return <a className={`checkin-blocker-recovery${primary ? ' secondary-button checkin-action-primary' : ''}`} href={`#/accounts?focus_account_id=${account.id}&open_credential=1`} title={account.last_error ? siteErrorMessage(account.last_error) : account.status === 'expired' ? '登录凭证已过期，请在账号管理中更新凭证' : '请在账号管理中核对并更新登录凭证'}><Info size={13} /><span>更新凭证</span></a>
+  return recovery ? <a className="checkin-blocker-recovery" href={recovery.href} title={recovery.text}><Info size={13} /><span>{recovery.text}</span></a> : null
 }

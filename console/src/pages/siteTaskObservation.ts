@@ -21,6 +21,30 @@ export function siteTaskBlocker(items: TaskItem[], siteId: number, accountId: nu
     && (!item.target.accountId || item.target.accountId === accountId))
 }
 
+export function accountRouteTask(items: TaskItem[], accountId: number): TaskItem | undefined {
+  const matches = items.filter((item) => item.target.kind === 'model_refresh' && item.target.accountId === accountId)
+  const active = matches.filter(pending)
+  if (active.length) return active.at(-1)
+  return matches.reduce<TaskItem | undefined>((latest, item) =>
+    !latest || (item.task?.created_at || 0) >= (latest.task?.created_at || 0) ? item : latest, undefined)
+}
+
+export function siteTaskRecovery(item: TaskItem): { text: string; href: string } | null {
+  const code = (item.message || '').split(':', 1)[0].trim()
+  const accountId = item.target.accountId
+  if (['expired', 'credential_required', 'user_id_required'].includes(code) && accountId && Number.isSafeInteger(accountId) && accountId > 0) {
+    return { text: '更新凭证', href: `#/accounts?focus_account_id=${accountId}&open_credential=1` }
+  }
+  if (code === 'browser_required' && Number.isSafeInteger(item.target.siteId) && item.target.siteId > 0) {
+    return { text: '查看上游站点', href: `#/sites?focus_site_id=${item.target.siteId}` }
+  }
+  return null
+}
+
+export function routeTaskSummary(item: TaskItem): { name: string; status: string; error?: string }[] {
+  return item.task?.progress?.routes || []
+}
+
 // An operation from another page is relevant here only when it locks this
 // account. Link back to its own recovery controls instead of mounting its panel.
 export function checkinBlockerRecovery(items: TaskItem[], siteId: number, accountId: number): { text: string; href: string } | null {

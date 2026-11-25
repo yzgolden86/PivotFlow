@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { checkinActionAvailability, needsBrowserCheckin, siteCheckinMethodHint } from './siteCheckinMethod.ts'
+import { checkinActionAvailability, needsBrowserCheckin, needsCredentialRecovery, siteCheckinMethodHint } from './siteCheckinMethod.ts'
 import type { Site, SiteAccount } from '../types.ts'
 
 const site = (checkin_method?: string): Pick<Site, 'checkin_method'> => ({ checkin_method })
@@ -28,6 +28,22 @@ test('站点没有签到接口时不给浏览器入口', () => {
   assert.equal(needsBrowserCheckin(account('failed'), site('unavailable')), false)
   // 对照：同样的落库状态，能力未知时仍要给入口——这条回落路径不能被上面的收严误伤。
   assert.equal(needsBrowserCheckin(account('unsupported'), site(undefined)), true)
+})
+
+test('凭证恢复只看账号当前状态，不被历史签到失败牵连', () => {
+  assert.equal(needsCredentialRecovery({ status: 'healthy', credential_configured: true, last_error: '' }), false)
+  assert.equal(needsCredentialRecovery({ status: 'healthy', credential_configured: true, last_error: 'expired' }), true)
+  assert.equal(needsCredentialRecovery({ status: 'expired', credential_configured: true, last_error: '' }), true)
+  assert.equal(needsCredentialRecovery({ status: 'healthy', credential_configured: false, last_error: '' }), true)
+})
+
+test('普通刷新失败保留签到重试，只在明确凭证故障时要求更新', () => {
+  for (const last_error of ['provider_timeout', 'provider_rate_limited', 'request_failed', 'invalid_response', 'browser_required', '']) {
+    assert.equal(needsCredentialRecovery({ status: 'error', credential_configured: true, last_error }), false, last_error)
+  }
+  for (const last_error of ['expired', 'credential_required', 'user_id_required: missing upstream identity']) {
+    assert.equal(needsCredentialRecovery({ status: 'error', credential_configured: true, last_error }), true, last_error)
+  }
 })
 
 test('站点自己关了签到也不给入口', () => {

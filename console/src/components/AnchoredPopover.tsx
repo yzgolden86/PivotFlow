@@ -28,6 +28,8 @@ export default function AnchoredPopover({
   className,
   role,
   ariaLabel,
+  passive = false,
+  tabThrough = false,
   children,
 }: {
   open: boolean
@@ -40,11 +42,14 @@ export default function AnchoredPopover({
   className?: string
   role?: string
   ariaLabel?: string
+  /** Hover previews own Escape without moving keyboard focus. */
+  passive?: boolean
+  tabThrough?: boolean
   children: ReactNode
 }) {
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
   const menu = useRef<HTMLDivElement>(null)
-  useFocusLayer(menu, { open: open && Boolean(position), modal: false, close: () => onOpenChange(false) })
+  useFocusLayer(menu, { open: open && Boolean(position), modal: false, passive, tabThrough, close: () => onOpenChange(false) })
 
   useLayoutEffect(() => {
     if (!open) { setPosition(null); return }

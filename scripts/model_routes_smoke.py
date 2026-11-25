@@ -9,6 +9,7 @@ import argparse
 import copy
 import gzip
 import json
+import re
 import time
 from functools import partial
 from http.server import ThreadingHTTPServer
@@ -661,6 +662,10 @@ def inventory_cases(runner):
     def inventory(page, data):
         inventory_rows = page.locator('button[aria-label^="查看 "][aria-label$=" 的路由"]')
         expect(inventory_rows).to_have_count(50)
+        inventory_call = [call for call in data.calls if call['path'] == '/admin/routing/models'][-1]
+        runner.check(inventory_call['query'].get('enabled_only') == ['true'],
+                     'Public inventory must request enabled-only supplied models')
+        expect(page.locator('.model-route-model.is-empty')).to_have_count(0)
         expect(page.get_by_role('navigation', name='模型清单分页', exact=True)).to_be_visible()
         runner.check(
             not any(call['path'] == '/admin/routing/diagnostics' for call in data.calls),
@@ -669,7 +674,7 @@ def inventory_cases(runner):
         pager = page.get_by_role('navigation', name='模型清单分页', exact=True)
         pager.get_by_role('textbox', name='跳转页码', exact=True).fill('3')
         pager.get_by_role('textbox', name='跳转页码', exact=True).press('Enter')
-        expect(inventory_rows).to_have_count(4)
+        expect(inventory_rows).to_have_count(2)
         search = page.get_by_label('搜索模型或别名', exact=True)
         search.fill(ALIAS_60)
         expect(inventory_rows).to_have_count(1)
@@ -804,7 +809,7 @@ def diagnostic_cases(runner):
         editor_path, editor_query = link_parts(editor)
         runner.check(editor_path == '/channels', f'Editor path was {editor_path}')
         runner.check(
-            editor_query == {'focus_channel_id': ['201']},
+            editor_query == {'focus_channel_id': ['201'], 'client_protocol': ['codex'], 'model': [MODEL], 'token_id': ['101']},
             f'Editor query was {editor_query}',
         )
         runner.record(
@@ -1083,9 +1088,8 @@ def history_cases(runner):
         expect(page.get_by_label('精确请求模型', exact=True)).to_have_value(HISTORY_MODEL)
         expect(page.get_by_label('历史客户端协议', exact=True)).to_have_value('codex')
         expect(page.get_by_label('完整请求访问令牌', exact=True)).to_have_value('101')
-        detail = page.locator(
-            'a[aria-label^="查看请求"], button[aria-label^="查看请求"]'
-        ).first
+        detail = page.locator('button.request-ledger-row').first
+        expect(detail).to_have_attribute('aria-label', re.compile(r'^查看.+的请求 .+ 详情$'))
         detail.click()
         expect(page.get_by_role('dialog')).to_be_visible()
         path, query = hash_parts(page)
@@ -1178,7 +1182,7 @@ def navigation_cases(runner):
         expect(page.get_by_role('dialog', name='编辑渠道', exact=True)).to_be_visible()
         path, query = hash_parts(page)
         runner.check(path == '/channels', f'Channel editor route was {path}')
-        runner.check(query == {'focus_channel_id': ['201']}, f'Channel focus query was {query}')
+        runner.check(query == {'focus_channel_id': ['201'], 'client_protocol': ['openai'], 'model': [MODEL]}, f'Channel focus query was {query}')
         expect(page.get_by_label('渠道名称', exact=True)).to_have_value('合成路由渠道 201')
         screenshot(runner, page, 'desktop-1440-light-channel-editor')
         runner.record('channel-editor', channel_id=201, snapshot_read=True)
@@ -1270,7 +1274,8 @@ def pagination_shrink_cases(runner):
         pager = page.get_by_role('navigation', name='模型清单分页', exact=True)
         pager.get_by_role('textbox', name='跳转页码', exact=True).fill('3')
         pager.get_by_role('textbox', name='跳转页码', exact=True).press('Enter')
-        expect(rows).to_have_count(4)
+        enabled_items = [item for item in data.inventory if item['kind'] != 'wildcard' and item['enabled_channels'] > 0]
+        expect(rows).to_have_count(len(enabled_items) - 100)
         data.inventory = data.inventory[:1]
         page.get_by_role('button', name='刷新路由快照', exact=True).click()
         expect(rows).to_have_count(1)
@@ -1328,6 +1333,7 @@ def resource_cases(runner):
             decoded_bytes: entries.reduce((sum, entry) => sum + entry.decodedBodySize, 0),
             route_loaded: entries.some(entry => entry.name.includes('/ModelRoutesPage-')
               && entry.name.endsWith('.js')),
+            entries: entries.map(entry => ({name:entry.name.split('/').pop(),encoded:entry.encodedBodySize,decoded:entry.decodedBodySize})),
           };
         }""")
         assets = runner.root / 'web/console/assets'
@@ -1342,14 +1348,22 @@ def resource_cases(runner):
             'decoded_bytes': chunk.stat().st_size,
             'gzip_bytes': len(gzip.compress(chunk.read_bytes(), mtime=0)),
         }
+        runner.metrics['routing_session'] = session
+        runner.metrics['model_routes_chunk'] = route_sizes
         runner.check(session['route_loaded'], 'The browser did not load the ModelRoutesPage chunk')
+        runner.check(not any(entry['name'].startswith(('AnnouncementDetail-', 'SystemSettingsPageV2-', 'ChannelsPage-', 'StatsPage-', 'BrowserImportPage-')) for entry in session['entries']),
+                     'Initial routing page eagerly downloads unrelated page bundles')
         runner.check(session['encoded_bytes'] <= 400000, 'Console session exceeds 400000 encoded bytes')
         runner.check(session['resources'] <= 45, 'Console session exceeds the 45-resource budget')
         runner.check(route_sizes['gzip_bytes'] <= 150000, 'ModelRoutesPage exceeds 150000 gzip bytes')
         runner.check(route_sizes['decoded_bytes'] <= 450000, 'ModelRoutesPage exceeds 450000 decoded bytes')
-        runner.metrics['routing_session'] = session
-        runner.metrics['model_routes_chunk'] = route_sizes
         runner.record('routing-resource-budgets', session=session, route=route_sizes)
+        page.get_by_role('link', name='请求日志', exact=True).focus()
+        wait_until(runner, lambda: page.evaluate("performance.getEntriesByType('resource').some(entry => entry.name.includes('/LogsPage-') && entry.name.endsWith('.js'))"),
+                   'Keyboard focus did not preload the request logs page')
+        page.get_by_role('link', name='请求日志', exact=True).click()
+        expect(page.locator('h1')).to_have_text('请求日志')
+        runner.record('routing-intent-preload', keyboard_target='/logs', navigation_succeeded=True)
 
     scope_path = '/routing?' + urlencode({
         'model': MODEL,

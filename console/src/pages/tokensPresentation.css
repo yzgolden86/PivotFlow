@@ -30,6 +30,7 @@
 }
 
 .tokens-page .token-table-head > span { min-width: 0; }
+.tokens-page :is(.token-table-head, .token-row) > :nth-child(6) { padding-inline-start: 16px; }
 .tokens-page .token-number-cell { text-align: right; font-variant-numeric: tabular-nums; }
 .tokens-page .token-row > .token-number-cell { align-items: flex-end; }
 .tokens-page .token-row .token-number-cell > span { max-width: 100%; }
