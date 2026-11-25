@@ -200,7 +200,12 @@ func ensureCheckinAttemptBalanceColumns(ctx context.Context, db *sql.DB, dialect
 }
 
 func ensureRequestCacheHistoryColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if err := ensureColumn(ctx, db, dialect, "request_traces", "channel_id", "BIGINT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	for _, column := range []struct{ name, mysqlDef string }{
+		{"actual_model", "VARCHAR(191) NOT NULL DEFAULT ''"},
+		{"channel_name", "VARCHAR(191) NOT NULL DEFAULT ''"},
 		{"cache_status", "VARCHAR(16) NOT NULL DEFAULT ''"},
 		{"cache_reason", "VARCHAR(64) NOT NULL DEFAULT ''"},
 	} {

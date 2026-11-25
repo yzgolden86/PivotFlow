@@ -1,0 +1,69 @@
+/* Header and rows retain the shared column template and the same border/padding.
+   Surfaces use the theme's alpha-aware tokens; only the short header adds blur. */
+.tokens-page .token-table-wrap {
+  /* Four 32px action buttons and three 4px gaps need the full 140px. */
+  --token-columns: 34px minmax(160px, 1.05fr) minmax(190px, 1.15fr) minmax(95px, .55fr) minmax(100px, .55fr) minmax(105px, .6fr) minmax(110px, .6fr) minmax(105px, .6fr) 140px;
+  --token-min: 1180px;
+  padding-bottom: 6px;
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.tokens-page .token-table-head {
+  min-height: 44px;
+  margin-bottom: 8px;
+  padding: 12px 13px;
+  color: var(--text-secondary);
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 18px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+:root[data-glass="on"] .tokens-page .token-table-head {
+  backdrop-filter: blur(var(--glass-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 14px));
+}
+
+.tokens-page .token-table-head > span { min-width: 0; }
+.tokens-page .token-number-cell { text-align: right; font-variant-numeric: tabular-nums; }
+.tokens-page .token-row > .token-number-cell { align-items: flex-end; }
+.tokens-page .token-row .token-number-cell > span { max-width: 100%; }
+.tokens-page .token-mobile-stats { display: none; }
+.tokens-page .token-table-wrap:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+@media (max-width: 1180px) {
+  .tokens-page .token-table-wrap {
+    --token-columns: 38px minmax(180px, 1fr) minmax(170px, 1fr) 90px 110px 140px;
+    --token-min: 826px;
+  }
+}
+
+@media (max-width: 900px) {
+  .tokens-page .token-table-wrap { --token-columns: 34px minmax(0, 1fr); --token-min: 0; }
+  .tokens-page .token-table-head { display: none; }
+  .tokens-page .token-row { gap: 10px; }
+  .tokens-page .token-row > :not(.token-icon):not(.token-identity):not(.row-actions) { display: none; }
+  /* The existing secret-cell rule has display:flex!important at every width. */
+  .tokens-page .token-row > .token-secret-cell { display: none !important; }
+  .tokens-page .token-row .row-actions {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .tokens-page .token-mobile-stats {
+    display: block;
+    max-width: 100%;
+    overflow: visible;
+    color: var(--text-secondary);
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+  }
+}

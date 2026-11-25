@@ -13,7 +13,7 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { getAuthTokens, getRequestTrace, getRequestTraces, getRequestTraceStats } from '../api'
+import { getAuthTokenOptions, getRequestTrace, getRequestTraces, getRequestTraceStats } from '../api'
 import useReadSnapshot from '../components/useReadSnapshot'
 import type {
   AuthToken,
@@ -41,22 +41,17 @@ import {
   reasonLabel,
   readRequestHistoryScope,
   requestCacheHistoryDiagnostic,
+  requestChannelObservation,
+  requestModelObservation,
   retryLabel,
   upstreamSuccessRate,
   writeRequestHistoryScope,
 } from './requestHistory'
 import type { RequestHistoryScope } from './requestHistory'
 import { routeProtocols, tokenOptions } from './modelRoutes'
+import '../requestHistoryPresentation.css'
 
 const PAGE_SIZE = 20
-const EMPTY_STATS: RequestTraceStats = {
-  requests: 0,
-  successes: 0,
-  errors: 0,
-  canceled: 0,
-  upstream_attempts: 0,
-  upstream_successes: 0,
-}
 
 export default function RequestHistoryView() {
   const location = useLocation()
@@ -83,23 +78,21 @@ export default function RequestHistoryView() {
     }, 300)
     return () => window.clearTimeout(timer)
   }, [search, searchQuery, setFilters])
-  const readTokens = useCallback((signal: AbortSignal) => getAuthTokens(range, signal), [range])
-  const tokenSnapshot = useReadSnapshot(`history-tokens:${range}`, readTokens)
-  const tokens = tokenOptions(tokenSnapshot.data?.tokens || [], tokenSearch, token)
-
-  const readHistory = useCallback(async (signal: AbortSignal) => {
-    const filters = {
-      range, search: searchQuery, outcome, auth_token_id: token,
-      model, client_protocol: clientProtocol,
-      limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE,
-    }
-    const [result, nextStats] = await Promise.all([getRequestTraces(filters, signal), getRequestTraceStats(filters, signal)])
-    return { result, stats: nextStats }
-  }, [clientProtocol, model, outcome, page, range, searchQuery, token])
+  const readTokens = useCallback((signal: AbortSignal) => getAuthTokenOptions(signal), [])
+  const tokenSnapshot = useReadSnapshot('history-tokens', readTokens)
+  const tokens = tokenOptions(tokenSnapshot.data || [], tokenSearch, token)
+  const filters = useMemo(() => ({
+    range, search: searchQuery, outcome, auth_token_id: token,
+    model, client_protocol: clientProtocol,
+  }), [clientProtocol, model, outcome, range, searchQuery, token])
+  const readHistory = useCallback((signal: AbortSignal) => getRequestTraces({
+    ...filters, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE,
+  }, signal), [filters, page])
+  const readStats = useCallback((signal: AbortSignal) => getRequestTraceStats(filters, signal), [filters])
   const history = useReadSnapshot(writeRequestHistoryScope(scope), readHistory, !scope.error)
-  const requests = history.data?.result.data || []
-  const stats = history.data?.stats || EMPTY_STATS
-  const total = history.data?.result.count || 0
+  const summary = useReadSnapshot(writeRequestHistoryScope({ ...scope, page: 1 }), readStats, !scope.error)
+  const requests = history.data?.data || []
+  const total = history.data?.count || 0
   const loading = history.loading && !history.data
   const refreshing = history.loading && Boolean(history.data)
   const error = history.error
@@ -166,46 +159,52 @@ export default function RequestHistoryView() {
         <button type="submit" className="secondary-button">筛选模型</button>
       </form>
       {hasFilters && <button className="icon-button icon-button--surface" type="button" title="清除筛选" aria-label="清除完整请求筛选" onClick={clearFilters}><RotateCcw size={16} /></button>}
-      <button className="icon-button icon-button--surface" type="button" disabled={refreshing || Boolean(scope.error)} onClick={history.refresh} aria-label="刷新完整请求" title="刷新完整请求"><RefreshCw className={refreshing ? 'spin' : undefined} size={16} /></button>
+      <button className="icon-button icon-button--surface" type="button" disabled={history.loading || Boolean(scope.error)} onClick={() => { history.refresh(); summary.refresh() }} aria-label="刷新完整请求" title="刷新完整请求"><RefreshCw className={refreshing ? 'spin' : undefined} size={16} /></button>
     </div>
 
     {tokenSnapshot.error && <p className="inline-error" role="alert">令牌清单读取失败，当前历史范围保持。<button className="text-button" type="button" onClick={tokenSnapshot.refresh}>重试令牌清单</button></p>}
-    {scope.error ? <div className="inline-error" role="alert">{scope.error}<button className="secondary-button" type="button" onClick={clearFilters}>清除无效筛选</button></div> : loading ? <LoadingState label="正在加载完整请求" /> : error ? <ErrorState message={error} retry={history.refresh} /> : <>
-      <RequestStatsStrip stats={stats} />
+    {!scope.error && <RequestStatsStrip stats={summary.error ? undefined : summary.data} loading={summary.loading} />}
+    {summary.error && <div className="request-summary-error" role="alert"><span>请求汇总读取失败：{summary.error}</span><button className="text-button" type="button" onClick={summary.refresh}>重试请求汇总</button></div>}
+    {error && history.data && <div className="request-summary-error" role="alert"><span>列表刷新失败，显示上次读取的请求：{error}</span><button className="text-button" type="button" onClick={history.refresh}>重试请求列表</button></div>}
+    {scope.error ? <div className="inline-error" role="alert">{scope.error}<button className="secondary-button" type="button" onClick={clearFilters}>清除无效筛选</button></div> : loading ? <LoadingState label="正在加载完整请求" /> : error && !history.data ? <ErrorState message={error} retry={history.refresh} /> : <>
       {requests.length === 0 ? <div className="content-state content-state--empty request-empty">当前筛选条件下暂无已保存请求</div> : (
         <div className="records-panel request-ledger" aria-label="完整请求列表">
           <div className="request-ledger-head" aria-hidden="true">
-            <span>最终结果 / 开始时间</span>
+            <span>渠道 / 请求时间</span>
             <span>模型与协议</span>
             <span>传输与尝试</span>
             <span>耗时</span>
             <span />
           </div>
-          {requests.map((request) => <button
-            className={`request-ledger-row request-ledger-row--${request.outcome}`}
-            type="button"
-            key={request.request_id}
-            onClick={() => openRequest(request.request_id)}
-            aria-label={`查看请求 ${request.request_id} 详情`}
-          >
-            <span className="request-ledger-cell request-ledger-result">
-              <span><RequestOutcomeBadge outcome={request.outcome} /> <RequestCacheBadge trace={request} /> <strong>{formatTime(request.started_at)}</strong></span>
-              <code title={request.request_id}>{request.request_id}</code>
-            </span>
-            <span className="request-ledger-cell">
-              <strong title={request.model}>{request.model || '未记录模型'}</strong>
-              <span title={finalStatusHint(request.final_status)}>{request.client_protocol || '—'} → {finalStatusLabel(request.final_status)}</span>
-            </span>
-            <span className="request-ledger-cell">
-              <strong>{transportLabel(request.transport)}{request.is_streaming ? ' · 流式' : ''}</strong>
-              <span>{request.attempt_count} 次尝试 · 上游 {request.upstream_attempt_count} 次{request.truncated ? ' · 明细截断' : ''}</span>
-            </span>
-            <span className="request-ledger-cell request-ledger-timing">
-              <strong>{formatSeconds(request.duration)}</strong>
-              <span>等待 {formatSeconds(request.wait_duration)}</span>
-            </span>
-            <span className="request-ledger-open" aria-hidden="true"><ArrowUpRight size={16} /></span>
-          </button>)}
+          {requests.map((request) => {
+            const channel = requestChannelObservation(request)
+            return <button
+              className={`request-ledger-row request-ledger-row--${request.outcome}`}
+              type="button"
+              key={request.request_id}
+              onClick={() => openRequest(request.request_id)}
+              aria-label={`查看${channel.label}的请求 ${request.request_id} 详情`}
+            >
+              <span className="request-ledger-cell request-ledger-result">
+                <strong className="request-channel-name" title={channel.title}>{channel.label}</strong>
+                <span className="request-ledger-meta"><RequestOutcomeBadge outcome={request.outcome} /> <RequestCacheBadge trace={request} /> <time>{formatTime(request.started_at)}</time></span>
+              </span>
+              <span className="request-ledger-cell request-model-cell">
+                <strong title={request.model}>{request.model || '未记录模型'}</strong>
+                <RequestActualModel trace={request} />
+                <span title={finalStatusHint(request.final_status)}>{request.client_protocol || '—'} → {finalStatusLabel(request.final_status)}</span>
+              </span>
+              <span className="request-ledger-cell">
+                <strong>{transportLabel(request.transport)}{request.is_streaming ? ' · 流式' : ''}</strong>
+                <span>{request.attempt_count} 次尝试 · 上游 {request.upstream_attempt_count} 次{request.truncated ? ' · 明细截断' : ''}</span>
+              </span>
+              <span className="request-ledger-cell request-ledger-timing">
+                <strong>{formatSeconds(request.duration)}</strong>
+                <span>等待 {formatSeconds(request.wait_duration)}</span>
+              </span>
+              <span className="request-ledger-open" aria-hidden="true"><ArrowUpRight size={16} /></span>
+            </button>
+          })}
         </div>
       )}
       <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPage={(page) => setFilters({ page })} />
@@ -215,14 +214,21 @@ export default function RequestHistoryView() {
   </>
 }
 
-function RequestStatsStrip({ stats }: { stats: RequestTraceStats }) {
-  return <div className="request-stats-strip" aria-label="完整请求汇总">
-    <RequestStat label="已保存请求" value={formatNumber(stats.requests)} detail="当前筛选范围" icon={Database} />
-    <RequestStat label="最终成功" value={formatNumber(stats.successes)} detail="客户端结果" icon={ShieldCheck} />
-    <RequestStat label="最终失败" value={formatNumber(stats.errors)} detail="客户端结果" icon={Activity} tone="danger" />
-    <RequestStat label="已取消" value={formatNumber(stats.canceled)} detail="独立计数，不进入成功率" icon={Clock3} tone="warning" />
-    <RequestStat label="客户端成功率" value={formatRate(clientSuccessRate(stats))} detail="成功 ÷（成功 + 失败），取消除外" icon={ListTree} />
-    <RequestStat label="上游成功率" value={formatRate(upstreamSuccessRate(stats))} detail={`${formatNumber(stats.upstream_successes)} / ${formatNumber(stats.upstream_attempts)} 次上游成功`} icon={ArrowUpRight} />
+function RequestActualModel({ trace }: { trace: RequestTrace }) {
+  const observation = requestModelObservation(trace)
+  return <span className={`request-actual-model${observation.actualModel ? '' : ' request-actual-model--empty'}`} title={observation.title}>
+    {observation.actualModel ? <><small>{observation.label}</small><code>{observation.actualModel}</code></> : observation.label}
+  </span>
+}
+
+function RequestStatsStrip({ stats, loading }: { stats?: RequestTraceStats; loading: boolean }) {
+  return <div className="request-stats-strip" aria-label="完整请求汇总" aria-busy={loading}>
+    <RequestStat label="已保存请求" value={stats ? formatNumber(stats.requests) : '—'} detail="当前筛选范围" icon={Database} />
+    <RequestStat label="最终成功" value={stats ? formatNumber(stats.successes) : '—'} detail="客户端结果" icon={ShieldCheck} />
+    <RequestStat label="最终失败" value={stats ? formatNumber(stats.errors) : '—'} detail="客户端结果" icon={Activity} tone="danger" />
+    <RequestStat label="已取消" value={stats ? formatNumber(stats.canceled) : '—'} detail="独立计数，不进入成功率" icon={Clock3} tone="warning" />
+    <RequestStat label="客户端成功率" value={stats ? formatRate(clientSuccessRate(stats)) : '—'} detail="成功 ÷（成功 + 失败），取消除外" icon={ListTree} />
+    <RequestStat label="上游成功率" value={stats ? formatRate(upstreamSuccessRate(stats)) : '—'} detail={stats ? `${formatNumber(stats.upstream_successes)} / ${formatNumber(stats.upstream_attempts)} 次上游成功` : '按已记录的上游尝试计算'} icon={ArrowUpRight} />
   </div>
 }
 
@@ -247,6 +253,8 @@ function RequestDetailModal({ requestId, close }: { requestId: string; close: ()
   const [retryKey, setRetryKey] = useState(0)
   const [copied, setCopied] = useState(false)
   const cacheDiagnostic = trace ? requestCacheHistoryDiagnostic(trace) : null
+  const modelObservation = trace ? requestModelObservation(trace) : null
+  const channelObservation = trace ? requestChannelObservation(trace) : null
 
   useEffect(() => {
     const controller = new AbortController()
@@ -320,7 +328,11 @@ function RequestDetailModal({ requestId, close }: { requestId: string; close: ()
             </button>
           </header>
 
+          {modelObservation && <div className="request-detail-actual-model" title={modelObservation.title}>
+            <span>{modelObservation.label}</span><code>{modelObservation.actualModel || '—'}</code>
+          </div>}
           <div className="request-detail-facts">
+            {channelObservation && <span className="request-detail-channel" title={channelObservation.title}><small>实际渠道</small><strong>{channelObservation.label}</strong></span>}
             <RequestFact label="开始时间" value={formatTime(trace.started_at)} />
             <RequestFact label="最终状态" value={finalStatusLabel(trace.final_status)} title={finalStatusHint(trace.final_status)} />
             <RequestFact label="客户端协议" value={trace.client_protocol || '—'} />

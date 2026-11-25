@@ -1,0 +1,18 @@
+/* Keep the selection panel level with the complete configuration/probe stack.
+   Intrinsic row sizes allow expanded permissions, errors and results to grow. */
+@media (min-width: 1101px) {
+  .connect-page .connect-workspace {
+    align-items: stretch;
+  }
+
+  .connect-page .connect-selection {
+    align-self: stretch;
+  }
+
+  .connect-page .connect-output {
+    display: grid;
+    grid-template-rows: minmax(min-content, 1fr) auto;
+    align-self: stretch;
+    align-content: stretch;
+  }
+}

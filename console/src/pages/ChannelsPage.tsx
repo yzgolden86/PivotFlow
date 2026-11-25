@@ -1,17 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ClipboardPaste, Copy, FileUp, FlaskConical, GitFork, Layers3, Pencil, Plus, Power, RefreshCw, Route, Search, Settings2, Sparkles, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { ClipboardPaste, Copy, FileUp, FlaskConical, GitCompareArrows, GitFork, Layers3, Pencil, Plus, Power, RefreshCw, Route, Search, Settings2, Sparkles, Trash2 } from 'lucide-react'
 import { createChannel, deleteChannel, deleteChannels, fetchChannelModelsPreview, fetchOAuthUsage, getAuthTokens, getChannelEditor, getChannelRouteDiagnostics, getChannels, importOAuthCredentials, peekChannels, restoreChannelSiteSync, setChannelsEnabled, updateChannel } from '../api'
 import type { AuthToken, Channel, ChannelBodyRuleAction, ChannelEditorSnapshot, ChannelHeaderRuleAction, ChannelModel, ChannelMutation, ChannelRequestRules, ChannelRouteDiagnostic, ChannelURL, OAuthUsageSummary } from '../types'
 import { EmptyState, ErrorState, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
-import { useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Modal, siteErrorMessage, StatusBadge } from './siteShared'
 import ChannelKeysModal from './ChannelKeysModal'
 import { parseChannelKeyBatch } from './channelKeyBatch'
 import HelpTip from '../components/HelpTip'
 import useReadSnapshot from '../components/useReadSnapshot'
-import { attemptStateLabel, healthObservationLabel, modelRouteURL, routeWarningLabel, stickyForwardLabel, weightReferenceLabel } from './modelRoutes'
+import { attemptStateLabel, boundedRouteText, healthObservationLabel, modelRouteURL, repeatedScopeParameter, routeWarningLabel, stickyForwardLabel, validObjectId, validRouteQuery, validRouteText, weightReferenceLabel, type ModelRouteScope } from './modelRoutes'
+import { channelDiagnosisCloseURL, channelDiagnosisURL, channelDiagnosticState, channelEditorTarget, readChannelDiagnosis } from './routeNavigation'
+import './channelRoutingPresentation.css'
+import './resourceListRefinement.css'
 import SourceMenu from '../components/SourceMenu'
-import SiteTaskProgress, { useSiteTaskCompletion } from './SiteTaskProgress'
+import { SiteTaskNotice, useSiteTaskCompletion } from './SiteTaskProgress'
 import SiteSyncPreviewModal from './SiteSyncPreviewModal'
 import ResourceDetails, { DetailList, DetailURL, detailDate } from './ResourceDetails'
 import { browserImportId } from '../browserImportTypes'
@@ -28,9 +31,13 @@ const routeDiagnosticProtocols = [
 export default function ChannelsPage() {
   const taskCompletion = useSiteTaskCompletion('model_refresh')
   const location = useLocation()
+  const navigate = useNavigate()
   const query = useMemo(() => new URLSearchParams(location.search), [location.search])
+  const diagnosis = useMemo(() => readChannelDiagnosis(location.search), [location.search])
   const querySearch = query.get('search') || ''
-  const focusChannelID = Number(query.get('focus_channel_id') || 0)
+  const focusChannelValue = query.get('focus_channel_id') || ''
+  const focusChannelInvalid = query.has('focus_channel_id') && (!validObjectId(focusChannelValue) || !validRouteQuery(location.search) || repeatedScopeParameter(query))
+  const focusChannelID = channelEditorTarget(location.search)
   const syncAccountID = /^\d+$/u.test(query.get('sync_account_id') || '') ? browserImportId(Number(query.get('sync_account_id'))) : 0
   const initialResult = peekChannels({ search: querySearch, status: 'all', source: 'all', sort: 'priority', limit: 50, offset: 0 })
   const [channels, setChannels] = useState<Channel[]>(() => initialResult?.data || [])
@@ -52,7 +59,6 @@ export default function ChannelsPage() {
   const [batchBusy, setBatchBusy] = useState(false)
 	const [editing, setEditing] = useState<number | 'new' | null>(null)
 	const [keyHealthChannel, setKeyHealthChannel] = useState<number | null>(null)
-	const [routeDiagnosticChannel, setRouteDiagnosticChannel] = useState<Channel | null>(null)
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
   const [details, setDetails] = useState<Channel | null>(null)
   const [syncOpen, setSyncOpen] = useState(false)
@@ -126,10 +132,11 @@ export default function ChannelsPage() {
     return () => window.clearTimeout(timer)
   }, [search, searchDraft])
   useEffect(() => {
+    if (diagnosis.requested) { setEditing(null); return }
     if (!focusChannelID || loading || focusedChannelRef.current === focusChannelID) return
     focusedChannelRef.current = focusChannelID
     setEditing(focusChannelID)
-  }, [channels, focusChannelID, loading])
+  }, [channels, diagnosis.requested, focusChannelID, loading])
   useEffect(() => {
     if (editing) setSourceMenuOpen(false)
   }, [editing])
@@ -234,7 +241,7 @@ export default function ChannelsPage() {
   }
 
   return (
-    <div className="workspace-page">
+    <div className="workspace-page channels-routing-page">
       <PageHeader
       icon={GitFork}
       title="渠道分发"
@@ -256,7 +263,8 @@ export default function ChannelsPage() {
         </>}
       />
 
-      {!syncOpen && <SiteTaskProgress />}
+      <SiteTaskNotice kinds={['model_refresh']} />
+      {focusChannelInvalid && <div className="channel-route-recovery" role="alert"><span>渠道 ID 或 URL 参数无效，请重新选择渠道。</span><button className="text-button" type="button" onClick={() => navigate('/channels', { replace: true })}>返回渠道列表</button></div>}
       {notice && <OperationNotice tone={noticeTone} onDismiss={() => setNotice('')}>{notice}</OperationNotice>}
 
       <section className="compact-summary channels-summary" aria-label="渠道摘要">
@@ -282,14 +290,14 @@ export default function ChannelsPage() {
       {error && channels.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
       {loading ? <LoadingState label="正在加载渠道" /> : error && channels.length === 0 ? <ErrorState message={error} retry={() => void load()} /> : channels.length === 0 ? <EmptyState label="没有符合条件的渠道" /> : (
         <div className="channel-list">
-          {channels.map((channel) => <ChannelRow channel={channel} selected={selected.has(channel.id)} busy={busyId === channel.id || (batchBusy && selected.has(channel.id))} select={() => toggleSelected(channel.id)} toggle={() => void toggleChannel(channel)} copy={() => void copyChannel(channel)} edit={() => setEditing(channel.id)} remove={() => void removeChannel(channel)} manageKeys={() => setKeyHealthChannel(channel.id)} diagnose={() => setRouteDiagnosticChannel(channel)} restoreSync={() => void restoreSiteSync(channel)} details={() => setDetails(channel)} key={channel.id} />)}
+          {channels.map((channel) => <ChannelRow channel={channel} routeScope={query.has('model') || query.has('client_protocol') || query.has('token_id') ? diagnosis.scope : undefined} selected={selected.has(channel.id)} busy={busyId === channel.id || (batchBusy && selected.has(channel.id))} select={() => toggleSelected(channel.id)} toggle={() => void toggleChannel(channel)} copy={() => void copyChannel(channel)} edit={() => setEditing(channel.id)} remove={() => void removeChannel(channel)} manageKeys={() => setKeyHealthChannel(channel.id)} restoreSync={() => void restoreSiteSync(channel)} details={() => setDetails(channel)} key={channel.id} />)}
         </div>
       )}
       <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} pageSizes={[50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
-      {editing && <ChannelEditor channelId={editing === 'new' ? undefined : editing} close={() => setEditing(null)} saved={() => { setEditing(null); void load(undefined, { silent: true, force: true }) }} />}
+      {editing && !diagnosis.requested && <ChannelEditor channelId={editing === 'new' ? undefined : editing} close={() => setEditing(null)} saved={() => { setEditing(null); void load(undefined, { silent: true, force: true }) }} />}
 	      {syncOpen && <SiteSyncPreviewModal initialAccountId={syncSeed} close={() => setSyncOpen(false)} onApplied={() => void load(undefined, { silent: true, force: true })} />}
 	      {keyHealthChannel !== null && <ChannelKeysModal channelId={keyHealthChannel} close={() => setKeyHealthChannel(null)} changed={() => void load(undefined, { silent: true, force: true })} />}
-	      {routeDiagnosticChannel && <ChannelRouteDiagnosticsModal key={routeDiagnosticChannel.id} channel={routeDiagnosticChannel} close={() => setRouteDiagnosticChannel(null)} />}
+        {diagnosis.requested && <ChannelRouteDiagnosticsModal key={diagnosis.channelId} channelId={diagnosis.channelId} channel={channels.find((item) => String(item.id) === diagnosis.channelId)} scope={diagnosis.scope} scopeError={diagnosis.error} close={() => navigate(channelDiagnosisCloseURL(location.search), { replace: true })} />}
       {details && <ResourceDetails title="渠道详情" close={() => setDetails(null)} facts={[
         { label: '名称', value: details.name },
         { label: '渠道 ID', value: `#${details.id}` },
@@ -319,14 +327,17 @@ export default function ChannelsPage() {
   )
 }
 
-function ChannelRouteDiagnosticsModal({ channel, close }: { channel: Channel; close: () => void }) {
-  const models = useMemo(() => channel.models.filter((item) => !item.disabled).map((item) => item.model.trim()).filter(Boolean), [channel])
-  const [model, setModel] = useState(models[0] || '')
-  const [protocol, setProtocol] = useState('openai')
-  const [tokenIdValue, setTokenIdValue] = useState('')
-  const tokenId = Number(tokenIdValue) || 0
-  const readDiagnostic = useCallback((signal: AbortSignal) => getChannelRouteDiagnostics(channel.id, model, protocol, tokenId, signal), [channel.id, model, protocol, tokenId])
-  const observation = useReadSnapshot(`channel-route:${channel.id}:${model}:${protocol}:${tokenId}`, readDiagnostic, Boolean(model))
+function ChannelRouteDiagnosticsModal({ channelId, channel, scope, scopeError, close }: { channelId: string; channel?: Channel; scope: ModelRouteScope; scopeError: string; close: () => void }) {
+  const navigate = useNavigate()
+  const { model, clientProtocol: protocol, tokenId: tokenIdValue } = scope
+  const [modelDraft, setModelDraft] = useState(model)
+  const [modelInvalid, setModelInvalid] = useState(false)
+  const modelErrorId = useId()
+  useEffect(() => { setModelDraft(model); setModelInvalid(false) }, [model])
+  const models = useMemo(() => [...new Set((channel?.models || []).map((item) => item.model).filter((name) => name.trim()))], [channel])
+  const tokenId = Number(tokenIdValue)
+  const readDiagnostic = useCallback((signal: AbortSignal) => getChannelRouteDiagnostics(Number(channelId), model, protocol, tokenId, signal), [channelId, model, protocol, tokenId])
+  const observation = useReadSnapshot(`channel-route:${channelId}:${model}:${protocol}:${tokenIdValue}`, readDiagnostic, Boolean(model.trim()) && !scopeError && validObjectId(channelId))
   const readTokens = useCallback((signal: AbortSignal) => getAuthTokens('today', signal), [])
   const tokenObservation = useReadSnapshot('channel-route-tokens', readTokens)
   const tokens = tokenObservation.data?.tokens || []
@@ -336,24 +347,33 @@ function ChannelRouteDiagnosticsModal({ channel, close }: { channel: Channel; cl
   const refresh = observation.refresh
 
   const strategyLabel = snapshot?.route_strategy === 'sticky' ? '粘性轮询' : '均衡轮询'
-  const target = snapshot?.target
+  const state = channelDiagnosticState({ channelId, model, loading, error, stale: observation.stale, target: snapshot?.target })
+  const target = snapshot?.target && String(snapshot.target.channel_id) === channelId ? snapshot.target : undefined
+  const changeScope = (patch: Partial<ModelRouteScope>) => {
+    const href = channelDiagnosisURL({ ...scope, ...patch, error: '' }, channelId)
+    if (href) navigate(href, { replace: true })
+  }
+  const globalURL = modelRouteURL({ ...scope, targetChannelId: channelId })
   return (
-    <Modal title={`${channel.name} · 路由诊断`} close={close} wide>
-      <div className="route-diagnostic-panel">
+    <Modal title={`${target?.channel_name || channel?.name || `渠道 #${channelId || '无效 ID'}`} · 渠道诊断`} close={close} wide>
+      <div className="route-diagnostic-panel channel-diagnostic-workspace" data-channel-id={channelId}>
+        {scopeError ? <div className="channel-route-recovery" role="alert"><span>{scopeError}</span><Link to="/channels">返回渠道列表重新选择</Link></div> : <>
         <div className="route-diagnostic-controls">
-          <label><span>诊断模型</span><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
-          <label><span>客户端协议</span><select value={protocol} onChange={(event) => setProtocol(event.target.value)}>{routeDiagnosticProtocols.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
-          <label><span>访问令牌</span><select value={tokenIdValue} onChange={(event) => setTokenIdValue(event.target.value)}><option value="">全局视角</option>{tokenIdValue && !tokens.some((token) => String(token.id) === tokenIdValue) && <option value={tokenIdValue}>所选令牌未载入 · #{tokenIdValue}</option>}{tokens.map((token) => <option value={token.id} key={token.id}>{authTokenLabel(token)}</option>)}</select></label>
+          <form className="channel-diagnostic-model-form" onSubmit={(event) => { event.preventDefault(); if (!validRouteText(modelDraft, 512)) { setModelInvalid(true); return } changeScope({ model: modelDraft }) }}><label><span>请求模型</span><input aria-label="渠道诊断请求模型" value={modelDraft} aria-invalid={modelInvalid || undefined} aria-describedby={modelInvalid ? modelErrorId : undefined} onChange={(event) => { setModelDraft(boundedRouteText(event.target.value, 512)); setModelInvalid(false) }} onKeyDown={(event) => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault() }} spellCheck={false} /></label><button className="secondary-button" type="submit">查看</button>{modelInvalid && <p id={modelErrorId} role="alert">请求模型最多 512 个字符，且不能包含控制字符。</p>}</form>
+          <label><span>客户端协议</span><select aria-label="客户端协议" value={protocol} onChange={(event) => changeScope({ clientProtocol: event.target.value })}>{routeDiagnosticProtocols.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
+          <label><span>访问令牌</span><select aria-label="访问令牌" value={tokenIdValue} onChange={(event) => changeScope({ tokenId: event.target.value })}><option value="">全局视角</option>{tokenIdValue && !tokens.some((token) => String(token.id) === tokenIdValue) && <option value={tokenIdValue}>所选令牌未载入 · #{tokenIdValue}</option>}{tokens.map((token) => <option value={token.id} key={token.id}>{authTokenLabel(token)}</option>)}</select></label>
           <button className="secondary-button" type="button" onClick={() => void refresh()} disabled={loading || !model}><RefreshCw className={loading ? 'spin' : ''} size={15} />{loading ? '诊断中' : '重新诊断'}</button>
         </div>
-        {model && <a className="text-button" href={`#${modelRouteURL({ model, clientProtocol: protocol, tokenId: tokenIdValue })}`}>在模型路由工作台查看</a>}
+        {models.length > 0 && <label className="channel-diagnostic-model-choice">渠道配置模型<select aria-label="选择渠道配置模型" value={models.includes(model) ? model : ''} onChange={(event) => changeScope({ model: event.target.value })}><option value="" disabled>选择配置名；保留当前请求名</option>{models.map((name) => <option key={name} value={name}>{name}{channel?.models.find((item) => item.model === name)?.disabled ? ' · 已停用' : ''}</option>)}</select></label>}
+        <div className="channel-diagnostic-links"><Link className="channel-route-workspace-link" to={globalURL}><Route size={15} />模型路由</Link><HelpTip label="渠道与模型诊断" text="两个入口共用当前请求的路由求值。渠道诊断查看指定渠道及其候选池；模型路由查看完整相关渠道。请求模型、协议与令牌保持，不改成统一名称，也不会自动探测。" /><Link to="/channels">返回渠道列表</Link></div>
         {tokenObservation.error && <p className="inline-error" role="alert">访问令牌清单读取失败，当前范围保持。<button className="text-button" type="button" onClick={tokenObservation.refresh}>重试令牌清单</button></p>}
         {snapshot?.route_strategy === 'sticky' && snapshot.sticky ? (
           <div className="route-diagnostic-sticky">
             <div><small>最近成功渠道</small><strong title={snapshot.sticky.channel_name}>{snapshot.sticky.channel_name || `#${snapshot.sticky.channel_id}`}</strong><span>有效至 {formatDiagnosticTime(snapshot.sticky.expires_at)}</span><span>{stickyForwardLabel(snapshot.sticky.forward_status)}</span></div>
           </div>
         ) : snapshot?.route_strategy === 'sticky' && !tokenId ? <div className="route-diagnostic-note"><span>粘性轮询：选择访问令牌后查看当前命中</span><HelpTip label="粘性轮询" text="同一「访问令牌 + 模型」会优先沿用上次成功渠道；全局视角只展示候选和日志占比。" /></div> : null}
-        {loading ? <LoadingState label="正在计算候选池" /> : error ? <ErrorState message={error} retry={() => void refresh()} /> : !model ? <EmptyState label="该渠道没有启用模型" /> : snapshot ? (
+        {state.message && state.status !== 'error' && state.status !== 'not-found' && state.status !== 'empty' && <p className="channel-route-recovery" role={state.status === 'stale' ? 'alert' : 'status'}>{state.message}{state.status === 'stale' && <button className="text-button" type="button" onClick={refresh}>重试当前范围</button>}</p>}
+        {state.status === 'loading' && !snapshot ? <LoadingState label="正在计算候选池" /> : state.status === 'error' || state.status === 'not-found' ? <ErrorState message={state.message} retry={() => void refresh()} /> : state.status === 'empty' ? <EmptyState label={state.message} /> : snapshot ? (
           <>
             <div className="route-diagnostic-summary">
               <article><small>当前策略</small><strong>{strategyLabel}</strong></article>
@@ -370,6 +390,7 @@ function ChannelRouteDiagnosticsModal({ channel, close }: { channel: Channel; cl
             </section>
           </>
         ) : <EmptyState label="暂无路由诊断数据" />}
+        </>}
       </div>
     </Modal>
   )
@@ -419,16 +440,16 @@ function formatChannelSuccessRate(value: number) {
   return `${percent.toFixed(1).replace(/\.0$/, '')}%`
 }
 
-function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remove, manageKeys, diagnose, restoreSync, details }: { channel: Channel; selected: boolean; busy: boolean; select: () => void; toggle: () => void; copy: () => void; edit: () => void; remove: () => void; manageKeys: () => void; diagnose: () => void; restoreSync: () => void; details: () => void }) {
+function ChannelRow({ channel, routeScope, selected, busy, select, toggle, copy, edit, remove, manageKeys, restoreSync, details }: { channel: Channel; routeScope?: ModelRouteScope; selected: boolean; busy: boolean; select: () => void; toggle: () => void; copy: () => void; edit: () => void; remove: () => void; manageKeys: () => void; restoreSync: () => void; details: () => void }) {
   const cooling = isCooling(channel)
   const activeModels = channel.models.filter((model) => !model.disabled)
   const protocols = Array.from(new Set(channel.urls.flatMap((url) => url.protocols?.length ? url.protocols : ['auto'])))
+  const diagnosisHref = channelDiagnosisURL(routeScope || { model: activeModels[0]?.model || '', clientProtocol: 'openai', tokenId: '' }, String(channel.id))
   return (
     <article className={`channel-row${selected ? ' row-selected' : ''}`}>
       <div className="channel-identity">
         <input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${channel.name}`} />
-        <span className={`status-dot ${channel.enabled ? cooling ? 'status-dot--warning' : 'status-dot--success' : 'status-dot--muted'}`} />
-        <div><div className="channel-name"><strong title={channel.name}>{channel.name}</strong><small>#{channel.id}</small>{channel.site_sync_ownership === 'manual' && <span className="site-sync-badge">手动接管</span>}</div>{channel.auth_type === 'api_key' ? <button type="button" className={`channel-key-health-link${channel.key_health_issue_count ? ' has-issues' : ''}`} onClick={manageKeys} aria-label={`管理 ${channel.name} 的 Key`} title="查看每个 Key 的状态、复检或清理">{channel.key_count} Keys · 健康管理{Boolean(channel.key_health_issue_count) && <em>{channel.key_health_issue_count} 需关注</em>}</button> : <span>{channel.auth_type}</span>}<button className="resource-details-trigger" type="button" onClick={details} aria-label={`查看 ${channel.name} 详情`}>详情</button></div>
+        <div className="channel-identity-copy"><div className="channel-name"><strong title={channel.name}>{channel.name}</strong><small>#{channel.id}</small></div><div className="channel-identity-status">{channel.auth_type === 'api_key' ? <button type="button" className={`channel-key-health-link${channel.key_health_issue_count ? ' has-issues' : ''}`} onClick={manageKeys} aria-label={`管理 ${channel.name} 的 Key`} title={`查看每个 Key 的状态、复检或清理${channel.key_health_issue_count ? `；${channel.key_health_issue_count} 需关注` : ''}`}>{channel.key_count} Keys · 健康管理{Boolean(channel.key_health_issue_count) && <em>{channel.key_health_issue_count} 需关注</em>}</button> : <span>{channel.auth_type}</span>}{cooling && <span className="channel-identity-cooldown text-warning" title={cooldownSummary(channel)}>冷却中</span>}{channel.site_sync_ownership === 'manual' && <span className="site-sync-badge" title="该渠道已手动接管站点同步">手动接管</span>}</div></div>
       </div>
       <div className="channel-endpoints">{channel.urls[0]?.url ? <a className="site-base-link" href={channel.urls[0].url} target="_blank" rel="noreferrer" title={`在新标签页打开 ${channel.urls[0].url}`}><strong>{channel.urls[0].url}</strong></a> : <strong>未配置 URL</strong>}<span title={channel.urls.map((item) => item.url).join('\n')}>{channel.urls.length} URL · {protocols.join(' / ')}</span></div>
       <div className="channel-routing">
@@ -442,10 +463,11 @@ function ChannelRow({ channel, selected, busy, select, toggle, copy, edit, remov
       <div className="channel-models"><strong>{activeModels.length} 模型</strong><span title={activeModels.map((item) => item.model).join(', ')}>{activeModels.slice(0, 2).map((item) => item.model).join(' · ') || '未配置'}</span></div>
       <div className="channel-limits"><span>RPM {channel.rpm_limit || '不限'}</span><span>并发 {channel.max_concurrency || '不限'}</span>{channel.auth_type === 'api_key' && <span title="有效 Key 会排除禁用或处于冷却中的 Key">Key {channel.effective_key_count ?? channel.key_count}/{channel.key_count}</span>}{cooling && <small className="text-warning" title={cooldownSummary(channel)}>存在冷却</small>}</div>
       <div className="row-actions">
+        <button className="resource-details-trigger channel-details-action" type="button" onClick={details} aria-label={`查看 ${channel.name} 详情`}>详情</button>
         <a className="icon-button icon-button--surface" href={`#/models?channel=${channel.id}&model=${encodeURIComponent(activeModels[0]?.model || '')}&view=probe`} aria-label={`测试 ${channel.name}`} title="模型测试"><FlaskConical size={16} /></a>
-        <button className="icon-button icon-button--surface" type="button" onClick={diagnose} aria-label={`诊断 ${channel.name} 的路由`} title="路由诊断：查看候选池、策略和排除原因"><Route size={16} /></button>
+        <a className="icon-button icon-button--surface channel-diagnosis-link" href={diagnosisHref ? `#${diagnosisHref}` : undefined} aria-disabled={!diagnosisHref || undefined} aria-label={`渠道诊断 ${channel.name}`} title="渠道诊断：查看该渠道的候选资格与排除原因"><GitCompareArrows size={16} /></a>
         {channel.site_sync_ownership === 'manual' && <button className="icon-button icon-button--surface" type="button" onClick={restoreSync} disabled={busy} aria-label={`恢复 ${channel.name} 自动同步`} title="恢复自动同步"><RefreshCw size={16} /></button>}
-        <button className={`icon-button icon-button--surface ${channel.enabled ? 'is-on' : ''}`} type="button" onClick={toggle} disabled={busy} aria-label={channel.enabled ? `停用 ${channel.name}` : `启用 ${channel.name}`} title={channel.enabled ? '停用渠道' : '启用渠道'}><Power className={busy ? 'spin' : ''} size={16} /></button>
+        <button className={`icon-button icon-button--surface resource-power-button ${channel.enabled ? 'is-on' : ''}`} type="button" onClick={toggle} disabled={busy} aria-label={channel.enabled ? `停用 ${channel.name}` : `启用 ${channel.name}`} aria-pressed={channel.enabled} title={channel.enabled ? '已启用 · 点击停用渠道' : '已停用 · 点击启用渠道'}><Power className={busy ? 'spin' : ''} size={16} /></button>
         <button className="icon-button icon-button--surface" type="button" onClick={copy} disabled={busy} aria-label={`复制 ${channel.name}`} title="复制渠道"><Copy size={16} /></button>
         <button className="icon-button icon-button--surface" type="button" onClick={edit} aria-label={`编辑 ${channel.name}`} title="编辑"><Pencil size={16} /></button>
         <button className="icon-button icon-button--surface danger-button" type="button" onClick={remove} disabled={busy} aria-label={`删除 ${channel.name}`} title="删除"><Trash2 size={16} /></button>

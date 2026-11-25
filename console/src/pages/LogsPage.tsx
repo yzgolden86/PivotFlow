@@ -5,12 +5,13 @@ import type { ActiveRequest, AuthToken, CostBasis, CostSource, CostStatus, Dashb
 import { EmptyState, ErrorState, formatNumber, formatTime, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
 import { useLocation } from 'react-router-dom'
 import { Modal } from './siteShared'
-import { modelRedirectTitle } from './modelRedirect'
+import { logModelObservation } from './modelRedirect'
 import RequestHistoryView from './RequestHistoryView'
-import { compactRequestId, requestDetailHref } from './requestHistory'
+import { requestDetailHref } from './requestHistory'
 import { buildCostEntryView, COST_BASIS_FILTER_OPTIONS, COST_SOURCE_FILTER_OPTIONS, COST_STATUS_FILTER_OPTIONS } from '../costSemantics.ts'
 import HelpTip from '../components/HelpTip'
 import '../costSemantics.css'
+import '../requestHistoryPresentation.css'
 
 const PAGE_SIZE = 20
 const EMPTY_BOOTSTRAP: LogsBootstrap = { channel_test_content: '', auth_tokens: [], models: [], channels: [], status_codes: [] }
@@ -221,6 +222,7 @@ function LogRow({ entry }: { entry: LogEntry }) {
   const success = entry.status_code >= 200 && entry.status_code < 300
   const statusText = `${entry.status_code || 'ERR'} · ${success ? '成功' : '错误'}`
   const cost = buildCostEntryView(entry)
+  const mappedModel = logModelObservation(entry)
   const hasChannel = entry.channel_id > 0
   const channelName = entry.channel_name || (hasChannel ? `渠道 #${entry.channel_id}` : '路由汇总')
   const usedTokenLabel = logAuthTokenLabel(entry)
@@ -252,10 +254,10 @@ function LogRow({ entry }: { entry: LogEntry }) {
   }
   return (
     <article className="record-row log-grid">
-      <div><strong>{formatTime(entry.time)}</strong><span>{sourceLabel(entry.log_source)}</span>{requestHref && <a className="request-cross-link" href={requestHref} title={entry.request_id} aria-label={`查看请求 ${entry.request_id} 详情`}><ListTree size={12} />{compactRequestId(entry.request_id || '')}{entry.attempt_number ? ` · 尝试 #${entry.attempt_number}` : ''}</a>}</div>
+      <div><strong>{formatTime(entry.time)}</strong><span>{sourceLabel(entry.log_source)}</span>{requestHref && <a className="request-cross-link" href={requestHref} title={entry.request_id} aria-label={`查看请求 ${entry.request_id} 详情`}><ListTree size={12} />请求详情{entry.attempt_number ? ` · 尝试 #${entry.attempt_number}` : ''}</a>}</div>
       <div className="log-channel-cell"><strong title={entry.channel_name || undefined}>{channelName}</strong><span>{hasChannel ? `#${entry.channel_id}` : '未命中可用渠道'}</span></div>
       <div className="log-status"><div className="log-status-line"><span className={`status-badge status-badge--${success ? 'success' : 'danger'}`}>{statusText}</span>{entry.message && <button className="log-copy-button" type="button" onClick={() => void copyStatus()} aria-label="复制状态错误" title="复制状态和错误详情">{copied ? <Check size={13} /> : <Copy size={13} />}</button>}</div>{entry.message && <span className="record-message" title={entry.message}>{entry.message}</span>}</div>
-      <div className="log-model-cell"><strong title={modelRedirectTitle(entry.model, entry.actual_model)} className={entry.actual_model ? 'log-model-name' : undefined}>{entry.model}{entry.actual_model && entry.actual_model !== entry.model && <span className="log-model-arrow" aria-label={`实际上游模型 ${entry.actual_model}`}> → {entry.actual_model}</span>}</strong><span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
+      <div className="log-model-cell"><strong title={entry.model}>{entry.model || '未记录模型'}</strong>{mappedModel && <span className="log-actual-model" title={mappedModel.title}><small>{mappedModel.label}</small><code>{mappedModel.model}</code></span>}<span>{entry.client_protocol || '—'} → {entry.upstream_protocol || '—'}</span></div>
       <div><strong>{entry.duration ? `${entry.duration.toFixed(2)}s` : '—'}</strong><span>首字 {entry.first_byte_time ? `${entry.first_byte_time.toFixed(2)}s` : '—'}</span></div>
       <div><strong title={usedTokenLabel.title}>{usedTokenLabel.label}</strong><span>{entry.auth_token_id ? `#${entry.auth_token_id}` : '系统任务 / 手动测试'}</span></div>
       <div><strong>{formatNumber(entry.input_tokens)} / {formatNumber(entry.output_tokens)}</strong><span>输入 / 输出 token</span></div>

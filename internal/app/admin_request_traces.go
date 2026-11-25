@@ -23,6 +23,9 @@ type requestTraceSummaryView struct {
 	StartedAt            int64   `json:"started_at"`
 	AuthTokenID          int64   `json:"auth_token_id"`
 	Model                string  `json:"model"`
+	ActualModel          string  `json:"actual_model,omitempty"`
+	ChannelID            int64   `json:"channel_id,omitempty"`
+	ChannelName          string  `json:"channel_name,omitempty"`
 	ClientProtocol       string  `json:"client_protocol"`
 	Transport            string  `json:"transport"`
 	IsStreaming          bool    `json:"is_streaming"`
@@ -81,11 +84,12 @@ func (s *Server) HandleRequestTraces(c *gin.Context) {
 		return
 	}
 	summaries := make([]requestTraceSummaryView, 0, len(traces))
+	includeRouting := requestTraceIdentityScope(c) == nil
 	for _, trace := range traces {
 		if trace == nil {
 			continue
 		}
-		summaries = append(summaries, projectRequestTraceSummary(trace))
+		summaries = append(summaries, projectRequestTraceSummary(trace, includeRouting))
 	}
 	RespondJSONWithCount(c, http.StatusOK, summaries, total)
 }
@@ -195,11 +199,11 @@ func requestTraceIdentityScope(c *gin.Context) *int64 {
 	return &authTokenID
 }
 
-func projectRequestTraceSummary(trace *model.RequestTrace) requestTraceSummaryView {
+func projectRequestTraceSummary(trace *model.RequestTrace, includeRouting bool) requestTraceSummaryView {
 	if trace == nil {
 		return requestTraceSummaryView{}
 	}
-	return requestTraceSummaryView{
+	summary := requestTraceSummaryView{
 		RequestID:            trace.RequestID,
 		StartedAt:            trace.StartedAt,
 		AuthTokenID:          trace.AuthTokenID,
@@ -218,10 +222,15 @@ func projectRequestTraceSummary(trace *model.RequestTrace) requestTraceSummaryVi
 		CacheStatus:          trace.CacheStatus,
 		CacheReason:          trace.CacheReason,
 	}
+	if includeRouting {
+		summary.ActualModel = model.LastRequestActualModel(trace)
+		summary.ChannelID, summary.ChannelName = model.LastRequestChannel(trace)
+	}
+	return summary
 }
 
 func projectTokenRequestTrace(trace *model.RequestTrace) tokenRequestTraceDetailView {
-	summary := projectRequestTraceSummary(trace)
+	summary := projectRequestTraceSummary(trace, false)
 	attempts := make([]tokenRequestTraceAttemptView, 0, len(trace.Attempts))
 	for _, attempt := range trace.Attempts {
 		attempts = append(attempts, tokenRequestTraceAttemptView{

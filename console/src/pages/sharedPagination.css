@@ -1,0 +1,133 @@
+/* Keep this shared layout authoritative even when page CSS loads later.
+   Metadata and controls can wrap independently; buttons never fill free space. */
+nav.pagination.pagination--compact {
+  box-sizing: border-box;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  container: shared-pagination / inline-size;
+}
+
+nav.pagination.pagination--compact > .pagination-meta {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  text-align: start;
+}
+
+nav.pagination.pagination--compact > .pagination-meta > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+nav.pagination.pagination--compact > .pagination-controls {
+  display: flex;
+  width: max-content;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  margin: 0 0 0 auto;
+}
+
+nav.pagination.pagination--compact .pagination-jump {
+  display: inline-flex;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  grid-column: auto;
+}
+
+nav.pagination.pagination--compact .pagination-controls > strong {
+  min-width: 3.5em;
+  flex: 0 1 auto;
+  overflow-wrap: anywhere;
+  font-family: var(--font-numeric, inherit);
+  font-variant-numeric: tabular-nums;
+}
+
+nav.pagination.pagination--compact .pagination-controls button {
+  box-sizing: border-box;
+  width: auto;
+  min-width: 0;
+  min-height: 34px;
+  flex: 0 0 auto;
+  align-self: center;
+  white-space: nowrap;
+}
+
+nav.pagination.pagination--compact .pagination-controls > .icon-button {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+}
+
+nav.pagination.pagination--compact .pagination-jump > label {
+  display: inline-flex;
+  width: auto;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+nav.pagination.pagination--compact .pagination-jump input {
+  box-sizing: border-box;
+  width: 3.5em;
+  min-width: 0;
+  min-height: 34px;
+  flex: 0 0 auto;
+}
+
+nav.pagination.pagination--compact .pagination-jump > button {
+  padding: 4px 6px;
+  font-size: inherit;
+  line-height: 1.2;
+}
+
+nav.pagination.pagination--compact > .pagination-error {
+  min-width: 0;
+  flex: 1 0 100%;
+  overflow-wrap: anywhere;
+}
+
+/* Respond to the pager's containing pane, including desktop model pickers. */
+@container shared-pagination (max-width: 32rem) {
+  nav.pagination.pagination--compact > .pagination-meta {
+    justify-content: center;
+    text-align: center;
+  }
+
+  nav.pagination.pagination--compact > .pagination-controls {
+    justify-content: center;
+    margin-inline: auto;
+  }
+}
+
+@container shared-pagination (max-width: 18rem) {
+  nav.pagination.pagination--compact > .pagination-controls { gap: 4px; }
+  nav.pagination.pagination--compact .pagination-jump,
+  nav.pagination.pagination--compact .pagination-jump > label { gap: 4px; }
+  nav.pagination.pagination--compact .pagination-controls > .icon-button { width: 28px; }
+  nav.pagination.pagination--compact .pagination-controls > strong { min-width: 2.75em; }
+  nav.pagination.pagination--compact .pagination-jump input { width: 3em; }
+  nav.pagination.pagination--compact .pagination-jump > button { padding-inline: 4px; }
+}

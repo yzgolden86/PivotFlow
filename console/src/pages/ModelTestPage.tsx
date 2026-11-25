@@ -22,6 +22,7 @@ import type { Channel, ChannelTestResult, Site, SiteAccount, SiteAccountModel, S
 import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, PageHeader } from './shared'
 import { useLocation } from 'react-router-dom'
 import { VendorMark } from './vendorMarks'
+import { createModelPricingLoader } from './modelPricingLoader'
 import {
   catalogFactForStatus,
   catalogTestDisabledReason,
@@ -79,33 +80,31 @@ export default function ModelTestPage() {
   // load 里要读当前选择做失效校验，但不能把它们放进 useCallback 依赖，
   // 否则每次改选择都会重建 load 并触发挂载 effect 重新拉数。
   const selectionRef = useRef<{ channelId: number; accountId: number; target: ProbeTarget }>({ channelId: 0, accountId: 0, target: 'channel' })
+  const catalogueSequence = useRef(0)
   const pricingSequence = useRef(0)
+  const pricingLoader = useMemo(() => createModelPricingLoader(
+    (siteId, refresh, signal) => getSitePricing({ site_id: siteId, refresh }, signal),
+  ), [])
 
   const loadPricing = useCallback(async (siteIds: number[], signal?: AbortSignal, refresh = false) => {
     const sequence = ++pricingSequence.current
-    const uniqueIds = Array.from(new Set(siteIds.filter((id) => id > 0)))
-    if (!uniqueIds.length) return
-    const results = await Promise.all(uniqueIds.map(async (siteId) => {
-      try { return await getSitePricing({ site_id: siteId, refresh }, signal) }
-      catch { return null }
-    }))
-    if (signal?.aborted || sequence !== pricingSequence.current) return
-    setSitePricing((current) => {
-      const next = { ...current }
-      uniqueIds.forEach((siteId, index) => {
-        const pricing = results[index]
-        if (pricing && !Array.isArray(pricing) && Array.isArray(pricing.models)) {
-          next[siteId] = { ...pricing, group_ratio: pricing.group_ratio || {} }
-        }
+    await pricingLoader.load(siteIds, (siteId, pricing) => {
+      if (signal?.aborted || sequence !== pricingSequence.current) return
+      setSitePricing((current) => {
+        if (signal?.aborted || sequence !== pricingSequence.current) return current
+        return { ...current, [siteId]: pricing }
       })
-      return next
-    })
-  }, [])
+    }, { signal, refresh })
+  }, [pricingLoader])
 
   // keepSelection：手动刷新只重新取数，不能重放 URL 参数，否则用户当前选好的
   // 渠道/账号/模型会被打回默认值。force：绕过 getChannels(30s) 与
   // getSiteInventory(45s) 的 TTL 缓存，否则「刷新」可能拿回陈旧数据。
   const load = useCallback(async (signal?: AbortSignal, options: { force?: boolean; keepSelection?: boolean } = {}) => {
+    const catalogueLoadSequence = ++catalogueSequence.current
+    // Stop the previous price queue as soon as a new catalog load starts.
+    const pricingLoadSequence = ++pricingSequence.current
+    pricingLoader.abort()
     setLoading(true)
     setError('')
     try {
@@ -115,6 +114,7 @@ export default function ModelTestPage() {
         getSiteModels({}, signal),
         getSiteChannelBindings(signal),
       ])
+      if (signal?.aborted || catalogueLoadSequence !== catalogueSequence.current) return
       const availableChannels = channelResponse.data
       const enabledAccounts = inventory.accounts.filter((item) => item.enabled)
       const nextChannelTargets = eligibleChannelTestTargets(availableChannels)
@@ -196,21 +196,30 @@ export default function ModelTestPage() {
         ...modelResponse.data.map((fact) => siteByAccount.get(fact.site_account_id)),
         ...availableChannels.map((channel) => channelSiteId(channel, bindingByChannel.get(channel.id), inventoryAccountsByID)),
       ].filter((siteId): siteId is number => Boolean(siteId))
-      void loadPricing(pricingSiteIds, signal, options.force)
+      if (!signal?.aborted && pricingLoadSequence === pricingSequence.current) {
+        void loadPricing(pricingSiteIds, signal, options.force)
+      }
     } catch (reason) {
-      if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '模型数据加载失败')
+      if (!signal?.aborted && catalogueLoadSequence === catalogueSequence.current) {
+        setError(reason instanceof Error ? reason.message : '模型数据加载失败')
+      }
     } finally {
-      if (!signal?.aborted) setLoading(false)
+      if (!signal?.aborted && catalogueLoadSequence === catalogueSequence.current) setLoading(false)
     }
-  }, [loadPricing, params])
+  }, [loadPricing, params, pricingLoader])
 
   useEffect(() => { selectionRef.current = { channelId, accountId, target } }, [channelId, accountId, target])
 
   useEffect(() => {
     const controller = new AbortController()
     void load(controller.signal)
-    return () => controller.abort()
-  }, [load])
+    return () => {
+      controller.abort()
+      ++catalogueSequence.current
+      ++pricingSequence.current
+      pricingLoader.abort()
+    }
+  }, [load, pricingLoader])
 
   const siteMap = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites])
   const accountMap = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts])

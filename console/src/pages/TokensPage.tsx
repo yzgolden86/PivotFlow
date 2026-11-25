@@ -1,16 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRight, Check, ChevronDown, Copy, KeyRound, Pencil, Play, PlugZap, Plus, Power, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { ArrowRight, Check, Copy, KeyRound, Pencil, Play, PlugZap, Plus, Power, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
-import { createAuthToken, deleteAuthToken, getAuthTokens, getChannels, getDashboardSummary, getModelRouteInventory, revealAuthToken, updateAuthToken } from '../api'
+import { createAuthToken, deleteAuthToken, getAuthTokens, getChannels, getModelRouteInventory, revealAuthToken, updateAuthToken } from '../api'
 import useReadSnapshot from '../components/useReadSnapshot'
 import HelpTip from '../components/HelpTip'
-import { analyzeCostSummary } from '../costSemantics'
-import type { AuthToken, Channel, CostSummary, DashboardRange } from '../types'
+import type { AuthToken, Channel, DashboardRange } from '../types'
 import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
 import { Modal } from './siteShared'
 import { tokenMetadata } from './clientConnection'
-import '../costSemantics.css'
-import CostSummaryPanel from './CostSummaryPanel'
+import './tokensPresentation.css'
 import { listWindow } from './listWindow'
 import ResourceDetails, { DetailList, detailDate } from './ResourceDetails'
 
@@ -44,8 +42,6 @@ export default function TokensPage() {
   const [pageSize, setPageSize] = useState(50)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [costSummary, setCostSummary] = useState<CostSummary | null>(null)
-  const [costSummaryError, setCostSummaryError] = useState('')
   const [editing, setEditing] = useState<AuthToken | 'new' | null>(null)
   const [details, setDetails] = useState<AuthToken | null>(null)
   const [createdToken, setCreatedToken] = useState<{ value: string; id: number } | null>(null)
@@ -59,23 +55,9 @@ export default function TokensPage() {
     const stale = () => Boolean(signal?.aborted) || sequence !== loadSequence.current
     setLoading(true); setError('')
     try {
-      const [tokenResult, summaryResult] = await Promise.allSettled([
-        getAuthTokens(range, signal),
-        getDashboardSummary(range, signal),
-      ])
+      const data = await getAuthTokens(range, signal)
       if (stale()) return
-      if (summaryResult.status === 'fulfilled') {
-        setCostSummary(summaryResult.value.cost_summary ?? null)
-        setCostSummaryError('')
-      } else {
-        setCostSummary(null)
-        setCostSummaryError(summaryResult.reason instanceof Error ? summaryResult.reason.message : '费用汇总读取失败')
-      }
-      if (tokenResult.status === 'rejected') {
-        setError(tokenResult.reason instanceof Error ? tokenResult.reason.message : '令牌加载失败')
-        return
-      }
-      setTokens(tokenResult.value.tokens || [])
+      setTokens(data.tokens || [])
     }
     catch (reason) { if (!stale()) setError(reason instanceof Error ? reason.message : '令牌加载失败') }
     finally { if (!stale()) setLoading(false) }
@@ -106,7 +88,6 @@ export default function TokensPage() {
     requests: tokens.reduce((sum, token) => sum + token.success_count + token.failure_count, 0),
     quotaUsed: tokens.reduce((sum, token) => sum + token.cost_used_usd, 0),
   }), [tokens])
-  const instanceCost = analyzeCostSummary(costSummary)
   const rangeName = rangeNames[range as keyof typeof rangeNames] || '所选时间'
 
   const toggle = async (token: AuthToken) => {
@@ -180,18 +161,18 @@ export default function TokensPage() {
 
     <section className="compact-summary" aria-label="令牌摘要">
       <span><strong>{tokens.length}</strong>令牌总数</span><span><strong>{totals.active}</strong>已启用</span>
-      <span><strong>{formatNumber(totals.requests)}</strong>{rangeName}请求记录</span>
+      <span><strong>{loading ? '—' : formatNumber(totals.requests)}</strong>{rangeName}请求记录</span>
       <span><strong>{formatMoney(totals.quotaUsed)}</strong>累计额度用量<HelpTip label="令牌用量" text="累计额度用量来自持久结算回执，用于费用软限额。请求统计和列表中的日志费用按所选时间查询，可能因历史或缺失日志与额度累计不同。所有金额均为本地口径，未与上游账单对账。" /></span>
     </section>
 
     {error && tokens.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
-    {loading ? <LoadingState label="正在加载令牌" /> : error && !tokens.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={query.trim() ? '没有符合搜索条件的令牌' : '创建一个令牌，开始配置客户端接入'} /> : <div className="token-table-wrap"><div className="token-table-head"><span /><span>名称</span><span>令牌</span><span>{rangeName}请求</span><span>{rangeName}日志费用</span><span>限制</span><span>创建时间</span><span>最后使用</span><span>操作</span></div><div className="token-list">
+    {loading ? <LoadingState label="正在加载令牌" /> : error && !tokens.length ? <ErrorState message={error} retry={() => void load()} /> : !visible.length ? <EmptyState label={query.trim() ? '没有符合搜索条件的令牌' : '创建一个令牌，开始配置客户端接入'} /> : <div className="token-table-wrap" role="region" aria-label="令牌列表" tabIndex={0}><div className="token-table-head"><span aria-hidden="true" /><span>名称</span><span>令牌</span><span className="token-number-cell">{rangeName}请求</span><span className="token-number-cell">{rangeName}日志费用</span><span>限制</span><span>创建时间</span><span>最后使用</span><span>操作</span></div><div className="token-list">
       {pagedTokens.map((token) => <article className="token-row" key={token.id}>
         <span className={`token-icon${token.is_active ? '' : ' token-icon--off'}`}><KeyRound size={17} /></span>
-        <div className="token-identity"><strong>{token.description}</strong><span>令牌 #{token.id}</span><button className="resource-details-trigger" type="button" onClick={() => setDetails(token)} aria-label={`查看 ${token.description} 详情`}>详情</button></div>
+        <div className="token-identity"><strong title={token.description}>{token.description}</strong><span>令牌 #{token.id} · {token.is_active ? '已启用' : '已停用'}</span><span className="token-mobile-stats">{rangeName} {formatNumber(token.success_count + token.failure_count)} 次请求 · 日志费用 {formatMoney(token.effective_cost_usd)}</span><button className="resource-details-trigger" type="button" onClick={() => setDetails(token)} aria-label={`查看 ${token.description} 详情`}>详情</button></div>
         <div className="token-secret-cell"><code>{token.token_hint || token.token || '****'}</code><button className="icon-button icon-button--surface" type="button" onClick={() => void reveal(token)} disabled={busyId === token.id || !token.token_recoverable} aria-label={`复制 ${token.description}`} title={token.token_recoverable ? '复制令牌' : '历史令牌不可恢复'}>{copiedId === token.id ? <Check size={15} /> : <Copy size={15} />}</button></div>
-        <div><strong>{formatNumber(token.success_count + token.failure_count)}</strong><span>{token.failure_count} 次失败</span></div>
-        <div><strong title={`${rangeName}归属此令牌的代理日志费用，尚未与上游账单对账`}>{formatMoney(token.effective_cost_usd)}</strong><span>{formatNumber((token.prompt_tokens_total || 0) + (token.completion_tokens_total || 0))} tokens</span></div>
+        <div className="token-number-cell"><strong>{formatNumber(token.success_count + token.failure_count)}</strong><span>{token.failure_count} 次失败</span></div>
+        <div className="token-number-cell"><strong title={`${rangeName}归属此令牌的代理日志费用，尚未与上游账单对账`}>{formatMoney(token.effective_cost_usd)}</strong><span>{formatNumber((token.prompt_tokens_total || 0) + (token.completion_tokens_total || 0))} tokens</span></div>
         <div><strong>并发 {token.max_concurrency || '不限'}</strong><span title={`累计额度用量 ${formatMoney(token.cost_used_usd)}`}>{token.cost_limit_usd ? `${formatMoney(token.cost_used_usd)} / ${formatMoney(token.cost_limit_usd)}` : '费用不限'}</span></div>
         <div><strong>{formatDate(createdTimestamp(token))}</strong></div>
         <div><strong>{token.last_used_at ? formatDate(token.last_used_at) : '未使用'}</strong>{token.expires_at != null && token.expires_at > 0 && <span>到期 {formatDate(token.expires_at)}</span>}</div>
@@ -204,11 +185,6 @@ export default function TokensPage() {
       </article>)}
     </div></div>}
     <Pagination label="令牌分页" page={page} pageSize={pageSize} total={visible.length} onPage={setPage} pageSizes={[50, 100]} onPageSize={(size) => { setPage(1); setPageSize(size) }} />
-
-    <details className="token-instance-costs">
-      <summary><span>全实例代理日志费用 · {rangeName}</span><span className={`token-instance-costs__state token-instance-costs__state--${instanceCost.coverageState}`}>{instanceCost.coverageState === 'incomplete' ? `${instanceCost.unknownOrPartialRequests} 条待核对` : instanceCost.coverageState === 'complete' ? '覆盖完整 · 未对账' : instanceCost.coverageState === 'empty' ? '暂无成功请求' : '依据缺失'}</span><ChevronDown size={16} aria-hidden="true" /></summary>
-      <div className="token-instance-costs__body"><div className="token-instance-costs__scope"><span>含未归属令牌的请求</span><HelpTip label="全实例费用范围" text="此处汇总所选时间的全部代理日志；令牌列表只统计各令牌归属日志，额度累计使用本地结算回执。这些范围可能产生不同金额。" /><a href="#/stats">打开数据面板<ArrowRight size={13} /></a></div><CostSummaryPanel summary={costSummary} title={`${rangeName}全实例本地记录费用`} compact />{costSummaryError && <p className="inline-error" role="alert">费用汇总读取失败：{costSummaryError}</p>}</div>
-    </details>
 
     {editing && <TokenForm token={editing === 'new' ? undefined : editing} close={() => setEditing(null)} saved={(token, plain) => {
       setEditing(null); if (plain) setCreatedToken({ value: plain, id: token.id })

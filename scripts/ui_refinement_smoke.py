@@ -181,6 +181,28 @@ class RefinementData(ModelRoutesData):
             self.calls.append({'path': path, 'method': route.request.method, 'query': query})
             self.fulfill(route, self.channels[offset:offset + limit], len(self.channels))
             return
+        if path == '/admin/stats/filter-options' and self.case.startswith('cost-'):
+            self.calls.append({'path': path, 'method': route.request.method})
+            self.fulfill(route, {'channel_names': ['合成费用渠道'], 'models': ['synthetic-cost-model']})
+            return
+        if path in ('/admin/stats', '/admin/dashboard') and self.case.startswith('cost-'):
+            coverage = 'complete' if self.case == 'cost-complete' else 'empty' if self.case == 'cost-empty' else 'incomplete'
+            summary = None if self.case == 'cost-missing' else cost_summary(coverage)
+            successful = summary['successful_requests'] if summary else 4
+            amount = summary['recorded_cost_usd'] if summary else 12
+            if path == '/admin/stats':
+                data = {'stats': [{'channel_id': 101, 'channel_name': '合成费用渠道', 'model': 'synthetic-cost-model',
+                                  'total': successful, 'success': successful, 'error': 0,
+                                  'total_cost': amount, 'effective_cost': amount,
+                                  'input_tokens': 0, 'output_tokens': 0}],
+                        'duration_seconds': 86400, 'rpm_stats': {}, 'is_today': True,
+                        'balance_history': [], 'cost_summary': summary}
+            else:
+                data = copy.deepcopy(fixtures.DASHBOARD)
+                data['cost_summary'] = summary
+            self.calls.append({'path': path, 'method': route.request.method})
+            self.fulfill(route, data)
+            return
         if path == '/admin/dashboard' and self.case == 'dashboard-costs':
             dashboard = copy.deepcopy(fixtures.DASHBOARD)
             dashboard['totals'].update(effective_cost=90, cost=90)
@@ -204,8 +226,9 @@ class RefinementData(ModelRoutesData):
 
 
 class Runner:
-    def __init__(self, browser, base, output, cases, wallpaper_fixture=None):
+    def __init__(self, browser, base, output, cases, wallpaper_fixture=None, data_factory=RefinementData):
         self.browser, self.base, self.output, self.cases = browser, base, output, cases
+        self.data_factory = data_factory
         self.wallpaper = wallpaper_fixture.read_bytes() if wallpaper_fixture else None
         self.results, self.events, self.metrics = [], [], {}
 
@@ -213,7 +236,7 @@ class Runner:
         if not condition:
             raise AssertionError(message)
 
-    def case(self, name, callback, path='/tokens', width=1440, height=900, theme='light', touch=False, wallpaper=False, glass=False):
+    def case(self, name, callback, path='/tokens', width=1440, height=900, theme='light', touch=False, wallpaper=False, glass=False, wait_until='networkidle'):
         if self.cases and name not in self.cases:
             return
         context = self.browser.new_context(viewport={'width': width, 'height': height},
@@ -226,7 +249,7 @@ class Runner:
             appearance = {'preference': theme, 'backgroundImage': f'{self.base}/synthetic-wallpaper.jpg',
                           'backgroundDim': 15, 'surfaceOpacity': 78 if glass else 100, 'surfaceBlur': 18}
             context.add_init_script(f"localStorage.setItem('pivotflow_appearance',JSON.stringify({json.dumps(appearance)}));")
-        data = RefinementData(name)
+        data = self.data_factory(name)
         page = context.new_page()
         page.on('pageerror', lambda error: self.events.append({'case': name, 'pageerror': str(error)}))
         origin = urlsplit(self.base).netloc
@@ -254,7 +277,7 @@ class Runner:
         started = time.perf_counter()
         result = {'case': name, 'pass': False}
         try:
-            page.goto(f'{self.base}/web/console/#{path}', wait_until='networkidle')
+            page.goto(f'{self.base}/web/console/#{path}', wait_until=wait_until)
             expect(page.locator('h1')).to_be_visible()
             callback(page, data)
             self.check(page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), 'Page overflows horizontally')
@@ -284,24 +307,24 @@ def regression_cases(runner):
     runner.case('dashboard-costs', dashboard_costs, path='/')
 
     def cost_state(page, data):
-        disclosure = page.locator('.token-instance-costs')
-        if disclosure.count():
-            runner.check(not disclosure.evaluate('(element) => element.open'), 'Instance-wide costs should start as secondary information')
-            disclosure.locator(':scope > summary').click()
-        panel = page.locator('.cost-summary-panel')
-        state = panel.locator('.cost-summary-panel__state')
+        panel = page.locator('.stats-cost-kpi')
         expect(panel).to_be_visible()
-        expected = {'cost-incomplete': ('incomplete', '覆盖不完整'),
-                    'cost-complete': ('complete', '覆盖完整'),
+        expected = {'cost-incomplete': ('incomplete', '1113 条待核对'),
+                    'cost-complete': ('complete', '完整估算 4/4'),
                     'cost-empty': ('empty', '暂无成功请求'),
-                    'cost-missing': ('missing', '依据缺失')}[data.case]
-        expect(state).to_have_text(expected[1])
-        expect(state).to_have_class(f'cost-summary-panel__state cost-summary-panel__state--{expected[0]}')
+                    'cost-missing': ('missing', '无法判断完整估算覆盖')}[data.case]
+        expect(panel).to_contain_text(expected[1])
+        expect(panel).to_have_class(f'stats-cost-kpi stats-cost-kpi--{expected[0]}')
+        expect(page.locator('.cost-summary-panel')).to_have_count(0)
+        disclosure = panel.locator('.stats-cost-evidence')
+        runner.check(not disclosure.evaluate('(element) => element.open'), 'Cost evidence should start folded')
+        disclosure.locator(':scope > summary').click()
+        expect(panel).to_contain_text('未对账')
         if data.case == 'cost-incomplete':
             expect(panel).to_contain_text('1113 条待核对')
             runner.check('当时无可用模型价格' not in panel.inner_text(), 'Historical unknown coverage must not imply missing current prices')
     for case in ('cost-incomplete', 'cost-complete', 'cost-empty', 'cost-missing'):
-        runner.case(case, cost_state)
+        runner.case(case, cost_state, path='/stats')
 
     def channel_selection(page, data):
         rows = page.locator('.channel-row')
@@ -475,7 +498,8 @@ def regression_cases(runner):
     def tokens_density(page, data):
         expect(page.get_by_role('region', name='令牌摘要')).to_contain_text('$10.00')
         expect(page.get_by_role('region', name='令牌摘要')).to_contain_text('累计额度用量')
-        runner.check(not page.locator('.token-instance-costs').evaluate('(element) => element.open'), 'Global logs must start collapsed')
+        expect(page.locator('.token-instance-costs')).to_have_count(0)
+        runner.check(not any(call['path'] == '/dashboard/summary' for call in data.calls), 'Tokens fetched removed instance-wide cost data')
         expect(page.locator('.token-table-head')).to_contain_text('今日日志费用')
         runner.check(page.locator('.token-row').first.inner_text().count('创建时间') == 0, 'Row repeats the visible date header')
         trigger = page.get_by_role('button', name='令牌用量 的说明', exact=True)

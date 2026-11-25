@@ -24,6 +24,8 @@ type SiteStore interface {
 	GetSiteAccount(ctx context.Context, id int64) (*model.SiteAccount, error)
 	CreateSiteAccount(ctx context.Context, account *model.SiteAccount) (*model.SiteAccount, error)
 	UpdateSiteAccount(ctx context.Context, id int64, account *model.SiteAccount) (*model.SiteAccount, error)
+	// Observation writes preserve management fields and never replace a newer balance.
+	UpdateSiteAccountBalance(ctx context.Context, id int64, balance float64, currency string, updatedAt int64) error
 	UpdateSiteAccountCredential(ctx context.Context, id int64, credentialType, ciphertext, keyVersion string) error
 	// RepairSiteAccountCredential replaces only authentication fields and marks
 	// the current credential status unknown. It preserves account switches,
@@ -36,6 +38,10 @@ type SiteStore interface {
 	ListSiteAccountModels(ctx context.Context, filter model.SiteModelFilter) ([]model.SiteAccountModel, error)
 	UpsertSiteAccountBalanceSnapshot(ctx context.Context, snapshot *model.SiteAccountBalanceSnapshot) error
 	ListSiteAccountBalanceSnapshots(ctx context.Context, sinceDay, untilDay string) ([]*model.SiteAccountBalanceSnapshot, error)
+	// Claim once and finish once; refreshes never rewrite fixed daily history.
+	CreateSiteAccountDailyBalance(ctx context.Context, sample *model.SiteAccountDailyBalance) (bool, error)
+	CompleteSiteAccountDailyBalance(ctx context.Context, sample *model.SiteAccountDailyBalance) (bool, error)
+	ListSiteAccountDailyBalances(ctx context.Context, sinceDay, untilDay string) ([]*model.SiteAccountDailyBalance, error)
 
 	UpsertSiteAnnouncements(ctx context.Context, announcements []model.SiteAnnouncement) error
 	ListSiteAnnouncements(ctx context.Context, filter model.SiteAnnouncementFilter) ([]*model.SiteAnnouncement, int, error)

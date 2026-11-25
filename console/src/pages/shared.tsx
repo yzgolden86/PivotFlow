@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, Eye, EyeOff, RefreshCw, X } from 'lucide-rea
 import type { LucideIcon } from 'lucide-react'
 import { listWindow, parsePageInput } from './listWindow'
 import { registerLiveRegion } from '../components/focusLayers'
+import './sharedPagination.css'
 
 export function PageHeader({ icon: Icon, title, actions, className = '', tone = 'green' }: {
   icon: LucideIcon
@@ -130,7 +131,7 @@ export function Pagination({ page, pageSize, total, onPage, pageSizes, onPageSiz
     onPage(target)
   }
   return (
-    <nav className="pagination" aria-label={label}>
+    <nav className="pagination pagination--compact" aria-label={label}>
       <div className="pagination-meta"><span aria-live="polite">共 {current.total} 条 · {current.total ? current.start + 1 : 0}–{current.end} 条</span>{pageSizes && onPageSize && <label>每页<select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}>{pageSizes.map((size) => <option value={size} key={size}>{size}</option>)}</select>条</label>}</div>
       <div className="pagination-controls">
         <button className="icon-button icon-button--surface" type="button" disabled={current.page <= 1} onClick={() => onPage(current.page - 1)} aria-label="上一页"><ChevronLeft size={16} /></button>

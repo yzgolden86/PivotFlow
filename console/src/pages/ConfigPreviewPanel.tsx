@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle2, RefreshCw, Search } from 'lucide-react'
+import HelpTip from '../components/HelpTip'
 import {
   canApplyPreview,
   configPreviewEntityLabel,
@@ -94,9 +95,7 @@ export default function ConfigPreviewPanel({
     <section className="config-preview-panel" aria-label="配置差异预览">
       <header className="config-preview-header">
         <div>
-          <span className="config-preview-kicker">{preview.kind === 'backup' ? '备份导入' : preview.kind === 'browser_import' ? '浏览器导入' : '站点渠道同步'}</span>
-          <h3>确认将发生的变更</h3>
-          <p>预览只展示字段名与结果摘要，不包含凭证、请求规则、代理地址或设置值。</p>
+          <div className="heading-with-hint"><h3>确认将发生的变更</h3><HelpTip label="变更预览说明" text={`${preview.kind === 'backup' ? '备份导入' : preview.kind === 'browser_import' ? '浏览器导入' : '站点渠道同步'}：预览只展示字段名与结果摘要，不包含凭证、请求规则、代理地址或设置值。`} /></div>
         </div>
         <span className={`config-preview-status config-preview-status--${preview.status}`}>
           {preview.status === 'applied'

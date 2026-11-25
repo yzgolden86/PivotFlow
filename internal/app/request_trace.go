@@ -236,6 +236,8 @@ func (t *requestTrace) appendLocked() {
 	a.Duration = time.Since(t.attemptStart).Seconds()
 	t.entry.AttemptCount++
 	if a.Upstream {
+		t.entry.ActualModel = a.ActualModel
+		t.entry.ChannelID, t.entry.ChannelName = a.ChannelID, a.ChannelName
 		t.entry.UpstreamAttemptCount++
 		if a.Outcome == "success" {
 			t.entry.UpstreamSuccessCount++

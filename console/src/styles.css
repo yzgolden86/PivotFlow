@@ -1684,7 +1684,7 @@ a:focus-visible {
   align-items: center;
   gap: 7px;
   padding: 7px 13px;
-  color: #ffffff;
+  color: var(--primary-foreground, #ffffff);
   background: linear-gradient(135deg, color-mix(in srgb, var(--green) 88%, var(--blue)), var(--green));
   border: 0;
   border-radius: 5px;
@@ -7442,13 +7442,11 @@ body {
 }
 
 /* Client connection: the existing asset workflow beside a concrete request. */
-.connect-intro { margin: 0 0 18px; color: var(--text-secondary); font-size: 13px; line-height: 1.7; }
 .connect-layout { display: grid; grid-template-columns: 246px minmax(0, 1fr); align-items: start; gap: 18px; }
 .connect-guide, .connect-panel { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--surface); }
 .connect-guide { position: sticky; top: 16px; }
 .connect-guide > header { display: flex; flex-direction: column; gap: 6px; padding: 18px; border-bottom: 1px solid var(--border); }
 .connect-guide > header > strong { font-size: 15px; font-weight: 650; }
-.connect-eyebrow { color: var(--text-muted); font-size: 11px; letter-spacing: .04em; }
 .connect-guide ol { list-style: none; padding: 8px 16px; margin: 0; }
 .connect-guide li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 11px; padding: 14px 0; }
 .connect-guide li + li { border-top: 1px solid var(--border); }
@@ -7569,8 +7567,6 @@ body {
   gap: 16px;
 }
 .request-cache-panel-head > div:first-child { display: grid; min-width: 0; gap: 5px; }
-.request-cache-eyebrow { display: inline-flex; align-items: center; gap: 7px; color: var(--green-text); font: 650 11px/16px var(--font-ui); letter-spacing: .08em; text-transform: uppercase; }
-.request-cache-eyebrow i { width: 7px; height: 7px; background: var(--green); border-radius: 50%; box-shadow: 0 0 0 4px var(--green-soft); animation: request-cache-pulse 2.4s ease-out infinite; }
 .request-cache-panel-head h3 { margin: 0; color: var(--text); font: 680 18px/24px var(--font-display); letter-spacing: -.015em; }
 .request-cache-panel-head p { max-width: 660px; margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.7; }
 .request-cache-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 8px; }
@@ -7748,7 +7744,4 @@ body {
   .request-cache-actions .secondary-button { flex-basis: 100%; }
   .request-cache-badge { flex-basis: 100%; width: max-content; }
   .request-cache-ledger dl { grid-template-columns: minmax(0, 1fr); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .request-cache-eyebrow i { animation: none; }
 }

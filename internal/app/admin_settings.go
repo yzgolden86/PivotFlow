@@ -82,6 +82,8 @@ var systemSettingRuntimeEffects = map[string]string{
 	"channel_check_interval_hours":            "渠道定时巡检调度器",
 	"site_daily_checkin_time":                 "站点每日签到调度器",
 	"site_daily_announcement_time":            "站点每日公告刷新调度器",
+	"site_daily_balance_enabled":              "每日余额统计调度器开关",
+	"site_daily_balance_time":                 "每日余额固定采样时间",
 	"model_catalog_sync_interval_hours":       "模型价格目录同步器",
 	"auto_update_interval_hours":              "版本检查调度器",
 	"auto_update_channel":                     "版本发布通道选择",
@@ -547,8 +549,8 @@ func validateSettingValue(key, valueType, value string) error {
 
 	case "string":
 		switch key {
-		case "site_daily_checkin_time", "site_daily_announcement_time":
-			if _, err := time.Parse("15:04", value); err != nil {
+		case "site_daily_checkin_time", "site_daily_announcement_time", "site_daily_balance_time":
+			if parsed, err := time.Parse("15:04", value); err != nil || parsed.Format("15:04") != value {
 				return fmt.Errorf("%s must use HH:MM", key)
 			}
 		case "auto_update_channel":

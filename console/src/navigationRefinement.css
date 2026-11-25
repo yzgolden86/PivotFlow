@@ -1,0 +1,169 @@
+/* Keep the current fourteen destinations visible in ordinary desktop windows. */
+.sidebar-brand {
+  min-height: 60px;
+  flex: 0 0 auto;
+  gap: 10px;
+  padding: 10px 15px;
+}
+
+.sidebar .brand-mark {
+  width: 34px;
+  height: 34px;
+  flex-basis: 34px;
+}
+
+.sidebar .brand-copy {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 7px;
+}
+
+.sidebar .brand-copy > span {
+  margin-top: 0;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.sidebar .global-search-trigger {
+  min-height: 34px;
+  flex-basis: 34px;
+  margin-top: 8px;
+  padding-block: 5px;
+}
+
+.sidebar-nav {
+  padding: var(--nav-edge-space, 8px) 10px;
+  overscroll-behavior: contain;
+}
+
+.sidebar-nav .nav-group + .nav-group {
+  margin-top: var(--nav-group-space, 6px);
+}
+
+.sidebar-nav .nav-group-label {
+  margin: 0 10px var(--nav-label-space, 4px);
+  font-size: 11px;
+  line-height: 14px;
+  letter-spacing: .03em;
+}
+
+.sidebar-nav .nav-group-label::after {
+  opacity: .6;
+}
+
+.sidebar-nav .nav-item {
+  min-height: 34px;
+  margin: 0;
+  padding: 6px 10px;
+  gap: 10px;
+  line-height: 20px;
+}
+
+.sidebar-footer {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+}
+
+.sidebar .sidebar-actions {
+  padding: 0;
+}
+
+.app-shell--collapsed .sidebar-nav .nav-group {
+  margin-top: 0;
+}
+
+.app-shell--collapsed .sidebar-nav .nav-group + .nav-group {
+  margin-top: var(--nav-group-space, 6px);
+}
+
+.app-shell--collapsed .sidebar-nav .nav-item {
+  padding-inline: 0;
+}
+
+@media (max-height: 800px) {
+  .sidebar-brand {
+    min-height: 52px;
+    padding-block: 8px;
+  }
+
+  .sidebar .brand-mark {
+    width: 30px;
+    height: 30px;
+    flex-basis: 30px;
+  }
+
+  .sidebar .global-search-trigger {
+    margin-top: 6px;
+  }
+
+  .sidebar-nav {
+    padding-block: var(--nav-edge-space, 6px);
+  }
+
+  .sidebar-nav .nav-group-label {
+    margin-bottom: var(--nav-label-space, 2px);
+  }
+
+  .sidebar-nav .nav-item {
+    min-height: 32px;
+    padding-block: 5px;
+  }
+
+  .sidebar-footer {
+    padding-block: 6px;
+  }
+}
+
+/* Share the actual space left by the brand, search and footer across all links.
+   Group weights match App.tsx's 1 / 4 / 4 / 3 / 2 destinations, so each link gets
+   the same extra height, including when labels disappear in collapsed mode. */
+@media (min-width: 881px) {
+  .sidebar-nav {
+    --nav-edge-space: clamp(6px, calc(6px + (100dvh - 720px) / 30), 12px);
+    --nav-group-space: clamp(6px, calc(6px + (100dvh - 720px) / 15), 18px);
+    --nav-label-space: clamp(2px, calc(2px + (100dvh - 720px) / 90), 4px);
+    --nav-item-space: clamp(0px, calc((100dvh - 720px) / 60), 3px);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sidebar-nav .nav-group {
+    display: flex;
+    flex: 1 0 auto;
+    flex-direction: column;
+  }
+
+  .sidebar-nav .nav-group:nth-child(2),
+  .sidebar-nav .nav-group:nth-child(3) {
+    flex-grow: 4;
+  }
+
+  .sidebar-nav .nav-group:nth-child(4) {
+    flex-grow: 3;
+  }
+
+  .sidebar-nav .nav-group:nth-child(5) {
+    flex-grow: 2;
+  }
+
+  .sidebar-nav .nav-group-label {
+    flex: 0 0 auto;
+  }
+
+  .sidebar-nav .nav-item {
+    flex: 1 0 auto;
+  }
+
+  .sidebar-nav .nav-item + .nav-item {
+    margin-top: var(--nav-item-space);
+  }
+}
+
+/* Low-height windows retain native navigation scrolling instead of clipping links. */
+@media (max-width: 880px) {
+  .sidebar-nav .nav-item {
+    min-height: 38px;
+    padding-block: 8px;
+  }
+}

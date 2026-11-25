@@ -282,6 +282,12 @@ func TestRequestCacheHistoryLegacySQLiteMigrationAddsEmptyMetadata(t *testing.T)
 	if !columns["cache_status"] || !columns["cache_reason"] {
 		t.Fatalf("cache metadata columns missing after real SQLite migration: %v", columns)
 	}
+	if !columns["channel_id"] || !columns["channel_name"] {
+		t.Fatal("actual channel summary columns missing after legacy SQLite migration")
+	}
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("repeat legacy request migration: %v", err)
+	}
 
 	store := sqlstore.NewSQLStore(db, "sqlite")
 	got, err := store.GetRequestTrace(ctx, "pf_req_cache_legacy", int64Pointer(23))
@@ -297,4 +303,5 @@ func TestRequestCacheHistoryLegacySQLiteMigrationAddsEmptyMetadata(t *testing.T)
 	if got.AttemptCount != 0 || len(got.Attempts) != 0 {
 		t.Fatalf("legacy zero-attempt trace changed: %+v", got)
 	}
+	requireStoredTraceChannel(t, got, 0, "")
 }

@@ -9,7 +9,7 @@ export type ResolvedTheme = 'light' | 'dark'
 // 预设清单是**唯一真源**：类型、校验、以及 index.html 里那段在 bundle 之前
 // 跑的内联脚本都从它派生。内联脚本没法 import（它必须先于模块执行），
 // 所以只能把字面量抄一份过去，由 themeBoot.test.ts 盯着两边不许漂移。
-export const themePresetOptions = ['jade', 'ocean', 'coral', 'anthropic', 'violet', 'slate', 'forest', 'plum'] as const
+export const themePresetOptions = ['jade', 'ocean', 'coral', 'anthropic', 'violet', 'slate', 'forest', 'plum', 'sand', 'ice', 'rose', 'ink'] as const
 export type ThemePreset = typeof themePresetOptions[number]
 // 字体只列 Windows / macOS 预装的常用款：项目不加载 webfont，
 // 写进未安装的字体只会静默回落，让选项之间看不出差别。
@@ -26,6 +26,9 @@ export const themeFontOptions = [
   { value: 'consolas', label: 'Consolas', note: '等宽，数字逐列对齐' },
   { value: 'cascadia', label: 'Cascadia Mono', note: '等宽，字形比 Consolas 圆润' },
   { value: 'sarasa', label: '更纱等宽', note: '等宽且中文对齐，需自行安装' },
+  { value: 'simhei', label: '黑体', note: 'Windows 常用黑体，笔画均匀' },
+  { value: 'fangsong', label: '仿宋', note: '细笔画衬线，适合安静阅读' },
+  { value: 'aptos', label: 'Aptos', note: 'Office 新字体，未安装时回退系统字体' },
 ] as const
 
 export type ThemeFont = typeof themeFontOptions[number]['value']

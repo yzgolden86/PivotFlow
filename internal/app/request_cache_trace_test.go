@@ -36,7 +36,7 @@ func TestRequestCacheTraceSummaryAndTokenProjectionCarryOnlyCacheMetadata(t *tes
 	trace.CacheStatus = "hit"
 	trace.CacheReason = "reused"
 
-	summary := projectRequestTraceSummary(trace)
+	summary := projectRequestTraceSummary(trace, true)
 	tokenDetail := projectTokenRequestTrace(trace)
 	if summary.CacheStatus != "hit" || summary.CacheReason != "reused" {
 		t.Fatalf("admin summary cache metadata=(%q,%q)", summary.CacheStatus, summary.CacheReason)

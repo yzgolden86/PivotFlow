@@ -1,0 +1,129 @@
+/* Keep agy's surfaces and type. Only action sizing and this page's notices
+   change: labels never shrink to individual Chinese characters. */
+.maintenance-page-notice.operation-notice {
+  position: static;
+  width: 100%;
+  max-width: none;
+  margin: 0 0 14px;
+  align-items: flex-start;
+}
+.maintenance-page-notice > .operation-notice__content {
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px 16px;
+}
+.maintenance-page-notice__text { display: grid; min-width: 0; flex: 1 1 320px; gap: 4px; }
+.maintenance-page-notice__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.maintenance-page-notice .secondary-button { flex: 0 0 auto; white-space: nowrap; }
+
+.checkin-workspace .records-panel > .checkin-account-grid {
+  min-width: 1110px;
+  grid-template-columns: minmax(205px, 1.05fr) minmax(140px, .7fr) minmax(215px, 1fr) minmax(130px, .65fr) minmax(280px, 1.1fr);
+  column-gap: 20px;
+}
+.checkin-workspace .records-panel > .checkin-grid {
+  min-width: 1220px;
+  grid-template-columns: minmax(210px, 1.1fr) 120px 130px minmax(240px, 1.3fr) 150px minmax(240px, 1fr);
+  column-gap: 20px;
+}
+.checkin-workspace .record-row > .checkin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  grid-column: auto;
+}
+.checkin-workspace .checkin-actions > a,
+.checkin-workspace .checkin-actions > button {
+  flex: 0 0 auto;
+  width: max-content;
+  min-width: max-content;
+  min-height: 34px;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+.checkin-workspace .checkin-actions svg,
+.accounts-maintenance-workspace .account-actions svg { flex: 0 0 auto; }
+.checkin-workspace .checkin-actions > .checkin-blocker-recovery {
+  display: flex;
+  flex: 1 1 100%;
+  align-items: flex-start;
+  gap: 6px;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 0;
+  padding: 3px 0;
+  color: var(--amber-text);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.checkin-blocker-recovery > svg { margin-top: 2px; }
+.checkin-blocker-recovery > span { min-width: 0; }
+.checkin-blocker-recovery:hover > span { text-decoration: underline; text-underline-offset: 3px; }
+.checkin-blocker-recovery:focus-visible { outline: 2px solid var(--focus-ring, var(--amber)); outline-offset: 3px; border-radius: 3px; }
+.checkin-workspace .checkin-actions > .checkin-unsupported {
+  flex: 0 1 auto;
+  max-width: 100%;
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+.checkin-workspace .records-panel .record-head > span:last-child,
+.accounts-maintenance-workspace .account-records .record-head > span:last-child { text-align: left; }
+.checkin-workspace .records-panel > .record-head,
+.accounts-maintenance-workspace .account-records > .record-head { display: grid; }
+
+.accounts-maintenance-workspace .account-records > .account-grid {
+  min-width: 1280px;
+  grid-template-columns: minmax(240px, 1.1fr) minmax(120px, .65fr) minmax(130px, .7fr) minmax(140px, .75fr) minmax(140px, .75fr) minmax(380px, 1.2fr);
+}
+.accounts-maintenance-workspace .account-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+  grid-column: auto;
+}
+.accounts-maintenance-workspace .account-actions > button { flex: 0 0 auto; white-space: nowrap; }
+
+@media (max-width: 880px) {
+  .checkin-workspace .records-panel > .record-head,
+  .accounts-maintenance-workspace .account-records > .record-head { display: none; }
+  .checkin-workspace .records-panel > .record-row.checkin-account-grid,
+  .checkin-workspace .records-panel > .record-row.checkin-grid,
+  .accounts-maintenance-workspace .account-records > .record-row.account-grid {
+    min-width: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 20px;
+    padding-block: 16px;
+  }
+  .checkin-workspace .record-row > .checkin-actions,
+  .accounts-maintenance-workspace .record-row > .account-actions { grid-column: 1 / -1; gap: 10px; }
+  .checkin-workspace .checkin-actions > a,
+  .checkin-workspace .checkin-actions > button,
+  .accounts-maintenance-workspace .account-actions > button:not(.icon-button) { min-height: 40px; padding: 8px 12px; }
+  .checkin-workspace .checkin-actions > .checkin-blocker-recovery { min-height: 40px; align-items: center; padding: 8px 0; }
+  .checkin-blocker-recovery > svg { margin-top: 0; }
+  .checkin-workspace .record-row > div > strong:not(.status-badge),
+  .checkin-workspace .record-row > div > span:not(.status-badge):not(.entity-chip) {
+    overflow: visible;
+    white-space: normal;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 620px) {
+  .checkin-workspace .records-panel > .record-row.checkin-account-grid,
+  .checkin-workspace .records-panel > .record-row.checkin-grid,
+  .accounts-maintenance-workspace .account-records > .record-row.account-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .maintenance-page-notice.operation-notice { flex-wrap: wrap; }
+  .maintenance-page-notice__text { flex-basis: 100%; }
+  .maintenance-page-notice__actions { width: 100%; }
+}

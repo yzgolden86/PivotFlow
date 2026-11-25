@@ -766,6 +766,12 @@ export function getAuthTokens(range: DashboardRange, signal?: AbortSignal): Prom
   return apiRequest<AuthTokenList>(`/admin/auth-tokens?range=${range}`, signal)
 }
 
+// Dropdowns need token metadata, not the RPM and cost scans enabled by range.
+export async function getAuthTokenOptions(signal?: AbortSignal): Promise<AuthToken[]> {
+  const result = await apiRequest<AuthTokenList>('/admin/auth-tokens', signal)
+  return result.tokens
+}
+
 export function createAuthToken(payload: {
   description: string
   expires_at: number | null

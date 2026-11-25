@@ -1580,15 +1580,43 @@ def integration_cases(runner):
                                     'site_account_id': account_id, 'status': status,
                                     'error': error, 'created_at': fixtures.NOW}
                                for name, kind, site_id, account_id, status, error in definitions}
+        snapshots = dict(data.task_snapshots)
         page.reload(wait_until='networkidle')
-        region = page.get_by_role('region', name='逐项任务结果', exact=True)
-        expect(region).to_be_visible()
-        links = region.get_by_role('link', name='浏览器修复凭证', exact=True)
-        expect(links).to_have_count(2)
-        hrefs = links.evaluate_all('(nodes) => nodes.map(node => node.getAttribute("href")).sort()')
+        notice = page.locator('.maintenance-page-notice')
+        expect(notice).to_contain_text('结果待确认')
+        expect(page.get_by_role('region', name='逐项任务结果', exact=True)).not_to_be_visible()
+        # Compact feedback prioritizes unresolved work. Its recovery still has
+        # the exact account identity and does not remove the duplicate lock.
+        link = notice.get_by_role('link', name='浏览器修复凭证', exact=True)
+        expect(link).to_have_count(1)
+        expect(link).to_have_attribute('href', '#/browser-import?account_id=102&site_id=1')
+        expect(notice.get_by_role('button', name='重新观察原任务', exact=True)).to_be_visible()
+        unknown_row = page.locator('.record-row.account-grid').filter(
+            has=page.locator('a[href*="focus_account_id=102"]'))
+        expect(unknown_row.get_by_role('button', name='余额', exact=True)).to_be_disabled()
+
+        # Each confirmed credential failure remains actionable when it is the
+        # current page notice; unrelated and generic failures offer no repair.
+        hrefs = []
+        for name in ('browser-101', 'expired-102', 'generic-101', 'site-only'):
+            data.task_snapshots = {name: snapshots[name]}
+            page.reload(wait_until='networkidle')
+            notice = page.locator('.maintenance-page-notice')
+            link = notice.get_by_role('link', name='浏览器修复凭证', exact=True)
+            if name in ('browser-101', 'expired-102'):
+                expect(link).to_have_count(1)
+                expected_id = 101 if name == 'browser-101' else 102
+                expect(link).to_have_attribute('href', f'#/browser-import?account_id={expected_id}&site_id=1')
+                hrefs.append(link.get_attribute('href'))
+            elif name == 'generic-101':
+                expect(notice).to_contain_text('操作失败')
+                expect(link).to_have_count(0)
+            else:
+                expect(notice).to_have_count(0)
         runner.check(hrefs == ['#/browser-import?account_id=101&site_id=1', '#/browser-import?account_id=102&site_id=1'],
-                     'Browser recovery must stay tied to the actual failed account')
-        runner.record('integration-task-recovery', links=2, other_results_without_links=3)
+                     'Browser recovery must stay tied to the current failed account')
+        runner.record('integration-task-recovery', credential_failures_checked=2,
+                      generic_and_unrelated_without_links=2, unknown_recovery_preserves_lock=True)
 
     runner.case('integration-task-account-recovery', task_recovery, path='/accounts')
 

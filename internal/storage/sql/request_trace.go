@@ -28,14 +28,14 @@ const requestTraceInsertColumns = `INSERT INTO request_traces(
 	request_id, started_at, auth_token_id, model, client_protocol, transport,
 	is_streaming, final_status, outcome, duration, wait_duration, attempt_count,
 	upstream_attempt_count, upstream_success_count, truncated, cache_status,
-	cache_reason, attempts_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	cache_reason, actual_model, channel_id, channel_name, attempts_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 const requestTraceSummaryColumns = `
 	request_id, started_at, auth_token_id, model, client_protocol, transport,
 	is_streaming, final_status, outcome, duration, wait_duration, attempt_count,
 	upstream_attempt_count, upstream_success_count, truncated, cache_status,
-	cache_reason`
+	cache_reason, actual_model, channel_id, channel_name`
 
 var validRequestTraceRetryCodes = map[string]struct{}{
 	"none":          {},
@@ -94,6 +94,12 @@ func NormalizeRequestTraceForStorage(trace *model.RequestTrace) (*model.RequestT
 	clone := *trace
 	clone.RequestID = requestID
 	clone.Model = truncateRequestTraceText(clone.Model, maxRequestTraceLabelLength)
+	clone.ActualModel = truncateRequestTraceText(model.LastRequestActualModel(trace), maxRequestTraceLabelLength)
+	clone.ChannelID, clone.ChannelName = model.LastRequestChannel(trace)
+	clone.ChannelName = truncateRequestTraceText(clone.ChannelName, maxRequestTraceLabelLength)
+	if err := validateRequestTraceID(clone.ChannelID, "channel_id"); err != nil {
+		return nil, err
+	}
 	clientProtocol, err := normalizeRequestTraceProtocol(clone.ClientProtocol, "client_protocol")
 	if err != nil {
 		return nil, err
@@ -375,6 +381,9 @@ func requestTraceInsertArgs(trace *model.RequestTrace, attemptsJSON string) []an
 		boolAsInt(trace.Truncated),
 		trace.CacheStatus,
 		trace.CacheReason,
+		trace.ActualModel,
+		trace.ChannelID,
+		trace.ChannelName,
 		attemptsJSON,
 	}
 }
@@ -425,10 +434,10 @@ func (s *SQLStore) BatchAddRequestTraces(ctx context.Context, traces []*model.Re
 
 func scanRequestTraceSummary(scanner interface {
 	Scan(...any) error
-}) (*model.RequestTrace, error) {
+}, legacyAttempts *string) (*model.RequestTrace, error) {
 	var trace model.RequestTrace
 	var isStreaming, truncated int
-	if err := scanner.Scan(
+	values := []any{
 		&trace.RequestID,
 		&trace.StartedAt,
 		&trace.AuthTokenID,
@@ -446,7 +455,14 @@ func scanRequestTraceSummary(scanner interface {
 		&truncated,
 		&trace.CacheStatus,
 		&trace.CacheReason,
-	); err != nil {
+		&trace.ActualModel,
+		&trace.ChannelID,
+		&trace.ChannelName,
+	}
+	if legacyAttempts != nil {
+		values = append(values, legacyAttempts)
+	}
+	if err := scanner.Scan(values...); err != nil {
 		return nil, err
 	}
 	trace.IsStreaming = isStreaming != 0
@@ -490,6 +506,9 @@ func (s *SQLStore) GetRequestTrace(ctx context.Context, id string, authTokenID *
 		&truncated,
 		&trace.CacheStatus,
 		&trace.CacheReason,
+		&trace.ActualModel,
+		&trace.ChannelID,
+		&trace.ChannelName,
 		&attemptsJSON,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -508,6 +527,9 @@ func (s *SQLStore) GetRequestTrace(ctx context.Context, id string, authTokenID *
 	if trace.Attempts == nil {
 		trace.Attempts = []model.RequestAttempt{}
 	}
+	trace.ActualModel = truncateRequestTraceText(model.LastRequestActualModel(trace), maxRequestTraceLabelLength)
+	trace.ChannelID, trace.ChannelName = model.LastRequestChannel(trace)
+	trace.ChannelName = truncateRequestTraceText(trace.ChannelName, maxRequestTraceLabelLength)
 	return trace, nil
 }
 
@@ -562,7 +584,9 @@ func normalizeTraceListLimit(limit int) int {
 	return limit
 }
 
-// ListRequestTraces returns summaries without decoding attempts JSON.
+// ListRequestTraces reads a bounded summary page. Only legacy rows without the
+// new scalar observation need their retained timeline, and only for this page;
+// new rows and statistics never read that large JSON column.
 func (s *SQLStore) ListRequestTraces(
 	ctx context.Context,
 	since, until time.Time,
@@ -579,7 +603,10 @@ func (s *SQLStore) ListRequestTraces(
 		s.applyRequestTraceFilter(qb, filter)
 	}
 
-	listQB := NewQueryBuilder(`SELECT ` + requestTraceSummaryColumns + ` FROM request_traces`)
+	listQB := NewQueryBuilder(`SELECT ` + requestTraceSummaryColumns + `,
+		CASE WHEN (actual_model = '' OR (channel_id = 0 AND channel_name = ''))
+		AND upstream_attempt_count > 0 AND truncated = 0
+		THEN attempts_json ELSE '' END FROM request_traces`)
 	applyRangeAndFilter(listQB)
 	listQuery, listArgs := listQB.BuildWithSuffix("ORDER BY started_at DESC, request_id DESC LIMIT ? OFFSET ?")
 	listArgs = append(listArgs, limit, offset)
@@ -592,9 +619,20 @@ func (s *SQLStore) ListRequestTraces(
 
 	traces := make([]*model.RequestTrace, 0, limit)
 	for rows.Next() {
-		trace, err := scanRequestTraceSummary(rows)
+		var legacyAttempts string
+		trace, err := scanRequestTraceSummary(rows, &legacyAttempts)
 		if err != nil {
 			return nil, 0, fmt.Errorf("scan request trace summary: %w", err)
+		}
+		if legacyAttempts != "" {
+			var attempts []model.RequestAttempt
+			if json.Unmarshal([]byte(legacyAttempts), &attempts) == nil {
+				trace.Attempts = attempts
+				trace.ActualModel = truncateRequestTraceText(model.LastRequestActualModel(trace), maxRequestTraceLabelLength)
+				trace.ChannelID, trace.ChannelName = model.LastRequestChannel(trace)
+				trace.ChannelName = truncateRequestTraceText(trace.ChannelName, maxRequestTraceLabelLength)
+				trace.Attempts = nil
+			}
 		}
 		traces = append(traces, trace)
 	}

@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, BarChart3, ChevronDown, CircleDollarSign, Clock3, Gauge, LineChart, List, PieChart, RefreshCw, WalletCards, Zap } from 'lucide-react'
 import { getDashboard, getStats, getStatsFilterOptions } from '../api'
-import type { CostBasis, CostSource, CostStatus, DashboardRange, DashboardSnapshot, MetricPoint, SiteBalanceHistoryPoint, StatsEntry, StatsFilterOptions, StatsSnapshot } from '../types'
+import HelpTip from '../components/HelpTip'
+import type { CostBasis, CostSource, CostStatus, DashboardRange, DashboardSnapshot, MetricPoint, StatsEntry, StatsFilterOptions, StatsSnapshot } from '../types'
 import { donutSlicePath, donutSlices } from './donutGeometry'
 import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, PageHeader, successTone } from './shared'
 import { analyzeCostSummary, COST_BASIS_FILTER_OPTIONS, COST_SOURCE_FILTER_OPTIONS, COST_STATUS_FILTER_OPTIONS } from '../costSemantics.ts'
 import { moneyDigits } from '../format.ts'
-import CostSummaryPanel from './CostSummaryPanel'
+import { balanceHistoryOverlay, balanceScheduleCaption, dailyComparisonLabel, formatBalanceAmount, formatDailyDelta, selectBalanceCurrencies } from './balanceHistoryChart.ts'
+import type { BalanceChartPoint, BalanceHistoryDays, BalanceHistoryInput } from './balanceHistoryChart.ts'
+import { statsDistribution } from './statsDistribution.ts'
+import type { DistributionItem, DistributionMode } from './statsDistribution.ts'
+import './statsPresentation.css'
 
 export default function StatsPage() {
   const [snapshot, setSnapshot] = useState<StatsSnapshot | null>(null)
@@ -20,6 +25,7 @@ export default function StatsPage() {
   const [costBasis, setCostBasis] = useState<CostBasis | ''>('')
   const [chartMode, setChartMode] = useState<TrendChartMode>('curve')
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [balanceDays, setBalanceDays] = useState<BalanceHistoryDays>(14)
   const loadSequence = useRef(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -59,9 +65,10 @@ export default function StatsPage() {
     costSummary?.historical_cost_usd,
   ]
   const costView = analyzeCostSummary(costSummary, moneyDigits(costMoney))
-  const costMeta = costView.status === 'ready' && costView.summary
-    ? `完整估算 ${costView.knownRequests}/${costView.summary.successful_requests} · 未对账`
-    : '费用依据未提供'
+  const recordedDistribution = useMemo(() => statsDistribution(entries, 'model', 'cost'), [entries])
+  const costAmount = costView.status === 'ready' ? costView.amountText
+    : recordedDistribution.items.length ? formatMoney(recordedDistribution.total) : '—'
+  const balanceSchedule = (snapshot as (StatsSnapshot & { balance_schedule?: unknown }) | null)?.balance_schedule
 
   return (
     <div className="workspace-page data-dashboard-page">
@@ -90,10 +97,24 @@ export default function StatsPage() {
         <MiniKPI icon={Zap} label="请求总量" value={formatNumber(totals.total)} meta={`${formatNumber(totals.success)} 成功`} />
         <MiniKPI icon={Gauge} label="成功率" value={totals.total ? `${(totals.success / totals.total * 100).toFixed(1)}%` : '—'} meta={`${formatNumber(totals.error)} 失败`} />
         <MiniKPI icon={Activity} label="Token 总量" value={formatNumber(totalTokens)} meta={`${formatNumber(dashboard.totals.cache_read_tokens)} 缓存命中`} />
-        <MiniKPI icon={CircleDollarSign} label="已记录费用" value={costView.amountText} meta={costMeta} />
+        <article className={`stats-cost-kpi stats-cost-kpi--${costView.coverageState}`}>
+          <span><CircleDollarSign size={17} /></span>
+          <div>
+            <small>已记录费用 · USD</small><strong>{costAmount}</strong>
+            <p className="stats-cost-coverage">{costView.coverageText} · 未对账</p>
+            <details className="stats-cost-evidence">
+              <summary>费用依据<ChevronDown size={13} aria-hidden="true" /></summary>
+              <div>
+                <p>本地记录金额，尚未与上游账单对账；未知费用不等于零。</p>
+                {costView.status === 'ready' ? <>
+                  <p>{costView.recordedBreakdown}</p>
+                  {costView.detailRows.map((row) => <p key={row.label}><b>{row.label}</b>：{row.value}</p>)}
+                </> : <p>{costView.statusLabel}。{recordedDistribution.items.length ? '金额取自当前渠道 / 模型明细；' : ''}完整估算覆盖与来源无法确认。</p>}
+              </div>
+            </details>
+          </div>
+        </article>
       </section>}
-
-      {snapshot && dashboard && <CostSummaryPanel summary={costSummary} />}
 
       {dashboard ? <section className="trend-workbench data-dashboard-trend">
         <header>
@@ -109,9 +130,9 @@ export default function StatsPage() {
 
       {!loading && !error && entries.length > 0 ? <StatsDistribution entries={entries} /> : null}
 
-      {snapshot?.balance_history?.length ? <BalanceHistoryPanel points={snapshot.balance_history} /> : snapshot ? <section className="balance-history-empty" aria-label="余额变化等待数据">
+      {snapshot?.balance_history?.length ? <BalanceHistoryPanel points={snapshot.balance_history} schedule={balanceSchedule} days={balanceDays} onDaysChange={setBalanceDays} /> : snapshot ? <section className="balance-history-empty" aria-label="每日余额变化等待数据">
         <span><WalletCards size={18} /></span>
-        <div><strong>余额变化等待数据</strong><span>成功刷新账号余额后，从第二天开始可对比每日变化。</span></div>
+        <div><strong>每日余额变化等待数据</strong><span>{balanceScheduleCaption(balanceSchedule)} · 连续两日采样完整后可比较。</span></div>
       </section> : null}
 
       {loading ? <LoadingState label="正在计算数据面板" /> : error ? <ErrorState message={error} retry={() => void load()} /> : entries.length === 0 ? <EmptyState label="当前范围暂无统计数据" /> : (
@@ -133,9 +154,6 @@ function MiniKPI({ icon: Icon, label, value, meta }: { icon: typeof Zap; label: 
   return <article><span><Icon size={17} /></span><div><small>{label}</small><strong>{value}</strong><em>{meta}</em></div></article>
 }
 
-type DistributionMode = 'cost' | 'requests'
-type DistributionItem = { label: string; value: number; share: number; isOther: boolean }
-
 // 环形图配色：只取主题里的强调色与两处混色，8 套主题明暗切换都能自动跟随；
 // 最后一档固定给「其他」，用中性色表示不参与对比的尾部长尾。
 const PIE_COLORS = [
@@ -151,15 +169,15 @@ const PIE_COLORS = [
 function StatsDistribution({ entries }: { entries: StatsEntry[] }) {
   const hasCostData = entries.some((entry) => entry.effective_cost != null || entry.total_cost != null)
   const mode: DistributionMode = hasCostData ? 'cost' : 'requests'
-  const channelItems = buildDistribution(entries, (entry) => entry.channel_name, mode)
-  const modelItems = buildDistribution(entries, (entry) => entry.model, mode)
+  const channelView = statsDistribution(entries, 'channel', mode)
+  const modelView = statsDistribution(entries, 'model', mode)
   return <section className="stats-distribution" aria-label="已记录费用与请求分布">
-    <DistributionPanel icon={BarChart3} title={mode === 'cost' ? '渠道已记录费用' : '渠道请求量'} items={channelItems} mode={mode} />
-    <DistributionPanel icon={Activity} title={mode === 'cost' ? '模型已记录费用' : '模型请求量'} items={modelItems} mode={mode} />
+    <DistributionPanel icon={BarChart3} title={mode === 'cost' ? '渠道已记录费用' : '渠道请求量'} total={channelView.total} items={channelView.items} unknownEntries={channelView.unknownEntries} mode={mode} />
+    <DistributionPanel icon={Activity} title={mode === 'cost' ? '模型已记录费用' : '模型请求量'} total={modelView.total} items={modelView.items} unknownEntries={modelView.unknownEntries} mode={mode} />
   </section>
 }
 
-function DistributionPanel({ icon: Icon, title, items, mode }: { icon: typeof BarChart3; title: string; items: DistributionItem[]; mode: DistributionMode }) {
+function DistributionPanel({ icon: Icon, title, total, items, unknownEntries, mode }: { icon: typeof BarChart3; title: string; total: number; items: DistributionItem[]; unknownEntries: number; mode: DistributionMode }) {
   // 默认饼图：先回答「谁占大头」；条形列表保留给需要精确排序对比的场景。
   const [view, setView] = useState<'pie' | 'list'>('pie')
   return <article>
@@ -167,24 +185,25 @@ function DistributionPanel({ icon: Icon, title, items, mode }: { icon: typeof Ba
       <Icon size={17} />
       <h2>{title}</h2>
       <div className="stats-distribution-toggle" role="group" aria-label={`${title}展示方式`}>
-        <button type="button" className={view === 'pie' ? 'is-active' : ''} onClick={() => setView('pie')} aria-pressed={view === 'pie'} title="占比饼图"><PieChart size={14} /></button>
-        <button type="button" className={view === 'list' ? 'is-active' : ''} onClick={() => setView('list')} aria-pressed={view === 'list'} title="条形列表"><List size={14} /></button>
+        <button type="button" className={view === 'pie' ? 'is-active' : ''} onClick={() => setView('pie')} aria-pressed={view === 'pie'} aria-label={`${title}占比饼图`} title="占比饼图"><PieChart size={14} /></button>
+        <button type="button" className={view === 'list' ? 'is-active' : ''} onClick={() => setView('list')} aria-pressed={view === 'list'} aria-label={`${title}条形列表`} title="条形列表"><List size={14} /></button>
       </div>
     </header>
-    {view === 'pie' ? <DistributionPie items={items} mode={mode} /> : <DistributionList items={items} mode={mode} />}
+    {items.length ? view === 'pie' ? <DistributionPie total={total} items={items} mode={mode} /> : <DistributionList items={items} mode={mode} /> : <p className="stats-distribution-note">当前明细没有可用金额</p>}
+    <p className="stats-distribution-note">{mode === 'cost' ? '仅含已记录金额 · 未对账' : '包含全部请求'}{unknownEntries > 0 ? ` · ${unknownEntries} 项明细${mode === 'cost' ? '费用' : '数量'}未知` : ''}{items.some((item) => item.isOther) ? ' · 前四项与其余合计' : ''}</p>
   </article>
 }
 
-function DistributionPie({ items, mode }: { items: DistributionItem[]; mode: DistributionMode }) {
+function DistributionPie({ total, items, mode }: { total: number; items: DistributionItem[]; mode: DistributionMode }) {
   const [hovered, setHovered] = useState<number | null>(null)
-  const total = items.reduce((sum, item) => sum + item.value, 0)
+  const digits = moneyDigits(items.map((item) => item.value))
   const radius = 33
   const slices = donutSlices(items, (item) => item.share).map((slice, index) => ({
     ...slice.item,
     index,
     start: slice.start,
     share: slice.share,
-    color: PIE_COLORS[index % PIE_COLORS.length],
+    color: slice.item.isOther ? 'var(--text-muted)' : PIE_COLORS[index % PIE_COLORS.length],
   }))
   const active = hovered == null ? null : slices[hovered]
   return <div className="stats-distribution-pie">
@@ -192,7 +211,7 @@ function DistributionPie({ items, mode }: { items: DistributionItem[]; mode: Dis
       <svg viewBox="0 0 100 100" role="img" aria-label="占比环形图">
         {slices.map((slice) => <path
           className={`stats-distribution-slice${hovered === slice.index ? ' is-active' : ''}`}
-          key={slice.label}
+          key={slice.key}
           d={donutSlicePath(slice.start, slice.share, radius)}
           stroke={slice.color}
           onMouseEnter={() => setHovered(slice.index)}
@@ -202,11 +221,11 @@ function DistributionPie({ items, mode }: { items: DistributionItem[]; mode: Dis
       <div className="stats-distribution-center">
         {active ? <>
           <strong title={active.label}>{active.label}</strong>
-          <b>{formatDistributionValue(active.value, mode)}</b>
+          <b>{formatDistributionValue(active.value, mode, digits)}</b>
           <em>{(active.share * 100).toFixed(1)}%</em>
         </> : <>
           <strong>合计</strong>
-          <b>{formatDistributionValue(total, mode)}</b>
+          <b>{formatDistributionValue(total, mode, digits)}</b>
           <em>{items.length} 项</em>
         </>}
       </div>
@@ -214,13 +233,15 @@ function DistributionPie({ items, mode }: { items: DistributionItem[]; mode: Dis
     <ul className="stats-distribution-legend">
       {slices.map((slice) => <li
         className={hovered === slice.index ? 'is-active' : ''}
-        key={slice.label}
+        key={slice.key}
         onMouseEnter={() => setHovered(slice.index)}
         onMouseLeave={() => setHovered(null)}
       >
-        <i style={{ background: slice.color }} aria-hidden="true" />
-        <div><span title={slice.label}>{slice.label}</span><b>{formatDistributionValue(slice.value, mode)}</b></div>
-        <em>{(slice.share * 100).toFixed(1)}%</em>
+        <button type="button" onFocus={() => setHovered(slice.index)} onBlur={() => setHovered(null)} onClick={() => setHovered(slice.index)} aria-label={`${slice.label} ${formatDistributionValue(slice.value, mode, digits)}，占比 ${(slice.share * 100).toFixed(1)}%`}>
+          <i style={{ background: slice.color }} aria-hidden="true" />
+          <span className="stats-distribution-legend-value"><span title={slice.label}>{slice.label}</span><b>{formatDistributionValue(slice.value, mode, digits)}</b></span>
+          <em>{(slice.share * 100).toFixed(1)}%</em>
+        </button>
       </li>)}
     </ul>
   </div>
@@ -322,112 +343,125 @@ function CombinedTrendChart({ points, mode }: { points: MetricPoint[]; mode: Tre
   </div>
 }
 
-function formatDistributionValue(value: number, mode: DistributionMode): string {
-  return mode === 'cost' ? formatMoney(value) : formatNumber(value)
-}
-
-function buildDistribution(entries: StatsEntry[], key: (entry: StatsEntry) => string, mode: DistributionMode): DistributionItem[] {
-  const totals = new Map<string, number>()
-  for (const entry of entries) {
-    const value = mode === 'cost' ? (entry.effective_cost ?? entry.total_cost ?? 0) : entry.total
-    totals.set(key(entry), (totals.get(key(entry)) || 0) + value)
-  }
-  const sorted = Array.from(totals.entries()).sort((a, b) => b[1] - a[1])
-  const visible = sorted.slice(0, 6)
-  const otherTotal = sorted.slice(6).reduce((sum, [, value]) => sum + value, 0)
-  if (otherTotal > 0) visible.push(['其他', otherTotal])
-  const total = sorted.reduce((sum, [, value]) => sum + value, 0) || 1
-  return visible.map(([label, value]) => ({ label, value, share: value / total, isOther: label === '其他' }))
+function formatDistributionValue(value: number, mode: DistributionMode, digits?: number): string {
+  return mode === 'cost' ? formatMoney(value, digits) : formatNumber(value)
 }
 
 function DistributionList({ items, mode }: { items: DistributionItem[]; mode: DistributionMode }) {
+  const digits = moneyDigits(items.map((item) => item.value))
   return <div className="stats-distribution-list">
-    {items.map((item, index) => <div key={item.label}>
+    {items.map((item, index) => <div key={item.key}>
       <span className="stats-distribution-rank">{index + 1}</span>
       <div>
         <strong title={item.label}>{item.label}</strong>
-        <i><b style={{ width: `${Math.max(3, item.share * 100)}%` }} /></i>
+        <i><b style={{ width: `${item.share * 100}%` }} /></i>
       </div>
-      <span>{formatDistributionValue(item.value, mode)}</span>
+      <span>{formatDistributionValue(item.value, mode, digits)}</span>
     </div>)}
   </div>
 }
 
-function BalanceHistoryPanel({ points }: { points: SiteBalanceHistoryPoint[] }) {
-  const groups = new Map<string, SiteBalanceHistoryPoint[]>()
-  for (const point of points) {
-    const current = groups.get(point.currency) || []
-    current.push(point)
-    groups.set(point.currency, current)
+function BalanceHistoryPanel({ points, schedule, days, onDaysChange }: { points: BalanceHistoryInput[]; schedule: unknown; days: BalanceHistoryDays; onDaysChange: (value: BalanceHistoryDays) => void }) {
+  const overlay = useMemo(() => balanceHistoryOverlay(points, days), [points, days])
+  const [requestedCurrencies, setRequestedCurrencies] = useState<string[]>([])
+  const [activeDay, setActiveDay] = useState<string | null>(null)
+  const pinnedDay = useRef<string | null>(null)
+  const currencies = overlay.series.map((chart) => chart.currency)
+  const selected = selectBalanceCurrencies(currencies, requestedCurrencies)
+  const charts = selected.map((currency) => overlay.series.find((chart) => chart.currency === currency)!)
+  const day = overlay.days.find((item) => item.day === activeDay) ?? null
+  const label = (currency: string) => currency || '币种未知'
+  const coverage = (item: BalanceChartPoint) => item.accounts == null || item.knownAccounts == null ? '账号覆盖未提供'
+    : item.knownAccounts > item.accounts ? '账号覆盖数据无效' : `${formatNumber(item.knownAccounts)}/${formatNumber(item.accounts)} 账号采样成功`
+  const digits = (chart: typeof charts[number]) => moneyDigits(chart.points.map((item) => item.dailyDelta ?? undefined))
+  const describe = (item: BalanceChartPoint, currency: string) => `${item.day}，${label(currency)} 每日净变化 ${formatDailyDelta(item.dailyDelta, currency)}，${dailyComparisonLabel(item)}，${coverage(item)}`
+  const selectDay = (value: string) => {
+    pinnedDay.current = value
+    setActiveDay(value)
   }
-
-  return <section className="balance-change-panel" aria-label="余额变化">
+  const changeDays = (value: BalanceHistoryDays) => {
+    if (value === days) return
+    const visible = new Set(balanceHistoryOverlay(points, value).days.map((item) => item.day))
+    if (!visible.has(pinnedDay.current ?? '')) pinnedDay.current = null
+    setActiveDay((current) => current && visible.has(current) ? current : pinnedDay.current)
+    onDaysChange(value)
+  }
+  const changeCurrency = (index: number, value: string) => {
+    const next = selected.slice()
+    const otherIndex = index === 0 ? 1 : 0
+    if (next[otherIndex] === value) next[otherIndex] = next[index]
+    next[index] = value
+    setRequestedCurrencies(next)
+  }
+  return <section className="balance-change-panel balance-history-lines" aria-label="余额变化">
     <header>
-      <div><WalletCards size={17} /><h2>余额变化</h2></div>
-      <span>最近 14 天</span>
+      <div><WalletCards size={17} /><h2>余额变化</h2><HelpTip label="余额变化" text="各币种共用日期与中心零线，左右轴分别使用原币种独立刻度，不做汇率转换或相加。日差额只比较连续日期、相同账号集合且采样完整的记录；正值净增加，负值净减少，充值与消费会相抵。曲线只连接有效日期，不补零、不超出相邻点范围。" /></div>
+      <div className="balance-history-header-controls">
+        <span className="balance-history-schedule">{balanceScheduleCaption(schedule)}</span>
+        <div className="balance-history-range" role="group" aria-label="余额变化区间">
+          {([7, 14] as const).map((value) => <button type="button" className={days === value ? 'is-active' : ''} aria-pressed={days === value} onClick={() => changeDays(value)} key={value}>{value}日</button>)}
+        </div>
+      </div>
     </header>
-    {Array.from(groups.entries()).map(([currency, currencyPoints]) => (
-      <BalanceChangeRow currency={currency} points={currencyPoints} key={currency} />
-    ))}
+    {charts.length ? <>
+      <div className="balance-history-series-controls">
+        {charts.map((chart, index) => <div className={`balance-history-currency-summary balance-series-${index}`} data-currency={chart.currency} key={index}>
+          <label><i className="balance-history-line-key" aria-hidden="true" /><span>{index === 0 ? '左轴' : '右轴'}</span><select aria-label={index === 0 ? '左轴币种' : '右轴币种'} value={chart.currency} onChange={(event) => changeCurrency(index, event.target.value)}>{currencies.map((currency) => <option value={currency} key={currency}>{label(currency)}</option>)}</select></label>
+          <span>{chart.latest ? `${formatDay(chart.latest.day)} · ${formatDailyDelta(chart.latest.dailyDelta, chart.currency)} · ${dailyComparisonLabel(chart.latest)}` : '当前日期范围无采样'}</span>
+        </div>)}
+      </div>
+      <div className="balance-history-overlay-layout">
+        {charts.map((chart, index) => <div className={`balance-history-currency-axis balance-series-${index}`} data-currency={chart.currency} data-side={index === 0 ? 'left' : 'right'} key={chart.currency}>
+          {chart.ticks.map((tick, tickIndex) => <span className="balance-history-tick" data-value={tick.value} data-y={tick.y} style={{ top: `${tick.y / 3}%` }} title={`${label(chart.currency)} ${formatSignedCurrency(tick.value, chart.currency, digits(chart))}`} key={tickIndex}>{formatSignedCurrency(tick.value, chart.currency, digits(chart))}</span>)}
+        </div>)}
+        <div className="balance-history-line-plot">
+          <svg className="balance-history-overlay" viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="各币种每日净变化平滑曲线图">
+            <desc>{charts.flatMap((chart) => chart.points.map((item) => describe(item, chart.currency))).join('；')}。左右轴各用原币种刻度，不换算，不相加。缺口不连线。</desc>
+            {[34, 92, 208, 266].map((y) => <line className="balance-history-grid-line" x1="80" x2="920" y1={y} y2={y} key={y} />)}
+            <line className="balance-history-zero" x1="80" x2="920" y1={overlay.zeroY} y2={overlay.zeroY} />
+            {charts.map((chart, seriesIndex) => <g className={`balance-series-${seriesIndex}`} key={chart.currency}>
+              {chart.paths.map((path, pathIndex) => <path className="balance-history-line" data-currency={chart.currency} data-style={seriesIndex === 0 ? 'solid' : 'dashed'} d={path} key={pathIndex} />)}
+            </g>)}
+            {day && <line className="balance-history-crosshair" data-day={day.day} x1={day.x} x2={day.x} y1="24" y2="276" />}
+          </svg>
+          {overlay.days.map((item) => <button
+            type="button" className="balance-history-hit" data-day={item.day} data-x={item.x}
+            style={{ left: `${item.x / 10}%`, width: overlay.days.length > 1 ? `${84 / (overlay.days.length - 1)}%` : '28px' }}
+            key={item.day} aria-label={`${item.day} 每日净变化`}
+            onPointerEnter={(event) => { if (event.pointerType === 'mouse') setActiveDay(item.day) }}
+            onPointerLeave={(event) => { if (event.pointerType === 'mouse') setActiveDay(pinnedDay.current) }}
+            onPointerUp={(event) => { if (event.isPrimary && event.pointerType !== 'mouse') selectDay(item.day) }}
+            onFocus={() => setActiveDay(item.day)}
+            onBlur={() => setActiveDay(pinnedDay.current)}
+            onClick={() => selectDay(item.day)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.stopPropagation()
+                pinnedDay.current = null
+                setActiveDay(null)
+              }
+            }}
+          />)}
+          {!charts.some((chart) => chart.hasData) && <span className="balance-history-no-values">暂无可比较的每日净变化</span>}
+        </div>
+        <div className="balance-history-axis"><span>{formatDay(overlay.startDay)}</span><span>{formatDay(overlay.endDay)}</span></div>
+      </div>
+      <div className="balance-history-readout" aria-live="polite">
+        {day ? <><strong>{formatDay(day.day)}</strong>{charts.map((chart, index) => {
+          const item = chart.points.find((point) => point.day === day.day)
+          return <span className={`balance-history-readout-value balance-series-${index}`} data-currency={chart.currency} data-status={item?.comparisonStatus ?? 'missing'} data-day={day.day} data-value={item?.dailyDelta ?? ''} key={chart.currency}><b>{label(chart.currency)} {formatDailyDelta(item?.dailyDelta ?? null, chart.currency)}</b><span>{item ? `${dailyComparisonLabel(item)} · ${coverage(item)}` : '当日无采样记录'}</span></span>
+        })}</> : <span>悬停、点击或用 Tab 查看每日净变化</span>}
+      </div>
+      {charts.map((chart) => {
+        const warnings = [chart.missingDays ? `缺少 ${chart.missingDays} 天记录` : '', chart.unknownPoints ? `${chart.unknownPoints} 天差额未知` : '', chart.coverageChanges ? `${chart.coverageChanges} 天账号范围变化` : '', chart.baselinePoints ? `${chart.baselinePoints} 天仅有基线` : ''].filter(Boolean)
+        return warnings.length ? <p className="balance-history-gaps" key={chart.currency}>{label(chart.currency)} · {warnings.join(' · ')}</p> : null
+      })}
+    </> : <p className="balance-history-explanation">采样日期无效，暂时无法绘制每日净变化。</p>}
   </section>
 }
 
-function BalanceChangeRow({ currency, points }: { currency: string; points: SiteBalanceHistoryPoint[] }) {
-  const [hovered, setHovered] = useState<number | null>(null)
-  const latest = points[points.length - 1]
-  const baseline = points[0]
-  const delta = latest.balance - baseline.balance
-  const deltas = points.slice(1).map((point, index) => ({
-    day: point.day,
-    balance: point.balance,
-    value: point.balance - points[index].balance,
-  }))
-  const recentDeltas = deltas.slice(-14)
-  const maxChange = Math.max(...recentDeltas.map((item) => Math.abs(item.value)), 1)
-  const hoveredItem = hovered == null ? null : recentDeltas[hovered]
-  const tooltipLeft = Math.min(90, Math.max(10, ((hovered ?? 0) + .5) / Math.max(recentDeltas.length, 1) * 100))
-  return <article className="balance-change-row">
-    <div className="balance-change-identity">
-      <strong>{currency}</strong>
-      <span>{formatCurrency(latest.balance, currency)}</span>
-    </div>
-    <div className="balance-change-bars" role="img" aria-label={`${currency} 每日余额变化`}>
-      {recentDeltas.length ? recentDeltas.map((item, index) => <span
-        className={`balance-change-cell${hovered === index ? ' is-active' : ''}`}
-        key={`${currency}:${item.day}`}
-        tabIndex={0}
-        aria-label={`${formatDay(item.day)} 变化 ${formatSignedCurrency(item.value, currency)}，余额 ${formatCurrency(item.balance, currency)}`}
-        onMouseEnter={() => setHovered(index)}
-        onMouseLeave={() => setHovered(null)}
-        onFocus={() => setHovered(index)}
-        onBlur={() => setHovered(null)}
-      >
-        <i className={`balance-change-bar ${item.value > 0 ? 'gain' : item.value < 0 ? 'loss' : 'flat'}`} style={{ height: `${item.value === 0 ? 2 : Math.max(7, Math.abs(item.value) / maxChange * 50)}%` }} />
-      </span>) : <span className="balance-change-wait">等待次日数据</span>}
-      {hoveredItem && <div className="balance-change-tooltip" style={{ left: `${tooltipLeft}%` }}>
-        <strong>{formatDay(hoveredItem.day)}</strong>
-        <span>变化 <b className={hoveredItem.value > 0 ? 'gain' : hoveredItem.value < 0 ? 'loss' : undefined}>{formatSignedCurrency(hoveredItem.value, currency)}</b></span>
-        <span>余额 <b>{formatCurrency(hoveredItem.balance, currency)}</b></span>
-      </div>}
-    </div>
-    <div className="balance-change-meta">
-      <strong className={delta > 0 ? 'gain' : delta < 0 ? 'loss' : undefined}>{formatSignedCurrency(delta, currency)}</strong>
-      <span>{points.length} 天 · {formatNumber(latest.accounts)} 账号</span>
-    </div>
-  </article>
-}
-
-function formatCurrency(value: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat('zh-CN', { style: 'currency', currency, maximumFractionDigits: 2 }).format(value)
-  } catch {
-    return `${currency} ${value.toFixed(2)}`
-  }
-}
-
-function formatSignedCurrency(value: number, currency: string): string {
-  const prefix = value > 0 ? '+' : ''
-  return prefix + formatCurrency(value, currency)
+function formatSignedCurrency(value: number | null, currency: string, digits = 2): string {
+  return formatBalanceAmount(value, currency, digits, true)
 }
 
 function formatDay(day: string): string {

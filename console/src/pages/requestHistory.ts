@@ -92,6 +92,9 @@ export interface RequestDiagnostic {
   started_at: number
   auth_token_id: number
   model?: string
+  actual_model?: string
+  channel_id?: number
+  channel_name?: string
   client_protocol: string
   transport: 'http' | 'websocket'
   is_streaming: boolean
@@ -106,6 +109,56 @@ export interface RequestDiagnostic {
   attempts?: RequestDiagnosticAttempt[]
   cache_status?: string
   cache_reason?: string
+}
+
+export function requestModelObservation(trace: RequestTrace): { actualModel: string; label: string; title: string } {
+  if (trace.upstream_attempt_count === 0) {
+    return {
+      actualModel: '',
+      label: trace.cache_status === 'hit' ? '缓存命中 · 未请求上游' : '未请求上游',
+      title: '本次请求没有已记录的上游传输。',
+    }
+  }
+  let actualModel = trace.actual_model || ''
+  if (!actualModel && !trace.truncated && trace.attempts) {
+    let last: RequestAttempt | undefined
+    for (const attempt of trace.attempts) {
+      if (attempt.upstream && (!last || attempt.number > last.number)) last = attempt
+    }
+    actualModel = last?.actual_model || ''
+  }
+  if (!actualModel) return { actualModel: '', label: '上游模型未提供', title: '摘要未提供最后一次上游模型；不会用请求名或截断的时间线推测。' }
+  return {
+    actualModel,
+    label: trace.outcome === 'success' ? '实际上游' : '最后上游',
+    title: `${trace.model || '未记录请求模型'} → ${actualModel}${trace.outcome === 'success' ? '' : '（最后一次已记录的上游传输）'}`,
+  }
+}
+
+export function requestChannelObservation(trace: RequestTrace): { channelId: number; channelName: string; label: string; title: string } {
+  if (trace.upstream_attempt_count === 0) return {
+    channelId: 0, channelName: '',
+    label: trace.cache_status === 'hit' ? '缓存命中 · 未请求上游' : '未请求上游',
+    title: '本次请求没有已记录的上游传输，未使用上游渠道。',
+  }
+  let channelId = trace.channel_id || 0
+  let channelName = trace.channel_name?.trim() || ''
+  if (!channelId && !channelName && !trace.truncated && trace.attempts) {
+    let last: RequestAttempt | undefined
+    for (const attempt of trace.attempts) {
+      if (attempt.upstream && (!last || attempt.number > last.number)) last = attempt
+    }
+    channelId = last?.channel_id || 0
+    channelName = last?.channel_name?.trim() || ''
+  }
+  if (!Number.isSafeInteger(channelId) || channelId < 0) channelId = 0
+  const label = channelName || (channelId ? `渠道 #${channelId}` : '渠道未记录')
+  return {
+    channelId, channelName, label,
+    title: channelName || channelId
+      ? `${label}${channelName && channelId ? ` · #${channelId}` : ''} · 最后一次实际请求的上游渠道`
+      : '记录未提供最后一次实际请求的渠道；不会用候选渠道或截断时间线推测。',
+  }
 }
 
 export interface RequestCacheHistoryDiagnostic {
@@ -350,6 +403,11 @@ export function buildRequestDiagnostic(trace: RequestTrace): RequestDiagnostic {
     upstream_success_count: trace.upstream_success_count,
     truncated: trace.truncated,
   }
+  const actualModel = requestModelObservation(trace).actualModel
+  if (actualModel) diagnostic.actual_model = actualModel
+  const channel = requestChannelObservation(trace)
+  if (channel.channelId) diagnostic.channel_id = channel.channelId
+  if (channel.channelName) diagnostic.channel_name = channel.channelName
   if (trace.attempts) diagnostic.attempts = trace.attempts.map(diagnosticAttempt)
   if (isRequestCacheStatus(trace.cache_status)) diagnostic.cache_status = trace.cache_status
   if (isRequestCacheReason(trace.cache_reason)) diagnostic.cache_reason = trace.cache_reason

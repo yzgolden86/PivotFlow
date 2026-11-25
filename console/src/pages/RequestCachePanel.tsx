@@ -56,7 +56,6 @@ export default function RequestCachePanel({ unsavedCount }: { unsavedCount: numb
   return <section className="request-cache-panel" aria-labelledby="request-cache-observation-title">
     <header className="request-cache-panel-head">
       <div>
-        <span className="request-cache-eyebrow"><i aria-hidden="true" />当前进程观察</span>
         <div className="request-cache-heading">
           <h3 id="request-cache-observation-title" ref={observationTitleRef} tabIndex={-1}>请求缓存运行状态</h3>
           <HelpTip label="请求缓存运行状态" text="下方只显示后端进程当前生效的配置与本次进程累计观察，不会主动探测数据库或上游。读取、刷新和清空都不会应用上方尚未保存的设置。" />

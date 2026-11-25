@@ -270,6 +270,24 @@ func DefineSiteAccountBalanceSnapshotsTable() *TableBuilder {
 		Index("idx_site_balance_snapshots_day", "local_day")
 }
 
+// DefineSiteAccountDailyBalancesTable keeps immutable scheduled observations,
+// including failed reads, separately from the latest-refresh history.
+func DefineSiteAccountDailyBalancesTable() *TableBuilder {
+	return NewTable("site_account_daily_balances").
+		Column("site_account_id INT NOT NULL").
+		Column("local_day VARCHAR(10) NOT NULL").
+		Column("currency VARCHAR(16) NOT NULL DEFAULT ''").
+		Column("balance DOUBLE").
+		Column("status VARCHAR(16) NOT NULL DEFAULT 'unknown'").
+		Column("error_code VARCHAR(64) NOT NULL DEFAULT ''").
+		Column("scheduled_at BIGINT NOT NULL").
+		Column("collected_at BIGINT NOT NULL DEFAULT 0").
+		Column("created_at BIGINT NOT NULL").
+		Column("PRIMARY KEY (site_account_id, local_day)").
+		Column("FOREIGN KEY (site_account_id) REFERENCES site_accounts(id) ON DELETE CASCADE").
+		Index("idx_site_daily_balances_day", "local_day")
+}
+
 // DefineSiteAnnouncementsTable defines sanitized and deduplicated announcements.
 func DefineSiteAnnouncementsTable() *TableBuilder {
 	return NewTable("site_announcements").
@@ -535,6 +553,9 @@ func DefineRequestTracesTable() *TableBuilder {
 		Column("started_at BIGINT NOT NULL").
 		Column("auth_token_id BIGINT NOT NULL DEFAULT 0").
 		Column("model VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("actual_model VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("channel_id BIGINT NOT NULL DEFAULT 0").
+		Column("channel_name VARCHAR(191) NOT NULL DEFAULT ''").
 		Column("client_protocol VARCHAR(32) NOT NULL DEFAULT ''").
 		Column("transport VARCHAR(16) NOT NULL DEFAULT ''").
 		Column("is_streaming TINYINT NOT NULL DEFAULT 0").
@@ -550,7 +571,9 @@ func DefineRequestTracesTable() *TableBuilder {
 		Column("cache_reason VARCHAR(64) NOT NULL DEFAULT ''").
 		Column("attempts_json LONGTEXT NOT NULL").
 		Index("idx_request_traces_started_at", "started_at").
-		Index("idx_request_traces_token_started_at", "auth_token_id, started_at")
+		Index("idx_request_traces_token_started_at", "auth_token_id, started_at").
+		Index("idx_request_traces_summary_time", "started_at, request_id, outcome, upstream_attempt_count, upstream_success_count").
+		Index("idx_request_traces_token_summary_time", "auth_token_id, started_at, request_id, outcome, upstream_attempt_count, upstream_success_count")
 }
 
 // DefineModelFingerprintsTable 定义model_fingerprints表结构（模型指纹基线）

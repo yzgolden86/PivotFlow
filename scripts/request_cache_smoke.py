@@ -872,9 +872,9 @@ def setting_cases(runner):
         runner.check(data.read_count == 1, 'Editing a setting triggered an unnecessary snapshot read')
 
         click_setting_group(page, '路由策略')
-        expect(page.get_by_role('heading', name='路由策略', exact=True)).to_be_visible()
+        expect(page.get_by_role('heading', name='路由策略', level=2, exact=True)).to_be_visible()
         click_setting_group(page, '请求缓存')
-        expect(page.get_by_role('heading', name='请求缓存', exact=True)).to_be_visible()
+        expect(page.get_by_role('heading', name='请求缓存', level=2, exact=True)).to_be_visible()
         expect(page.locator('.request-cache-panel')).to_be_visible()
         runner.record(
             'settings-navigation',

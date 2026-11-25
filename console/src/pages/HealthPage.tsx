@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Activity, ArrowUpRight, Check, CircleAlert, CircleHelp, Copy, Database, RefreshCw, ShieldCheck, WalletCards } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
 import type { RuntimeHealthComponent, RuntimeMetrics, RuntimeOperationStats, RuntimeQueueStats, RuntimeReplicationStats } from '../types'
@@ -189,15 +189,17 @@ function attentionContent(item: RuntimeAttentionItem, snapshot: RuntimeMetrics):
 function HealthSection({ title, caption, icon, children, collapsible = false, defaultOpen = false }: {
   title: string; caption: string; icon: ReactNode; children: ReactNode; collapsible?: boolean; defaultOpen?: boolean
 }) {
+  const titleId = useId()
   const section = useRef<HTMLDetailsElement>(null)
   useEffect(() => {
     if (defaultOpen && section.current) section.current.open = true
   }, [defaultOpen])
-  const heading = <h2>{icon}{title}<HelpTip label={title} text={caption} /></h2>
-  if (!collapsible) return <section className="health-section"><div className="health-section-heading">{heading}</div>{children}</section>
-  return <details ref={section} className="health-section health-section--collapsible">
-    <summary>{heading}<span>{defaultOpen ? '存在需要核对的状态' : '展开查看'}</span></summary>
-    {children}
+  const heading = <h2 id={titleId}><span className="health-section-mark" aria-hidden="true">{icon}</span><span>{title}</span><HelpTip label={title} text={caption} /></h2>
+  const body = <div className="health-section-body">{children}</div>
+  if (!collapsible) return <section className="health-section" aria-labelledby={titleId}><header className="health-section-heading">{heading}</header>{body}</section>
+  return <details ref={section} className="health-section health-section--collapsible" aria-labelledby={titleId}>
+    <summary>{heading}{defaultOpen && <span>存在需要核对的状态</span>}</summary>
+    {body}
   </details>
 }
 

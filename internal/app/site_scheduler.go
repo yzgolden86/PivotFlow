@@ -98,6 +98,21 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 	sem := make(chan struct{}, siteSchedulerConcurrency)
 	checkinMinute := s.dailyCheckinMinute()
 	announcementMinute := s.dailyAnnouncementMinute()
+	balanceEnabled, _, balanceMinute := s.dailyBalanceSettings()
+	balanceAt, balanceDue := dailyBalanceWindow(now, balanceMinute)
+	balanceDue = balanceDue && balanceEnabled
+	sampledAccounts := make(map[int64]bool)
+	if balanceDue {
+		day := balanceAt.Format("2006-01-02")
+		observations, err := s.store.ListSiteAccountDailyBalances(ctx, day, day)
+		if err != nil {
+			balanceDue = false
+		} else {
+			for _, observation := range observations {
+				sampledAccounts[observation.SiteAccountID] = true
+			}
+		}
+	}
 	var wg sync.WaitGroup
 	for _, site := range sites {
 		if site == nil || !site.Enabled {
@@ -117,6 +132,9 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 			for _, account := range accounts {
 				if account == nil || !account.Enabled {
 					continue
+				}
+				if balanceDue && !sampledAccounts[account.ID] {
+					s.runScheduledDailyBalance(ctx, site, account, balanceAt)
 				}
 				loc := loadSiteLocation(account.Timezone, site.Timezone)
 				localNow := now.In(loc)

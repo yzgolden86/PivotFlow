@@ -825,6 +825,9 @@ export interface RequestTrace {
   started_at: number
   auth_token_id: number
   model?: string
+  actual_model?: string
+  channel_id?: number
+  channel_name?: string
   client_protocol: string
   transport: 'http' | 'websocket'
   is_streaming: boolean
@@ -906,9 +909,13 @@ export interface RPMStats {
 export interface SiteBalanceHistoryPoint {
   day: string
   currency: string
-  balance: number
+  balance: number | null
   accounts: number
   updated_at: number
+  daily_delta?: number | null
+  known_accounts?: number
+  comparison_status?: 'complete' | 'baseline' | 'missing_previous' | 'coverage_changed' | 'incomplete' | 'overflow'
+  scheduled_at?: number
 }
 
 export interface StatsSnapshot {
@@ -917,6 +924,7 @@ export interface StatsSnapshot {
   rpm_stats: RPMStats
   is_today: boolean
   balance_history?: SiteBalanceHistoryPoint[]
+  balance_schedule?: { enabled: boolean; time: string; timezone: string }
   cost_summary?: CostSummary | null
 }
 

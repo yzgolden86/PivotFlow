@@ -286,10 +286,11 @@ export default function BrowserImportPage() {
 
   return <div className="browser-import-page">
     <PageHeader icon={FolderInput} title="导入账号" tone="blue" actions={<>
+      <HelpTip label="导入账号" text="从 All API Hub 或已登录的上游页面导入账号，核对差异后保存。新账号默认停用。" />
       <a className="secondary-button" href="#/accounts">账号管理<ArrowRight size={14} /></a>
       <button className="secondary-button" type="button" onClick={() => { setSourceChoice('browser'); setHelperOpen(true); helperSection.current?.scrollIntoView({ block: 'nearest' }) }}>获取页面助手<Download size={14} /></button>
     </>} />
-    <div className="browser-import-intro"><p>从 All API Hub 或已登录的上游页面导入账号，核对差异后保存。</p><ol aria-label="导入步骤"><li>1 来源</li><li>2 目标</li><li>3 确认</li></ol></div>
+    <div className="browser-import-intro"><ol aria-label="导入步骤"><li>1 来源</li><li>2 目标</li><li>3 确认</li></ol></div>
     {failure && <div ref={errorRegion} tabIndex={-1} className="browser-import-error" role="alert"><strong>{failure.label}</strong><div>
       {failure.code === 'browser_required' && selected && <><a className="text-button" href={selected.source_origin} target="_blank" rel="noopener noreferrer">打开来源站点<ExternalLink size={14} /></a><button className="text-button" type="button" onClick={() => void submitPreview('verify')} disabled={!canPreview}>重新验证</button></>}
       {failure.pendingPreviewId && <button className="text-button" type="button" onClick={() => void reloadPreview(failure.pendingPreviewId)}>读取原预览</button>}
@@ -324,7 +325,7 @@ export default function BrowserImportPage() {
       </section>
 
       <section className="browser-import-target browser-import-card" aria-labelledby="browser-import-target-title">
-        <header className="browser-import-card-header"><span>02</span><div><div className="heading-with-hint"><h2 id="browser-import-target-title">核对来源与目标</h2><HelpTip label="账号保存方式" text="每次处理一条资料。更新凭证时保留既有开关、历史和渠道配置；新账号默认停用。请核对预览后再应用。" /></div><p>新账号默认停用</p></div></header>
+        <header className="browser-import-card-header"><span>02</span><div><div className="heading-with-hint"><h2 id="browser-import-target-title">核对来源与目标</h2><HelpTip label="账号保存方式" text="每次处理一条资料。更新凭证时保留既有开关、历史和渠道配置；新账号默认停用。请核对预览后再应用。" /></div></div></header>
         {selected ? <>
           <dl className="browser-import-source-facts"><div><dt>浏览器来源</dt><dd><a href={selected.source_origin} target="_blank" rel="noopener noreferrer">{selected.source_origin}<ExternalLink size={13} /></a></dd></div><div><dt>完整 API 地址</dt><dd>{selected.base_url}</dd></div><div><dt>平台 / 资料</dt><dd>{platformNames[selected.platform] || selected.platform} · {credentialNames[selected.credential_type]}</dd></div><div><dt>导出时间</dt><dd>{inspection?.captured_at ? formatTime(inspection.captured_at) : '原文件未提供'}</dd></div></dl>
           {seedNotice && <p className="browser-import-caution" role="status">{seedNotice}</p>}

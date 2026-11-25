@@ -11,6 +11,8 @@ import { buildSiteAccountIndex } from './siteAccountIndex'
 import ResourceDetails, { DetailList, DetailURL, detailDate } from './ResourceDetails'
 import { listWindow } from './listWindow'
 import { batchNoticeTone, countBatchOutcomes, probeNotice, type NoticeTone } from './batchOutcome'
+import { useSiteTaskCompletion } from './SiteTaskProgress'
+import './resourceListRefinement.css'
 
 type SiteForm = {
   name: string; base_url: string; platform: string; timezone: string; use_system_proxy: boolean; proxy_url: string; external_checkin_url: string; enabled: boolean
@@ -29,6 +31,7 @@ const PLATFORM_OPTIONS = [
 ] as const
 
 export default function SitesPage() {
+  const taskCompletion = useSiteTaskCompletion()
   const initialInventory = peekSiteInventory()
   const location = useLocation()
   const query = useMemo(() => new URLSearchParams(location.search), [location.search])
@@ -68,6 +71,7 @@ export default function SitesPage() {
   }, [])
 
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
+  useEffect(() => { if (!taskCompletion) return; const timer = setTimeout(() => void load(undefined, { silent: true, force: true }), 500); return () => clearTimeout(timer) }, [taskCompletion, load])
   useEffect(() => setSearch(querySearch), [querySearch])
   const accountIndex = useMemo(() => buildSiteAccountIndex(accounts), [accounts])
   const visible = useMemo(() => {
@@ -240,7 +244,7 @@ export default function SitesPage() {
     catch { setError('复制失败，请检查浏览器剪贴板权限') }
   }
 
-  return <div className="workspace-page">
+  return <div className="workspace-page sites-resource-page">
     <PageHeader
       icon={Globe2}
       title="站点管理"
@@ -279,14 +283,15 @@ function SiteRow({ site, accounts, healthyCount, selected, busy, focused, rowRef
   // 会把手动配置的那几个真正需要人工签到的站点淹掉。
   const checkinURL = siteConfiguredCheckinURL(site)
   return <article ref={rowRef} data-site-id={site.id} className={`site-row${selected ? ' row-selected' : ''}${focused ? ' row-focus-highlight' : ''}`}>
-    <div className="site-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${site.name}`} /><span className={`status-dot ${site.enabled ? 'status-dot--success' : 'status-dot--muted'}`} /><div><a className="entity-link" href={`#/sites?focus_site_id=${site.id}`}><strong>{site.name}</strong></a><span>#{site.id} · {site.timezone || 'Asia/Shanghai'}</span><button className="resource-details-trigger" type="button" onClick={details} aria-label={`查看 ${site.name} 详情`}>详情</button></div></div>
+    <div className="site-identity"><input className="row-selector" type="checkbox" checked={selected} onChange={select} aria-label={`选择 ${site.name}`} /><div className="site-identity-copy"><a className="entity-link" href={`#/sites?focus_site_id=${site.id}`} title={site.name}><strong>{site.name}</strong></a><span title={`#${site.id} · ${site.timezone || 'Asia/Shanghai'}`}>#{site.id} · {site.timezone || 'Asia/Shanghai'}</span></div></div>
     <div className="site-address"><a className="site-base-link" href={site.base_url} target="_blank" rel="noreferrer" title={`在新标签页打开 ${site.base_url}`}><strong>{site.base_url}</strong></a><span>{site.platform || 'unknown'} · {site.proxy_url ? '自定义代理' : site.use_system_proxy ? '系统代理' : '直连'}</span></div>
     <div className="site-account-summary"><strong>{healthyCount}/{accounts.length}</strong><div className="site-account-links">{accounts.length ? accounts.slice(0, 2).map((account) => <a className="entity-chip" key={account.id} href={`#/accounts?focus_account_id=${account.id}${['expired', 'error'].includes(account.status) ? '&open_credential=1' : ''}`}>{account.label}</a>) : <span>暂无账号</span>}</div></div>
     <div className="site-probe"><StatusBadge status={site.last_probe_status} />{(site.last_error || siteCheckinMethodHint(site)) && <span title={site.last_error}>{site.last_error}{site.last_error && siteCheckinMethodHint(site) ? ' · ' : ''}{siteCheckinMethodHint(site)}</span>}</div>
     <div className="row-actions">
+      <button className="resource-details-trigger site-details-action" type="button" onClick={details} aria-label={`查看 ${site.name} 详情`}>详情</button>
       {checkinURL && <a className="icon-button icon-button--surface" href={checkinURL} target="_blank" rel="noreferrer" aria-label={`打开 ${site.name} 签到页`} title="浏览器辅助签到页"><ExternalLink size={16} /></a>}
       <button className="icon-button icon-button--surface" type="button" onClick={() => execute('probe')} disabled={busy} aria-label={`探测 ${site.name}`} title="探测站点"><Radar className={busy ? 'spin' : ''} size={16} /></button>
-      <button className={`icon-button icon-button--surface ${site.enabled ? 'is-on' : ''}`} type="button" onClick={() => execute('toggle')} disabled={busy} aria-label={site.enabled ? `停用 ${site.name}` : `启用 ${site.name}`}><Power size={16} /></button>
+      <button className={`icon-button icon-button--surface resource-power-button ${site.enabled ? 'is-on' : ''}`} type="button" onClick={() => execute('toggle')} disabled={busy} aria-label={site.enabled ? `停用 ${site.name}` : `启用 ${site.name}`} aria-pressed={site.enabled} title={site.enabled ? '已启用 · 点击停用站点' : '已停用 · 点击启用站点'}><Power size={16} /></button>
       <a className="icon-button icon-button--surface" href={`#/accounts?site_id=${site.id}&create=1`} aria-label={`为 ${site.name} 添加账号`} title="添加账号"><UserPlus size={16} /></a>
       <button className="icon-button icon-button--surface" type="button" onClick={copy} aria-label={`复制 ${site.name} 地址`} title="复制站点地址"><Copy size={16} /></button>
       <button className="icon-button icon-button--surface" type="button" onClick={edit} aria-label={`编辑 ${site.name}`} title="编辑站点"><Pencil size={16} /></button>

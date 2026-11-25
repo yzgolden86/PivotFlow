@@ -1,4 +1,4 @@
-export interface ModelRouteScope { model: string; clientProtocol: string; tokenId: string; error?: string }
+export interface ModelRouteScope { model: string; clientProtocol: string; tokenId: string; targetChannelId?: string; error?: string }
 
 export const routeProtocols = [
   { value: 'openai', label: 'OpenAI' }, { value: 'anthropic', label: 'Anthropic' },
@@ -21,13 +21,28 @@ export function repeatedScopeParameter(params: URLSearchParams): boolean {
   return [...params.keys()].some((key) => params.getAll(key).length > 1)
 }
 
+export function validRouteQuery(search: string): boolean {
+  // URLSearchParams repairs malformed percent escapes/UTF8. Validate the raw
+  // query first so an exact request name cannot silently change on navigation.
+  if (search.includes(';')) return false
+  try {
+    for (const part of search.replace(/^\?/, '').split('&')) {
+      decodeURIComponent(part.replace(/\+/g, ' '))
+    }
+    return true
+  } catch { return false }
+}
+
 export function parseModelRouteScope(search: string): ModelRouteScope {
   const params = new URLSearchParams(search)
-  const scope = { model: params.get('model') || '', clientProtocol: params.get('client_protocol') ?? 'openai', tokenId: params.get('token_id') || '', error: '' }
-  if (repeatedScopeParameter(params)) scope.error = '路由范围包含重复参数，请重新选择。'
+  const scope: ModelRouteScope = { model: params.get('model') || '', clientProtocol: params.get('client_protocol') ?? 'openai', tokenId: params.get('token_id') || '', error: '' }
+  if (params.has('target_channel_id')) scope.targetChannelId = params.get('target_channel_id') || ''
+  if (!validRouteQuery(search)) scope.error = '路由参数编码无效，请重新选择请求模型。'
+  else if (repeatedScopeParameter(params)) scope.error = '路由范围包含重复参数，请重新选择。'
   else if (!validRouteText(scope.model, 512)) scope.error = '请求模型最多 512 字符，且不能包含控制字符。'
   else if (!routeProtocols.some((item) => item.value === scope.clientProtocol)) scope.error = '客户端协议无效，请重新选择。'
   else if (params.has('token_id') && !validObjectId(scope.tokenId)) scope.error = '所选令牌 ID 无效，请明确选择令牌或全局范围。'
+  else if (params.has('target_channel_id') && !validObjectId(scope.targetChannelId || '')) scope.error = '目标渠道 ID 无效，请重新选择渠道。'
   return scope
 }
 
@@ -35,6 +50,7 @@ export function modelRouteURL(scope: ModelRouteScope): string {
   const params = new URLSearchParams({ client_protocol: scope.clientProtocol })
   if (scope.model) params.set('model', scope.model)
   if (scope.tokenId) params.set('token_id', scope.tokenId)
+  if (scope.targetChannelId !== undefined) params.set('target_channel_id', scope.targetChannelId)
   return `/routing?${params}`
 }
 

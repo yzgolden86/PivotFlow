@@ -6,7 +6,8 @@ import { announcementFetchedTime } from './announcementTime'
 import { EmptyState, ErrorState, formatTime, LoadingState, OperationNotice, PageHeader, Pagination } from './shared'
 import { Modal, siteErrorMessage } from './siteShared'
 import { siteTaskRunner, siteTaskTarget } from '../siteTasks'
-import SiteTaskProgress, { useSiteTaskCompletion } from './SiteTaskProgress'
+import { SiteTaskNotice, useSiteTaskCompletion, useSiteTasks } from './SiteTaskProgress'
+import { siteTaskFeedback } from './siteTaskObservation'
 
 const PAGE_SIZE = 30
 
@@ -17,7 +18,8 @@ const loadAnnouncementDetail = () => import('./AnnouncementDetail')
 const AnnouncementDetail = lazy(loadAnnouncementDetail)
 
 export default function AnnouncementsPage() {
-  const taskCompletion = useSiteTaskCompletion()
+  const taskCompletion = useSiteTaskCompletion('announcement_refresh')
+  const maintenanceTasks = useSiteTasks()
   const loadRequest = useRef<AbortController | null>(null)
   const [sites, setSites] = useState<Site[]>([]); const [items, setItems] = useState<SiteAnnouncement[]>([]); const [total, setTotal] = useState(0); const [unreadCount, setUnreadCount] = useState(0)
   const [siteFilter, setSiteFilter] = useState(0); const [unread, setUnread] = useState(false); const [page, setPage] = useState(1); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [noticeTone, setNoticeTone] = useState<'success' | 'warning'>('success'); const [refreshing, setRefreshing] = useState(false); const [selected, setSelected] = useState<SiteAnnouncement | null>(null)
@@ -50,13 +52,17 @@ export default function AnnouncementsPage() {
   useEffect(() => () => loadRequest.current?.abort(), [])
   useEffect(() => { if (!taskCompletion) return; const timer = setTimeout(() => void load(undefined, { silent: true }), 500); return () => clearTimeout(timer) }, [taskCompletion, load])
   const siteMap = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites])
+  const refreshFeedback = siteTaskFeedback(maintenanceTasks, { kinds: ['announcement_refresh'], siteId: siteFilter })
+  const blockedRefresh = refreshFeedback.active.length + refreshFeedback.unknown.length > 0
   const refresh = async () => {
+    if (refreshing || blockedRefresh) return
     setRefreshing(true); setError(''); setNotice(''); setNoticeTone('success')
     try {
-      const targets = sites.filter((site) => siteFilter ? site.id === siteFilter : site.enabled)
+      const targets = sites.filter((site) => site.enabled && (!siteFilter || site.id === siteFilter))
+      if (!targets.length) { setNotice('没有可刷新公告的启用站点'); setNoticeTone('warning'); return }
       const results = await siteTaskRunner.run(targets.map((site) => siteTaskTarget('announcement_refresh', site.id, undefined, site.name, '站点公告')))
       const count = (status: string) => results.filter((item) => item.status === status).length
-      setNotice(`公告刷新完成：成功 ${count('success')}，失败 ${count('failed')}，取消 ${count('cancelled')}，待确认 ${count('unknown')}`)
+      setNotice(`公告刷新结果：成功 ${count('success')}，部分完成 ${count('partial')}，失败 ${count('failed')}，取消 ${count('cancelled')}，待确认 ${count('unknown')}`)
       setNoticeTone(results.every((item) => item.status === 'success') ? 'success' : 'warning')
       await load(undefined, { silent: true })
     } catch (reason) { setError(siteErrorMessage(reason)) } finally { setRefreshing(false) }
@@ -69,12 +75,12 @@ export default function AnnouncementsPage() {
       icon={Bell}
       title="公告中心"
       tone="blue"
-      actions={<><button className="secondary-button" type="button" onClick={() => void readAll()} disabled={!unreadCount}><CheckCheck size={15} />全部已读</button><button className="primary-button" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />}{refreshing ? '刷新中' : '刷新公告'}</button></>}
+      actions={<><button className="secondary-button" type="button" onClick={() => void readAll()} disabled={!unreadCount}><CheckCheck size={15} />全部已读</button><button className="primary-button" type="button" onClick={() => void refresh()} disabled={refreshing || blockedRefresh} title={blockedRefresh ? '已有公告刷新进行中或结果待确认，请先核实原任务' : undefined}>{refreshing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />}{refreshing ? '刷新中' : '刷新公告'}</button></>}
     />
-    <SiteTaskProgress />
+    <SiteTaskNotice kinds={['announcement_refresh']} siteId={siteFilter} />
     <section className="compact-summary"><span><strong>{total}</strong>当前公告</span><span><strong>{unreadCount}</strong>未读</span><span><strong>{sites.filter((site) => site.enabled).length}</strong>启用站点</span><span><strong>{items.filter((item) => item.level === 'important' || item.level === 'warning').length}</strong>重要提醒</span></section>
     <div className="filter-bar"><select value={siteFilter} onChange={(event) => { setPage(1); setSiteFilter(Number(event.target.value)) }} aria-label="公告站点"><option value={0}>全部站点</option>{sites.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}</select><label className="checkbox-field filter-checkbox"><input type="checkbox" checked={unread} onChange={(event) => { setPage(1); setUnread(event.target.checked) }} /><span>只看未读</span></label><span className="filter-count"><Bell size={14} />{total} 条公告</span></div>
-    {notice && <OperationNotice tone={noticeTone} onDismiss={() => setNotice('')}>{notice}</OperationNotice>}{error && items.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
+    {notice && <OperationNotice tone={noticeTone} persistent={noticeTone !== 'success'} onDismiss={() => setNotice('')}>{notice}</OperationNotice>}{error && items.length > 0 && <OperationNotice tone="error">{error}</OperationNotice>}
     {loading ? <LoadingState label="正在加载站点公告" /> : error && !items.length ? <ErrorState message={error} retry={() => void load()} /> : !items.length ? <EmptyState label={unread ? '没有未读公告' : '暂无站点公告'} /> : <div className="announcement-list">{items.map((item) => <AnnouncementRow key={item.id} item={item} siteName={siteMap.get(item.site_id)?.name || `站点 #${item.site_id}`} open={() => void open(item)} warm={() => void loadAnnouncementDetail()} />)}</div>}
     <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPage={setPage} />
     {selected && <Modal title={selected.title || '公告'} close={() => setSelected(null)} wide><Suspense fallback={<LoadingState label="正在加载公告正文" />}><AnnouncementDetail item={selected} site={siteMap.get(selected.site_id)} close={() => setSelected(null)} /></Suspense></Modal>}

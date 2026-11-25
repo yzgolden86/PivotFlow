@@ -9,15 +9,15 @@
     <link rel="apple-touch-icon" href="/web/apple-touch-icon.png?v=__VERSION__" />
     <title>PivotFlow</title>
     <style>
-      /* 启动态在 bundle 之前显示，用不了 styles.css 的令牌，只能抄字面量。
-         取值对齐 :root 的 --bg / --text-secondary / --border-strong / --green，
-         这样 React 挂载后底色不会跳一下。改令牌时记得同步这里。 */
-      .console-boot { position: fixed; inset: 0; display: grid; place-items: center; background: #f4f6f8; color: #46554f; font: 600 14px/1.5 "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif; }
+      /* Vite 把主题 CSS 作为阻塞渲染的 stylesheet 放在入口模块之前。
+         启动画面直接消费同一组令牌，脚本或 session 慢时仍使用已保存的配色和字体。
+         无样式/开发启动时的回退值沿用原默认外观。 */
+      .console-boot { position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg, #f4f6f8); color: var(--text-secondary, #46554f); font: 600 14px/1.5 var(--font-ui, "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif); }
       .console-boot div { display: flex; align-items: center; gap: 12px; }
       .console-boot img { width: 38px; height: 38px; border-radius: 8px; }
-      .console-boot i { width: 18px; height: 18px; border: 2px solid #c9d2d8; border-top-color: #10865d; border-radius: 50%; animation: console-spin .75s linear infinite; }
-      :root[data-theme="dark"] .console-boot { background: #111513; color: #b6c1bb; }
-      :root[data-theme="dark"] .console-boot i { border-color: #3a443f; border-top-color: #49b884; }
+      .console-boot i { width: 18px; height: 18px; border: 2px solid var(--border-strong, #c9d2d8); border-top-color: var(--green, #10865d); border-radius: 50%; animation: console-spin .75s linear infinite; }
+      :root[data-theme="dark"] .console-boot { background: var(--bg, #111513); color: var(--text-secondary, #b6c1bb); }
+      :root[data-theme="dark"] .console-boot i { border-color: var(--border-strong, #3a443f); border-top-color: var(--green, #49b884); }
       @keyframes console-spin { to { transform: rotate(360deg); } }
       @media (prefers-reduced-motion: reduce) { .console-boot i { animation-duration: 1.6s; } }
     </style>
@@ -37,8 +37,8 @@
           // 默认外观」：这里拒绝的值会被替换成默认值，随后 bundle 挂载才改回用户
           // 真正选的那个。后三项虽然只是布局/动效，但闪一下同样是肉眼可见的位移。
           // 两边的清单由 console/src/themeBoot.test.ts 逐个比对，别再手工同步。
-          root.dataset.themePreset = ['jade', 'ocean', 'coral', 'anthropic', 'violet', 'slate', 'forest', 'plum'].includes(appearance.preset) ? appearance.preset : 'jade'
-          root.dataset.themeFont = ['system', 'yahei', 'pingfang', 'dengxian', 'harmony', 'notoserif', 'songti', 'kaiti', 'segoe', 'consolas', 'cascadia', 'sarasa'].includes(appearance.font) ? appearance.font : 'system'
+          root.dataset.themePreset = ['jade', 'ocean', 'coral', 'anthropic', 'violet', 'slate', 'forest', 'plum', 'sand', 'ice', 'rose', 'ink'].includes(appearance.preset) ? appearance.preset : 'jade'
+          root.dataset.themeFont = ['system', 'yahei', 'pingfang', 'dengxian', 'harmony', 'notoserif', 'songti', 'kaiti', 'segoe', 'consolas', 'cascadia', 'sarasa', 'simhei', 'fangsong', 'aptos'].includes(appearance.font) ? appearance.font : 'system'
           root.dataset.themeRadius = ['compact', 'balanced', 'soft'].includes(appearance.radius) ? appearance.radius : 'balanced'
           root.dataset.sidebarWidth = ['narrow', 'default', 'wide'].includes(appearance.sidebarWidth) ? appearance.sidebarWidth : 'default'
           root.dataset.contentWidth = ['narrow', 'default', 'full'].includes(appearance.contentWidth) ? appearance.contentWidth : 'default'
@@ -60,9 +60,9 @@
         }
       })()
     </script>
-    <script type="module" crossorigin src="/web/console/assets/index-D01Giu39.js"></script>
-    <link rel="modulepreload" crossorigin href="/web/console/assets/icons-DlKgHtVB.js">
-    <link rel="stylesheet" crossorigin href="/web/console/assets/index-vrxoAZrI.css">
+    <script type="module" crossorigin src="/web/console/assets/index-8KyJepJ_.js"></script>
+    <link rel="modulepreload" crossorigin href="/web/console/assets/icons-Cg6PS1yv.js">
+    <link rel="stylesheet" crossorigin href="/web/console/assets/index-DgeamNer.css">
   </head>
   <body>
     <div id="root"><div class="console-boot" role="status"><div><img src="/web/brand-mark.svg?v=__VERSION__" alt="" /><i aria-hidden="true"></i><span>正在验证登录状态</span></div></div></div>

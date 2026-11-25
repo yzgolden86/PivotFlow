@@ -1,0 +1,260 @@
+/* Full surfaces keep the new palettes coherent in light, dark and glass modes. */
+:root[data-theme-preset="sand"] {
+  --bg: #f5f2ec;
+  --surface-base: #fffdf9;
+  --surface-muted-base: #f5f0e7;
+  --surface-strong-base: #eae2d5;
+  --text: #302d28;
+  --text-secondary: #5e574e;
+  --text-muted: #6b6157;
+  --border: #e0d8ca;
+  --border-strong: #c9bcaa;
+  --sidebar-base: #fcf9f3;
+  --sidebar-border: #e0d8ca;
+  --sidebar-text: #302d28;
+  --sidebar-muted: #6b6157;
+  --green: #896036;
+  --green-soft: #f0e3d0;
+  --green-text: #76512d;
+  --blue: #487b80;
+  --blue-soft: #dfedef;
+  --blue-text: #3d6c70;
+  --amber: #9c711e;
+  --amber-soft: #f5eacb;
+  --amber-text: #825d17;
+  --coral: #b45140;
+  --coral-soft: #f6e3dd;
+  --coral-text: #a34536;
+  --graphite: #5f5c57;
+}
+
+:root[data-theme="dark"][data-theme-preset="sand"] {
+  --primary-foreground: #1d1a17;
+  --bg: #1d1a17;
+  --surface-base: #25211c;
+  --surface-muted-base: #2d271f;
+  --surface-strong-base: #393126;
+  --text: #f4eee5;
+  --text-secondary: #c6baaa;
+  --text-muted: #a99b89;
+  --border: #40372b;
+  --border-strong: #5b4c38;
+  --sidebar-base: #211d18;
+  --sidebar-border: #40372b;
+  --sidebar-text: #f4eee5;
+  --sidebar-muted: #a99b89;
+  --green: #d5ae7d;
+  --green-soft: #3d3020;
+  --blue: #85b7ba;
+  --blue-soft: #223438;
+  --amber: #dfb965;
+  --amber-soft: #3f311a;
+  --coral: #e79480;
+  --coral-soft: #422923;
+  --graphite: #c3b9ad;
+  --green-text: var(--green);
+  --blue-text: var(--blue);
+  --amber-text: var(--amber);
+  --coral-text: var(--coral);
+}
+
+:root[data-theme-preset="ice"] {
+  --bg: #eff5f8;
+  --surface-base: #fcfeff;
+  --surface-muted-base: #edf4f9;
+  --surface-strong-base: #e0ebf3;
+  --text: #20333f;
+  --text-secondary: #435d6d;
+  --text-muted: #526976;
+  --border: #d6e3ec;
+  --border-strong: #b6cddd;
+  --sidebar-base: #f7fbfe;
+  --sidebar-border: #d6e3ec;
+  --sidebar-text: #20333f;
+  --sidebar-muted: #526976;
+  --green: #286d9e;
+  --green-soft: #ddeef8;
+  --green-text: #235f8a;
+  --blue: #5272ae;
+  --blue-soft: #e6ecf8;
+  --blue-text: #45649e;
+  --amber: #976d26;
+  --amber-soft: #f4ead5;
+  --amber-text: #815b1d;
+  --coral: #b35259;
+  --coral-soft: #f7e4e5;
+  --coral-text: #a0464d;
+  --graphite: #4f6470;
+}
+
+:root[data-theme="dark"][data-theme-preset="ice"] {
+  --primary-foreground: #121b23;
+  --bg: #121b23;
+  --surface-base: #19252e;
+  --surface-muted-base: #1d2c36;
+  --surface-strong-base: #263945;
+  --text: #edf6fc;
+  --text-secondary: #b0c8d8;
+  --text-muted: #8ca9bc;
+  --border: #2c414f;
+  --border-strong: #3f5a6d;
+  --sidebar-base: #15202a;
+  --sidebar-border: #2c414f;
+  --sidebar-text: #edf6fc;
+  --sidebar-muted: #8ca9bc;
+  --green: #7dbce7;
+  --green-soft: #20394c;
+  --blue: #9fb5ed;
+  --blue-soft: #28324d;
+  --amber: #dbb873;
+  --amber-soft: #3a311f;
+  --coral: #ed9a9e;
+  --coral-soft: #412b33;
+  --graphite: #b4c9d5;
+  --green-text: var(--green);
+  --blue-text: var(--blue);
+  --amber-text: var(--amber);
+  --coral-text: var(--coral);
+}
+
+:root[data-theme-preset="rose"] {
+  --bg: #f8f2f4;
+  --surface-base: #fffafb;
+  --surface-muted-base: #f7edf1;
+  --surface-strong-base: #efdee5;
+  --text: #392b32;
+  --text-secondary: #67515c;
+  --text-muted: #715a66;
+  --border: #e8d8df;
+  --border-strong: #d1b8c3;
+  --sidebar-base: #fcf7f9;
+  --sidebar-border: #e8d8df;
+  --sidebar-text: #392b32;
+  --sidebar-muted: #715a66;
+  --green: #a74363;
+  --green-soft: #f4dee7;
+  --green-text: #923853;
+  --blue: #526e8e;
+  --blue-soft: #e4ebf4;
+  --blue-text: #465f7e;
+  --amber: #96692c;
+  --amber-soft: #f6e8d3;
+  --amber-text: #81591f;
+  --coral: #b44d45;
+  --coral-soft: #f7e1dc;
+  --coral-text: #a0443b;
+  --graphite: #6a5961;
+}
+
+:root[data-theme="dark"][data-theme-preset="rose"] {
+  --primary-foreground: #21181d;
+  --bg: #21181d;
+  --surface-base: #2c2027;
+  --surface-muted-base: #342630;
+  --surface-strong-base: #432e3a;
+  --text: #f8edf2;
+  --text-secondary: #d2b8c5;
+  --text-muted: #b495a5;
+  --border: #493340;
+  --border-strong: #664858;
+  --sidebar-base: #261b22;
+  --sidebar-border: #493340;
+  --sidebar-text: #f8edf2;
+  --sidebar-muted: #b495a5;
+  --green: #e893b3;
+  --green-soft: #4a2939;
+  --blue: #9bb6d5;
+  --blue-soft: #293449;
+  --amber: #ddb578;
+  --amber-soft: #413322;
+  --coral: #ed978b;
+  --coral-soft: #482b2b;
+  --graphite: #cdb8c2;
+  --green-text: var(--green);
+  --blue-text: var(--blue);
+  --amber-text: var(--amber);
+  --coral-text: var(--coral);
+}
+
+:root[data-theme-preset="ink"] {
+  --bg: #f3f4f5;
+  --surface-base: #ffffff;
+  --surface-muted-base: #f2f3f4;
+  --surface-strong-base: #e6e8eb;
+  --text: #22272c;
+  --text-secondary: #4d565f;
+  --text-muted: #5c6670;
+  --border: #dcdfe3;
+  --border-strong: #bfc5cb;
+  --sidebar-base: #fafbfc;
+  --sidebar-border: #dcdfe3;
+  --sidebar-text: #22272c;
+  --sidebar-muted: #5c6670;
+  --green: #41464d;
+  --green-soft: #e5e8ec;
+  --green-text: #363c43;
+  --blue: #526e85;
+  --blue-soft: #e3ecf3;
+  --blue-text: #445e73;
+  --amber: #916a31;
+  --amber-soft: #f2e8d7;
+  --amber-text: #795725;
+  --coral: #b34e43;
+  --coral-soft: #f8e3df;
+  --coral-text: #9f4339;
+  --graphite: #545c64;
+}
+
+:root[data-theme="dark"][data-theme-preset="ink"] {
+  --primary-foreground: #141619;
+  --bg: #141619;
+  --surface-base: #1d2024;
+  --surface-muted-base: #23272c;
+  --surface-strong-base: #2e333a;
+  --text: #f0f2f5;
+  --text-secondary: #bcc3cc;
+  --text-muted: #959fae;
+  --border: #343b45;
+  --border-strong: #4c5664;
+  --sidebar-base: #181b1f;
+  --sidebar-border: #343b45;
+  --sidebar-text: #f0f2f5;
+  --sidebar-muted: #959fae;
+  --green: #c6ced9;
+  --green-soft: #303844;
+  --blue: #91b5d1;
+  --blue-soft: #253645;
+  --amber: #d4b27a;
+  --amber-soft: #3c3223;
+  --coral: #e7998b;
+  --coral-soft: #432c2a;
+  --graphite: #bbc4d0;
+  --green-text: var(--green);
+  --blue-text: var(--blue);
+  --amber-text: var(--amber);
+  --coral-text: var(--coral);
+}
+
+:root[data-theme-font="simhei"] {
+  --font-ui: SimHei, "Heiti SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-display: var(--font-ui);
+  --font-numeric: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+:root[data-theme-font="fangsong"] {
+  --font-ui: FangSong, STFangsong, "仿宋", "Songti SC", SimSun, serif;
+  --font-display: var(--font-ui);
+  --font-numeric: var(--font-ui);
+}
+
+:root[data-theme-font="aptos"] {
+  --font-ui: Aptos, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-display: "Aptos Display", Aptos, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-numeric: Aptos, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+.theme-font-preview--simhei,
+.theme-font-preview--fangsong,
+.theme-font-preview--aptos {
+  font-family: var(--font-ui);
+}

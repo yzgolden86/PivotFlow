@@ -15,6 +15,7 @@ import {
   type ClientArtifact, type ClientKind, type ClientShell, type GatewayProtocol,
 } from './clientConnection'
 import '../connectPresentation.css'
+import './connectWorkspace.css'
 
 const EMPTY_CONFIGURATION: ConnectConfigurationInput = { sites: null, accounts: null, facts: null, channels: null }
 
@@ -198,14 +199,13 @@ export default function ConnectPage() {
     : ''
 
   return <div className="workspace-page connect-page">
-    <PageHeader icon={PlugZap} title="接入配置" tone="blue" actions={<button className="icon-button icon-button--surface" type="button" onClick={() => void refresh()} disabled={loading || testing || reading} aria-label="刷新接入状态"><RefreshCw size={17} className={loading ? 'spin' : undefined} /></button>} />
-    <p className="connect-intro">为你的客户端生成网关配置，并测试一次调用</p>
+    <PageHeader icon={PlugZap} title="接入配置" tone="blue" actions={<><HelpTip label="接入配置" text="为客户端生成网关配置。选择令牌和模型后，可复制配置，并按需发送一次真实验证请求。" /><button className="icon-button icon-button--surface" type="button" onClick={() => void refresh()} disabled={loading || testing || reading} aria-label="刷新接入状态"><RefreshCw size={17} className={loading ? 'spin' : undefined} /></button></>} />
     {loadError && <div className="inline-error" role="alert">{loadError}</div>}
     <ConnectionGuide configuration={configuration} tokens={tokens.length} configured={ready && !generated.error} verified={result?.status === 'success'} loading={loading} />
     <div className="connect-layout">
       <div className="connect-workspace">
         <section className="connect-panel connect-selection" aria-labelledby="connect-selection-title">
-          <header className="connect-panel-heading"><div><span className="connect-eyebrow">配置条件</span><h2 id="connect-selection-title">选择令牌与模型</h2></div><KeyRound size={19} aria-hidden="true" /></header>
+          <header className="connect-panel-heading"><h2 id="connect-selection-title">选择令牌与模型</h2><HelpTip label="令牌与模型" text="读取或创建一个下游访问令牌，再选择此令牌可以访问的模型。完整令牌只保留在本页内存中。" /></header>
           <div className="connect-token-controls">
             <label className="connect-field">下游访问令牌<select value={tokenId} onChange={(event) => changeToken(Number(event.target.value))} disabled={testing || reading || loading} aria-label="下游访问令牌">
               <option value={0} disabled>{tokens.length ? '选择访问令牌' : '尚未创建访问令牌'}</option>
@@ -214,10 +214,8 @@ export default function ConnectPage() {
             <button className={secret ? 'secondary-button' : 'primary-button'} type="button" onClick={() => void readSecret()} disabled={!selectedToken || Boolean(unavailable) || reading || testing || loading}>{reading ? <RefreshCw size={15} className="spin" /> : <KeyRound size={15} />}{reading ? '读取中' : secret ? '重新读取令牌' : '读取现有令牌'}</button>
             <button className="secondary-button" type="button" onClick={() => setCreating(true)} disabled={testing || reading || loading}><Plus size={15} />创建令牌</button>
           </div>
-          <p className="connect-next-step">{secret ? '下一步：确认模型与客户端配置，再发送一次真实验证。' : selectedToken ? '下一步：读取现有令牌；完整值只保留在当前页面内存。' : '下一步：创建或选择下游访问令牌。'}</p>
           {unavailable && <p className="connect-warning" role="status">{unavailable}</p>}
           {secretError && <p className="inline-error" role="alert">{secretError}</p>}
-          {secret && !unavailable && <p className="connect-hint"><Check size={13} aria-hidden="true" />已读取下游令牌；完整值只保留在当前页面内存，切换令牌或离开页面后需重新读取。</p>}
           {selectedToken && <details className="connect-permissions" aria-label="令牌权限与额度"><summary><span>令牌权限与额度</span><span>{permissionSummary}</span><ChevronDown size={14} aria-hidden="true" /></summary><div className="connect-permissions-body"><span>协议 {selectedToken.allowed_protocols?.length ? selectedToken.allowed_protocols.join(' / ') : '不限'}</span><span>模型 {selectedToken.allowed_models?.length ? `${selectedToken.allowed_models.length} 个` : '不限'}</span><span>渠道 {selectedToken.allowed_channel_ids?.length ? `${selectedToken.channel_restriction_mode === 'deny' ? '排除' : '只允许'} ${selectedToken.allowed_channel_ids.length} 个` : '不限'}</span><span>额度 {selectedToken.cost_limit_usd ? `${formatMoney(selectedToken.cost_used_usd)} / ${formatMoney(selectedToken.cost_limit_usd)}` : '不限'}</span><a href={`#/tokens?token=${selectedToken.id}`}>管理限制<ArrowRight size={12} /></a></div></details>}
           <div className="connect-choice-heading"><strong>客户端与协议</strong><HelpTip label="客户端协议" text="客户端类型决定后续模型列表与验证请求使用的协议。配置模板仍按所选客户端的官方语法生成，本页不会修改本机文件或安装客户端。" /></div>
           <div className="connect-client-options" role="group" aria-label="客户端">
@@ -239,7 +237,7 @@ export default function ConnectPage() {
         <div className="connect-output">
           <ConfigurationPanel artifacts={generated.artifacts} secret={secret} shell={shell} client={client} />
           <section className="connect-panel connect-probe" aria-labelledby="connect-probe-title">
-            <header className="connect-panel-heading"><div><span className="connect-eyebrow">实际验证 · 单独计费</span><h2 id="connect-probe-title">验证当前网关</h2></div><Terminal size={19} aria-hidden="true" /></header>
+            <header className="connect-panel-heading"><h2 id="connect-probe-title">验证当前网关</h2><Terminal size={19} aria-hidden="true" /></header>
             <p className="connect-probe-address"><span>本次浏览器联测地址（仅当前同源网关）</span><code>{window.location.origin}{buildGatewayProbePath(protocol, model)}</code></p>
             {differentAddress && <p className="connect-warning">客户端地址与当前网关地址不同。浏览器联测只验证当前网关；请在客户端设备执行“终端验证”，确认填写的地址可达。</p>}
             <p className="connect-billing-warning"><span>验证请求按正常模型调用计费，页面不会自动重发。</span><HelpTip label="验证请求边界" text="只发送一次最多 256 输出 token 的文本模型请求。浏览器只验证当前同源网关，网关按现有路由规则处理故障切换。一次成功仅覆盖本次调用；工具调用、流式和长会话仍需在客户端使用中确认。" /></p>
@@ -271,7 +269,7 @@ function ConnectionGuide({ configuration, tokens, configured, verified, loading 
   const guide = buildConnectionGuide({ configuration, tokens, configured, verified, loading })
   const configurationSteps = guide.steps.filter((step) => step.scope === 'configuration')
   return <details className="connect-guide" aria-label="接入步骤">
-    <summary><span className="connect-guide-summary"><span className="connect-eyebrow">接入清单</span><strong>{guide.summary}</strong></span><ChevronDown size={17} aria-hidden="true" /></summary>
+    <summary><span className="connect-guide-summary"><strong>{guide.summary}</strong></span><ChevronDown size={17} aria-hidden="true" /></summary>
     <div className="connect-guide-body">
       {loading ? <LoadingState label="读取接入状态" /> : <>
         <ol aria-label="配置条件">{configurationSteps.map((step, index) => <li key={step.id} className={step.state === 'ready' ? 'is-ready' : ''}><span className="connect-step-number" aria-hidden="true">{step.state === 'ready' ? <Check size={14} /> : step.state === 'unknown' ? '?' : index + 1}</span><div><header><h3>{step.label}</h3><span className="connect-step-status">{step.state === 'ready' ? '已配置' : step.state === 'unknown' ? '未确认' : '待配置'}</span></header><p>{step.detail}</p>{step.links.length > 0 && <div className="connect-step-links">{step.links.map(([label, href]) => <a href={href} key={href}>{label}<ArrowRight size={11} /></a>)}</div>}</div></li>)}</ol>
@@ -313,7 +311,7 @@ function ConfigurationPanel({ artifacts, secret, shell, client }: { artifacts: C
     setNotice(`已下载 ${artifact.fileName}${artifact.containsToken ? '，文件包含完整下游令牌。' : '。'}`)
   }
   return <section className="connect-panel connect-config" aria-labelledby="connect-config-title">
-    <header className="connect-panel-heading"><div><span className="connect-eyebrow">客户端配置</span><h2 id="connect-config-title">复制并合并配置</h2></div><a className="connect-source" href={connectionClients.find((entry) => entry.id === client)?.source} target="_blank" rel="noreferrer">官方文档<ExternalLink size={12} /></a></header>
+    <header className="connect-panel-heading"><h2 id="connect-config-title">复制并合并配置</h2><a className="connect-source" href={connectionClients.find((entry) => entry.id === client)?.source} target="_blank" rel="noreferrer">官方文档<ExternalLink size={12} /></a></header>
     <div className="connect-artifact-tabs" role="group" aria-label="配置内容">{(['config', 'environment', 'verify'] as const).map((value) => <button type="button" key={value} aria-pressed={kind === value} className={kind === value ? 'is-active' : ''} onClick={() => { setKind(value); setNotice('') }}>{value === 'config' ? '配置文件' : value === 'environment' ? '环境变量与启动' : '终端验证'}</button>)}</div>
     {artifact ? <><p className="connect-destination"><code>{artifact.destination}</code>{artifact.containsToken && <span>包含下游令牌</span>}</p><p className="connect-hint">{artifact.instructions}</p><pre className="connect-code" tabIndex={0} aria-label="配置预览"><code>{visible ? artifact.content : maskArtifact(artifact, secret, shell)}</code></pre><div className="connect-code-actions"><label className="checkbox-field"><input type="checkbox" checked={visible} onChange={(event) => setVisible(event.target.checked)} disabled={!artifact.containsToken} />显示完整令牌</label><div><button className="secondary-button" type="button" onClick={() => void copy()}><Copy size={14} />复制内容</button><button className="secondary-button" type="button" onClick={download}><Download size={14} />下载文件</button></div></div></> : <p className="connect-config-empty">先读取一个有效的下游令牌，再选择网关返回的模型，即可生成配置。</p>}
     {notice && <p className="connect-copy-notice" role="status" aria-live="polite">{notice}</p>}

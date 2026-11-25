@@ -144,6 +144,18 @@ func (h *HybridStore) UpsertSiteAccountBalanceSnapshot(ctx context.Context, v *m
 func (h *HybridStore) ListSiteAccountBalanceSnapshots(ctx context.Context, sinceDay, untilDay string) ([]*model.SiteAccountBalanceSnapshot, error) {
 	return h.mysql.ListSiteAccountBalanceSnapshots(ctx, sinceDay, untilDay)
 }
+func (h *HybridStore) CreateSiteAccountDailyBalance(ctx context.Context, v *model.SiteAccountDailyBalance) (bool, error) {
+	return h.mysql.CreateSiteAccountDailyBalance(ctx, v)
+}
+func (h *HybridStore) UpdateSiteAccountBalance(ctx context.Context, id int64, balance float64, currency string, updatedAt int64) error {
+	return h.mysql.UpdateSiteAccountBalance(ctx, id, balance, currency, updatedAt)
+}
+func (h *HybridStore) CompleteSiteAccountDailyBalance(ctx context.Context, v *model.SiteAccountDailyBalance) (bool, error) {
+	return h.mysql.CompleteSiteAccountDailyBalance(ctx, v)
+}
+func (h *HybridStore) ListSiteAccountDailyBalances(ctx context.Context, sinceDay, untilDay string) ([]*model.SiteAccountDailyBalance, error) {
+	return h.mysql.ListSiteAccountDailyBalances(ctx, sinceDay, untilDay)
+}
 func (h *HybridStore) UpsertSiteAnnouncements(ctx context.Context, v []model.SiteAnnouncement) error {
 	return h.mysql.UpsertSiteAnnouncements(ctx, v)
 }

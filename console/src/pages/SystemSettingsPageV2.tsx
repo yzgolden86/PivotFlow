@@ -20,10 +20,10 @@ import {
   byteSettingUnit,
   formatByteSettingValue,
   isByteSettingKey,
-  parseByteSettingValue,
   validateWallpaperInput,
 } from '../settingsFields'
 import type { ByteSettingKey } from '../settingsFields'
+import { editByteSetting, groupSettingsForWorkspace, settingGroup } from './settingsWorkspace'
 import {
   applyThemeCustomization, backgroundDimRange, glassPresetValues, readThemeCustomization, rerollWallpaper,
   resetThemeCustomization, surfaceBlurRange, surfaceOpacityRange, themeFontOptions,
@@ -93,6 +93,9 @@ export default function SystemSettingsPageV2() {
   const [aliasRefreshTick, setAliasRefreshTick] = useState(0)
   const [aliasFocusTick, setAliasFocusTick] = useState(0)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+  const [byteDrafts, setByteDrafts] = useState<Record<string, string>>({})
+  const [pendingFieldFocus, setPendingFieldFocus] = useState<string | null>(null)
+  const editorScroll = useRef<HTMLDivElement>(null)
 
   useEffect(() => { setQuery(''); setOnlyModified(false) }, [location.search])
 
@@ -117,6 +120,7 @@ export default function SystemSettingsPageV2() {
       setValues(Object.fromEntries(data.map((setting) => [setting.key, setting.value])))
       setDirty(new Set())
       setFieldErrors({})
+      setByteDrafts({})
     } catch (reason) {
       if (!signal?.aborted) setError(reason instanceof Error ? reason.message : '系统设置加载失败')
     } finally {
@@ -154,6 +158,7 @@ export default function SystemSettingsPageV2() {
       return normalized ? searchable.includes(normalized) : onlyModified || settingGroup(setting.key) === group
     })
   }, [dirty, group, onlyModified, query, settings])
+  const workspaceSections = useMemo(() => groupSettingsForWorkspace(visible), [visible])
   const showAliases = (!onlyModified || dirty.has('model_alias_groups')) && (query.trim()
     ? '模型统一映射 别名 model_alias_groups'.includes(query.trim().toLowerCase()) : onlyModified || group === 'routing')
   const aliasIssues = useMemo(
@@ -171,12 +176,29 @@ export default function SystemSettingsPageV2() {
     })
   }, [])
 
+  useEffect(() => {
+    if (editorScroll.current) editorScroll.current.scrollTop = 0
+  }, [group, section, onlyModified, query])
+
+  useEffect(() => {
+    if (!pendingFieldFocus) return
+    const frame = requestAnimationFrame(() => {
+      const input = document.querySelector<HTMLInputElement>(`[data-setting-key="${CSS.escape(pendingFieldFocus)}"] input`)
+      if (!input) return
+      input.focus({ preventScroll: true })
+      input.scrollIntoView({ block: 'center', inline: 'nearest' })
+      setPendingFieldFocus(null)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [pendingFieldFocus, group, section, onlyModified, query, location.key])
+
   const discard = () => {
     if (!window.confirm(`放弃 ${dirty.size} 项未保存的修改？`)) return
     setValues(Object.fromEntries(settings.map((setting) => [setting.key, setting.value])))
     setDirty(new Set())
     setOnlyModified(false)
     setFieldErrors({})
+    setByteDrafts({})
   }
 
   const change = (key: string, value: string) => {
@@ -190,6 +212,20 @@ export default function SystemSettingsPageV2() {
     })
   }
 
+  const changeByteDraft = (setting: SystemSetting, draft: string) => {
+    const edit = editByteSetting(setting.key as ByteSettingKey, draft, setting.value)
+    setByteDrafts((current) => ({ ...current, [setting.key]: edit.draft }))
+    const value = edit.value
+    if (value !== null) setValues((current) => ({ ...current, [setting.key]: value }))
+    reportFieldError(setting.key, edit.error)
+    setDirty((current) => {
+      const next = new Set(current)
+      if (edit.dirty) next.add(setting.key)
+      else next.delete(setting.key)
+      return next
+    })
+  }
+
   const save = async () => {
     if (!dirty.size || saving || refreshing) return
     const fieldErrorEntries = Object.entries(fieldErrors)
@@ -198,10 +234,10 @@ export default function SystemSettingsPageV2() {
       setNotice('')
       setError(`无法保存：${firstError}`)
       const firstSetting = settings.find((setting) => setting.key === firstKey)
+      setQuery('')
+      setOnlyModified(false)
       if (firstSetting) setGroup(settingGroup(firstSetting.key))
-      requestAnimationFrame(() => {
-        document.querySelector<HTMLElement>(`[data-setting-key="${CSS.escape(firstKey)}"] input`)?.focus()
-      })
+      setPendingFieldFocus(firstKey)
       return
     }
     if (aliasIssues.length) {
@@ -224,6 +260,7 @@ export default function SystemSettingsPageV2() {
       setNotice(result.message)
       setDirty(new Set())
       setFieldErrors({})
+      setByteDrafts({})
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '保存失败')
     } finally {
@@ -246,6 +283,11 @@ export default function SystemSettingsPageV2() {
         return next
       })
       reportFieldError(setting.key, '')
+      setByteDrafts((current) => {
+        const next = { ...current }
+        delete next[setting.key]
+        return next
+      })
       setNotice(result.message)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '重置失败')
@@ -311,9 +353,9 @@ export default function SystemSettingsPageV2() {
     </div>
 
     <section className="system-settings-panel" id={`${sectionTabsId}-panel`} role="tabpanel" aria-labelledby={`${sectionTabsId}-tab-${section}`} tabIndex={0}>
-    {section === 'notifications' ? <WebhookSettingsPanel /> : section === 'backup' ? <BackupSettingsPanel /> : section === 'system-access' ? <SystemAccessTokensPanel /> : <>
       {notice && <OperationNotice onDismiss={() => setNotice('')}><CheckCircle2 size={16} />{notice}</OperationNotice>}
       {error && <OperationNotice tone="error">{error}</OperationNotice>}
+    {section === 'notifications' ? <WebhookSettingsPanel /> : section === 'backup' ? <BackupSettingsPanel /> : section === 'system-access' ? <SystemAccessTokensPanel /> : <>
       <div className="settings-layout">
         <aside className="settings-groups" aria-label="设置分类">
           {groups.map(({ key, label, icon: Icon }) => <button className={group === key && !query.trim() && !onlyModified ? 'is-active' : ''} type="button" aria-pressed={group === key && !query.trim() && !onlyModified} onClick={() => { setGroup(key); setQuery(''); setOnlyModified(false) }} key={key}>
@@ -327,26 +369,42 @@ export default function SystemSettingsPageV2() {
           <div className="settings-editor-toolbar">
             <div className="settings-editor-heading">
               <span><ActiveGroupIcon size={19} /></span>
-              <div><h2>{onlyModified ? '未保存修改' : query.trim() ? '搜索结果' : activeGroup.label}</h2>{query.trim() && <p>{visible.length + Number(showAliases)} 项结果</p>}</div>
+              <div><h2 id={`${sectionTabsId}-editor-title`}>{onlyModified ? '未保存修改' : query.trim() ? '搜索结果' : activeGroup.label}</h2>{query.trim() && <p role="status">{visible.length + Number(showAliases)} 项结果</p>}</div>
             </div>
             <label className="search-field settings-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索全部设置" aria-label="搜索全部设置" />{query && <button type="button" className="search-clear" aria-label="清除设置搜索" title="清除搜索" onClick={() => setQuery('')}><X size={15} /></button>}</label>
           </div>
 
+          {workspaceSections.length + Number(showAliases) > 1 && <nav className="settings-local-nav" aria-label="当前设置分组">
+            {showAliases && <button type="button" onClick={() => {
+              const target = editorScroll.current?.querySelector<HTMLElement>('.model-alias-panel')
+              target?.scrollIntoView({ block: 'start' })
+              target?.querySelector<HTMLElement>('input, button')?.focus({ preventScroll: true })
+            }}>模型统一映射</button>}
+            {workspaceSections.map((item) => <button type="button" key={item.id} onClick={() => {
+              const target = document.getElementById(`${sectionTabsId}-${item.id}`)
+              target?.scrollIntoView({ block: 'start' })
+              target?.focus({ preventScroll: true })
+            }}>{item.title}<span>{item.settings.length}</span></button>)}
+          </nav>}
+          <div ref={editorScroll} className="settings-editor-content" role="region" aria-labelledby={`${sectionTabsId}-editor-title`} tabIndex={0}>
           <fieldset className="settings-fields" disabled={saving || refreshing}>
           {group === 'appearance' && !query.trim() && !onlyModified ? <AppearancePanel customization={appearance} change={changeAppearance} reset={resetAppearance} clearNotice={() => setNotice('')} /> : <>
           {showAliases && <ModelAliasPanel value={values.model_alias_groups || '[]'} change={(value) => change('model_alias_groups', value)} refreshTick={aliasRefreshTick} validationIssues={aliasIssues} focusIssuesTick={aliasFocusTick} />}
           {group === 'advanced' && !query.trim() && <div className="settings-risk-note"><ShieldAlert size={17} /><span>这些设置用于特殊兼容场景。不了解具体影响时请保持默认值。</span></div>}
 
-          {!visible.length && !showAliases ? <EmptyState label={onlyModified ? '没有未保存的修改' : '没有符合条件的设置'} /> : <div className="setting-list">
-            {visible.map((setting) => <article className={`setting-row${dirty.has(setting.key) ? ' setting-row--dirty' : ''}${fieldErrors[setting.key] ? ' setting-row--invalid' : ''}`} key={setting.key} data-setting-key={setting.key}>
-              <div className="setting-copy"><strong title={setting.key}>{settingLabel(setting)}{helps[setting.key] && <HelpTip label={settingLabel(setting)} text={helps[setting.key]} code={setting.key} />}</strong></div>
+          {!visible.length && !showAliases ? <EmptyState label={onlyModified ? '没有未保存的修改' : '没有符合条件的设置'} /> : <div className={`settings-section-grid${workspaceSections.length > 1 ? ' settings-section-grid--multiple' : ''}`}>
+            {workspaceSections.map((item) => <section className="settings-workspace-section" key={item.id} data-settings-section={item.id} aria-labelledby={`${sectionTabsId}-${item.id}`}>
+              <header><div className="heading-with-hint"><h3 id={`${sectionTabsId}-${item.id}`} tabIndex={-1}>{item.title}</h3>{item.caption && <HelpTip label={item.title} text={item.caption} />}</div></header>
+              <div className="setting-list">{item.settings.map((setting) => <article className={`setting-row${dirty.has(setting.key) ? ' setting-row--dirty' : ''}${fieldErrors[setting.key] ? ' setting-row--invalid' : ''}`} key={setting.key} data-setting-key={setting.key}>
+              <div className="setting-copy"><strong title={setting.key}>{settingLabel(setting)}<HelpTip label={settingLabel(setting)} text={settingHelp(setting)} code={setting.key} /></strong>{!setting.editable && <p className="setting-readonly-note">{setting.disabled_reason || '此设置当前只读'}</p>}</div>
               <div className="setting-control">
                 <SettingInput
                   setting={setting}
                   value={values[setting.key] ?? ''}
                   change={(value) => change(setting.key, value)}
                   error={fieldErrors[setting.key] || ''}
-                  reportError={(message) => reportFieldError(setting.key, message)}
+                  byteDraft={byteDrafts[setting.key]}
+                  changeByteDraft={(draft) => changeByteDraft(setting, draft)}
                 />
                 {setting.value_type !== 'bool' && settingUnit(setting.key) && <span>{settingUnit(setting.key)}</span>}
               </div>
@@ -354,14 +412,16 @@ export default function SystemSettingsPageV2() {
                 <div className="setting-activation">
                   <small>默认值：{formatDefault(setting)}</small>
                 </div>
-                <button className="icon-button icon-button--surface" type="button" onClick={() => void reset(setting)} disabled={!setting.editable || saving || values[setting.key] === setting.default_value} aria-label={`重置 ${settingLabel(setting)}`} title="恢复默认值"><RotateCcw size={16} /></button>
+                <button className="icon-button icon-button--surface" type="button" onClick={() => void reset(setting)} disabled={!setting.editable || saving || (values[setting.key] === setting.default_value && !dirty.has(setting.key))} aria-label={`重置 ${settingLabel(setting)}`} title="恢复默认值"><RotateCcw size={16} /></button>
               </div>
-            </article>)}
+            </article>)}</div>
+            </section>)}
           </div>}
           {group === 'cache' && !query.trim() && <RequestCachePanel unsavedCount={[...dirty].filter((key) => settingGroup(key) === 'cache').length} />}
           {group === 'maintenance' && !query.trim() && <UpdatePanel info={versionInfo} checking={checkingVersion} check={checkUpdates} />}
           </>}
           </fieldset>
+          </div>
         </section>
       </div>
     </>}
@@ -753,6 +813,10 @@ function AppearancePanel({ customization, change, reset, clearNotice }: {
     ['slate', '石墨灰', ['#4a6272', '#3f6f9c', '#a8762a']],
     ['forest', '松林绿', ['#2f6b45', '#3d6f8f', '#97701f']],
     ['plum', '梅子紫', ['#9a3f6b', '#4a6a9e', '#b0761f']],
+    ['sand', '暖砂', ['#896036', '#487b80', '#9c711e']],
+    ['ice', '冰川', ['#286d9e', '#5272ae', '#976d26']],
+    ['rose', '蔷薇', ['#a74363', '#526e8e', '#96692c']],
+    ['ink', '水墨', ['#41464d', '#526e85', '#916a31']],
   ]
   const radii: Array<[ThemeRadius, string]> = [
     ['compact', '利落'],
@@ -794,15 +858,13 @@ function AppearancePanel({ customization, change, reset, clearNotice }: {
         </section>
 
         <section className="appearance-control-group">
-          <header><span><Type size={17} /></span><strong>字体风格</strong></header>
-          {/* 下拉而非按钮墙：常用字体有八款，平铺占位太多，
-              且相邻两款的差异往往要看同一段文字才分得出来。 */}
+          <header><span><Type size={17} /></span><strong>字体风格</strong><HelpTip label="本地字体" text="使用设备上已安装的字体，无需下载。字体缺失时会使用本地回退字体；下方可直接查看中英文和数字的效果。" /></header>
           <div className="appearance-font-picker">
             <select className="theme-font-select" value={customization.font} onChange={(event) => {
               const next = event.target.value as ThemeFont
               change({ font: next }, themeFontOptions.find((item) => item.value === next)?.label || next)
             }} aria-label="界面字体">
-              {themeFontOptions.map((option) => <option value={option.value} key={option.value}>{option.label} · {option.note}</option>)}
+              {themeFontOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
             </select>
             <p className={`theme-font-preview theme-font-preview--${customization.font}`}>枢衡 PivotFlow · 渠道 12 个 · $0.0834 · 99.6%</p>
           </div>
@@ -909,16 +971,17 @@ function UpdatePanel({ info, checking, check }: { info: { version: string; lates
   </div>
 }
 
-function SettingInput({ setting, value, change, error, reportError }: {
+function SettingInput({ setting, value, change, error, byteDraft, changeByteDraft }: {
   setting: SystemSetting
   value: string
   change: (value: string) => void
   error: string
-  reportError: (message: string) => void
+  byteDraft?: string
+  changeByteDraft: (draft: string) => void
 }) {
   if (setting.value_type === 'bool') return <button className={`setting-switch${normalizeBool(value) === 'true' ? ' is-on' : ''}`} type="button" role="switch" aria-label={settingLabel(setting)} aria-checked={normalizeBool(value) === 'true'} onClick={() => change(normalizeBool(value) === 'true' ? 'false' : 'true')} disabled={!setting.editable}><span>{normalizeBool(value) === 'true' ? '已启用' : '已停用'}</span><i /></button>
-  if (isByteSettingKey(setting.key)) return <ByteCapacityInput setting={setting} value={value} change={change} error={error} reportError={reportError} />
-  if (setting.key === 'site_daily_checkin_time' || setting.key === 'site_daily_announcement_time') return <input type="time" step="60" aria-label={settingLabel(setting)} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
+  if (isByteSettingKey(setting.key)) return <ByteCapacityInput setting={setting} draft={byteDraft ?? formatByteSettingValue(setting.key, value)} changeDraft={changeByteDraft} error={error} />
+  if (setting.key === 'site_daily_checkin_time' || setting.key === 'site_daily_announcement_time' || setting.key === 'site_daily_balance_time') return <input type="time" step="60" aria-label={settingLabel(setting)} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
   const options = settingOptions(setting.key)
   const tips = optionTips[setting.key]
   // 有逐项说明时用分段按钮：原生 <option> 的 title 在各浏览器表现不一致，
@@ -944,42 +1007,21 @@ function SettingInput({ setting, value, change, error, reportError }: {
   return <input type={type} min={bounds.min} max={bounds.max} aria-label={settingLabel(setting)} step={setting.value_type === 'float' ? '0.1' : '1'} value={value} onChange={(event) => change(event.target.value)} disabled={!setting.editable} />
 }
 
-function ByteCapacityInput({ setting, value, change, error, reportError }: {
+function ByteCapacityInput({ setting, draft, changeDraft, error }: {
   setting: SystemSetting
-  value: string
-  change: (value: string) => void
+  draft: string
+  changeDraft: (draft: string) => void
   error: string
-  reportError: (message: string) => void
 }) {
   const key = setting.key as ByteSettingKey
-  const [draft, setDraft] = useState(() => formatByteSettingValue(key, value))
   const errorId = `setting-error-${setting.key}`
-
-  useEffect(() => {
-    const parsed = parseByteSettingValue(key, draft)
-    if (!parsed.ok || parsed.bytes !== Number(value)) setDraft(formatByteSettingValue(key, value))
-    // 只在外部值（保存、重置或刷新）变化时同步；用户输入合法的等值文本时保留草稿。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, value])
-
-  const updateDraft = (next: string) => {
-    setDraft(next)
-    const parsed = parseByteSettingValue(key, next)
-    if (!parsed.ok) {
-      reportError(parsed.error)
-      return
-    }
-    reportError('')
-    if (String(parsed.bytes) !== value) change(String(parsed.bytes))
-  }
 
   return <div className="byte-capacity-control">
     <input
       type="text"
       inputMode="decimal"
       value={draft}
-      onChange={(event) => updateDraft(event.target.value)}
-      onBlur={() => updateDraft(draft)}
+      onChange={(event) => changeDraft(event.target.value)}
       disabled={!setting.editable}
       aria-label={`${settingLabel(setting)}（${byteSettingUnit(key)}）`}
       aria-invalid={Boolean(error)}
@@ -993,21 +1035,6 @@ function ByteCapacityInput({ setting, value, change, error, reportError }: {
 
 function normalizeBool(value: string): string { return value === 'true' || value === '1' ? 'true' : 'false' }
 
-function settingGroup(key: string): GroupKey {
-  if (key === 'site_daily_checkin_time' || key === 'site_daily_announcement_time') return 'automation'
-  if (/^request_cache_/.test(key)) return 'cache'
-  if (key === 'cooldown_fallback_enabled') return 'routing'
-  if (/^cooldown_|global_cooldown/.test(key)) return 'cooldown'
-  if (/timeout|connection_reuse/.test(key)) return 'timeouts'
-  if (/max_concurrency|max_body|max_image_body/.test(key)) return 'capacity'
-  if (/channel_test|channel_check|enable_health|success_rate|health_|ttfb_/.test(key)) return 'health'
-  if (/log_|debug_log|auto_refresh/.test(key)) return 'logs'
-  if (/websocket|responses_ws/.test(key)) return 'websocket'
-  if (/update|catalog/.test(key)) return 'maintenance'
-  if (/antigravity/.test(key)) return 'advanced'
-  return 'routing'
-}
-
 const labels: Record<string, string> = {
   request_cache_enabled: '启用请求缓存', request_cache_ttl_seconds: '缓存有效期', request_cache_max_entries: '最大缓存条目',
   request_cache_max_bytes: '缓存正文总容量', request_cache_max_entry_bytes: '单条响应容量',
@@ -1020,12 +1047,18 @@ const labels: Record<string, string> = {
   channel_test_content: '健康检测提示词', channel_check_interval_hours: '自动健康检测间隔', enable_health_score: '按渠道健康度动态排序', success_rate_penalty_weight: '失败率惩罚权重', health_score_window_minutes: '健康度统计窗口', health_score_update_interval: '健康度刷新间隔', health_min_confident_sample: '健康度可信样本量', enable_ttfb_score: '加入首字延迟评分', ttfb_penalty_weight: '首字延迟惩罚权重', ttfb_max_slow_ratio: '首字慢速比上限', ttfb_min_confident_sample: '首字评分可信样本量',
   site_daily_checkin_time: '每日自动签到时间',
   site_daily_announcement_time: '每日自动刷新公告时间',
+  site_daily_balance_enabled: '每日余额统计',
+  site_daily_balance_time: '每日余额统计时间',
   log_retention_days: '请求日志保留时间', debug_log_enabled: '记录上游原始报文', debug_log_retention_minutes: '原始报文保留时间', auto_refresh_interval_seconds: '日志页面自动刷新间隔',
   responses_ws_max_sessions: '最大执行会话数', responses_ws_session_ttl_minutes: '空闲会话保留时间', responses_ws_max_transcript_bytes: '会话内容总容量', responses_ws_max_connections: '最大长连接数', responses_ws_max_connections_per_token: '单密钥最大长连接数',
   model_catalog_sync_interval_hours: '模型价格目录同步间隔', auto_update_interval_hours: '上游检查间隔', auto_update_channel: '上游检查通道', antigravity_sensitive_words: 'Antigravity 敏感词兼容',
 }
 
 const helps: Record<string, string> = {
+  upstream_first_byte_timeout: '等待流式响应的首个有效内容，单位为秒；设为 0 关闭全局首字超时。协议专属的首字超时设为 0 时继承此值。',
+  stream_timeout: '流式请求从开始到结束的总时限，单位为秒；设为 0 关闭此总时限。',
+  non_stream_timeout: '非流式请求的总时限，单位为秒；设为 0 关闭全局非流式超时。协议专属的非流式超时设为 0 时继承此值。',
+  upstream_connection_reuse_limit_seconds: '上游连接的最长复用时间，单位为秒；设为 0 不限制。达到时限后不接收新请求，在途请求完成后再关闭连接。',
   request_cache_enabled: '默认关闭。启用后，客户端仍需发送 X-PivotFlow-Cache: use 才会查找缓存；refresh 强制刷新，bypass 不读不写。保存后按现有流程重启生效。',
   request_cache_ttl_seconds: '条目从写入后保留的秒数，允许 5–3600 秒。过期条目会从统计中单列，直到被查找或容量淘汰。',
   request_cache_max_entries: '当前进程最多保留的条目数，允许 1–4096 条；统计中的 entries 包含尚未清理的过期驻留项。',
@@ -1036,6 +1069,8 @@ const helps: Record<string, string> = {
   channel_test_content: '自动巡检渠道时发送的最小测试内容。', channel_check_interval_hours: '设为 0 可关闭定时巡检，小数支持分钟级间隔。', enable_health_score: '根据近期成功率动态调整同优先级渠道的顺序。', enable_ttfb_score: '在健康度排序中考虑首字响应速度。',
   site_daily_checkin_time: '到达该时间后，为当天尚未执行过的账号触发签到；分别按账号或站点时区计算。',
   site_daily_announcement_time: '到达该时间后，每个站点每天刷新一次公告；按站点时区计算。',
+  site_daily_balance_enabled: '每日固定时间读取启用账号的余额，记录相邻两日净变化。关闭后保留历史记录。',
+  site_daily_balance_time: '按北京时间采样，每日只记录一次；延误超过 15 分钟或采集失败会保留缺口。修改后重启生效。',
   debug_log_enabled: '会记录上游请求与响应原文，仅建议排障时短暂开启。', auto_refresh_interval_seconds: '日志页面按此间隔刷新历史请求和进行中请求；设为 0 关闭，隐藏浏览器标签页时会暂停。', model_catalog_sync_interval_hours: '从 models.dev 更新价格信息，不影响站点模型列表。', auto_update_interval_hours: '仅非容器部署生效，设为 0 关闭后台检查；融合版不会自动替换程序。',
   antigravity_sensitive_words: '使用零宽字符处理特定 systemInstruction 关键词。', global_cooldown_detection_rules: '没有渠道专属规则时使用的状态码与错误文本识别规则。',
 }

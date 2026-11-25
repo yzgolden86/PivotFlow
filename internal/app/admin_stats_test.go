@@ -80,7 +80,7 @@ func TestFillHealthTimeline_UsesSecondsForAvgTimes(t *testing.T) {
 	}
 }
 
-func TestSiteBalanceHistoryAggregatesDailyLatestSnapshots(t *testing.T) {
+func TestSiteBalanceHistoryAggregatesFixedDailySnapshots(t *testing.T) {
 	store, err := storage.CreateSQLiteStore(t.TempDir() + "/balance-history.db")
 	if err != nil {
 		t.Fatal(err)
@@ -104,15 +104,24 @@ func TestSiteBalanceHistoryAggregatesDailyLatestSnapshots(t *testing.T) {
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	yesterday := start.AddDate(0, 0, -1).Format("2006-01-02")
 	today := start.Format("2006-01-02")
-	for _, snapshot := range []*model.SiteAccountBalanceSnapshot{
-		{SiteAccountID: first.ID, LocalDay: yesterday, Currency: "CNY", Balance: 8, UpdatedAt: 100},
-		{SiteAccountID: first.ID, LocalDay: today, Currency: "CNY", Balance: 10, UpdatedAt: 200},
-		{SiteAccountID: first.ID, LocalDay: today, Currency: "CNY", Balance: 12, UpdatedAt: 300},
-		{SiteAccountID: second.ID, LocalDay: today, Currency: "CNY", Balance: 6, UpdatedAt: 250},
+	for _, snapshot := range []*model.SiteAccountDailyBalance{
+		{SiteAccountID: first.ID, LocalDay: yesterday, Currency: "CNY", Balance: ptrBalance(8), CollectedAt: 100},
+		{SiteAccountID: second.ID, LocalDay: yesterday, Currency: "CNY", Balance: ptrBalance(6), CollectedAt: 100},
+		{SiteAccountID: first.ID, LocalDay: today, Currency: "CNY", Balance: ptrBalance(10), CollectedAt: 300},
+		{SiteAccountID: second.ID, LocalDay: today, Currency: "CNY", Balance: ptrBalance(5), CollectedAt: 250},
 	} {
-		if err := store.UpsertSiteAccountBalanceSnapshot(ctx, snapshot); err != nil {
+		amount := snapshot.Balance
+		snapshot.Balance, snapshot.Status, snapshot.ScheduledAt = nil, "unknown", 1
+		if _, err := store.CreateSiteAccountDailyBalance(ctx, snapshot); err != nil {
 			t.Fatal(err)
 		}
+		snapshot.Balance, snapshot.Status = amount, "success"
+		if _, err := store.CompleteSiteAccountDailyBalance(ctx, snapshot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.UpsertSiteAccountBalanceSnapshot(ctx, &model.SiteAccountBalanceSnapshot{SiteAccountID: first.ID, LocalDay: today, Currency: "CNY", Balance: 999}); err != nil {
+		t.Fatal(err)
 	}
 
 	server := &Server{store: store}
@@ -120,13 +129,15 @@ func TestSiteBalanceHistoryAggregatesDailyLatestSnapshots(t *testing.T) {
 	if len(history) != 2 {
 		t.Fatalf("history=%+v, want yesterday and today", history)
 	}
-	if history[0].Day != yesterday || history[0].Balance != 8 || history[0].Accounts != 1 {
+	if history[0].Day != yesterday || history[0].Balance == nil || *history[0].Balance != 14 || history[0].Accounts != 2 {
 		t.Fatalf("yesterday=%+v", history[0])
 	}
-	if history[1].Day != today || history[1].Balance != 18 || history[1].Accounts != 2 || history[1].UpdatedAt != 300 {
+	if history[1].Day != today || history[1].Balance == nil || *history[1].Balance != 15 || history[1].Accounts != 2 || history[1].UpdatedAt != 300 || history[1].DailyDelta == nil || *history[1].DailyDelta != 1 {
 		t.Fatalf("today=%+v", history[1])
 	}
 }
+
+func ptrBalance(value float64) *float64 { return &value }
 
 func ptrInt64(v int64) *int64 { return &v }
 

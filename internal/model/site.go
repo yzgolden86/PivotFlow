@@ -119,14 +119,18 @@ type SiteAccountBalanceSnapshot struct {
 	CreatedAt     int64   `json:"created_at"`
 }
 
-// SiteBalanceHistoryPoint aggregates all account snapshots for one local day
-// and currency. Account IDs are collapsed before leaving the storage layer.
+// SiteBalanceHistoryPoint summarizes fixed daily observations by currency.
+// Only consecutive observations of the exact same account cohort are compared.
 type SiteBalanceHistoryPoint struct {
-	Day       string  `json:"day"`
-	Currency  string  `json:"currency"`
-	Balance   float64 `json:"balance"`
-	Accounts  int     `json:"accounts"`
-	UpdatedAt int64   `json:"updated_at"`
+	Day              string   `json:"day"`
+	Currency         string   `json:"currency"`
+	Balance          *float64 `json:"balance"`
+	DailyDelta       *float64 `json:"daily_delta"`
+	Accounts         int      `json:"accounts"`
+	KnownAccounts    int      `json:"known_accounts"`
+	ComparisonStatus string   `json:"comparison_status"`
+	ScheduledAt      int64    `json:"scheduled_at"`
+	UpdatedAt        int64    `json:"updated_at"`
 }
 
 // SiteAnnouncement is a sanitized, deduplicated upstream announcement.

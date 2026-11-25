@@ -1,4 +1,4 @@
-// 请求模型与实际上游模型的差异分级。
+// 请求模型与日志所保存映射模型的差异分级。
 //
 // 只有「可证明不改变模型身份」的差异才算写法差异：
 //   1. 纯大小写不同         GPT-4O                vs gpt-4o
@@ -14,8 +14,8 @@
 // 请求模型 —— 所以隐藏这个差异等于让用户对不上账。
 //
 // 关键约束：无论哪一级，只要两者不同就必须把真实模型显示出来。
-// actual_model 在控制台里只有这一个出口（历史日志没有接 /admin/debug-logs/:log_id），
-// 隐藏它就等于彻底丢失读数。分级只影响提示措辞，不影响数据是否可见。
+// 分级只影响提示措辞，不影响数据是否可见。旧日志的 actual_model 可能只
+// 记录了模型选择；完整请求另提供实际发送的传输事实，不能仅凭名称推断发送。
 
 export type ModelRedirectKind = 'none' | 'cosmetic' | 'substantive'
 
@@ -49,4 +49,16 @@ export function modelRedirectTitle(model?: string, actualModel?: string): string
   if (kind === 'none') return undefined
   const pair = `${(model || '').trim()} → ${(actualModel || '').trim()}`
   return kind === 'cosmetic' ? `${pair}（写法差异，同一模型）` : `实际重定向：${pair}`
+}
+
+// Older attempt logs retain the selected mapping even when constructing the
+// request failed locally. Without a saved transmission flag, use neutral
+// wording; the complete-request timeline records which attempts reached upstream.
+export function logModelObservation(entry: { model?: string; actual_model?: string }): { label: string; model: string; title: string } | null {
+  if (!entry.actual_model) return null
+  return {
+    label: '映射模型',
+    model: entry.actual_model,
+    title: `${entry.model || '未记录请求模型'} → ${entry.actual_model}。此处是日志保存的模型映射；是否请求上游以完整请求的传输记录为准。`,
+  }
 }

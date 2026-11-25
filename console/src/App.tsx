@@ -32,6 +32,7 @@ import PageErrorBoundary from './components/PageErrorBoundary'
 import useFocusLayer from './components/useFocusLayer'
 import { applyTheme, readThemePreference, resolveTheme } from './theme'
 import type { ResolvedTheme, ThemePreference } from './theme'
+import SiteTaskObserver from './pages/SiteTaskProgress'
 
 const loadDashboardPage = () => import('./pages/DashboardPage')
 const loadChannelsPage = () => import('./pages/ChannelsPage')
@@ -232,6 +233,7 @@ function App() {
 
   return (
     <div className={shellClass}>
+      <SiteTaskObserver />
       <a className="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById('main-content')?.focus() }}>跳到主要内容</a>
       <header className="mobile-topbar">
       <button

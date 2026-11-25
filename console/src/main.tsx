@@ -4,6 +4,8 @@ import { HashRouter } from 'react-router-dom'
 import App from './App'
 import { applyTheme, readThemePreference } from './theme'
 import './styles.css'
+import './appearancePresets.css'
+import './navigationRefinement.css'
 import './accessibility.css'
 
 declare global {
