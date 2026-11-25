@@ -2,11 +2,13 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"math"
 	"path/filepath"
 	"testing"
 
 	"github.com/yzgolden86/PivotFlow/internal/model"
+	sqlstore "github.com/yzgolden86/PivotFlow/internal/storage/sql"
 )
 
 func dailyBalanceTestStore(t *testing.T) (Store, int64) {
@@ -95,7 +97,7 @@ func TestDailyBalanceUnknownAndFailedNeverBecomeZero(t *testing.T) {
 	}
 	rows, err = store.ListSiteAccountDailyBalances(ctx, "2026-11-24", "2026-11-24")
 	if err != nil || len(rows) != 1 {
-		t.Fatalf("soft delete rewrote historical coverage: rows=%+v err=%v", rows, err)
+		t.Fatalf("account deletion rewrote historical coverage: rows=%+v err=%v", rows, err)
 	}
 }
 
@@ -123,6 +125,66 @@ func TestDailyBalanceRejectsInvalidDatesAndNonFiniteSuccess(t *testing.T) {
 	entry.Balance = &zero
 	if completed, err := store.CompleteSiteAccountDailyBalance(ctx, entry); err != nil || !completed {
 		t.Fatalf("real zero rejected: complete=%v err=%v", completed, err)
+	}
+}
+
+func TestDailyBalanceSurvivesAccountAndSiteDeletionWithForeignKeys(t *testing.T) {
+	for _, target := range []string{"account", "site"} {
+		t.Run(target, func(t *testing.T) {
+			db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(t.TempDir(), "daily-history.db"))+"?_pragma=foreign_keys(1)")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			db.SetMaxOpenConns(1)
+			ctx := context.Background()
+			if err := migrateSQLite(ctx, db); err != nil {
+				t.Fatal(err)
+			}
+			var foreignKeys int
+			if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil || foreignKeys != 1 {
+				t.Fatalf("foreign key enforcement=%d err=%v", foreignKeys, err)
+			}
+			store := sqlstore.NewSQLStore(db, "sqlite")
+			site, err := store.CreateSite(ctx, &model.Site{Name: "historical", Platform: model.SitePlatformNewAPIFamily, BaseURL: "https://history.example.invalid", Timezone: "Asia/Shanghai", TagsJSON: "[]"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			account, err := store.CreateSiteAccount(ctx, &model.SiteAccount{SiteID: site.ID, Label: "historical", CredentialType: model.CredentialTypeAPIKey, CredentialCiphertext: "synthetic", CredentialKeyVersion: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, observation := range []struct {
+				day     string
+				balance float64
+			}{{"2026-11-23", 12.25}, {"2026-11-24", 9.25}} {
+				entry := &model.SiteAccountDailyBalance{SiteAccountID: account.ID, LocalDay: observation.day, ScheduledAt: 1000, Status: "unknown"}
+				if claimed, err := store.CreateSiteAccountDailyBalance(ctx, entry); err != nil || !claimed {
+					t.Fatalf("claim=%v err=%v", claimed, err)
+				}
+				entry.Balance, entry.Currency, entry.Status, entry.CollectedAt = &observation.balance, "USD", "success", 2000
+				if completed, err := store.CompleteSiteAccountDailyBalance(ctx, entry); err != nil || !completed {
+					t.Fatalf("completion=%v err=%v", completed, err)
+				}
+			}
+			if target == "account" {
+				err = store.DeleteSiteAccount(ctx, account.ID)
+			} else {
+				err = store.DeleteSite(ctx, site.ID)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows, err := store.ListSiteAccountDailyBalances(ctx, "2026-11-23", "2026-11-24")
+			if err != nil || len(rows) != 2 {
+				t.Fatalf("%s deletion erased fixed daily history: rows=%+v err=%v", target, rows, err)
+			}
+			for index, amount := range []float64{12.25, 9.25} {
+				if rows[index].SiteAccountID != account.ID || rows[index].Balance == nil || *rows[index].Balance != amount || rows[index].Currency != "USD" || rows[index].Status != "success" {
+					t.Fatalf("%s deletion changed observation %d: %+v", target, index, rows[index])
+				}
+			}
+		})
 	}
 }
 

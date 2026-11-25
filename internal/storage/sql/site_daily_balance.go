@@ -75,7 +75,7 @@ func (s *SQLStore) CompleteSiteAccountDailyBalance(ctx context.Context, sample *
 }
 
 func (s *SQLStore) ListSiteAccountDailyBalances(ctx context.Context, sinceDay, untilDay string) ([]*model.SiteAccountDailyBalance, error) {
-	// Soft-deleting an account must not rewrite previously recorded coverage.
+	// Deleting an account must not rewrite previously recorded coverage.
 	query := `SELECT site_account_id,local_day,currency,balance,status,error_code,scheduled_at,collected_at,created_at FROM site_account_daily_balances WHERE 1=1`
 	args := make([]any, 0, 2)
 	if sinceDay != "" {

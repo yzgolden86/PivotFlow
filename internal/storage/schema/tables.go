@@ -271,7 +271,9 @@ func DefineSiteAccountBalanceSnapshotsTable() *TableBuilder {
 }
 
 // DefineSiteAccountDailyBalancesTable keeps immutable scheduled observations,
-// including failed reads, separately from the latest-refresh history.
+// including failed reads, separately from the latest-refresh history. Account
+// IDs remain historical identities: deleting an account must not cascade into
+// these observations or rewrite previously recorded balance differences.
 func DefineSiteAccountDailyBalancesTable() *TableBuilder {
 	return NewTable("site_account_daily_balances").
 		Column("site_account_id INT NOT NULL").
@@ -284,7 +286,6 @@ func DefineSiteAccountDailyBalancesTable() *TableBuilder {
 		Column("collected_at BIGINT NOT NULL DEFAULT 0").
 		Column("created_at BIGINT NOT NULL").
 		Column("PRIMARY KEY (site_account_id, local_day)").
-		Column("FOREIGN KEY (site_account_id) REFERENCES site_accounts(id) ON DELETE CASCADE").
 		Index("idx_site_daily_balances_day", "local_day")
 }
 
