@@ -51,3 +51,14 @@ test('grouping repeated names sums raw values before rounding and request distri
   assert.equal(statsDistribution(source, 'channel', 'requests').total, 30)
   assert.deepEqual(statsDistribution([], 'model', 'cost'), { total: 0, items: [], unknownEntries: 0 })
 })
+
+test('scrollable list retains every named group while the pie keeps its grouped remainder', () => {
+  const source = Array.from({ length: 18 }, (_, index) => entry(index, index + 1))
+  const list = statsDistribution(source, 'channel', 'cost', false)
+  const pie = statsDistribution(source, 'channel', 'cost')
+  assert.equal(list.items.length, 18)
+  assert.equal(list.items.some((item) => item.isOther), false)
+  assert.equal(list.items[0].label, 'channel-17')
+  assert.equal(list.items.reduce((sum, item) => sum + item.value, 0), pie.total)
+  assert.ok(Math.abs(list.items.reduce((sum, item) => sum + item.share, 0) - 1) < 1e-12)
+})

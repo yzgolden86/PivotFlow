@@ -130,15 +130,20 @@ func sensitiveRequestTraceForAPI() *model.RequestTrace {
 }
 
 func TestRequestTraceAPIListAndStatsForceTokenScope(t *testing.T) {
+	trace := sensitiveRequestTraceForAPI()
+	trace.AttemptSummaries = []model.RequestAttemptSummary{{
+		Number: 1, StartedAt: trace.StartedAt, StatusCode: http.StatusUnauthorized,
+		Outcome: "error", Upstream: true,
+	}}
 	store := &requestTraceAPIStore{
-		traces: []*model.RequestTrace{sensitiveRequestTraceForAPI()},
+		traces: []*model.RequestTrace{trace},
 		stats:  &model.RequestTraceStats{Requests: 1, Successes: 1, UpstreamAttempts: 1, UpstreamSuccesses: 1},
 	}
 	server := &Server{store: store}
 
 	listContext, listRecorder := newTestContext(t, newRequest(
 		http.MethodGet,
-		"/admin/request-traces?auth_token_id={{SECRET_kx4x3h17}}&search=needle&outcome=success",
+		"/admin/request-traces?auth_token_id={{SECRET_kx4x3h17}}&search=needle&outcome=success&upstream_failures=1",
 		nil,
 	))
 	setRequestTraceAPITokenIdentity(listContext, 42)
@@ -153,6 +158,19 @@ func TestRequestTraceAPIListAndStatsForceTokenScope(t *testing.T) {
 	}
 	if _, found := listResponse.Data[0]["attempts"]; found {
 		t.Fatalf("list response unexpectedly included attempt detail: %+v", listResponse.Data[0])
+	}
+	attemptSummaries, ok := listResponse.Data[0]["attempt_summaries"].([]any)
+	if !ok || len(attemptSummaries) != 1 {
+		t.Fatalf("list response omitted compact attempt summaries: %+v", listResponse.Data[0])
+	}
+	compactAttempt, ok := attemptSummaries[0].(map[string]any)
+	if !ok || compactAttempt["status_code"] != float64(http.StatusUnauthorized) || compactAttempt["outcome"] != "error" {
+		t.Fatalf("compact attempt summary=%v, want status 401 and error outcome", attemptSummaries[0])
+	}
+	for _, forbidden := range []string{"channel_name", "endpoint", "actual_model", "reason", "key_index", "url_index"} {
+		if _, found := compactAttempt[forbidden]; found {
+			t.Fatalf("compact attempt summary included %q: %+v", forbidden, compactAttempt)
+		}
 	}
 	for _, secret := range []string{
 		"private-channel-name",
@@ -170,13 +188,13 @@ func TestRequestTraceAPIListAndStatsForceTokenScope(t *testing.T) {
 	if listFilter == nil || listFilter.AuthTokenID == nil || *listFilter.AuthTokenID != 42 {
 		t.Fatalf("list filter=%+v, want forced token ID 42", listFilter)
 	}
-	if listFilter.Search != "needle" || listFilter.Outcome != "success" {
+	if listFilter.Search != "needle" || listFilter.Outcome != "success" || !listFilter.UpstreamFailuresOnly {
 		t.Fatalf("list filter=%+v, want search/outcome preserved", listFilter)
 	}
 
 	statsContext, statsRecorder := newTestContext(t, newRequest(
 		http.MethodGet,
-		"/admin/request-traces/stats?auth_token_id={{SECRET_gvnyo6nk}}&search=needle&outcome=success",
+		"/admin/request-traces/stats?auth_token_id={{SECRET_gvnyo6nk}}&search=needle&outcome=success&upstream_failures=1",
 		nil,
 	))
 	setRequestTraceAPITokenIdentity(statsContext, 42)
@@ -196,7 +214,7 @@ func TestRequestTraceAPIListAndStatsForceTokenScope(t *testing.T) {
 	if statsFilter == nil || statsFilter.AuthTokenID == nil || *statsFilter.AuthTokenID != 42 {
 		t.Fatalf("stats filter=%+v, want forced token ID 42", statsFilter)
 	}
-	if statsFilter.Search != "needle" || statsFilter.Outcome != "success" {
+	if statsFilter.Search != "needle" || statsFilter.Outcome != "success" || !statsFilter.UpstreamFailuresOnly {
 		t.Fatalf("stats filter=%+v, want search/outcome preserved", statsFilter)
 	}
 }
@@ -296,6 +314,7 @@ func TestRequestTraceAPIRejectsInvalidFiltersAndRequestIDs(t *testing.T) {
 		target string
 	}{
 		{name: "outcome", target: "/admin/request-traces?outcome=maybe"},
+		{name: "upstream failure filter", target: "/admin/request-traces?upstream_failures=maybe"},
 		{name: "long search", target: "/admin/request-traces?search=" + strings.Repeat("x", 201)},
 	}
 	for _, testCase := range listCases {

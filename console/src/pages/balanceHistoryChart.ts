@@ -49,12 +49,15 @@ export interface BalanceHistoryOverlay {
 
 export type BalanceHistoryDays = 7 | 14
 
-export function balanceHistoryOverlay(source: BalanceHistoryInput[], days: BalanceHistoryDays = 14): BalanceHistoryOverlay {
+export function balanceHistoryOverlay(source: BalanceHistoryInput[], days: BalanceHistoryDays = 14, asOfDay?: string): BalanceHistoryOverlay {
   const groups = dailyGroups(source)
   const dates = Array.from(groups.values()).flatMap((days) => Array.from(days.keys())).sort()
-  if (!dates.length) return { series: [], days: [], startDay: '', endDay: '', zeroY: 150 }
-  const end = dayNumber(dates[dates.length - 1])!
-  const start = Math.max(dayNumber(dates[0])!, end - (days - 1))
+  const anchoredEnd = asOfDay ? dayNumber(asOfDay) : null
+  if (!dates.length && anchoredEnd == null) return { series: [], days: [], startDay: '', endDay: '', zeroY: 150 }
+  const end = anchoredEnd ?? dayNumber(dates[dates.length - 1])!
+  // The requested calendar remains complete even when sampling is sparse.
+  // Legacy callers without a server anchor retain their observed date domain.
+  const start = anchoredEnd == null ? Math.max(dayNumber(dates[0])!, end - (days - 1)) : end - (days - 1)
   const calendar = Array.from({ length: end - start + 1 }, (_, index) => ({
     day: new Date((start + index) * DAY).toISOString().slice(0, 10), x: dateX(start + index, start, end),
   }))

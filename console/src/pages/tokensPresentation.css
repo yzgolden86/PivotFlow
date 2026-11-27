@@ -1,18 +1,18 @@
 /* Header and rows retain the shared column template and the same border/padding.
    Surfaces use the theme's alpha-aware tokens; only the short header adds blur. */
 .tokens-page .token-table-wrap {
-  /* Four 32px action buttons and three 4px gaps need the full 140px. */
-  --token-columns: 34px minmax(160px, 1.05fr) minmax(190px, 1.15fr) minmax(95px, .55fr) minmax(100px, .55fr) minmax(105px, .6fr) minmax(110px, .6fr) minmax(105px, .6fr) 140px;
-  --token-min: 1180px;
+  /* Details + four 32px buttons share one fixed action track in every row. */
+  --token-columns: 34px minmax(150px, 1.05fr) minmax(170px, 1.15fr) minmax(90px, .55fr) minmax(95px, .55fr) minmax(100px, .6fr) minmax(100px, .6fr) minmax(100px, .6fr) 180px;
+  --token-min: 1160px;
   padding-bottom: 6px;
   scrollbar-gutter: stable;
   scrollbar-color: var(--border-strong) transparent;
 }
 
 .tokens-page .token-table-head {
-  min-height: 44px;
-  margin-bottom: 8px;
-  padding: 12px 13px;
+  min-height: 40px;
+  margin-bottom: 6px;
+  padding: 10px 13px;
   color: var(--text-secondary);
   background: var(--surface-strong);
   border: 1px solid var(--border);
@@ -36,11 +36,18 @@
 .tokens-page .token-row .token-number-cell > span { max-width: 100%; }
 .tokens-page .token-mobile-stats { display: none; }
 .tokens-page .token-table-wrap:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.tokens-page .token-list { gap: 6px; }
+.tokens-page .token-row { min-height: 66px; padding-block: 9px; }
+.tokens-page .token-identity { gap: 2px; }
+.tokens-page .token-identity > strong { line-height: 20px; }
+.tokens-page .token-row > .row-actions { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 4px; }
+.tokens-page .row-actions > .icon-button { width: 32px; height: 32px; flex: 0 0 32px; }
+.tokens-page .row-actions > .token-details-action { width: 36px; min-width: 36px; min-height: 32px; align-self: center; justify-content: center; margin: 0; padding: 4px 2px; }
 
 @media (max-width: 1180px) {
   .tokens-page .token-table-wrap {
-    --token-columns: 38px minmax(180px, 1fr) minmax(170px, 1fr) 90px 110px 140px;
-    --token-min: 826px;
+    --token-columns: 34px minmax(160px, 1fr) minmax(160px, 1fr) 90px 100px 180px;
+    --token-min: 834px;
   }
 }
 
@@ -56,15 +63,15 @@
     grid-row: auto;
     flex-direction: row;
     flex-wrap: wrap;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
   .tokens-page .token-mobile-stats {
-    display: block;
-    max-width: 100%;
-    overflow: visible;
-    color: var(--text-secondary);
-    white-space: normal;
-    overflow-wrap: anywhere;
+    display: inline;
     font-variant-numeric: tabular-nums;
   }
+}
+
+@media (max-width: 620px) {
+  .tokens-page .row-actions > .icon-button { width: 36px; height: 36px; flex-basis: 36px; }
+  .tokens-page .row-actions > .token-details-action { width: 44px; min-width: 44px; min-height: 36px; }
 }

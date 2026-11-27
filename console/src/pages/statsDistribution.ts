@@ -3,7 +3,7 @@ import type { StatsEntry } from '../types.ts'
 export type DistributionMode = 'cost' | 'requests'
 export interface DistributionItem { key: string; label: string; value: number; share: number; isOther: boolean }
 
-export function statsDistribution(entries: StatsEntry[], dimension: 'channel' | 'model', mode: DistributionMode): { total: number; items: DistributionItem[]; unknownEntries: number } {
+export function statsDistribution(entries: StatsEntry[], dimension: 'channel' | 'model', mode: DistributionMode, groupRemainder = true): { total: number; items: DistributionItem[]; unknownEntries: number } {
   const groups = new Map<string, number>()
   let unknownEntries = 0
   let total = 0
@@ -17,7 +17,7 @@ export function statsDistribution(entries: StatsEntry[], dimension: 'channel' | 
   const sorted = Array.from(groups, ([label, value]) => ({ key: `named:${label}`, label, value, share: 0, isOther: false }))
     .sort((a, b) => b.value - a.value)
   let items = sorted
-  if (sorted.length > 5) {
+  if (groupRemainder && sorted.length > 5) {
     items = [...sorted.slice(0, 4), { key: 'remainder', label: '其他', value: sorted.slice(4).reduce((sum, item) => sum + item.value, 0), share: 0, isOther: true }]
   }
   return { total, unknownEntries, items: items.map((item) => ({ ...item, share: total > 0 ? item.value / total : 0 })) }

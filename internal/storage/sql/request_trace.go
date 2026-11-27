@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -563,6 +564,9 @@ func (s *SQLStore) applyRequestTraceFilter(qb *QueryBuilder, filter *model.Reque
 	if outcome := strings.TrimSpace(filter.Outcome); outcome != "" {
 		qb.Where("outcome = ?", outcome)
 	}
+	if filter.UpstreamFailuresOnly {
+		qb.Where("upstream_attempt_count > upstream_success_count")
+	}
 }
 
 func requestTraceTimeBounds(since, until time.Time) (int64, int64) {
@@ -584,9 +588,8 @@ func normalizeTraceListLimit(limit int) int {
 	return limit
 }
 
-// ListRequestTraces reads a bounded summary page. Only legacy rows without the
-// new scalar observation need their retained timeline, and only for this page;
-// new rows and statistics never read that large JSON column.
+// ListRequestTraces reads a bounded summary page. It parses attempt metadata
+// only for retried rows, plus legacy rows missing scalar channel/model fields.
 func (s *SQLStore) ListRequestTraces(
 	ctx context.Context,
 	since, until time.Time,
@@ -604,8 +607,8 @@ func (s *SQLStore) ListRequestTraces(
 	}
 
 	listQB := NewQueryBuilder(`SELECT ` + requestTraceSummaryColumns + `,
-		CASE WHEN (actual_model = '' OR (channel_id = 0 AND channel_name = ''))
-		AND upstream_attempt_count > 0 AND truncated = 0
+		CASE WHEN attempt_count > 1 OR ((actual_model = '' OR (channel_id = 0 AND channel_name = ''))
+		AND upstream_attempt_count > 0 AND truncated = 0)
 		THEN attempts_json ELSE '' END FROM request_traces`)
 	applyRangeAndFilter(listQB)
 	listQuery, listArgs := listQB.BuildWithSuffix("ORDER BY started_at DESC, request_id DESC LIMIT ? OFFSET ?")
@@ -619,19 +622,32 @@ func (s *SQLStore) ListRequestTraces(
 
 	traces := make([]*model.RequestTrace, 0, limit)
 	for rows.Next() {
-		var legacyAttempts string
-		trace, err := scanRequestTraceSummary(rows, &legacyAttempts)
+		var attemptsJSON string
+		trace, err := scanRequestTraceSummary(rows, &attemptsJSON)
 		if err != nil {
 			return nil, 0, fmt.Errorf("scan request trace summary: %w", err)
 		}
-		if legacyAttempts != "" {
-			var attempts []model.RequestAttempt
-			if json.Unmarshal([]byte(legacyAttempts), &attempts) == nil {
-				trace.Attempts = attempts
-				trace.ActualModel = truncateRequestTraceText(model.LastRequestActualModel(trace), maxRequestTraceLabelLength)
-				trace.ChannelID, trace.ChannelName = model.LastRequestChannel(trace)
-				trace.ChannelName = truncateRequestTraceText(trace.ChannelName, maxRequestTraceLabelLength)
-				trace.Attempts = nil
+		if attemptsJSON != "" {
+			var summaries []model.RequestAttemptSummary
+			if json.Unmarshal([]byte(attemptsJSON), &summaries) == nil {
+				sort.SliceStable(summaries, func(i, j int) bool {
+					if summaries[i].Number != summaries[j].Number {
+						return summaries[i].Number < summaries[j].Number
+					}
+					return summaries[i].StartedAt < summaries[j].StartedAt
+				})
+				trace.AttemptSummaries = summaries
+			}
+			if (trace.ActualModel == "" || (trace.ChannelID == 0 && trace.ChannelName == "")) &&
+				trace.UpstreamAttemptCount > 0 && !trace.Truncated {
+				var attempts []model.RequestAttempt
+				if json.Unmarshal([]byte(attemptsJSON), &attempts) == nil {
+					trace.Attempts = attempts
+					trace.ActualModel = truncateRequestTraceText(model.LastRequestActualModel(trace), maxRequestTraceLabelLength)
+					trace.ChannelID, trace.ChannelName = model.LastRequestChannel(trace)
+					trace.ChannelName = truncateRequestTraceText(trace.ChannelName, maxRequestTraceLabelLength)
+					trace.Attempts = nil
+				}
 			}
 		}
 		traces = append(traces, trace)

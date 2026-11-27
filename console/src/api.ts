@@ -14,6 +14,7 @@ import type {
   DashboardRange,
   DashboardSnapshot,
   DashboardSummary,
+  MetricPoint,
   LogEntry,
   LogFilters,
   LogsBootstrap,
@@ -398,13 +399,14 @@ export async function getLogs(filters: LogFilters, signal?: AbortSignal): Promis
   return { data: payload.data, count: payload.count ?? payload.data.length }
 }
 
-function requestTraceParams(filters: Pick<RequestTraceFilters, 'range' | 'search' | 'outcome' | 'auth_token_id' | 'model' | 'client_protocol'>): URLSearchParams {
+function requestTraceParams(filters: Pick<RequestTraceFilters, 'range' | 'search' | 'outcome' | 'auth_token_id' | 'model' | 'client_protocol' | 'upstream_failures_only'>): URLSearchParams {
   const params = new URLSearchParams({ range: filters.range })
   if (filters.search) params.set('search', filters.search)
   if (filters.outcome) params.set('outcome', filters.outcome)
   if (filters.auth_token_id) params.set('auth_token_id', String(filters.auth_token_id))
   if (filters.model) params.set('model', filters.model)
   if (filters.client_protocol) params.set('client_protocol', filters.client_protocol)
+  if (filters.upstream_failures_only) params.set('upstream_failures', '1')
   return params
 }
 
@@ -417,7 +419,7 @@ export async function getRequestTraces(filters: RequestTraceFilters, signal?: Ab
 }
 
 export function getRequestTraceStats(
-  filters: Pick<RequestTraceFilters, 'range' | 'search' | 'outcome' | 'auth_token_id' | 'model' | 'client_protocol'>,
+  filters: Pick<RequestTraceFilters, 'range' | 'search' | 'outcome' | 'auth_token_id' | 'model' | 'client_protocol' | 'upstream_failures_only'>,
   signal?: AbortSignal,
 ): Promise<RequestTraceStats> {
   return apiRequest<RequestTraceStats>(`/admin/request-traces/stats?${requestTraceParams(filters)}`, signal)
@@ -445,6 +447,16 @@ export function getStats(filters: StatsFilters, signal?: AbortSignal): Promise<S
   if (filters.cost_status) params.set('cost_status', filters.cost_status)
   if (filters.cost_basis) params.set('cost_basis', filters.cost_basis)
   return apiRequest<StatsSnapshot>(`/admin/stats?${params}`, signal)
+}
+
+export function getUsageTrend(filters: StatsFilters, signal?: AbortSignal): Promise<MetricPoint[]> {
+  const params = new URLSearchParams({ range: filters.range, bucket_min: filters.range === 'today' ? '180' : '1440' })
+  if (filters.channel_name) params.set('channel_name', filters.channel_name)
+  if (filters.model) params.set('model', filters.model)
+  if (filters.cost_source) params.set('cost_source', filters.cost_source)
+  if (filters.cost_status) params.set('cost_status', filters.cost_status)
+  if (filters.cost_basis) params.set('cost_basis', filters.cost_basis)
+  return apiRequest<MetricPoint[] | null>(`/admin/metrics?${params}`, signal).then((points) => points ?? [])
 }
 
 export function getStatsFilterOptions(range: DashboardRange, signal?: AbortSignal): Promise<StatsFilterOptions> {

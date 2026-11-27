@@ -32,7 +32,7 @@ READ_PATHS = frozenset((
     '/admin/sites', '/admin/site-inventory', '/admin/site-models',
     '/admin/site-channel-bindings', '/admin/site-pricing', '/admin/channels',
     '/admin/checkin-attempts', '/admin/site-tasks', '/admin/announcements',
-    '/admin/model-alias-inventory', '/admin/stats', '/admin/stats/filter-options',
+    '/admin/model-alias-inventory', '/admin/stats', '/admin/stats/filter-options', '/admin/metrics',
     '/admin/request-cache', '/admin/active-requests', '/admin/appearance/wallpaper-bytes',
 ))
 TIMEOUT_GROUPS = {
@@ -60,6 +60,7 @@ class LayoutData(RefinementData):
         self.unexpected = []
         self.wallpaper = None
         self.wallpaper_url = None
+        self.pricing_snapshot = None
         self.task_kind = 'checkin'
         self.task_status = 'running'
         self.task_reads = 0
@@ -82,12 +83,47 @@ class LayoutData(RefinementData):
                                     'route_type': 'openai_chat', 'source': 'models_endpoint',
                                     'disabled': False, 'stale': False, 'last_seen_at': fixtures.NOW,
                                     'created_at': fixtures.NOW, 'updated_at': fixtures.NOW})
+        dense_channel = copy.deepcopy(self.channels[0])
+        next_channel_id = max(channel['id'] for channel in self.channels) + 1
+        for number in range(7):
+            channel = copy.deepcopy(dense_channel)
+            channel.update(id=next_channel_id + number, name=f'密集布局渠道 {number + 1:02d}',
+                           models=[{'model': 'layout-model-001', 'disabled': False, 'redirect': ''}])
+            self.channels.append(channel)
         for site in self.sites:
             site.update(base_url=f'https://layout-site-{site["id"]}.example.invalid',
                         external_checkin_url=f'https://layout-site-{site["id"]}.example.invalid/checkin',
                         checkin_method='unknown')
         self.accounts[0].update(last_checkin_status='failed', credential_type='access_token',
                                 enabled=True, label='layout-checkin-account')
+        if case.startswith('model-pricing-'):
+            owner = self.accounts[0]
+            self.scoped_bindings = []
+            for index, channel in enumerate(self.channels):
+                channel['site_account_id'] = owner['id']
+                self.scoped_bindings.append({
+                    'id': index + 1, 'site_account_id': owner['id'], 'channel_id': channel['id'],
+                    'projection_key': f'layout-pricing-{index}', 'pricing_group': 'vip',
+                    'ownership': 'projected', 'status': 'active', 'last_sync_status': 'success',
+                    'created_at': fixtures.NOW, 'updated_at': fixtures.NOW,
+                })
+            self.pricing_snapshot = {
+                'site_id': owner['site_id'], 'available': True, 'group_ratio': {'default': 1, 'vip': .8},
+                'models': [
+                    {'model': 'layout-model-001', 'quota_type': 0, 'per_call_price': 0,
+                     'model_ratio': 1.25, 'completion_ratio': 4, 'cache_ratio': .1,
+                     'cache_creation_ratio': 1.25, 'groups': ['vip'], 'input_price': 2.5,
+                     'output_price': 10, 'cache_read_price': .25, 'cache_write_price': 3.125},
+                    {'model': 'layout-model-003', 'quota_type': 0, 'per_call_price': 0,
+                     'model_ratio': 0, 'completion_ratio': 1, 'cache_ratio': 1,
+                     'cache_creation_ratio': 1, 'groups': ['vip'], 'input_price': 0,
+                     'output_price': 0, 'cache_read_price': 0, 'cache_write_price': 0},
+                    {'model': 'layout-model-004', 'quota_type': 1, 'per_call_price': .05,
+                     'model_ratio': 0, 'completion_ratio': 0, 'cache_ratio': 0,
+                     'cache_creation_ratio': 0, 'groups': ['vip'], 'input_price': 0,
+                     'output_price': 0, 'cache_read_price': 0, 'cache_write_price': 0},
+                ],
+            }
         if case.startswith('maintenance-cross-kind-'):
             self.task_kind = 'model_refresh' if '-model-refresh-' in case else 'refresh'
             self.task_status = 'unknown'
@@ -167,18 +203,26 @@ class LayoutData(RefinementData):
             self.fulfill(route, items[offset:offset + limit], len(items))
         elif path == '/admin/site-pricing':
             self.calls.append(call)
-            self.fulfill(route, {'site_id': int(query.get('site_id', ['1'])[0]),
-                                 'available': False, 'models': [], 'group_ratio': {}})
+            site_id = int(query.get('site_id', ['1'])[0])
+            self.fulfill(route, self.pricing_snapshot if self.pricing_snapshot
+                         and self.pricing_snapshot['site_id'] == site_id
+                         else {'site_id': site_id, 'available': False, 'models': [], 'group_ratio': {}})
         elif path == '/admin/stats':
             self.calls.append(call)
-            stats = [{'channel_name': '布局合成渠道', 'model': 'layout-model-001', 'total': 10,
-                      'success': 9, 'error': 1, 'effective_cost': 1, 'total_input_tokens': 100,
-                      'total_output_tokens': 20}]
+            stats = [{'channel_name': f'布局合成渠道 {index:02d}', 'model': f'layout-model-{index:03d}',
+                      'total': 10 + index, 'success': 9 + index, 'error': 1,
+                      'effective_cost': 1 + index / 10, 'total_input_tokens': 100,
+                      'total_output_tokens': 20} for index in range(1, 23)]
             self.fulfill(route, {'stats': stats, 'duration_seconds': 3600, 'is_today': True,
                                  'balance_history': self.balance_history, 'cost_summary': cost_summary('complete'),
+                                 'balance_as_of_day': '2026-11-26',
                                  'balance_schedule': {'enabled': True, 'time': '00:05', 'timezone': 'Asia/Shanghai'},
                                  'rpm_stats': {'peak_rpm': 2, 'peak_qps': 1, 'avg_rpm': 1,
                                                'avg_qps': .1, 'recent_rpm': 1, 'recent_qps': .1}})
+        elif path == '/admin/metrics':
+            self.calls.append(call)
+            dashboard = copy.deepcopy(fixtures.DASHBOARD)
+            self.fulfill(route, dashboard.get('trend', []))
         elif path == '/admin/stats/filter-options':
             self.calls.append(call)
             self.fulfill(route, {'channel_names': ['布局合成渠道'], 'models': ['layout-model-001']})
@@ -429,8 +473,13 @@ def checkins(runner, page, data):
     expect(link).to_have_attribute('href', data.sites[0]['external_checkin_url'])
     expect(actions.get_by_role('button', name='立即签到', exact=True)).to_be_enabled()
     action_group(runner, actions, 'Checkin actions')
+    action_box = rect(actions)
+    if page.viewport_size['width'] >= 881:
+        heading_box = rect(page.locator('.checkin-account-records > .record-head > span:last-child'))
+        runner.check(action_box['width'] <= 250 and abs(action_box['width'] - heading_box['width']) <= 2,
+                     f'Checkin action column and heading stay aligned within the compact width: {action_box["width"]:.1f}px / {heading_box["width"]:.1f}px')
     runner.check(contains(rect(row), rect(actions)), 'Checkin action column stays inside its row')
-    runner.record(action_geometry=rect(actions), manual_link_geometry=rect(link))
+    runner.record(action_geometry=action_box, manual_link_geometry=rect(link))
 
 
 def maintenance(runner, page, data):
@@ -448,8 +497,10 @@ def maintenance(runner, page, data):
         runner.check(not panel.count() or not panel.is_visible(), f'{path} has no visible historical maintenance panel')
     expect(button).to_be_disabled()
     data.task_status = 'unknown'
-    expect(page.locator('.maintenance-page-notice')).to_contain_text('结果待确认', timeout=6000)
+    notice = page.locator('.maintenance-page-notice')
+    expect(notice).to_contain_text('结果待确认', timeout=6000)
     expect(button).to_be_disabled()
+    notice.get_by_role('button', name='查看逐项操作结果', exact=True).click()
     observe = page.get_by_role('button', name='重新观察原任务', exact=True)
     reachable(runner, observe, 'Unknown-task recovery')
     runner.photo(page, 'unknown-retained')
@@ -495,7 +546,8 @@ def checkin_blocker_recovery(runner, page, data):
     expect(notice).to_contain_text('结果待确认')
     expect(notice).to_contain_text(f'账号 #{account_id}')
     expect(notice).to_contain_text(operation)
-    observe = notice.get_by_role('button', name='重新观察原任务', exact=True)
+    notice.get_by_role('button', name='查看逐项操作结果', exact=True).click()
+    observe = page.get_by_role('button', name='重新观察原任务', exact=True)
     reachable(runner, observe, 'Origin-page scoped task recovery')
     runner.check(data.task_reads > 0, 'Cross-kind persisted task was read rather than locally invented')
     runner.check(not any(call['method'] != 'GET' for call in data.calls), 'Following blocker recovery issues only reads')
@@ -540,11 +592,60 @@ def balances(runner, page, data):
     import console_alignment_daily_smoke as balance_checks
     balance_checks.expect = expect
     metrics = balance_checks.shared_chart_geometry(runner, page, data.balance_history)
+    chart_grid = page.locator('.stats-charts-grid')
+    trend_card, balance_card = chart_grid.locator(':scope > *').nth(0), chart_grid.locator(':scope > *').nth(1)
+    trend_box, balance_box = rect(trend_card), rect(balance_card)
+    grid_style = chart_grid.evaluate('(element) => getComputedStyle(element)')
+    tracks = [float(value.replace('px', '')) for value in grid_style['gridTemplateColumns'].split()]
+    if page.viewport_size['width'] > 1200:
+        runner.check(grid_style['alignItems'] == 'stretch' and abs(tracks[0] - tracks[1]) <= 1
+                     and abs(trend_box['y'] - balance_box['y']) <= 1
+                     and abs(trend_box['bottom'] - balance_box['bottom']) <= 1,
+                     'Trend and balance panels share equal tracks and aligned top and bottom edges')
+    panel = page.locator('.balance-history-lines')
+    summaries = panel.locator('.balance-history-currency-summary')
+    if summaries.count() == 2 and page.viewport_size['width'] > 620:
+        summary_boxes = [rect(summaries.nth(index)) for index in range(2)]
+        runner.check(abs(summary_boxes[0]['y'] - summary_boxes[1]['y']) <= 1
+                     and abs(summary_boxes[0]['height'] - summary_boxes[1]['height']) <= 1,
+                     'Left and right currency selectors and latest values share aligned rows')
+    tooltip = panel.locator('.balance-history-readout')
+    expect(panel.locator('.balance-history-readout-empty')).to_have_count(0)
+    runner.check(not panel.locator(':scope > .balance-history-readout').count(),
+                 'The chart has no separate instruction/readout strip below it')
+
+    distribution = page.locator('.stats-distribution > article').first
+    help_button = distribution.get_by_role('button', name='渠道已记录费用口径 的说明', exact=True)
+    runner.check(help_button.count() == 1 and help_button.evaluate('(node) => node.closest("header") === node.closest("article").querySelector(":scope > header")'),
+                 'Distribution help sits beside the title in its heading')
+    legend = distribution.locator('.stats-distribution-legend')
+    expect(legend.locator('li')).to_have_count(22)
+    legend_style = legend.evaluate('(element) => getComputedStyle(element)')
+    legend_size = legend.evaluate('(element) => ({client: element.clientHeight, scroll: element.scrollHeight})')
+    runner.check(legend_style['overflowY'] == 'auto' and legend_size['scroll'] > legend_size['client'],
+                 'Pie legend preserves every channel in a bounded scroll region')
+    legend.locator('button').last.focus()
+    last_item = rect(legend.locator('button').last)
+    legend_box = rect(legend)
+    runner.check(last_item['y'] >= legend_box['y'] - 1 and last_item['bottom'] <= legend_box['bottom'] + 1,
+                 'Keyboard focus scrolls the last pie item into view')
+    distribution.get_by_role('button', name='渠道已记录费用条形列表', exact=True).click()
+    rows = distribution.locator('.stats-distribution-list > div')
+    expect(rows).to_have_count(22)
+    rows.last.scroll_into_view_if_needed()
+    list_element = distribution.locator('.stats-distribution-list')
+    list_style = list_element.evaluate('(element) => getComputedStyle(element)')
+    runner.check(list_style['overflowY'] == 'auto'
+                 and list_element.evaluate('(element) => element.scrollHeight > element.clientHeight'),
+                 'Bar view preserves the same complete channel set in a bounded scroll region')
+    runner.photo(page, 'stats-dense-distribution')
     for currency in ('USD', 'CNY'):
         runner.check(len(metrics['series'][currency]['edges']) == 2,
                      f'{currency} still plots three consecutive actual daily changes as smooth cubics')
     for day in ('2026-11-21', '2026-11-22'):
         balance_checks.shared_readout(runner, page, data.balance_history, day)
+        runner.check(tooltip.count() == 1 and tooltip.evaluate('(node) => node.parentElement?.classList.contains("balance-history-line-plot")'),
+                     'Daily balance values render inside the chart as an overlay')
         runner.photo(page, f'balance-{day}')
     runner.record(shared_plot=metrics, currencies=['USD', 'CNY'], daily_samples_per_currency=4,
                   comparable_changes_per_currency=3)
@@ -565,8 +666,121 @@ def health(runner, page, data):
     expect(websocket).to_be_visible()
     websocket.locator('h3').scroll_into_view_if_needed()
     runner.check(contains(rect(websocket), rect(websocket.locator('h3'))), 'WebSocket heading stays inside its component panel')
+    maintenance_section = page.locator('.health-section--collapsible').filter(
+        has=page.locator('summary h2').filter(has_text=re.compile('^维护与恢复$')))
+    websocket_section = websocket.locator('xpath=ancestor::section[1]')
+    maintenance_box, websocket_box = rect(maintenance_section), rect(websocket_section)
+    if page.viewport_size['width'] > 1100:
+        runner.check(abs(maintenance_box['y'] - websocket_box['y']) <= 1
+                     and maintenance_box['x'] < websocket_box['x'],
+                     'Maintenance and WebSocket sections occupy the same desktop row')
+    detail_buttons = page.locator('.health-card-details-trigger:visible')
+    expect(detail_buttons.first).to_be_visible()
+    detail_card = detail_buttons.first.locator('xpath=ancestor::article[1]')
+    before_open = rect(detail_card)
+    detail_buttons.first.click()
+    popover = page.locator('.health-card-details-popover')
+    expect(popover).to_be_visible()
+    expect(detail_buttons.first).to_have_attribute('aria-expanded', 'true')
+    after_open = rect(detail_card)
+    popover_box = rect(popover)
+    view = page.viewport_size
+    runner.check(abs(after_open['height'] - before_open['height']) <= 1,
+                 'Opening health details does not change the card geometry')
+    runner.check(popover_box['x'] >= 0 and popover_box['right'] <= view['width']
+                 and popover_box['y'] >= 0 and popover_box['bottom'] <= view['height'],
+                 'Health details stay within the viewport')
+    second_button = detail_buttons.nth(1)
+    second_button.scroll_into_view_if_needed()
+    second_button.click()
+    expect(popover).to_have_count(1)
+    expect(detail_buttons.first).to_have_attribute('aria-expanded', 'false')
+    expect(second_button).to_have_attribute('aria-expanded', 'true')
+    runner.check(page.locator('.health-card-details-popover').count() == 1,
+                 'Opening another health detail replaces the previous panel')
+    runner.photo(page, 'health-metric-details')
+
+    maintenance_grid = maintenance_section.locator('.health-section-body .health-grid')
+    maintenance_cards = maintenance_grid.locator(':scope > .health-card')
+    if maintenance_cards.count() == 1:
+        grid_box, card_box = rect(maintenance_grid), rect(maintenance_cards.first)
+        runner.check(abs(card_box['width'] - grid_box['width']) <= 2
+                     and abs(card_box['x'] - grid_box['x']) <= 2,
+                     'A single maintenance card fills the available section width')
     target.scroll_into_view_if_needed()
     runner.record(deep_link=page.evaluate('location.hash'), revealed_component='debug_cleanup')
+
+
+def health_interactive_details(runner, page, data):
+    """A hover preview must become pinned before its nested history expands."""
+    detail_button = page.locator('.health-card-details-trigger:visible').first
+    expect(detail_button).to_be_visible()
+    expect(detail_button).to_have_text('查看详情')
+    detail_button.hover()
+    popover = page.locator('.health-card-details-popover')
+    expect(popover).to_be_visible()
+    history = popover.locator('.health-operation-details').first
+    expect(history).to_be_visible()
+    history.locator('summary').click()
+    page.wait_for_timeout(300)
+    runner.check(popover.count() == 1 and popover.is_visible(),
+                 'Expanding runtime history keeps the health details panel open')
+    runner.check(detail_button.get_attribute('aria-expanded') == 'true'
+                 and history.get_attribute('open') is not None,
+                 'Interacting with a hover preview pins its nested history panel')
+    runner.photo(page, 'health-interactive-details')
+
+
+def health_maintenance_default_open(runner, page, data):
+    section = page.locator('.health-section--collapsible').filter(
+        has=page.locator('summary h2').filter(has_text=re.compile('^维护与恢复$')))
+    expect(section).to_be_visible()
+    runner.check(section.evaluate('(element) => element.open'),
+                 'Maintenance and recovery details are expanded on first visit')
+    expect(section.locator('.health-section-body')).to_be_visible()
+    runner.check('存在需要核对的状态' not in section.locator(':scope > summary').inner_text(),
+                 'A healthy expanded section does not show a false attention warning')
+    section.locator(':scope > summary').scroll_into_view_if_needed()
+    runner.photo(page, 'health-maintenance-default-open')
+    runner.record(default_open=section.evaluate('(element) => element.open'))
+
+
+def model_pricing(runner, page, data):
+    cards = page.locator('.model-card')
+    expect(cards).to_have_count(8)
+    token_card = cards.filter(has=page.locator('header code[title="layout-model-001"]'))
+    free_card = cards.filter(has=page.locator('header code[title="layout-model-003"]'))
+    call_card = cards.filter(has=page.locator('header code[title="layout-model-004"]'))
+    unpriced_card = cards.filter(has=page.locator('header code[title="layout-model-002"]'))
+    token_prices = token_card.locator('.model-pricing-strip')
+    expect(token_prices).to_contain_text('$2.00/M')
+    expect(token_prices).to_contain_text('$8.00/M')
+    expect(free_card.locator('.model-pricing-strip')).to_contain_text('$0.00/M')
+    expect(call_card.locator('.model-pricing-strip')).to_contain_text('按次')
+    expect(call_card.locator('.model-pricing-strip')).to_contain_text('$0.040')
+    expect(unpriced_card.locator('.model-pricing-strip')).to_have_count(0)
+    runner.check(any(call['path'] == '/admin/site-pricing' and call['query'].get('site_id')
+                     == [str(data.accounts[0]['site_id'])] for call in data.calls),
+                 'Model prices are loaded for their owning site')
+    boxes = cards.evaluate_all('(nodes) => nodes.map(node => { const r = node.getBoundingClientRect(); return {top: Math.round(r.top), height: r.height}; })')
+    by_row = {}
+    for box in boxes:
+        by_row.setdefault(box['top'], []).append(box['height'])
+    runner.check(all(max(heights) - min(heights) <= 1 for heights in by_row.values()),
+                 'Priced and unpriced model cards stay aligned in each row')
+    token_card.scroll_into_view_if_needed()
+    runner.photo(page, 'prices-card')
+    page.get_by_role('button', name='列表视图', exact=True).click()
+    rows = page.locator('.model-records .record-row')
+    expect(rows).to_have_count(8)
+    token_row = rows.filter(has=page.locator('strong[title="layout-model-001"]'))
+    expect(token_row.locator('.model-price-line')).to_contain_text('输入 $2.00/M')
+    expect(token_row.locator('.model-price-line')).to_contain_text('输出 $8.00/M')
+    expect(rows.filter(has=page.locator('strong[title="layout-model-004"]')).locator('.model-price-line')).to_contain_text('按次 $0.040')
+    expect(rows.filter(has=page.locator('strong[title="layout-model-002"]')).locator('.model-price-line')).to_have_count(0)
+    token_row.scroll_into_view_if_needed()
+    runner.photo(page, 'prices-list')
+    runner.record(token_prices=['$2.00/M', '$8.00/M'], per_call_price='$0.040', unpriced_hidden=True)
 
 
 def settings(runner, page, data):
@@ -692,6 +906,25 @@ def related(runner, page, data, profile):
                 runner.check(actions['x'] >= outer['x'] - 2 and actions['right'] <= outer['right'] + 2,
                              f'Account row {index + 1} actions can be revealed within the scroll viewport')
     if name == 'models':
+        cards = page.locator('.model-card')
+        expect(cards).to_have_count(8)
+        card_boxes = cards.evaluate_all('(nodes) => nodes.map(node => { const r = node.getBoundingClientRect(); return {top: Math.round(r.top), height: r.height}; })')
+        by_row = {}
+        for box in card_boxes:
+            by_row.setdefault(box['top'], []).append(box['height'])
+        runner.check(all(max(heights) - min(heights) <= 1 for heights in by_row.values()),
+                     'Model cards align to a uniform height within each visual row')
+        runner.check(max(box['height'] for box in card_boxes) < 300,
+                     'Sparse model cards do not retain a large artificial minimum height')
+        channel_lists = cards.locator('.model-card-channels > ul')
+        expect(channel_lists).to_have_count(8)
+        dense_list = page.locator('.model-card-channels > ul').filter(has_text='密集布局渠道')
+        expect(dense_list).to_have_count(1)
+        list_state = dense_list.evaluate('(element) => ({overflow: getComputedStyle(element).overflowY, max: getComputedStyle(element).maxHeight, scroll: element.scrollHeight, client: element.clientHeight})')
+        runner.check(list_state['overflow'] == 'auto' and list_state['max'] != 'none'
+                     and list_state['scroll'] > list_state['client'],
+                     'Dense model channels scroll inside their fixed-height card')
+        runner.photo(page, 'model-card-grid')
         page.get_by_role('textbox', name='搜索模型清单', exact=True).fill('layout-model-001')
         expect(page.locator('.model-card')).to_have_count(1)
     elif name == 'announcements':
@@ -717,11 +950,15 @@ def case_specs(wallpaper=False):
         add(f'checkin-actions-{width}', checkins, '/checkins', width, height)
     add('maintenance-cross-kind-refresh-1440', checkin_blocker_recovery, '/checkins')
     add('maintenance-cross-kind-model-refresh-390', checkin_blocker_recovery, '/checkins', 390, 844)
-    for width, height in ((1440, 900), (390, 844)):
+    for width, height in ((1440, 900), (1000, 900), (390, 844)):
         add(f'maintenance-persisted-navigation-{width}', maintenance, '/checkins', width, height)
         add(f'tokens-surface-header-{width}', tokens, '/tokens', width, height)
         add(f'stats-currency-balance-lines-{width}', balances, '/stats', width, height)
         add(f'health-panel-headings-deeplink-{width}', health, '/health?component=debug_cleanup', width, height)
+    for width, height in ((1440, 900), (390, 844)):
+        add(f'health-interactive-details-{width}', health_interactive_details, '/health', width, height)
+        add(f'health-maintenance-default-open-{width}', health_maintenance_default_open, '/health', width, height)
+        add(f'model-pricing-{width}', model_pricing, '/models', width, height)
     for width, height in ((1440, 900), (1000, 700), (390, 844)):
         add(f'settings-timeout-draft-workspace-{width}', settings, '/system?section=runtime&group=timeouts', width, height)
     for profile in RELATED:

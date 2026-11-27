@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import {
   CheckCircle2, CircleAlert, Clock3, CloudDownload, CloudUpload, DatabaseBackup, Download, FileJson, RefreshCw,
   Save, ShieldAlert, ShieldCheck, Trash2, Upload,
@@ -19,6 +19,7 @@ import type { BackupDocument, BackupType, BackupVerification, BackupWebDAVConfig
 import ConfigPreviewPanel from './ConfigPreviewPanel'
 import { ErrorState, LoadingState, OperationNotice, formatTime } from './shared'
 import { Modal } from './siteShared'
+import './backupPresentation.css'
 
 type WebDAVForm = Pick<BackupWebDAVConfig,
   'enabled' | 'file_url' | 'username' | 'export_type' | 'auto_sync_enabled' | 'auto_sync_interval_hours'
@@ -40,6 +41,7 @@ const backupTypes: Array<{ value: BackupType; label: string; detail: string; ton
 ]
 
 export function BackupSettingsPanel() {
+  const webdavURLId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
   const [config, setConfig] = useState<BackupWebDAVConfig | null>(null)
   const [form, setForm] = useState<WebDAVForm>(defaultWebDAV)
@@ -385,20 +387,20 @@ export function BackupSettingsPanel() {
     </section>
 
     <section className="backup-block">
-      <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--blue"><Upload size={20} /></span><div><h2>从配置文件恢复</h2></div></header>
+      <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--blue"><Upload size={20} /></span><div><div className="heading-with-hint"><h2>从配置文件恢复</h2><HelpTip label="从配置文件恢复" text="先预览将新增、更新、保留、冲突与停用的条目，再确认应用同一份快照。支持 PivotFlow JSON 备份，最大 32 MB。" /></div></div></header>
       <div className={`backup-dropzone${pendingFile ? ' has-file' : ''}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void inspectFile(event.dataTransfer.files[0]) }}>
         <input ref={inputRef} type="file" accept="application/json,.json" onChange={(event) => void inspectFile(event.target.files?.[0])} />
         <FileJson size={28} />
         <div>{pendingFile ? <><strong>{pendingFile.name}</strong><small>{backupTypeLabel(pendingDocument?.type || 'all')} · {formatBytes(pendingFile.size)} · 版本 {pendingDocument?.version}</small></> : <><strong>拖入备份文件，或点击选择</strong><small>支持 PivotFlow JSON 备份，最大 32 MB</small></>}</div>
         {pendingFile && <button className="icon-button icon-button--surface" type="button" onClick={(event) => { event.stopPropagation(); void inspectFile(undefined) }} aria-label="移除备份文件" title="移除"><Trash2 size={16} /></button>}
       </div>
-      <footer className="backup-block-footer"><span>先预览将新增、更新、保留、冲突与停用的条目，再确认应用同一份快照。</span><button className="primary-button" type="button" onClick={() => void stageLocalPreview()} disabled={!pendingDocument || Boolean(busy) || Boolean(previewBusy)}>{previewBusy === 'local' ? <RefreshCw className="spin" size={15} /> : <Upload size={15} />}{previewBusy === 'local' ? '正在预览' : '预览导入'}</button></footer>
+      <footer className="backup-block-footer backup-import-footer"><button className="primary-button" type="button" onClick={() => void stageLocalPreview()} disabled={!pendingDocument || Boolean(busy) || Boolean(previewBusy)}>{previewBusy === 'local' ? <RefreshCw className="spin" size={15} /> : <Upload size={15} />}{previewBusy === 'local' ? '正在预览' : '预览导入'}</button></footer>
     </section>
 
     <form className="backup-block webdav-form" onSubmit={saveWebDAV}>
       <header className="backup-block-header"><span className="backup-block-icon backup-block-icon--amber"><CloudUpload size={20} /></span><div><h2>WebDAV 备份</h2></div><BackupSwitch checked={form.enabled} change={(enabled) => setForm((current) => ({ ...current, enabled }))} label="启用 WebDAV" /></header>
       <div className="webdav-fields">
-        <label className="webdav-url"><span>WebDAV 地址</span><input type="url" value={form.file_url} onChange={(event) => setForm((current) => ({ ...current, file_url: event.target.value }))} placeholder="https://dav.example.com/PivotFlow" /><small>填写目录地址会自动保存为 pivotflow-backup.json；也支持指定 JSON 文件地址。</small></label>
+        <div className="webdav-url"><div className="heading-with-hint"><label htmlFor={webdavURLId}>WebDAV 地址</label><HelpTip label="WebDAV 地址" text="填写目录地址会自动保存为 pivotflow-backup.json；也支持指定 JSON 文件地址。操作使用已保存的连接设置，更改地址或凭证后请先保存。" /></div><input id={webdavURLId} type="url" value={form.file_url} onChange={(event) => setForm((current) => ({ ...current, file_url: event.target.value }))} placeholder="https://dav.example.com/PivotFlow" /></div>
         <label><span>用户名</span><input value={form.username} onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))} autoComplete="username" /></label>
         <label><span>密码</span><input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setClearPassword(false) }} autoComplete="new-password" placeholder={config?.password_configured ? '留空保持现有密码' : 'WebDAV 密码'} /></label>
         <label><span>备份范围</span><select value={form.export_type} onChange={(event) => setForm((current) => ({ ...current, export_type: event.target.value as BackupType }))}>{backupTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
@@ -408,17 +410,17 @@ export function BackupSettingsPanel() {
       {config?.password_configured && <label className="webdav-clear-password"><input type="checkbox" checked={clearPassword} onChange={(event) => { setClearPassword(event.target.checked); if (event.target.checked) setPassword('') }} /><span>清除已保存的 WebDAV 密码</span></label>}
       <section className={`backup-verification backup-verification--${verification.state}`} aria-label="已保存的 WebDAV 校验记录">
         <header className="backup-verification-header">
-          <div>{verification.state === 'verified' ? <ShieldCheck size={19} /> : <Clock3 size={19} />}<strong>已保存的校验记录</strong><HelpTip label="回读校验" text="上传后读取同一目标，核对完整字节数及 SHA-256。内容校验不等于所有配置均可恢复；请核对备份范围和遗漏警告。" /></div>
+          <div>{verification.state === 'verified' ? <ShieldCheck size={19} /> : <Clock3 size={19} />}<strong>已保存的校验记录</strong><HelpTip label="回读校验" text={`${verification.state === 'unverified' ? `${verificationStateDetails.unverified} ` : ''}上传后读取同一目标，核对完整字节数及 SHA-256。内容校验不等于所有配置均可恢复；请核对备份范围和遗漏警告。`} /></div>
           <span className={`backup-verification-badge${verification.proof?.warning_count ? ' has-warnings' : ''}`}>{verificationStateLabels[verification.state]}</span>
         </header>
-        {verification.state !== 'verified' && <p className="backup-verification-description">{verificationStateDetails[verification.state]}</p>}
+        {verification.state !== 'verified' && verification.state !== 'unverified' && <p className="backup-verification-description">{verificationStateDetails[verification.state]}</p>}
         {verification.lastUploadAt && verification.state !== 'verified' && <p className="backup-verification-upload">最近上传记录 {formatTime(verification.lastUploadAt)}</p>}
         {verification.proof && <VerificationDetails proof={verification.proof} historical={verification.state !== 'verified'} />}
         {verification.warnings.map((warning) => <p className="backup-verification-warning" key={warning}><CircleAlert size={15} /><span>{warning}</span></p>)}
         {config?.last_error && <p className="backup-verification-error"><CircleAlert size={15} /><span><strong>最近操作失败：</strong>{backupErrorMessage(config.last_error)}</span></p>}
       </section>
       {showObservedProof && observedProof && <section className="backup-verification backup-verification--observed" aria-label="本次上传的校验回执"><header className="backup-verification-header"><div><ShieldCheck size={19} /><strong>本次上传的校验回执</strong></div><span className="backup-verification-badge">内容已校验</span></header><p className="backup-verification-description">{latestUpload?.metadataSaved === true ? '服务器已报告记录保存成功；当前设置尚未读到对应记录。' : '本次目标内容已校验，结果尚未可靠记入当前设置。此回执仅在当前页面保留。'}</p><VerificationDetails proof={observedProof} /></section>}
-      <footer className="backup-block-footer webdav-footer"><div><span>操作使用已保存的连接设置。更改地址或凭证后，请先保存。</span></div><div><button className="secondary-button" type="button" onClick={() => void stageWebDAVPreview()} disabled={!config?.enabled || Boolean(busy) || Boolean(previewBusy)}>{previewBusy === 'webdav' ? <RefreshCw className="spin" size={15} /> : <CloudDownload size={15} />}{previewBusy === 'webdav' ? '正在预览' : '预览恢复'}</button><button className="secondary-button" type="button" onClick={uploadWebDAV} disabled={!config?.enabled || Boolean(busy)}>{busy === 'upload-webdav' ? <RefreshCw className="spin" size={15} /> : <CloudUpload size={15} />}立即上传</button><button className="primary-button" type="submit" disabled={Boolean(busy)}>{busy === 'save-webdav' ? <RefreshCw className="spin" size={15} /> : <Save size={15} />}保存设置</button></div></footer>
+      <footer className="backup-block-footer webdav-footer"><div><span>更改连接设置后，请先保存。</span></div><div><button className="secondary-button" type="button" onClick={() => void stageWebDAVPreview()} disabled={!config?.enabled || Boolean(busy) || Boolean(previewBusy)}>{previewBusy === 'webdav' ? <RefreshCw className="spin" size={15} /> : <CloudDownload size={15} />}{previewBusy === 'webdav' ? '正在预览' : '预览恢复'}</button><button className="secondary-button" type="button" onClick={uploadWebDAV} disabled={!config?.enabled || Boolean(busy)}>{busy === 'upload-webdav' ? <RefreshCw className="spin" size={15} /> : <CloudUpload size={15} />}立即上传</button><button className="primary-button" type="submit" disabled={Boolean(busy)}>{busy === 'save-webdav' ? <RefreshCw className="spin" size={15} /> : <Save size={15} />}保存设置</button></div></footer>
     </form>
     </section>
     {preview && (

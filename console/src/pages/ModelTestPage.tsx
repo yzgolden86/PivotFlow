@@ -23,6 +23,7 @@ import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingS
 import { useLocation } from 'react-router-dom'
 import { VendorMark } from './vendorMarks'
 import { createModelPricingLoader } from './modelPricingLoader'
+import './modelCatalogPresentation.css'
 import {
   catalogFactForStatus,
   catalogTestDisabledReason,
@@ -509,7 +510,6 @@ function ModelCard({ item, fact, channels, siteMap, accountMap, channelBindings,
   const disabledReason = catalogTestDisabledReason(fact, channels, accountMap, siteMap)
   const tone = selection ? 'success' : fact?.disabled ? 'muted' : 'warning'
   const statusLabel = selection ? '可测试' : fact?.disabled ? '停用' : fact?.stale ? '过期' : '无测试目标'
-  const channelLabel = channels.length > 2 ? `${channels[0].name}、${channels[1].name} 等 ${channels.length} 个渠道` : channels.map((channel) => channel.name).join('、') || '尚未投影到渠道'
   const pricing = modelPricingSummary(item, fact, channels, sitePricing, channelBindings, accountMap)
   return <article className={`model-card model-card--${tone} model-vendor--${vendor.key}`} key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`}>
     <header>
@@ -523,7 +523,7 @@ function ModelCard({ item, fact, channels, siteMap, accountMap, channelBindings,
       <span className="model-meta-badge">{fact ? sourceLabel(fact.source) : '渠道配置'}</span>
     </div>
     <dl className="model-card-meta">
-      <div><dt><Server size={12} />来源</dt><dd>{fact ? <>{account?.site_id ? <a className="entity-link model-entity-link model-entity-link--site" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a> : <>{site?.name || '未知站点'}</>}{fact.site_account_id ? <a className="entity-link model-entity-link model-entity-link--account" href={`#/accounts?focus_account_id=${fact.site_account_id}`}>{account?.label || `账号 #${fact.site_account_id}`}</a> : <span>未知账号</span>}</> : <span title={channelLabel}>{channelLabel}</span>}</dd></div>
+      <div><dt><Server size={12} />来源</dt><dd>{fact ? <>{account?.site_id ? <a className="entity-link model-entity-link model-entity-link--site" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a> : <>{site?.name || '未知站点'}</>}{fact.site_account_id ? <a className="entity-link model-entity-link model-entity-link--account" href={`#/accounts?focus_account_id=${fact.site_account_id}`}>{account?.label || `账号 #${fact.site_account_id}`}</a> : <span>未知账号</span>}</> : '渠道配置'}</dd></div>
       <div><dt><CalendarClock size={12} />发现</dt><dd>{fact?.last_seen_at ? formatTime(fact.last_seen_at) : '渠道当前配置'}</dd></div>
     </dl>
     {pricing ? <div className="model-pricing-strip" title={pricingSourceTitle(pricing)}>
@@ -541,11 +541,11 @@ function ModelCard({ item, fact, channels, siteMap, accountMap, channelBindings,
         <span><small>倍率</small><strong>{formatRatioPair(pricing.modelRatios, pricing.completionRatios)}</strong></span>
       </>}
     </div> : null}
-    <footer>
-      {channels.slice(0, 3).map((channel) => <span key={channel.id}>{channel.name}</span>)}
-      {channels.length > 3 ? <span>+{channels.length - 3}</span> : null}
-      {!channels.length ? <span>尚未投影到渠道</span> : null}
-    </footer>
+    <div className="model-card-channels">
+      {channels.length ? <ul aria-label={`${item.model} 的 ${channels.length} 个渠道`} tabIndex={channels.length > 3 ? 0 : undefined}>
+        {channels.map((channel) => <li key={channel.id}><span title={channel.name}>{channel.name}</span><HelpTip label={`渠道 ${channel.name}`} text={`${channel.name} · 渠道 #${channel.id} · 优先级 ${channel.priority} · ${channel.enabled ? '已启用' : '已停用，可直测'}`} /></li>)}
+      </ul> : <span className="model-card-no-channels">尚未投影到渠道</span>}
+    </div>
   </article>
 }
 

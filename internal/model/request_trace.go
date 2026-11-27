@@ -4,27 +4,38 @@ package model
 // stored as JSON in the same row so summary counters and the detail timeline
 // cannot be committed independently.
 type RequestTrace struct {
-	RequestID            string           `json:"request_id"`
-	StartedAt            int64            `json:"started_at"`
-	AuthTokenID          int64            `json:"auth_token_id"`
-	Model                string           `json:"model"`
-	ActualModel          string           `json:"actual_model,omitempty"`
-	ChannelID            int64            `json:"channel_id,omitempty"`
-	ChannelName          string           `json:"channel_name,omitempty"`
-	ClientProtocol       string           `json:"client_protocol"`
-	Transport            string           `json:"transport"`
-	IsStreaming          bool             `json:"is_streaming"`
-	FinalStatus          int              `json:"final_status"`
-	Outcome              string           `json:"outcome"`
-	Duration             float64          `json:"duration"`
-	WaitDuration         float64          `json:"wait_duration"`
-	AttemptCount         int              `json:"attempt_count"`
-	UpstreamAttemptCount int              `json:"upstream_attempt_count"`
-	UpstreamSuccessCount int              `json:"upstream_success_count"`
-	Truncated            bool             `json:"truncated"`
-	CacheStatus          string           `json:"cache_status,omitempty"`
-	CacheReason          string           `json:"cache_reason,omitempty"`
-	Attempts             []RequestAttempt `json:"attempts"`
+	RequestID            string                  `json:"request_id"`
+	StartedAt            int64                   `json:"started_at"`
+	AuthTokenID          int64                   `json:"auth_token_id"`
+	Model                string                  `json:"model"`
+	ActualModel          string                  `json:"actual_model,omitempty"`
+	ChannelID            int64                   `json:"channel_id,omitempty"`
+	ChannelName          string                  `json:"channel_name,omitempty"`
+	ClientProtocol       string                  `json:"client_protocol"`
+	Transport            string                  `json:"transport"`
+	IsStreaming          bool                    `json:"is_streaming"`
+	FinalStatus          int                     `json:"final_status"`
+	Outcome              string                  `json:"outcome"`
+	Duration             float64                 `json:"duration"`
+	WaitDuration         float64                 `json:"wait_duration"`
+	AttemptCount         int                     `json:"attempt_count"`
+	UpstreamAttemptCount int                     `json:"upstream_attempt_count"`
+	UpstreamSuccessCount int                     `json:"upstream_success_count"`
+	Truncated            bool                    `json:"truncated"`
+	AttemptSummaries     []RequestAttemptSummary `json:"attempt_summaries,omitempty"`
+	CacheStatus          string                  `json:"cache_status,omitempty"`
+	CacheReason          string                  `json:"cache_reason,omitempty"`
+	Attempts             []RequestAttempt        `json:"attempts"`
+}
+
+// RequestAttemptSummary is the bounded, non-sensitive projection used by the
+// paginated request list. Full attempt details remain available on one trace.
+type RequestAttemptSummary struct {
+	Number     int    `json:"number"`
+	StartedAt  int64  `json:"started_at"`
+	StatusCode int    `json:"status_code"`
+	Outcome    string `json:"outcome"`
+	Upstream   bool   `json:"upstream"`
 }
 
 // LastRequestActualModel is the model of the last recorded upstream transport,
@@ -105,11 +116,12 @@ type RequestAttempt struct {
 // RequestTraceFilter narrows request summaries. AuthTokenID is also supplied
 // separately to list/stat methods so token-owned reads can be enforced.
 type RequestTraceFilter struct {
-	AuthTokenID    *int64 `json:"auth_token_id,omitempty"`
-	Search         string `json:"search,omitempty"`
-	Outcome        string `json:"outcome,omitempty"`
-	Model          string `json:"model,omitempty"`
-	ClientProtocol string `json:"client_protocol,omitempty"`
+	AuthTokenID          *int64 `json:"auth_token_id,omitempty"`
+	Search               string `json:"search,omitempty"`
+	Outcome              string `json:"outcome,omitempty"`
+	Model                string `json:"model,omitempty"`
+	ClientProtocol       string `json:"client_protocol,omitempty"`
+	UpstreamFailuresOnly bool   `json:"upstream_failures_only,omitempty"`
 }
 
 // RequestTraceStats contains summary-meter counters, never probe logs.

@@ -13,7 +13,37 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
   background: var(--surface-muted);
-  box-shadow: var(--elev-1);
+  box-shadow: none;
+}
+
+/* Pair the two high traffic sections on desktop while keeping each half's
+   cards in one readable column. The maintenance and optional sections keep
+   their existing flow below this pair. */
+.health-sections-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px;
+}
+
+.health-sections-grid > .health-section {
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.health-sections-grid .health-section-body {
+  padding: 10px;
+}
+
+.health-sections-grid .health-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.health-sections-grid .health-card,
+.health-sections-grid .health-card--wide {
+  min-height: 0;
+  grid-column: auto;
 }
 
 .health-page .health-section-heading,
@@ -107,7 +137,93 @@
   border-top: 1px solid var(--border);
 }
 
-.health-card-details > summary,
+.health-card-details-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  margin-top: 10px;
+  padding: 9px 0 0;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.health-card-details-trigger::before {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  content: "›";
+  font-size: 18px;
+  line-height: 1;
+  transition: transform var(--dur-fast) ease;
+}
+
+.health-card-details-trigger[aria-expanded="true"]::before {
+  transform: rotate(90deg);
+}
+
+.health-card-details-trigger:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+.health-card-details-popover {
+  position: fixed;
+  z-index: 140;
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(56vh, 420px);
+  overflow: auto;
+  padding: 13px;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  box-shadow: var(--elev-2);
+  font-size: 12px;
+  line-height: 20px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.health-card-details-popover > div {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+
+.health-card-details-popover .health-metrics {
+  margin: 0;
+  padding: 0 0 10px;
+  border-top: 0;
+}
+
+.health-card-details-popover .health-counter-line,
+.health-card-details-popover .health-last-success {
+  margin-block: 0;
+}
+
+.health-card-details-popover .health-operation-details {
+  margin-top: 0;
+}
+
+.health-card-details-popover .health-operation-details[open] > dl {
+  margin-bottom: 0;
+}
+
+.health-card-details-popover .health-recovery-phases {
+  margin-top: 0;
+}
+
+.health-card-details,
+.health-process-details {
+  position: relative;
+  z-index: 1;
+}
+
+.health-process-details > summary,
 .health-process-details > summary,
 .health-section--collapsible > summary {
   display: flex;
@@ -120,13 +236,11 @@
   list-style: none;
 }
 
-.health-card-details > summary::-webkit-details-marker,
 .health-process-details > summary::-webkit-details-marker,
 .health-section--collapsible > summary::-webkit-details-marker {
   display: none;
 }
 
-.health-card-details > summary::before,
 .health-process-details > summary::before,
 .health-section--collapsible > summary::before {
   flex: 0 0 auto;
@@ -137,13 +251,11 @@
   transition: transform var(--dur-fast) ease;
 }
 
-.health-card-details[open] > summary::before,
 .health-process-details[open] > summary::before,
 .health-section--collapsible[open] > summary::before {
   transform: rotate(90deg);
 }
 
-.health-card-details > summary:focus-visible,
 .health-process-details > summary:focus-visible,
 .health-section--collapsible > summary:focus-visible {
   outline: 2px solid var(--green);
@@ -151,8 +263,29 @@
   border-radius: 2px;
 }
 
-.health-card-details > div {
-  padding-top: 8px;
+.health-maintenance-websocket-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px;
+}
+
+.health-maintenance-websocket-grid > .health-section {
+  min-width: 0;
+  margin-bottom: 20px;
+}
+
+.health-maintenance-websocket-grid .health-section-body > .health-grid:has(> .health-card:only-child) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.health-page .health-card,
+.health-page .health-overview {
+  box-shadow: none;
+}
+
+@media (max-width: 1100px) {
+  .health-maintenance-websocket-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
 }
 
 .runtime-attention {
@@ -376,6 +509,16 @@
 }
 
 @media (max-width: 760px) {
+  .health-sections-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .health-maintenance-websocket-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
   .health-page .health-section-heading,
   .health-page .health-section--collapsible > summary {
     padding: 10px 12px;
@@ -415,7 +558,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .health-card-details > summary::before,
+  .health-card-details-trigger::before,
   .health-process-details > summary::before,
   .health-section--collapsible > summary::before {
     transition: none;

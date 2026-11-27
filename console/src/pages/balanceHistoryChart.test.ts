@@ -371,3 +371,28 @@ test('daily readouts retain precise original values even when another day is lar
   assert.equal(formatDailyDelta(Number.MIN_VALUE, 'USD'), '+5e-324 USD')
   assert.equal(formatDailyDelta(null, 'USD'), '未知')
 })
+
+test('explicit server day fixes the entire 7/14 calendar even with one old observation', () => {
+  const source = [point('2026-11-22', -3)]
+  const week = balanceHistoryOverlay(source, 7, '2026-11-26')
+  const fortnight = balanceHistoryOverlay(source, 14, '2026-11-26')
+  assert.equal(week.startDay, '2026-11-20')
+  assert.equal(week.endDay, '2026-11-26')
+  assert.equal(week.days.length, 7)
+  assert.equal(fortnight.startDay, '2026-11-13')
+  assert.equal(fortnight.days.length, 14)
+  assert.equal(week.series[0].missingDays, 6)
+  assert.deepEqual(week.series[0].points.map((item) => item.dailyDelta), [-3])
+  assert.deepEqual(week.series[0].paths, [], 'absent days must never become a fabricated line')
+})
+
+test('empty and future-only samples retain the explicit calendar without inventing observations', () => {
+  const empty = balanceHistoryOverlay([], 7, '2026-03-02')
+  assert.equal(empty.startDay, '2026-02-24')
+  assert.equal(empty.endDay, '2026-03-02')
+  assert.equal(empty.days.length, 7)
+  assert.deepEqual(empty.series, [])
+  const future = balanceHistoryOverlay([point('2026-11-27', 999)], 14, '2026-11-26')
+  assert.equal(future.days.length, 14)
+  assert.ok(future.series.every((chart) => chart.points.length === 0 && !chart.hasData))
+})

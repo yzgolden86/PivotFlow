@@ -1,0 +1,29 @@
+/* Keep help beside its heading even where older card rules set div to grid. */
+.backup-settings .heading-with-hint { display: flex; min-width: 0; align-items: center; gap: 4px; }
+.backup-settings .heading-with-hint > .help-tip { flex: 0 0 auto; margin: 0; }
+.backup-settings .heading-with-hint > :is(h2, strong) { min-width: 0; }
+.backup-settings { gap: 12px; }
+.backup-settings .backup-block-header { min-height: 70px; gap: 10px; padding: 12px 16px; }
+.backup-settings .backup-type-grid { gap: 10px; padding: 14px 16px; }
+.backup-settings .backup-type-card { min-height: 0; align-items: center; gap: 8px; padding: 12px; }
+.backup-settings .backup-type-card > .heading-with-hint { display: flex; align-items: center; }
+.backup-settings .backup-type-card .secondary-button { margin-top: 0; }
+.backup-settings .backup-dropzone { min-height: 94px; margin: 14px 16px; padding: 14px; }
+.backup-settings .backup-block-footer { min-height: 60px; gap: 12px; padding: 10px 16px; }
+.backup-settings .backup-import-footer { justify-content: flex-end; }
+.backup-settings .webdav-fields { gap: 12px; padding: 14px 16px; }
+.backup-settings .webdav-url { display: grid; min-width: 0; align-content: start; gap: 7px; }
+.backup-settings .webdav-url > .heading-with-hint { min-height: 28px; margin-top: -5px; margin-bottom: -5px; }
+.backup-settings .webdav-url label { display: block; color: var(--text-secondary); font-size: 12px; font-weight: 650; }
+.backup-settings .backup-verification { gap: 8px; margin: 0 16px 14px; padding: 12px; }
+
+@media (max-width: 620px) {
+  .backup-settings .backup-block-header { grid-template-columns: 36px minmax(0, 1fr) auto; padding-inline: 12px; }
+  .backup-settings .backup-block-header > .switch { grid-column: auto; justify-self: end; }
+  .backup-settings .backup-block-icon { width: 36px; height: 36px; }
+  .backup-settings .backup-type-grid,
+  .backup-settings .webdav-fields,
+  .backup-settings .backup-block-footer { padding-inline: 12px; }
+  .backup-settings .backup-dropzone,
+  .backup-settings .backup-verification { margin-inline: 12px; }
+}

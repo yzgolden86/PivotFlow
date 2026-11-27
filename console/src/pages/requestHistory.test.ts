@@ -18,8 +18,11 @@ import {
   reasonLabel,
   requestCacheHistoryDiagnostic,
   requestDetailHref,
+  readRequestHistoryScope,
+  requestAttemptSummary,
   retryLabel,
   upstreamSuccessRate,
+  writeRequestHistoryScope,
 } from './requestHistory.ts'
 
 const stats: RequestTraceStats = {
@@ -36,6 +39,48 @@ test('keeps canceled requests out of the client success denominator', () => {
   assert.equal(upstreamSuccessRate(stats), 0.75)
   assert.equal(formatRate(clientSuccessRate(stats)), '62.5%')
   assert.equal(formatRate(clientSuccessRate({ ...stats, successes: 0, errors: 0 })), '—')
+})
+
+test('summarizes upstream failures that were recovered by a later success', () => {
+  const summary = requestAttemptSummary({
+    attempt_count: 3,
+    upstream_attempt_count: 2,
+    upstream_success_count: 1,
+    outcome: 'success',
+    attempt_summaries: [
+      { number: 1, started_at: 1_000, status_code: 401, outcome: 'error', upstream: true },
+      { number: 2, started_at: 1_250, status_code: 200, outcome: 'success', upstream: true },
+    ],
+  })
+
+  assert.equal(summary.upstream_failures, 1)
+  assert.equal(summary.has_failure, true)
+  assert.equal(summary.label, '1 次失败 → 最终成功')
+  assert.match(summary.title, /上游 2 次尝试/)
+  assert.deepEqual(summary.events, [
+    { number: 1, started_at: 1_000, status_code: 401, outcome: 'error', upstream: true },
+    { number: 2, started_at: 1_250, status_code: 200, outcome: 'success', upstream: true },
+  ])
+})
+
+test('keeps a final error visible when no upstream attempt succeeded', () => {
+  const summary = requestAttemptSummary({
+    attempt_count: 4,
+    upstream_attempt_count: 3,
+    upstream_success_count: 0,
+    outcome: 'error',
+  })
+
+  assert.equal(summary.upstream_failures, 3)
+  assert.equal(summary.has_failure, true)
+  assert.equal(summary.label, '3 次失败 · 最终失败')
+})
+
+test('preserves the upstream-failure filter in the request-history URL', () => {
+  const scope = readRequestHistoryScope('?view=requests&range=this_week&upstream_failures=1')
+  assert.equal(scope.upstreamFailuresOnly, true)
+  assert.match(writeRequestHistoryScope(scope), /upstream_failures=1/)
+  assert.equal(readRequestHistoryScope('?upstream_failures=invalid').error, '上游失败筛选无效。')
 })
 
 test('orders attempts by execution number even when timestamps invert, without mutating the trace', () => {

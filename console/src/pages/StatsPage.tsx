@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, BarChart3, ChevronDown, CircleDollarSign, Clock3, Gauge, LineChart, List, PieChart, RefreshCw, WalletCards, Zap } from 'lucide-react'
-import { getDashboard, getStats, getStatsFilterOptions } from '../api'
+import { Activity, BarChart3, ChevronDown, CircleDollarSign, Gauge, LineChart, List, PieChart, RefreshCw, WalletCards, Zap } from 'lucide-react'
+import { getDashboard, getStats, getStatsFilterOptions, getUsageTrend } from '../api'
 import HelpTip from '../components/HelpTip'
+import useReadSnapshot from '../components/useReadSnapshot'
 import type { CostBasis, CostSource, CostStatus, DashboardRange, DashboardSnapshot, MetricPoint, StatsEntry, StatsFilterOptions, StatsSnapshot } from '../types'
 import { donutSlicePath, donutSlices } from './donutGeometry'
 import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, PageHeader, successTone } from './shared'
 import { analyzeCostSummary, COST_BASIS_FILTER_OPTIONS, COST_SOURCE_FILTER_OPTIONS, COST_STATUS_FILTER_OPTIONS } from '../costSemantics.ts'
 import { moneyDigits } from '../format.ts'
-import { balanceHistoryOverlay, balanceScheduleCaption, dailyComparisonLabel, formatBalanceAmount, formatDailyDelta, selectBalanceCurrencies } from './balanceHistoryChart.ts'
+import { balanceHistoryOverlay, balanceScheduleCaption, formatBalanceAmount, formatDailyDelta, selectBalanceCurrencies } from './balanceHistoryChart.ts'
 import type { BalanceChartPoint, BalanceHistoryDays, BalanceHistoryInput } from './balanceHistoryChart.ts'
 import { statsDistribution } from './statsDistribution.ts'
 import type { DistributionItem, DistributionMode } from './statsDistribution.ts'
@@ -24,6 +25,7 @@ export default function StatsPage() {
   const [costStatus, setCostStatus] = useState<CostStatus | ''>('')
   const [costBasis, setCostBasis] = useState<CostBasis | ''>('')
   const [chartMode, setChartMode] = useState<TrendChartMode>('curve')
+  const [trendRange, setTrendRange] = useState<DashboardRange>('this_month')
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [balanceDays, setBalanceDays] = useState<BalanceHistoryDays>(14)
   const loadSequence = useRef(0)
@@ -54,6 +56,9 @@ export default function StatsPage() {
   }, [channel, costBasis, costSource, costStatus, model, range])
 
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
+  const trendFilters = useMemo(() => ({ range: trendRange, channel_name: channel, model, cost_source: costSource, cost_status: costStatus, cost_basis: costBasis }), [channel, costBasis, costSource, costStatus, model, trendRange])
+  const readTrend = useCallback((signal: AbortSignal) => getUsageTrend(trendFilters, signal), [trendFilters])
+  const trend = useReadSnapshot(JSON.stringify(trendFilters), readTrend)
   const entries = snapshot?.stats || []
   const totals = useMemo(() => sumStats(entries), [entries])
   const totalTokens = (dashboard?.totals.input_tokens || 0) + (dashboard?.totals.output_tokens || 0)
@@ -68,7 +73,8 @@ export default function StatsPage() {
   const recordedDistribution = useMemo(() => statsDistribution(entries, 'model', 'cost'), [entries])
   const costAmount = costView.status === 'ready' ? costView.amountText
     : recordedDistribution.items.length ? formatMoney(recordedDistribution.total) : '—'
-  const balanceSchedule = (snapshot as (StatsSnapshot & { balance_schedule?: unknown }) | null)?.balance_schedule
+  const balanceSchedule = snapshot?.balance_schedule
+  const balanceAsOf = snapshot?.balance_as_of_day || formatShanghaiDay(new Date())
 
   return (
     <div className="workspace-page data-dashboard-page">
@@ -80,7 +86,7 @@ export default function StatsPage() {
           <div className="range-control" role="radiogroup" aria-label="数据面板时间范围">
             {([['today', '今日'], ['this_week', '本周'], ['this_month', '本月']] as const).map(([value, label]) => <button className={range === value ? 'is-active' : ''} type="button" role="radio" aria-checked={range === value} onClick={() => { setChannel(''); setModel(''); setCostSource(''); setCostStatus(''); setCostBasis(''); setRange(value) }} key={value}>{label}</button>)}
           </div>
-          <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新数据面板"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
+          <button className="icon-button icon-button--surface" type="button" disabled={refreshing} onClick={async () => { setRefreshing(true); trend.refresh(); try { await load() } finally { setRefreshing(false) } }} aria-label="刷新数据面板"><RefreshCw size={17} className={refreshing ? 'spin' : undefined} /></button>
         </>}
       />
 
@@ -100,40 +106,29 @@ export default function StatsPage() {
         <article className={`stats-cost-kpi stats-cost-kpi--${costView.coverageState}`}>
           <span><CircleDollarSign size={17} /></span>
           <div>
-            <small>已记录费用 · USD</small><strong>{costAmount}</strong>
-            <p className="stats-cost-coverage">{costView.coverageText} · 未对账</p>
-            <details className="stats-cost-evidence">
-              <summary>费用依据<ChevronDown size={13} aria-hidden="true" /></summary>
-              <div>
-                <p>本地记录金额，尚未与上游账单对账；未知费用不等于零。</p>
-                {costView.status === 'ready' ? <>
-                  <p>{costView.recordedBreakdown}</p>
-                  {costView.detailRows.map((row) => <p key={row.label}><b>{row.label}</b>：{row.value}</p>)}
-                </> : <p>{costView.statusLabel}。{recordedDistribution.items.length ? '金额取自当前渠道 / 模型明细；' : ''}完整估算覆盖与来源无法确认。</p>}
-              </div>
-            </details>
+            <small className="stats-kpi-label">已记录费用 · USD<HelpTip label="已记录费用" text={`本地记录金额，尚未与上游账单对账。${costView.coverageText}；未记录的费用不计为零。来源与金额可在下方渠道、模型明细中查看。`} /></small><strong>{costAmount}</strong>
           </div>
         </article>
       </section>}
 
-      {dashboard ? <section className="trend-workbench data-dashboard-trend">
+      <div className="stats-charts-grid">
+      <section className="trend-workbench data-dashboard-trend" aria-label="用量走势">
         <header>
-          <div><LineChart size={18} /><h2>用量走势</h2></div>
-          <div className="trend-chart-toggle" role="group" aria-label="趋势图形式">
-            <button type="button" className={chartMode === 'curve' ? 'is-active' : ''} onClick={() => setChartMode('curve')} aria-pressed={chartMode === 'curve'} title="曲线视图"><LineChart size={15} /><span>曲线图</span></button>
-            <button type="button" className={chartMode === 'bars' ? 'is-active' : ''} onClick={() => setChartMode('bars')} aria-pressed={chartMode === 'bars'} title="柱状视图"><BarChart3 size={15} /><span>柱状图</span></button>
+          <div><LineChart size={18} /><h2>用量走势</h2><HelpTip label="用量走势" text="本周与本月按日汇总，今日按 3 小时汇总；时间范围独立于上方统计，沿用当前渠道、模型和费用筛选。曲线保留实际采样值，各指标使用独立刻度。" /></div>
+          <div className="stats-trend-controls">
+            <select value={trendRange} onChange={(event) => setTrendRange(event.target.value as DashboardRange)} aria-label="用量走势时间范围"><option value="today">今日</option><option value="this_week">本周</option><option value="this_month">本月</option></select>
+            <div className="trend-chart-toggle" role="group" aria-label="趋势图形式">
+              <button type="button" className={chartMode === 'curve' ? 'is-active' : ''} onClick={() => setChartMode('curve')} aria-pressed={chartMode === 'curve'} aria-label="曲线视图" title="曲线视图"><LineChart size={15} /></button>
+              <button type="button" className={chartMode === 'bars' ? 'is-active' : ''} onClick={() => setChartMode('bars')} aria-pressed={chartMode === 'bars'} aria-label="柱状视图" title="柱状视图"><BarChart3 size={15} /></button>
+            </div>
           </div>
         </header>
-        <CombinedTrendChart points={dashboard.trend} mode={chartMode} />
-        <div className="data-dashboard-sampling"><Clock3 size={13} /><span>采样间隔 {formatInterval(averageTrendInterval(dashboard.trend))} · {dashboard.trend.length} 个时间点</span></div>
-      </section> : null}
+        {trend.error ? <ErrorState message={trend.error} retry={trend.refresh} /> : trend.loading && !trend.data ? <LoadingState label="正在读取用量走势" /> : <CombinedTrendChart points={trend.data || []} mode={chartMode} />}
+      </section>
+      {snapshot ? <BalanceHistoryPanel points={snapshot.balance_history || []} schedule={balanceSchedule} days={balanceDays} asOfDay={balanceAsOf} onDaysChange={setBalanceDays} /> : <section className="balance-change-panel"><LoadingState label="正在读取余额变化" /></section>}
+      </div>
 
       {!loading && !error && entries.length > 0 ? <StatsDistribution entries={entries} /> : null}
-
-      {snapshot?.balance_history?.length ? <BalanceHistoryPanel points={snapshot.balance_history} schedule={balanceSchedule} days={balanceDays} onDaysChange={setBalanceDays} /> : snapshot ? <section className="balance-history-empty" aria-label="每日余额变化等待数据">
-        <span><WalletCards size={18} /></span>
-        <div><strong>每日余额变化等待数据</strong><span>{balanceScheduleCaption(balanceSchedule)} · 连续两日采样完整后可比较。</span></div>
-      </section> : null}
 
       {loading ? <LoadingState label="正在计算数据面板" /> : error ? <ErrorState message={error} retry={() => void load()} /> : entries.length === 0 ? <EmptyState label="当前范围暂无统计数据" /> : (
         <section className={`stats-records-wrap${detailsOpen ? ' is-open' : ''}`}>
@@ -169,8 +164,8 @@ const PIE_COLORS = [
 function StatsDistribution({ entries }: { entries: StatsEntry[] }) {
   const hasCostData = entries.some((entry) => entry.effective_cost != null || entry.total_cost != null)
   const mode: DistributionMode = hasCostData ? 'cost' : 'requests'
-  const channelView = statsDistribution(entries, 'channel', mode)
-  const modelView = statsDistribution(entries, 'model', mode)
+  const channelView = statsDistribution(entries, 'channel', mode, false)
+  const modelView = statsDistribution(entries, 'model', mode, false)
   return <section className="stats-distribution" aria-label="已记录费用与请求分布">
     <DistributionPanel icon={BarChart3} title={mode === 'cost' ? '渠道已记录费用' : '渠道请求量'} total={channelView.total} items={channelView.items} unknownEntries={channelView.unknownEntries} mode={mode} />
     <DistributionPanel icon={Activity} title={mode === 'cost' ? '模型已记录费用' : '模型请求量'} total={modelView.total} items={modelView.items} unknownEntries={modelView.unknownEntries} mode={mode} />
@@ -184,13 +179,13 @@ function DistributionPanel({ icon: Icon, title, total, items, unknownEntries, mo
     <header>
       <Icon size={17} />
       <h2>{title}</h2>
+      <HelpTip label={`${title}口径`} text={`${mode === 'cost' ? '仅含已记录金额，尚未与上游账单对账。' : '包含全部请求。'}${unknownEntries > 0 ? ` ${unknownEntries} 项明细的${mode === 'cost' ? '费用' : '数量'}暂不可用。` : ''}图表与列表都保留全部项目，可滚动查看。`} />
       <div className="stats-distribution-toggle" role="group" aria-label={`${title}展示方式`}>
         <button type="button" className={view === 'pie' ? 'is-active' : ''} onClick={() => setView('pie')} aria-pressed={view === 'pie'} aria-label={`${title}占比饼图`} title="占比饼图"><PieChart size={14} /></button>
         <button type="button" className={view === 'list' ? 'is-active' : ''} onClick={() => setView('list')} aria-pressed={view === 'list'} aria-label={`${title}条形列表`} title="条形列表"><List size={14} /></button>
       </div>
     </header>
     {items.length ? view === 'pie' ? <DistributionPie total={total} items={items} mode={mode} /> : <DistributionList items={items} mode={mode} /> : <p className="stats-distribution-note">当前明细没有可用金额</p>}
-    <p className="stats-distribution-note">{mode === 'cost' ? '仅含已记录金额 · 未对账' : '包含全部请求'}{unknownEntries > 0 ? ` · ${unknownEntries} 项明细${mode === 'cost' ? '费用' : '数量'}未知` : ''}{items.some((item) => item.isOther) ? ' · 前四项与其余合计' : ''}</p>
   </article>
 }
 
@@ -239,7 +234,7 @@ function DistributionPie({ total, items, mode }: { total: number; items: Distrib
       >
         <button type="button" onFocus={() => setHovered(slice.index)} onBlur={() => setHovered(null)} onClick={() => setHovered(slice.index)} aria-label={`${slice.label} ${formatDistributionValue(slice.value, mode, digits)}，占比 ${(slice.share * 100).toFixed(1)}%`}>
           <i style={{ background: slice.color }} aria-hidden="true" />
-          <span className="stats-distribution-legend-value"><span title={slice.label}>{slice.label}</span><b>{formatDistributionValue(slice.value, mode, digits)}</b></span>
+          <div className="stats-distribution-legend-value"><span title={slice.label}>{slice.label}</span><b>{formatDistributionValue(slice.value, mode, digits)}</b></div>
           <em>{(slice.share * 100).toFixed(1)}%</em>
         </button>
       </li>)}
@@ -361,8 +356,8 @@ function DistributionList({ items, mode }: { items: DistributionItem[]; mode: Di
   </div>
 }
 
-function BalanceHistoryPanel({ points, schedule, days, onDaysChange }: { points: BalanceHistoryInput[]; schedule: unknown; days: BalanceHistoryDays; onDaysChange: (value: BalanceHistoryDays) => void }) {
-  const overlay = useMemo(() => balanceHistoryOverlay(points, days), [points, days])
+function BalanceHistoryPanel({ points, schedule, days, asOfDay, onDaysChange }: { points: BalanceHistoryInput[]; schedule: unknown; days: BalanceHistoryDays; asOfDay?: string; onDaysChange: (value: BalanceHistoryDays) => void }) {
+  const overlay = useMemo(() => balanceHistoryOverlay(points, days, asOfDay), [points, days, asOfDay])
   const [requestedCurrencies, setRequestedCurrencies] = useState<string[]>([])
   const [activeDay, setActiveDay] = useState<string | null>(null)
   const pinnedDay = useRef<string | null>(null)
@@ -371,17 +366,16 @@ function BalanceHistoryPanel({ points, schedule, days, onDaysChange }: { points:
   const charts = selected.map((currency) => overlay.series.find((chart) => chart.currency === currency)!)
   const day = overlay.days.find((item) => item.day === activeDay) ?? null
   const label = (currency: string) => currency || '币种未知'
-  const coverage = (item: BalanceChartPoint) => item.accounts == null || item.knownAccounts == null ? '账号覆盖未提供'
-    : item.knownAccounts > item.accounts ? '账号覆盖数据无效' : `${formatNumber(item.knownAccounts)}/${formatNumber(item.accounts)} 账号采样成功`
   const digits = (chart: typeof charts[number]) => moneyDigits(chart.points.map((item) => item.dailyDelta ?? undefined))
-  const describe = (item: BalanceChartPoint, currency: string) => `${item.day}，${label(currency)} 每日净变化 ${formatDailyDelta(item.dailyDelta, currency)}，${dailyComparisonLabel(item)}，${coverage(item)}`
+  const displayDelta = (value: number | null, currency: string) => value == null ? '—' : formatDailyDelta(value, currency)
+  const describe = (item: BalanceChartPoint, currency: string) => `${item.day}，${label(currency)} 每日净变化 ${displayDelta(item.dailyDelta, currency)}`
   const selectDay = (value: string) => {
     pinnedDay.current = value
     setActiveDay(value)
   }
   const changeDays = (value: BalanceHistoryDays) => {
     if (value === days) return
-    const visible = new Set(balanceHistoryOverlay(points, value).days.map((item) => item.day))
+    const visible = new Set(balanceHistoryOverlay(points, value, asOfDay).days.map((item) => item.day))
     if (!visible.has(pinnedDay.current ?? '')) pinnedDay.current = null
     setActiveDay((current) => current && visible.has(current) ? current : pinnedDay.current)
     onDaysChange(value)
@@ -393,11 +387,10 @@ function BalanceHistoryPanel({ points, schedule, days, onDaysChange }: { points:
     next[index] = value
     setRequestedCurrencies(next)
   }
-  return <section className="balance-change-panel balance-history-lines" aria-label="余额变化">
+  return <section className="balance-change-panel balance-history-lines" data-balance-start-day={overlay.startDay} data-balance-end-day={overlay.endDay} aria-label="余额变化">
     <header>
-      <div><WalletCards size={17} /><h2>余额变化</h2><HelpTip label="余额变化" text="各币种共用日期与中心零线，左右轴分别使用原币种独立刻度，不做汇率转换或相加。日差额只比较连续日期、相同账号集合且采样完整的记录；正值净增加，负值净减少，充值与消费会相抵。曲线只连接有效日期，不补零、不超出相邻点范围。" /></div>
+      <div><WalletCards size={17} /><h2>余额变化</h2><HelpTip label="余额变化" text={`按${days}日固定日历展示；${balanceScheduleCaption(schedule)}。各币种共用日期与中心零线，左右轴分别使用原币种独立刻度，不做汇率转换或相加。日差额只比较连续日期、相同账号集合且采样完整的记录；曲线只连接有效日期，不补零。`}/></div>
       <div className="balance-history-header-controls">
-        <span className="balance-history-schedule">{balanceScheduleCaption(schedule)}</span>
         <div className="balance-history-range" role="group" aria-label="余额变化区间">
           {([7, 14] as const).map((value) => <button type="button" className={days === value ? 'is-active' : ''} aria-pressed={days === value} onClick={() => changeDays(value)} key={value}>{value}日</button>)}
         </div>
@@ -407,20 +400,21 @@ function BalanceHistoryPanel({ points, schedule, days, onDaysChange }: { points:
       <div className="balance-history-series-controls">
         {charts.map((chart, index) => <div className={`balance-history-currency-summary balance-series-${index}`} data-currency={chart.currency} key={index}>
           <label><i className="balance-history-line-key" aria-hidden="true" /><span>{index === 0 ? '左轴' : '右轴'}</span><select aria-label={index === 0 ? '左轴币种' : '右轴币种'} value={chart.currency} onChange={(event) => changeCurrency(index, event.target.value)}>{currencies.map((currency) => <option value={currency} key={currency}>{label(currency)}</option>)}</select></label>
-          <span>{chart.latest ? `${formatDay(chart.latest.day)} · ${formatDailyDelta(chart.latest.dailyDelta, chart.currency)} · ${dailyComparisonLabel(chart.latest)}` : '当前日期范围无采样'}</span>
+          <span>{chart.latest ? `${formatDay(chart.latest.day)}${chart.latest.dailyDelta == null ? '' : ` · ${formatDailyDelta(chart.latest.dailyDelta, chart.currency)}`}` : '当前日期范围无记录'}</span>
         </div>)}
       </div>
       <div className="balance-history-overlay-layout">
         {charts.map((chart, index) => <div className={`balance-history-currency-axis balance-series-${index}`} data-currency={chart.currency} data-side={index === 0 ? 'left' : 'right'} key={chart.currency}>
           {chart.ticks.map((tick, tickIndex) => <span className="balance-history-tick" data-value={tick.value} data-y={tick.y} style={{ top: `${tick.y / 3}%` }} title={`${label(chart.currency)} ${formatSignedCurrency(tick.value, chart.currency, digits(chart))}`} key={tickIndex}>{formatSignedCurrency(tick.value, chart.currency, digits(chart))}</span>)}
         </div>)}
-        <div className="balance-history-line-plot">
+      <div className="balance-history-line-plot">
           <svg className="balance-history-overlay" viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="各币种每日净变化平滑曲线图">
             <desc>{charts.flatMap((chart) => chart.points.map((item) => describe(item, chart.currency))).join('；')}。左右轴各用原币种刻度，不换算，不相加。缺口不连线。</desc>
             {[34, 92, 208, 266].map((y) => <line className="balance-history-grid-line" x1="80" x2="920" y1={y} y2={y} key={y} />)}
             <line className="balance-history-zero" x1="80" x2="920" y1={overlay.zeroY} y2={overlay.zeroY} />
             {charts.map((chart, seriesIndex) => <g className={`balance-series-${seriesIndex}`} key={chart.currency}>
               {chart.paths.map((path, pathIndex) => <path className="balance-history-line" data-currency={chart.currency} data-style={seriesIndex === 0 ? 'solid' : 'dashed'} d={path} key={pathIndex} />)}
+              {chart.isolatedPoints.map((point) => <line className="balance-history-isolated" data-currency={chart.currency} x1={Math.max(80, point.x - 8)} x2={Math.min(920, point.x + 8)} y1={point.y ?? overlay.zeroY} y2={point.y ?? overlay.zeroY} key={`${point.day}-${point.x}`} />)}
             </g>)}
             {day && <line className="balance-history-crosshair" data-day={day.day} x1={day.x} x2={day.x} y1="24" y2="276" />}
           </svg>
@@ -443,20 +437,19 @@ function BalanceHistoryPanel({ points, schedule, days, onDaysChange }: { points:
             }}
           />)}
           {!charts.some((chart) => chart.hasData) && <span className="balance-history-no-values">暂无可比较的每日净变化</span>}
+          {day && <div className="balance-history-readout" aria-live="polite" role="status" style={{ left: `${Math.min(75, Math.max(25, day.x / 10))}%` }}>
+            <strong>{formatDay(day.day)}</strong>{charts.map((chart, index) => {
+              const item = chart.points.find((point) => point.day === day.day)
+              return <span className={`balance-history-readout-value balance-series-${index}`} data-currency={chart.currency} data-status={item?.comparisonStatus ?? 'missing'} data-day={day.day} data-value={item?.dailyDelta ?? ''} key={chart.currency}><b>{label(chart.currency)} {displayDelta(item?.dailyDelta ?? null, chart.currency)}</b></span>
+            })}
+          </div>}
         </div>
         <div className="balance-history-axis"><span>{formatDay(overlay.startDay)}</span><span>{formatDay(overlay.endDay)}</span></div>
       </div>
-      <div className="balance-history-readout" aria-live="polite">
-        {day ? <><strong>{formatDay(day.day)}</strong>{charts.map((chart, index) => {
-          const item = chart.points.find((point) => point.day === day.day)
-          return <span className={`balance-history-readout-value balance-series-${index}`} data-currency={chart.currency} data-status={item?.comparisonStatus ?? 'missing'} data-day={day.day} data-value={item?.dailyDelta ?? ''} key={chart.currency}><b>{label(chart.currency)} {formatDailyDelta(item?.dailyDelta ?? null, chart.currency)}</b><span>{item ? `${dailyComparisonLabel(item)} · ${coverage(item)}` : '当日无采样记录'}</span></span>
-        })}</> : <span>悬停、点击或用 Tab 查看每日净变化</span>}
-      </div>
-      {charts.map((chart) => {
-        const warnings = [chart.missingDays ? `缺少 ${chart.missingDays} 天记录` : '', chart.unknownPoints ? `${chart.unknownPoints} 天差额未知` : '', chart.coverageChanges ? `${chart.coverageChanges} 天账号范围变化` : '', chart.baselinePoints ? `${chart.baselinePoints} 天仅有基线` : ''].filter(Boolean)
-        return warnings.length ? <p className="balance-history-gaps" key={chart.currency}>{label(chart.currency)} · {warnings.join(' · ')}</p> : null
-      })}
-    </> : <p className="balance-history-explanation">采样日期无效，暂时无法绘制每日净变化。</p>}
+    </> : <div className="balance-history-empty" aria-label="每日余额变化等待数据">
+      <span><WalletCards size={18} /></span>
+      <div><strong>暂无余额变化</strong><span>{overlay.startDay ? `${formatDay(overlay.startDay)} – ${formatDay(overlay.endDay)} · 当前日期范围没有可用记录` : '当前日期范围没有可用记录'}</span></div>
+    </div>}
   </section>
 }
 
@@ -467,6 +460,12 @@ function formatSignedCurrency(value: number | null, currency: string, digits = 2
 function formatDay(day: string): string {
   const date = new Date(`${day}T00:00:00`)
   return Number.isNaN(date.getTime()) ? day : date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+}
+
+function formatShanghaiDay(value: Date): string {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(value)
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? ''
+  return `${get('year')}-${get('month')}-${get('day')}`
 }
 
 function StatsRow({ entry }: { entry: StatsEntry }) {
@@ -553,7 +552,9 @@ function smoothCurvePath(values: number[], max: number): string {
   }, `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`)
 }
 function clampPlotY(value: number): number { return Math.min(306, Math.max(8, value)) }
-const CURVE_SMOOTH_PASSES = 3
+// One pass softens corners while retaining day-level peaks and troughs for a
+// longer-range chart; repeated passes visibly flattened real activity.
+const CURVE_SMOOTH_PASSES = 1
 function smoothSeries(values: number[], passes = CURVE_SMOOTH_PASSES): number[] {
   let result = values.slice()
   for (let pass = 0; pass < passes; pass += 1) result = smoothOnce(result)

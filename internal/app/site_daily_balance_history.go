@@ -12,16 +12,13 @@ import (
 	"github.com/yzgolden86/PivotFlow/internal/site/provider"
 )
 
-func (s *Server) siteBalanceHistory(ctx context.Context, startTime, endTime time.Time, rangeName string) []model.SiteBalanceHistoryPoint {
+func (s *Server) siteBalanceHistory(ctx context.Context, _ time.Time, endTime time.Time, _ string) []model.SiteBalanceHistoryPoint {
 	location := dailyBalanceLocation()
 	end := endTime.In(location)
 	endDay := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, location)
-	visibleStart := startTime.In(location)
-	// Daily observations remain useful on the default “今日” request view.
-	// Show the last fourteen calendar days; other ranges still use their start.
-	if rangeName == "today" || rangeName == "" || visibleStart.Before(endDay.AddDate(0, 0, -13)) {
-		visibleStart = endDay.AddDate(0, 0, -13)
-	}
+	// Balance observations have their own 7/14-day calendar, independent of
+	// the request/cost filters. Include one earlier day only for comparison.
+	visibleStart := endDay.AddDate(0, 0, -13)
 	samples, err := s.store.ListSiteAccountDailyBalances(ctx, visibleStart.AddDate(0, 0, -1).Format("2006-01-02"), endDay.Format("2006-01-02"))
 	if err != nil {
 		log.Printf("[WARN] load fixed daily balance history failed")

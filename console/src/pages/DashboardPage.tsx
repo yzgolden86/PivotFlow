@@ -29,10 +29,8 @@ import type {
 } from '../types'
 import { donutSlicePath, donutSlices } from './donutGeometry'
 import { modelCostDistribution } from './costDistribution'
-import RuntimeHealthSummary from './RuntimeHealthSummary'
 import { formatMoney, formatNumber, formatPercent, moneyDigits, OperationNotice, PageHeader } from './shared'
 import { analyzeCostSummary, COST_BASIS_FILTER_OPTIONS, COST_SOURCE_FILTER_OPTIONS, COST_STATUS_FILTER_OPTIONS } from '../costSemantics.ts'
-import CostSummaryPanel from './CostSummaryPanel'
 
 const rangeOptions: Array<{ value: DashboardRange; label: string }> = [
   { value: 'today', label: '今日' },
@@ -184,8 +182,8 @@ export default function DashboardPage() {
     </div>
   )
 
-  if (loading && !snapshot) return <div className="dashboard-page">{overviewHeader}<RuntimeHealthSummary />{costFilterBar}<DashboardSkeleton /></div>
-  if (error && !snapshot) return <div className="dashboard-page">{overviewHeader}<RuntimeHealthSummary />{costFilterBar}<DashboardError message={error} retry={() => void load(range)} /></div>
+  if (loading && !snapshot) return <div className="dashboard-page">{overviewHeader}{costFilterBar}<DashboardSkeleton /></div>
+  if (error && !snapshot) return <div className="dashboard-page">{overviewHeader}{costFilterBar}<DashboardError message={error} retry={() => void load(range)} /></div>
   if (!snapshot) return null
 
   const successRate = snapshot.totals.requests
@@ -209,15 +207,14 @@ export default function DashboardPage() {
   const recordedCostText = costView.status === 'ready'
     ? costView.amountText
     : formatMoney(snapshot.totals.effective_cost, costDigits)
-  const costMeta = costView.status === 'ready' && costView.summary
-    ? `完整估算 ${costView.knownRequests}/${costView.summary.successful_requests} · 未对账`
-    : '费用依据未提供 · 旧汇总口径'
+  const costTitle = costView.status === 'ready' && costView.summary
+    ? `${costView.coverageText} · 记录费用未与上游账单对账`
+    : `${costView.statusLabel}；当前金额沿用旧汇总口径`
 
   return (
     <div className="dashboard-page">
       {overviewHeader}
 
-      <RuntimeHealthSummary />
       {costFilterBar}
 
       {error && <OperationNotice tone="error">{error}</OperationNotice>}
@@ -236,7 +233,8 @@ export default function DashboardPage() {
           tone="green"
           label="已记录费用"
           value={recordedCostText}
-          meta={costMeta}
+          meta="查看费用详情"
+          title={costTitle}
           href="#/stats"
         />
         <MetricCard
@@ -257,8 +255,6 @@ export default function DashboardPage() {
           href={`#/logs?view=history&range=${range}`}
         />
       </section>
-
-      <CostSummaryPanel summary={costSummary} />
 
       <section className="resource-strip" aria-label="资源状态">
         <ResourceStatus
@@ -338,6 +334,7 @@ function MetricCard({
   label,
   value,
   meta,
+  title,
   href,
 }: {
   icon: typeof WalletCards
@@ -347,12 +344,14 @@ function MetricCard({
   label: string
   value: React.ReactNode
   meta: string
+  title?: string
   href: string
 }) {
   return (
     <a
       className={`metric-card metric-card--${tone}${alert ? ' metric-card--alert' : ''}`}
       href={href}
+      title={title}
       aria-label={`${label}，${meta}，查看详情`}
     >
       <div className="metric-card-top">

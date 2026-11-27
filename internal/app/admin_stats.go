@@ -146,18 +146,20 @@ func (s *Server) HandleStats(c *gin.Context) {
 	}
 
 	channelHealth := s.fillHealthTimeline(c.Request.Context(), stats, startTime, endTime, &lf, isToday)
-	balanceHistory := s.siteBalanceHistory(c.Request.Context(), startTime, endTime, params.Range)
+	balanceAsOf := time.Now()
+	balanceHistory := s.siteBalanceHistory(c.Request.Context(), startTime, balanceAsOf, params.Range)
 	balanceEnabled, balanceTime, _ := s.siteControl.dailyBalanceSettings()
 
 	RespondJSON(c, http.StatusOK, gin.H{
-		"stats":            stats,
-		"cost_summary":     costSummary,
-		"channel_health":   channelHealth,
-		"balance_history":  balanceHistory,
-		"balance_schedule": gin.H{"enabled": balanceEnabled, "time": balanceTime, "timezone": "Asia/Shanghai"},
-		"duration_seconds": durationSeconds,
-		"rpm_stats":        rpmStats,
-		"is_today":         isToday,
+		"stats":             stats,
+		"cost_summary":      costSummary,
+		"channel_health":    channelHealth,
+		"balance_history":   balanceHistory,
+		"balance_as_of_day": balanceAsOf.In(dailyBalanceLocation()).Format("2006-01-02"),
+		"balance_schedule":  gin.H{"enabled": balanceEnabled, "time": balanceTime, "timezone": "Asia/Shanghai"},
+		"duration_seconds":  durationSeconds,
+		"rpm_stats":         rpmStats,
+		"is_today":          isToday,
 	})
 }
 

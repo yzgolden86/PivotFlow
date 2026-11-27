@@ -2,11 +2,12 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import AnchoredPopover from './AnchoredPopover'
 
 /** A compact result label with hover preview and a pinned click/touch panel. */
-export default function OperationDetails({ label, ariaLabel, title, className = '', children }: {
+export default function OperationDetails({ label, ariaLabel, title, className = '', popoverClassName = 'operation-details-popover', children }: {
   label: string
   ariaLabel: string
   title?: string
   className?: string
+  popoverClassName?: string
   children: ReactNode
 }) {
   const [mode, setMode] = useState<'closed' | 'preview' | 'pinned'>('closed')
@@ -28,8 +29,11 @@ export default function OperationDetails({ label, ariaLabel, title, className = 
       {label}
     </button>
     <AnchoredPopover open={mode !== 'closed'} onOpenChange={(open) => { if (!open) setMode('closed') }} anchorRef={anchor}
-      className="operation-details-popover" role="dialog" ariaLabel={ariaLabel} passive={mode === 'preview'} tabThrough>
-      <div id={id} onPointerEnter={clearTimer} onPointerLeave={leave}>{children}</div>
+      className={popoverClassName} role="dialog" ariaLabel={ariaLabel} passive={mode === 'preview'} tabThrough>
+      <div id={id} onPointerEnter={clearTimer} onPointerLeave={leave}
+        onPointerDown={() => { clearTimer(); setMode((current) => current === 'preview' ? 'pinned' : current) }}>
+        {children}
+      </div>
     </AnchoredPopover>
   </>
 }

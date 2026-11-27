@@ -37,10 +37,10 @@ import {
   finalStatusHint,
   finalStatusLabel,
   formatRate,
-  isPendingRequestTraceError,
   reasonLabel,
   readRequestHistoryScope,
   requestCacheHistoryDiagnostic,
+  requestAttemptSummary,
   requestChannelObservation,
   requestModelObservation,
   retryLabel,
@@ -49,6 +49,7 @@ import {
 } from './requestHistory'
 import type { RequestHistoryScope } from './requestHistory'
 import { routeProtocols, tokenOptions } from './modelRoutes'
+import { createRequestTraceLoader, RequestTracePendingError } from './requestTraceLoader'
 import '../requestHistoryPresentation.css'
 
 const PAGE_SIZE = 20
@@ -59,10 +60,14 @@ export default function RequestHistoryView() {
   const params = new URLSearchParams(location.search)
   const requestId = params.get('request')?.trim() || ''
   const scope = useMemo(() => readRequestHistoryScope(location.search), [location.search])
-  const { range, authTokenId: token, outcome, model, clientProtocol, search: searchQuery, page } = scope
+  const { range, authTokenId: token, outcome, upstreamFailuresOnly, model, clientProtocol, search: searchQuery, page } = scope
   const [search, setSearch] = useState(searchQuery)
   const [modelDraft, setModelDraft] = useState(model)
   const [tokenSearch, setTokenSearch] = useState('')
+  const detailLoaderRef = useRef<ReturnType<typeof createRequestTraceLoader> | null>(null)
+  if (!detailLoaderRef.current) detailLoaderRef.current = createRequestTraceLoader(getRequestTrace)
+  const detailLoader = detailLoaderRef.current
+  useEffect(() => () => detailLoader.clear(), [detailLoader])
   const setFilters = useCallback((patch: Partial<RequestHistoryScope>, replace = false) => {
     const next = new URLSearchParams(location.search)
     next.delete('request')
@@ -83,8 +88,8 @@ export default function RequestHistoryView() {
   const tokens = tokenOptions(tokenSnapshot.data || [], tokenSearch, token)
   const filters = useMemo(() => ({
     range, search: searchQuery, outcome, auth_token_id: token,
-    model, client_protocol: clientProtocol,
-  }), [clientProtocol, model, outcome, range, searchQuery, token])
+    model, client_protocol: clientProtocol, upstream_failures_only: upstreamFailuresOnly,
+  }), [clientProtocol, model, outcome, range, searchQuery, token, upstreamFailuresOnly])
   const readHistory = useCallback((signal: AbortSignal) => getRequestTraces({
     ...filters, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE,
   }, signal), [filters, page])
@@ -115,17 +120,9 @@ export default function RequestHistoryView() {
     navigate('/logs?view=requests&range=today')
   }
 
-  const hasFilters = Boolean(token || model || clientProtocol || outcome || searchQuery || range !== 'today' || scope.error)
+  const hasFilters = Boolean(token || model || clientProtocol || outcome || upstreamFailuresOnly || searchQuery || range !== 'today' || scope.error)
 
   return <>
-    <div className="request-history-note">
-      <span aria-hidden="true"><Database size={16} /></span>
-      <div>
-        <strong>已保存的网关请求</strong>
-        <p>仅展示请求历史功能上线后成功写入的摘要。旧日志不会补录，定时巡检探测不计入。</p>
-      </div>
-    </div>
-
     <div className="filter-bar filter-bar--wide request-filter-bar">
       <select value={range} onChange={(event) => setFilters({ range: event.target.value as RequestHistoryScope['range'] })} aria-label="完整请求时间范围">
         <option value="today">今日</option>
@@ -148,6 +145,10 @@ export default function RequestHistoryView() {
         <option value="success">成功</option>
         <option value="error">失败</option>
         <option value="canceled">已取消</option>
+      </select>
+      <select value={upstreamFailuresOnly ? '1' : ''} onChange={(event) => setFilters({ upstreamFailuresOnly: event.target.value === '1' })} aria-label="上游尝试状态">
+        <option value="">全部过程</option>
+        <option value="1">包含失败尝试</option>
       </select>
       <span className="filter-count request-filter-count">{total} 个请求</span>
       <label className="search-field request-search">
@@ -180,12 +181,13 @@ export default function RequestHistoryView() {
           </div>
           {requests.map((request) => {
             const channel = requestChannelObservation(request)
+            const process = requestAttemptSummary(request)
             return <button
-              className={`request-ledger-row request-ledger-row--${request.outcome}`}
+              className={`request-ledger-row request-ledger-row--${request.outcome}${process.has_failure ? ' request-ledger-row--retry-error' : ''}`}
               type="button"
               key={request.request_id}
               onClick={() => openRequest(request.request_id)}
-              aria-label={`查看${channel.label}的请求 ${request.request_id} 详情`}
+              aria-label={`查看${channel.label}的请求 ${request.request_id} 详情；${process.label}`}
             >
               <span className="request-ledger-cell request-ledger-result">
                 <strong className="request-channel-name" title={channel.title}>{channel.label}</strong>
@@ -199,6 +201,7 @@ export default function RequestHistoryView() {
               <span className="request-ledger-cell">
                 <strong>{transportLabel(request.transport)}{request.is_streaming ? ' · 流式' : ''}</strong>
                 <span>{request.attempt_count} 次尝试 · 上游 {request.upstream_attempt_count} 次{request.truncated ? ' · 明细截断' : ''}</span>
+                <RequestAttemptSequence summary={process} truncated={request.truncated} />
               </span>
               <span className="request-ledger-cell request-ledger-timing">
                 <strong>{formatSeconds(request.duration)}</strong>
@@ -212,8 +215,35 @@ export default function RequestHistoryView() {
       <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPage={(page) => setFilters({ page })} />
     </>}
 
-    {requestId && <RequestDetailModal requestId={requestId} close={closeRequest} />}
+    {requestId && <RequestDetailModal requestId={requestId} close={closeRequest} loader={detailLoader} />}
   </>
+}
+
+function RequestAttemptSequence({ summary, truncated }: { summary: ReturnType<typeof requestAttemptSummary>; truncated: boolean }) {
+  if (!summary.events.length) {
+    return <span className={`request-process-summary${summary.has_failure ? ' request-process-summary--failure' : ''}`} title={summary.title}>
+      <span aria-hidden="true">{summary.has_failure ? '!' : '·'}</span>{summary.label}
+    </span>
+  }
+  return <span className={`request-attempt-sequence${summary.has_failure ? ' request-attempt-sequence--failure' : ''}`} title={summary.title} aria-label={`尝试过程：${summary.label}`}>
+    {summary.events.map((attempt) => {
+      const outcome = attemptOutcomeLabel(attempt.outcome)
+      const status = attempt.status_code > 0 ? `HTTP ${attempt.status_code}` : '无 HTTP 状态'
+      const label = attempt.upstream ? '上游' : '本地'
+      const title = `尝试 #${attempt.number} · ${formatTime(attempt.started_at)} · ${label} ${outcome} · ${status}`
+      return <span className={`request-attempt-step request-attempt-step--${attempt.outcome}`} key={`${attempt.number}-${attempt.started_at}`} title={title}>
+        <time dateTime={new Date(attempt.started_at > 10_000_000_000 ? attempt.started_at : attempt.started_at * 1000).toISOString()}>{formatAttemptClock(attempt.started_at)}</time>
+        <strong>{attempt.status_code > 0 ? attempt.status_code : outcome}</strong>
+        <small>{outcome}</small>
+      </span>
+    })}
+    {truncated && <span className="request-attempt-truncated" title="已保存时间线只包含前 128 条事件；摘要计数保留全部尝试">部分</span>}
+  </span>
+}
+
+function formatAttemptClock(timestamp: number): string {
+  const value = timestamp > 10_000_000_000 ? timestamp : timestamp * 1000
+  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(value))
 }
 
 function RequestActualModel({ trace }: { trace: RequestTrace }) {
@@ -241,17 +271,25 @@ function RequestStat({ label, value, detail, icon: Icon, tone = 'default' }: {
   icon: typeof Database
   tone?: 'default' | 'warning' | 'danger'
 }) {
-  return <article className={`request-stat-card request-stat-card--${tone}`}>
+  return <article className={`request-stat-card request-stat-card--${tone}`} title={`${label}：${detail}`}>
     <span aria-hidden="true"><Icon size={15} /></span>
-    <div><small>{label}</small><strong>{value}</strong><p>{detail}</p></div>
+    <div><small>{label}</small><strong>{value}</strong></div>
   </article>
 }
 
-function RequestDetailModal({ requestId, close }: { requestId: string; close: () => void }) {
-  const [trace, setTrace] = useState<RequestTrace | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [pending, setPending] = useState(false)
+function RequestDetailModal({ requestId, close, loader }: {
+  requestId: string
+  close: () => void
+  loader: ReturnType<typeof createRequestTraceLoader>
+}) {
+  const initialDetail = () => {
+    const trace = loader.peek(requestId) || null
+    return { requestId, trace, loading: !trace, error: '', pending: false }
+  }
+  const [detail, setDetail] = useState(initialDetail)
+  // Scope during render as well as in the effect: old detail must never flash
+  // under the next ID, while a cached detail should render on the first frame.
+  const { trace, loading, error, pending } = detail.requestId === requestId ? detail : initialDetail()
   const [retryKey, setRetryKey] = useState(0)
   const [copied, setCopied] = useState(false)
   const cacheDiagnostic = trace ? requestCacheHistoryDiagnostic(trace) : null
@@ -259,23 +297,23 @@ function RequestDetailModal({ requestId, close }: { requestId: string; close: ()
   const channelObservation = trace ? requestChannelObservation(trace) : null
 
   useEffect(() => {
+    const saved = loader.peek(requestId) || null
+    setDetail({ requestId, trace: saved, loading: !saved, error: '', pending: false })
+    if (saved) return
     const controller = new AbortController()
-    setLoading(true)
-    setError('')
-    setPending(false)
-    void getRequestTrace(requestId, controller.signal)
-      .then((result) => { if (!controller.signal.aborted) setTrace(result) })
+    void loader.load(requestId, controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) setDetail({ requestId, trace: result, loading: false, error: '', pending: false })
+      })
       .catch((reason) => {
         if (!controller.signal.aborted) {
-          setTrace(null)
-          const awaitingTrace = isPendingRequestTraceError(reason)
-          setPending(awaitingTrace)
-          setError(awaitingTrace ? '' : reason instanceof Error ? reason.message : '请求详情加载失败')
+          const awaitingTrace = reason instanceof RequestTracePendingError
+          setDetail({ requestId, trace: null, loading: false, pending: awaitingTrace,
+            error: awaitingTrace ? '' : reason instanceof Error ? reason.message : '请求详情加载失败' })
         }
       })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [requestId, retryKey])
+  }, [loader, requestId, retryKey])
 
   useEffect(() => setCopied(false), [requestId])
 
@@ -312,7 +350,7 @@ function RequestDetailModal({ requestId, close }: { requestId: string; close: ()
         <div className="request-detail-state request-detail-pending" role="status">
           <Clock3 size={22} />
           <strong>请求记录尚未就绪</strong>
-          <span>请求仍在执行或记录尚未保存，请稍后重试</span>
+          <span>已自动检查，请求仍在执行或记录尚未保存，请稍后重新检查</span>
           <button className="secondary-button" type="button" onClick={() => setRetryKey((value) => value + 1)}><RefreshCw size={15} />重新检查</button>
         </div>
       ) : error ? (

@@ -820,6 +820,14 @@ export interface RequestAttempt {
   cooldown_until: number
 }
 
+export interface RequestAttemptSummary {
+  number: number
+  started_at: number
+  status_code: number
+  outcome: RequestAttemptOutcome
+  upstream: boolean
+}
+
 export interface RequestTrace {
   request_id: string
   started_at: number
@@ -839,6 +847,7 @@ export interface RequestTrace {
   upstream_attempt_count: number
   upstream_success_count: number
   truncated: boolean
+  attempt_summaries?: RequestAttemptSummary[]
   attempts?: RequestAttempt[]
   cache_status?: string
   cache_reason?: string
@@ -862,6 +871,7 @@ export interface RequestTraceFilters {
   auth_token_id?: string | number
   model?: string
   client_protocol?: string
+  upstream_failures_only?: boolean
 }
 
 export interface HealthPoint {
@@ -924,6 +934,7 @@ export interface StatsSnapshot {
   rpm_stats: RPMStats
   is_today: boolean
   balance_history?: SiteBalanceHistoryPoint[]
+  balance_as_of_day?: string
   balance_schedule?: { enabled: boolean; time: string; timezone: string }
   cost_summary?: CostSummary | null
 }

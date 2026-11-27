@@ -19,26 +19,35 @@ const requestTraceSearchMaxRunes = 200
 var requestTraceIDPattern = regexp.MustCompile(`^pf_req_[0-9a-f]{32}$`)
 
 type requestTraceSummaryView struct {
-	RequestID            string  `json:"request_id"`
-	StartedAt            int64   `json:"started_at"`
-	AuthTokenID          int64   `json:"auth_token_id"`
-	Model                string  `json:"model"`
-	ActualModel          string  `json:"actual_model,omitempty"`
-	ChannelID            int64   `json:"channel_id,omitempty"`
-	ChannelName          string  `json:"channel_name,omitempty"`
-	ClientProtocol       string  `json:"client_protocol"`
-	Transport            string  `json:"transport"`
-	IsStreaming          bool    `json:"is_streaming"`
-	FinalStatus          int     `json:"final_status"`
-	Outcome              string  `json:"outcome"`
-	Duration             float64 `json:"duration"`
-	WaitDuration         float64 `json:"wait_duration"`
-	AttemptCount         int     `json:"attempt_count"`
-	UpstreamAttemptCount int     `json:"upstream_attempt_count"`
-	UpstreamSuccessCount int     `json:"upstream_success_count"`
-	Truncated            bool    `json:"truncated"`
-	CacheStatus          string  `json:"cache_status,omitempty"`
-	CacheReason          string  `json:"cache_reason,omitempty"`
+	RequestID            string                           `json:"request_id"`
+	StartedAt            int64                            `json:"started_at"`
+	AuthTokenID          int64                            `json:"auth_token_id"`
+	Model                string                           `json:"model"`
+	ActualModel          string                           `json:"actual_model,omitempty"`
+	ChannelID            int64                            `json:"channel_id,omitempty"`
+	ChannelName          string                           `json:"channel_name,omitempty"`
+	ClientProtocol       string                           `json:"client_protocol"`
+	Transport            string                           `json:"transport"`
+	IsStreaming          bool                             `json:"is_streaming"`
+	FinalStatus          int                              `json:"final_status"`
+	Outcome              string                           `json:"outcome"`
+	Duration             float64                          `json:"duration"`
+	WaitDuration         float64                          `json:"wait_duration"`
+	AttemptCount         int                              `json:"attempt_count"`
+	UpstreamAttemptCount int                              `json:"upstream_attempt_count"`
+	UpstreamSuccessCount int                              `json:"upstream_success_count"`
+	Truncated            bool                             `json:"truncated"`
+	AttemptSummaries     []requestTraceAttemptSummaryView `json:"attempt_summaries,omitempty"`
+	CacheStatus          string                           `json:"cache_status,omitempty"`
+	CacheReason          string                           `json:"cache_reason,omitempty"`
+}
+
+type requestTraceAttemptSummaryView struct {
+	Number     int    `json:"number"`
+	StartedAt  int64  `json:"started_at"`
+	StatusCode int    `json:"status_code"`
+	Outcome    string `json:"outcome"`
+	Upstream   bool   `json:"upstream"`
 }
 
 type tokenRequestTraceAttemptView struct {
@@ -184,6 +193,13 @@ func parseRequestTraceRequest(c *gin.Context) (*PaginationParams, *model.Request
 	if scopedAuthTokenID := requestTraceIdentityScope(c); scopedAuthTokenID != nil {
 		filter.AuthTokenID = scopedAuthTokenID
 	}
+	switch raw := strings.TrimSpace(c.Query("upstream_failures")); raw {
+	case "", "0":
+	case "1":
+		filter.UpstreamFailuresOnly = true
+	default:
+		return nil, nil, errors.New("invalid upstream_failures")
+	}
 	return params, filter, nil
 }
 
@@ -221,6 +237,20 @@ func projectRequestTraceSummary(trace *model.RequestTrace, includeRouting bool) 
 		Truncated:            trace.Truncated,
 		CacheStatus:          trace.CacheStatus,
 		CacheReason:          trace.CacheReason,
+	}
+	for _, attempt := range trace.AttemptSummaries {
+		summary.AttemptSummaries = append(summary.AttemptSummaries, requestTraceAttemptSummaryView{
+			Number: attempt.Number, StartedAt: attempt.StartedAt, StatusCode: attempt.StatusCode,
+			Outcome: attempt.Outcome, Upstream: attempt.Upstream,
+		})
+	}
+	if len(summary.AttemptSummaries) == 0 {
+		for _, attempt := range trace.Attempts {
+			summary.AttemptSummaries = append(summary.AttemptSummaries, requestTraceAttemptSummaryView{
+				Number: attempt.Number, StartedAt: attempt.StartedAt, StatusCode: attempt.StatusCode,
+				Outcome: attempt.Outcome, Upstream: attempt.Upstream,
+			})
+		}
 	}
 	if includeRouting {
 		summary.ActualModel = model.LastRequestActualModel(trace)

@@ -2,11 +2,12 @@
    URL exists. The global checkin flex rule is important, so scope its override. */
 .checkin-workspace .record-row > .checkin-actions.checkin-action-layout {
   display: grid !important;
-  grid-template-columns: 104px 156px;
+  grid-template-columns: 96px 140px;
   grid-auto-rows: auto;
   align-items: start;
   align-self: start;
   justify-content: start;
+  justify-self: start;
   gap: 6px 8px;
   min-width: 0;
   max-width: 100%;
@@ -33,7 +34,7 @@
   min-width: 0;
   max-width: 100%;
   min-height: 38px;
-  padding: 7px 10px;
+  padding: 7px 8px;
   font-size: 11px;
   line-height: 20px;
   box-sizing: border-box;
@@ -100,8 +101,9 @@
 }
 
 .checkin-workspace .records-panel .record-head > span:last-child {
-  width: 268px;
+  width: 244px;
   max-width: 100%;
+  justify-self: start;
   text-align: center;
 }
 
@@ -118,7 +120,7 @@
 @media (max-width: 880px) {
   .checkin-workspace .record-row > .checkin-actions.checkin-action-layout {
     grid-column: 1 / -1;
-    grid-template-columns: minmax(0, 104px) minmax(0, 156px);
+    grid-template-columns: minmax(0, 96px) minmax(0, 140px);
     gap: 6px 10px;
   }
 

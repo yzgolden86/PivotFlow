@@ -85,7 +85,7 @@ test('token search covers the whole list but renders only a bounded preview', ()
 })
 
 test('request history restores every filter after detail navigation or browser back', () => {
-  const scope = { range: 'this_week' as const, authTokenId: '7', model: 'm%_ /中文', clientProtocol: 'codex', outcome: 'error' as const, search: 'pf_req_quoted', page: 3, error: '' }
+  const scope = { range: 'this_week' as const, authTokenId: '7', model: 'm%_ /中文', clientProtocol: 'codex', outcome: 'error' as const, upstreamFailuresOnly: false, search: 'pf_req_quoted', page: 3, error: '' }
   const query = writeRequestHistoryScope(scope, '?view=requests&request=pf_req_a')
   assert.deepEqual(readRequestHistoryScope(query), scope)
   assert.equal(new URLSearchParams(query).get('request'), 'pf_req_a')

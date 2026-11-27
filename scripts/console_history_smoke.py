@@ -35,20 +35,40 @@ class HistoryData(RefinementData):
         self.channel_name = '超长渠道_' + 'very-long-name/' * 12 if case.startswith('history-channel-long') else CHANNEL
         self.request_traces = []
         for number in range(1, 42):
+            started_at = fixtures.NOW - number * 1000
+            if number % 5 == 0:
+                outcome, upstream_attempts, upstream_successes = 'error', 2, 0
+                attempt_summaries = [
+                    {'number': 1, 'started_at': started_at, 'status_code': 503, 'outcome': 'error', 'upstream': True},
+                    {'number': 2, 'started_at': started_at + 500, 'status_code': 429, 'outcome': 'error', 'upstream': True},
+                ]
+            elif number % 2 == 0:
+                outcome, upstream_attempts, upstream_successes = 'success', 1, 1
+                attempt_summaries = [
+                    {'number': 1, 'started_at': started_at, 'status_code': 200, 'outcome': 'success', 'upstream': True},
+                ]
+            else:
+                outcome, upstream_attempts, upstream_successes = 'success', 2, 1
+                attempt_summaries = [
+                    {'number': 1, 'started_at': started_at, 'status_code': 401, 'outcome': 'error', 'upstream': True},
+                    {'number': 2, 'started_at': started_at + 500, 'status_code': 200, 'outcome': 'success', 'upstream': True},
+                ]
             self.request_traces.append({
                 **copy.deepcopy(fixtures.REQUEST_TRACES[0]),
                 'request_id': f'pf_req_{number:032x}', 'model': CANONICAL,
-                'actual_model': ACTUAL, 'started_at': fixtures.NOW - number * 1000,
+                'actual_model': ACTUAL, 'started_at': started_at,
                 'channel_id': 102, 'channel_name': self.channel_name,
-                'attempt_count': 2, 'upstream_attempt_count': 2,
-                'upstream_success_count': 1, 'truncated': False,
+                'outcome': outcome, 'final_status': 200 if outcome == 'success' else 503,
+                'attempt_count': upstream_attempts, 'upstream_attempt_count': upstream_attempts,
+                'upstream_success_count': upstream_successes,
+                'attempt_summaries': attempt_summaries, 'truncated': False,
             })
         if case == 'history-channel-empty':
             self.request_traces = self.request_traces[:3]
             for index, trace in enumerate(self.request_traces):
                 trace.update(channel_id=0, channel_name='')
                 if index < 2:
-                    trace.update(actual_model='', upstream_attempt_count=0, upstream_success_count=0, attempt_count=0)
+                    trace.update(actual_model='', upstream_attempt_count=0, upstream_success_count=0, attempt_count=0, attempt_summaries=[])
                 else:
                     trace['truncated'] = True
             self.request_traces[0].update(cache_status='hit', cache_reason='reused')
@@ -77,7 +97,7 @@ class HistoryData(RefinementData):
             elif self.fail_stats:
                 route.fulfill(status=503, content_type='application/json', body='{"success":false,"error":"synthetic_stats_unavailable"}')
             else:
-                self.fulfill(route, history_stats(self.request_traces))
+                self.fulfill(route, history_stats(self._history_items(query)))
             return
         if path.startswith('/admin/request-traces/'):
             self.calls.append({'path': path, 'method': route.request.method, 'query': query})
@@ -101,6 +121,12 @@ class HistoryData(RefinementData):
             self.fulfill(route, [entry], 1)
             return
         super().route(route)
+
+    def _history_items(self, query):
+        items = super()._history_items(query)
+        if query.get('upstream_failures') == ['1']:
+            items = [item for item in items if item['upstream_attempt_count'] > item['upstream_success_count']]
+        return items
 
 
 def history_cases(runner):
@@ -149,6 +175,30 @@ def history_cases(runner):
         runner.check(sum(call['path'] == '/admin/request-traces/stats' for call in data.calls) == stats_before, 'Opening detail aggregated the range again')
     runner.case('history-models-detail', models_and_details, path='/logs?view=requests')
     runner.case('history-models-mobile', models_and_details, path='/logs?view=requests', width=390, height=844, theme='dark', touch=True)
+
+    def visible_attempt_failures(page, data):
+        row = page.locator('.request-ledger-row').first
+        expect(row.locator('.status-badge--success')).to_be_visible()
+        steps = row.locator('.request-attempt-step')
+        expect(steps).to_have_count(2)
+        expect(steps.nth(0)).to_contain_text('401')
+        expect(steps.nth(0)).to_contain_text('失败')
+        expect(steps.nth(1)).to_contain_text('200')
+        expect(steps.nth(1)).to_contain_text('成功')
+        expect(steps.nth(0).locator('time')).to_be_visible()
+        expect(steps.nth(1).locator('time')).to_be_visible()
+        expect(row).to_have_class(re.compile('request-ledger-row--retry-error'))
+
+        page.get_by_role('combobox', name='上游尝试状态').select_option('1')
+        expect(page.locator('.request-ledger-row').first).to_be_visible()
+        runner.check(any(call.get('query', {}).get('upstream_failures') == ['1'] for call in data.calls if call['path'] == '/admin/request-traces'), 'Failed-attempt filter was not sent to the server')
+        runner.check(all('request-ledger-row--retry-error' in value for value in page.locator('.request-ledger-row').evaluate_all('rows => rows.map(row => row.className)')), 'Failure-only filter included a request with no failed attempt')
+
+        page.get_by_role('combobox', name='最终结果').select_option('error')
+        expect(page.locator('.request-ledger-row').first.locator('.status-badge--danger')).to_be_visible()
+        expect(page.locator('.request-ledger-row')).to_have_count(8)
+    runner.case('history-attempt-visibility', visible_attempt_failures, path='/logs?view=requests')
+    runner.case('history-attempt-visibility-mobile', visible_attempt_failures, path='/logs?view=requests', width=390, height=844, theme='dark', touch=True)
 
     def page_without_aggregation(page, data):
         expect(page.locator('.request-ledger-row')).to_have_count(20)

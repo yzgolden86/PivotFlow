@@ -22,20 +22,70 @@ export interface RequestHistoryScope {
   model: string
   clientProtocol: string
   outcome: 'success' | 'error' | 'canceled' | ''
+  upstreamFailuresOnly: boolean
   search: string
   page: number
   error: string
+}
+
+export interface RequestAttemptSummary {
+  upstream_attempts: number
+  upstream_successes: number
+  upstream_failures: number
+  has_failure: boolean
+  label: string
+  title: string
+  events: NonNullable<RequestTrace['attempt_summaries']>
+}
+
+/**
+ * Keep the request list lightweight while exposing its compact attempt sequence
+ * and distinguishing recovered upstream failures from the final result.
+ */
+export function requestAttemptSummary(trace: Pick<RequestTrace, 'attempt_count' | 'upstream_attempt_count' | 'upstream_success_count' | 'outcome' | 'attempt_summaries'>): RequestAttemptSummary {
+  const upstreamAttempts = Number.isSafeInteger(trace.upstream_attempt_count) && trace.upstream_attempt_count > 0
+    ? trace.upstream_attempt_count : 0
+  const upstreamSuccesses = Number.isSafeInteger(trace.upstream_success_count) && trace.upstream_success_count > 0
+    ? Math.min(trace.upstream_success_count, upstreamAttempts) : 0
+  const upstreamFailures = Math.max(0, upstreamAttempts - upstreamSuccesses)
+  const events = trace.attempt_summaries || []
+  let label = '未请求上游'
+  if (trace.outcome === 'success') {
+    label = upstreamFailures > 0
+      ? `${upstreamFailures} 次失败 → 最终成功`
+      : upstreamSuccesses > 0 ? '上游成功' : '本地完成'
+  } else if (trace.outcome === 'error') {
+    label = upstreamFailures > 0
+      ? `${upstreamFailures} 次失败 · 最终失败`
+      : upstreamSuccesses > 0 ? `${upstreamSuccesses} 次成功 · 最终失败` : '未请求上游 · 最终失败'
+  } else if (trace.outcome === 'canceled') {
+    label = upstreamFailures > 0 ? `${upstreamFailures} 次失败 · 已取消` : '请求已取消'
+  }
+  const title = upstreamAttempts > 0
+    ? `上游 ${upstreamAttempts} 次尝试：${upstreamFailures} 次失败，${upstreamSuccesses} 次成功；最终结果为${trace.outcome === 'success' ? '成功' : trace.outcome === 'error' ? '失败' : '取消'}`
+    : `未记录上游尝试；最终结果为${trace.outcome === 'success' ? '成功' : trace.outcome === 'error' ? '失败' : '取消'}`
+  return {
+    upstream_attempts: upstreamAttempts,
+    upstream_successes: upstreamSuccesses,
+    upstream_failures: upstreamFailures,
+    has_failure: upstreamFailures > 0 || events.some((event) => event.outcome === 'error'),
+    label,
+    title,
+    events,
+  }
 }
 
 export function readRequestHistoryScope(search: string): RequestHistoryScope {
   const params = new URLSearchParams(search)
   const range = params.get('range')
   const rawOutcome = params.get('outcome') || ''
+  const rawUpstreamFailures = params.get('upstream_failures') || ''
   const page = Number(params.get('page') || 1)
   const scope: RequestHistoryScope = {
     range: range === 'this_week' || range === 'this_month' ? range : 'today',
     authTokenId: params.get('auth_token_id') || '', model: params.get('model') || '',
     clientProtocol: params.get('client_protocol') || '', outcome: rawOutcome === 'success' || rawOutcome === 'error' || rawOutcome === 'canceled' ? rawOutcome : '',
+    upstreamFailuresOnly: rawUpstreamFailures === '1',
     search: params.get('search') || '', page: Number.isSafeInteger(page) && page > 0 ? page : 1, error: '',
   }
   if (repeatedScopeParameter(params)) scope.error = '历史范围包含重复参数，请清除筛选后重试。'
@@ -44,13 +94,14 @@ export function readRequestHistoryScope(search: string): RequestHistoryScope {
   else if (params.has('auth_token_id') && !validObjectId(scope.authTokenId)) scope.error = '历史令牌 ID 无效，请明确选择范围。'
   else if (!validRouteText(scope.search, 200)) scope.error = '历史搜索最多 200 字符，且不能包含控制字符。'
   else if (rawOutcome && !scope.outcome) scope.error = '最终结果筛选无效。'
+  else if (rawUpstreamFailures && rawUpstreamFailures !== '1') scope.error = '上游失败筛选无效。'
   return scope
 }
 
 export function writeRequestHistoryScope(scope: RequestHistoryScope, search = ''): string {
   const params = new URLSearchParams(search)
   params.set('view', 'requests')
-  for (const [key, value] of Object.entries({ range: scope.range, auth_token_id: scope.authTokenId, model: scope.model, client_protocol: scope.clientProtocol, outcome: scope.outcome, search: scope.search, page: scope.page > 1 ? String(scope.page) : '' })) {
+  for (const [key, value] of Object.entries({ range: scope.range, auth_token_id: scope.authTokenId, model: scope.model, client_protocol: scope.clientProtocol, outcome: scope.outcome, upstream_failures: scope.upstreamFailuresOnly ? '1' : '', search: scope.search, page: scope.page > 1 ? String(scope.page) : '' })) {
     params.delete(key)
     if (value) params.set(key, value)
   }

@@ -76,7 +76,7 @@ READ_PATHS = frozenset((
     '/admin/sites', '/admin/site-inventory', '/admin/site-models',
     '/admin/site-channel-bindings', '/admin/site-pricing', '/admin/channels',
     '/admin/checkin-attempts', '/admin/site-tasks', '/admin/announcements',
-    '/admin/model-alias-inventory', '/admin/stats', '/admin/stats/filter-options',
+    '/admin/model-alias-inventory', '/admin/stats', '/admin/stats/filter-options', '/admin/metrics',
     '/admin/request-cache', '/admin/active-requests', '/admin/logs/bootstrap',
     '/admin/logs', '/admin/logs/stats', '/admin/request-traces',
     '/admin/request-traces/stats', '/admin/request-traces/options',
@@ -634,8 +634,11 @@ def shared_chart_geometry(runner, page, points):
     svg.scroll_into_view_if_needed()
     hits = panel.locator('.balance-history-hit[data-day]')
     days = hits.evaluate_all('(nodes)=>nodes.map(n=>n.dataset.day)')
-    last = max(datetime.fromisoformat(p['day']).toordinal() for p in points)
-    first = max(min(datetime.fromisoformat(p['day']).toordinal() for p in points), last - 13)
+    rendered_start = panel.get_attribute('data-balance-start-day')
+    rendered_end = panel.get_attribute('data-balance-end-day')
+    assert rendered_start and rendered_end, 'Rendered balance panel must expose its authoritative calendar bounds'
+    first = datetime.fromisoformat(rendered_start).toordinal()
+    last = datetime.fromisoformat(rendered_end).toordinal()
     expected_days = [datetime.fromordinal(day).date().isoformat() for day in range(first, last + 1)]
     runner.check(days == expected_days, 'One bounded shared calendar includes every date, including absent samples')
     positions = hits.evaluate_all('(nodes)=>nodes.map(n=>Number(n.dataset.x))')
@@ -736,11 +739,13 @@ def shared_readout(runner, page, points, day):
     for value in page.locator('.balance-history-readout-value[data-currency]').all():
         currency = value.get_attribute('data-currency')
         expect(value).to_have_attribute('data-day', day)
+        runner.check(not value.evaluate('(element) => element.hasAttribute("title")'), 'Per-day readouts keep diagnostic explanations out of hover tooltips')
+        expect(value).not_to_contain_text(re.compile('未知|无记录|已记录|采样|差额|基线|账号范围|覆盖|溢出'))
         fact = next((p for p in points if p['day'] == day and p['currency'] == currency), None)
         if fact is None:
             expect(value).to_have_attribute('data-status', 'missing')
             expect(value).to_have_attribute('data-value', '')
-            expect(value).to_contain_text(re.compile('缺|无|未知'))
+            expect(value.locator('b')).to_have_text(f'{currency} —')
         else:
             expect(value).to_have_attribute('data-status', fact['comparison_status'])
             if fact['daily_delta'] is not None and fact['comparison_status'] == 'complete':
@@ -753,18 +758,18 @@ def shared_readout(runner, page, points, day):
                 pattern = (r'\+[^\d\n]{0,8}' if amount > 0 else r'[-−][^\d\n]{0,8}' if amount < 0 else r'(?<![\d.])') + number + r'(?!\d)'
                 runner.check(bool(re.search(pattern, text)), f'{currency} {day} readout preserves exact signed daily delta {amount}')
             else:
-                reasons = {'baseline': '基线|首日|首次', 'missing_previous': '前日|前一天|缺少|缺失',
-                           'coverage_changed': '覆盖|账号范围|账号集合', 'incomplete': '不完整|未知|失败|未完成',
-                           'overflow': '溢出|范围|数值'}
-                expect(value).to_contain_text(re.compile(reasons.get(fact['comparison_status'], '未知|依据')))
+                expect(value.locator('b')).to_have_text(f'{currency} —')
                 runner.check(not re.search(r'(?:\+|\$|¥|￥)?\b0\.00\b', value.inner_text()),
                              'Unknown comparison readout never invents a zero delta')
 
 
 def signed_chart(runner, page, data):
     panel = page.locator('.balance-history-lines')
-    expect(panel).to_contain_text('00:05')
-    expect(panel).to_contain_text(re.compile('Asia/Shanghai|北京时间'))
+    page.get_by_role('button', name='余额变化 的说明').click()
+    tip = page.get_by_role('tooltip')
+    expect(tip).to_contain_text('00:05')
+    expect(tip).to_contain_text(re.compile('Asia/Shanghai|北京时间'))
+    page.get_by_role('button', name='余额变化 的说明').click()
     runner.record(shared_plot=shared_chart_geometry(runner, page, data.balance_history))
     shared_readout(runner, page, data.balance_history, '2026-11-11')
     page.keyboard.press('Tab')
@@ -785,11 +790,13 @@ def baseline_chart(runner, page, data):
 
 
 def empty_chart(runner, page, data):
-    panel = page.locator('.balance-history-empty')
+    panel = page.locator('.balance-history-lines')
     expect(panel).to_be_visible()
-    expect(panel).to_contain_text('00:05')
-    runner.check(re.search(r'每日|每天|北京时间|Asia/Shanghai', panel.inner_text()) is not None,
-                 'Waiting for daily samples preserves the configured schedule explanation')
+    expect(panel.get_by_role('button', name='余额变化 的说明')).to_be_visible()
+    page.get_by_role('button', name='余额变化 的说明').click()
+    expect(page.get_by_role('tooltip')).to_contain_text('00:05')
+    runner.check(bool(panel.get_attribute('data-balance-start-day')) and bool(panel.get_attribute('data-balance-end-day')),
+                 'Empty samples keep the selected fixed calendar visible')
     runner.check(page.locator('path.balance-history-line').count() == 0,
                  'No sampled data produces no fabricated curve')
 
@@ -1084,7 +1091,16 @@ def runtime_types():
                     'total_input_tokens': 100, 'total_output_tokens': 20}],
                     'duration_seconds': 86400, 'is_today': True, 'rpm_stats': {},
                     'balance_history': self.balance_history, 'balance_schedule': self.balance_schedule,
+                    'balance_as_of_day': '2026-11-24',
                     'cost_summary': cost_summary('complete')})
+            elif path == '/admin/metrics':
+                self.calls.append(call)
+                self.fulfill(route, [
+                    {'ts': f'2026-11-{day:02d}T12:00:00+08:00', 'success': 8 + day % 5,
+                     'error': day % 2, 'effective_cost': day * .03,
+                     'input_tokens': day * 1200, 'output_tokens': day * 240}
+                    for day in range(1, 25)
+                ])
             elif path.startswith('/admin/request-traces') or path.startswith('/admin/logs') or path == '/admin/system-access-tokens':
                 # These optional audit pages retain the shared fixture convention
                 # without allowing an unhandled admin GET to reach the server.

@@ -3,6 +3,7 @@ import { Activity, ArrowUpRight, Check, CircleAlert, CircleHelp, Copy, Database,
 import { Link, useLocation } from 'react-router-dom'
 import type { RuntimeHealthComponent, RuntimeMetrics, RuntimeOperationStats, RuntimeQueueStats, RuntimeReplicationStats } from '../types'
 import HelpTip from '../components/HelpTip'
+import OperationDetails from '../components/OperationDetails'
 import { ErrorState, LoadingState, PageHeader } from './shared'
 import { RuntimeBadge } from './RuntimeHealthSummary'
 import {
@@ -103,33 +104,37 @@ export default function HealthPage() {
       {error && <div className="health-refresh-error" role="alert"><strong>刷新失败，当前状态未知</strong><span>{error}</span><button type="button" className="secondary-button" onClick={refresh} disabled={refreshing}>重新读取</button></div>}
       <RuntimeAttentionSection items={attentionItems} snapshot={lastSnapshot} />
 
-      <HealthSection title="费用与请求记录" caption="先确认费用有保障，排障记录能保存。" icon={<WalletCards size={17} />}>
-        <div className="health-grid">
-          <BillingCard snapshot={snapshot} />
-          <QueueCard snapshot={snapshot} id="request_history" stats={snapshot.request_traces} caption="完整请求与尝试时间线" />
-        </div>
-      </HealthSection>
+      <div className="health-sections-grid">
+        <HealthSection title="费用与请求记录" caption="先确认费用有保障，排障记录能保存。" icon={<WalletCards size={17} />}>
+          <div className="health-grid">
+            <BillingCard snapshot={snapshot} />
+            <QueueCard snapshot={snapshot} id="request_history" stats={snapshot.request_traces} caption="完整请求与尝试时间线" />
+          </div>
+        </HealthSection>
 
-      <HealthSection title="写入与同步" caption="本地写入与主库复制分别观察" icon={<Database size={17} />}>
-        <div className="health-grid">
-          {groups?.routine.includes('logs') && <QueueCard snapshot={snapshot} id="logs" stats={snapshot.logs} caption="上游逐次尝试日志" />}
-          {groups?.routine.includes('token_stats') && <QueueCard snapshot={snapshot} id="token_stats" stats={snapshot.token_failure_stats} caption="可降级的失败请求统计" />}
-          {groups?.routine.includes('log_replication') && <ReplicationCard snapshot={snapshot} id="log_replication" stats={snapshot.storage.log_replication} />}
-          {groups?.routine.includes('trace_replication') && <ReplicationCard snapshot={snapshot} id="trace_replication" stats={snapshot.request_traces.replication} />}
-          {groups?.routine.includes('cache_sync') && <CacheCard snapshot={snapshot} />}
-        </div>
-      </HealthSection>
+        <HealthSection title="写入与同步" caption="本地写入与主库复制分别观察" icon={<Database size={17} />}>
+          <div className="health-grid">
+            {groups?.routine.includes('logs') && <QueueCard snapshot={snapshot} id="logs" stats={snapshot.logs} caption="上游逐次尝试日志" />}
+            {groups?.routine.includes('token_stats') && <QueueCard snapshot={snapshot} id="token_stats" stats={snapshot.token_failure_stats} caption="可降级的失败请求统计" />}
+            {groups?.routine.includes('log_replication') && <ReplicationCard snapshot={snapshot} id="log_replication" stats={snapshot.storage.log_replication} />}
+            {groups?.routine.includes('trace_replication') && <ReplicationCard snapshot={snapshot} id="trace_replication" stats={snapshot.request_traces.replication} />}
+            {groups?.routine.includes('cache_sync') && <CacheCard snapshot={snapshot} />}
+          </div>
+        </HealthSection>
+      </div>
 
-      <HealthSection title="维护与恢复" caption="保留策略、最近清理与实际启动结果；这些内容不会主动执行清理或恢复。" icon={<RefreshCw size={17} />} collapsible
-        defaultOpen={Boolean(groups?.maintenance.some((id) => attentionItems.some((item) => item.componentId === id)))}>
-        <div className="health-grid">
-          {groups?.maintenance.includes('log_cleanup') && <CleanupCard snapshot={snapshot} id="log_cleanup" />}
-          {groups?.maintenance.includes('debug_cleanup') && <CleanupCard snapshot={snapshot} id="debug_cleanup" />}
-          {groups?.maintenance.includes('startup_recovery') && <StartupCard snapshot={snapshot} />}
-        </div>
-      </HealthSection>
+      <div className="health-maintenance-websocket-grid">
+        <HealthSection title="维护与恢复" caption="保留策略、最近清理与实际启动结果；这些内容不会主动执行清理或恢复。" icon={<RefreshCw size={17} />} collapsible
+          defaultOpen hasAttention={Boolean(groups?.maintenance.some((id) => attentionItems.some((item) => item.componentId === id)))}>
+          <div className="health-grid">
+            {groups?.maintenance.includes('log_cleanup') && <CleanupCard snapshot={snapshot} id="log_cleanup" />}
+            {groups?.maintenance.includes('debug_cleanup') && <CleanupCard snapshot={snapshot} id="debug_cleanup" />}
+            {groups?.maintenance.includes('startup_recovery') && <StartupCard snapshot={snapshot} />}
+          </div>
+        </HealthSection>
 
-      {groups?.routine.includes('websocket') && <WebsocketCard snapshot={snapshot} />}
+        {groups?.routine.includes('websocket') && <WebsocketCard snapshot={snapshot} />}
+      </div>
       {Boolean(groups?.optional.length) && <HealthSection title="其他组件" caption="当前配置未启用或无需运行的组件，仍保留各自深链接。" icon={<CircleHelp size={17} />} collapsible>
         <div className="runtime-optional-list">{groups?.optional.map((id) => <OptionalComponentRow key={id} snapshot={snapshot} id={id} />)}</div>
       </HealthSection>}
@@ -186,8 +191,8 @@ function attentionContent(item: RuntimeAttentionItem, snapshot: RuntimeMetrics):
   }
 }
 
-function HealthSection({ title, caption, icon, children, collapsible = false, defaultOpen = false }: {
-  title: string; caption: string; icon: ReactNode; children: ReactNode; collapsible?: boolean; defaultOpen?: boolean
+function HealthSection({ title, caption, icon, children, collapsible = false, defaultOpen = false, hasAttention = false }: {
+  title: string; caption: string; icon: ReactNode; children: ReactNode; collapsible?: boolean; defaultOpen?: boolean; hasAttention?: boolean
 }) {
   const titleId = useId()
   const section = useRef<HTMLDetailsElement>(null)
@@ -197,8 +202,8 @@ function HealthSection({ title, caption, icon, children, collapsible = false, de
   const heading = <h2 id={titleId}><span className="health-section-mark" aria-hidden="true">{icon}</span><span>{title}</span><HelpTip label={title} text={caption} /></h2>
   const body = <div className="health-section-body">{children}</div>
   if (!collapsible) return <section className="health-section" aria-labelledby={titleId}><header className="health-section-heading">{heading}</header>{body}</section>
-  return <details ref={section} className="health-section health-section--collapsible" aria-labelledby={titleId}>
-    <summary>{heading}{defaultOpen && <span>存在需要核对的状态</span>}</summary>
+  return <details ref={section} open={defaultOpen} className="health-section health-section--collapsible" aria-labelledby={titleId}>
+    <summary>{heading}{hasAttention && <span>存在需要核对的状态</span>}</summary>
     {body}
   </details>
 }
@@ -206,12 +211,12 @@ function HealthSection({ title, caption, icon, children, collapsible = false, de
 function HealthCard({ component, caption, children, details, wide = false }: {
   component: RuntimeHealthComponent; caption: string; children: ReactNode; details?: ReactNode; wide?: boolean
 }) {
-  const needsExplanation = ['blocked', 'error', 'warning', 'unknown'].includes(component.state)
+  const needsExplanation = ['blocked', 'error', 'warning'].includes(component.state)
   return <article id={`runtime-${component.id}`} tabIndex={-1} className={`health-card health-card--${component.state}${wide ? ' health-card--wide' : ''}`} aria-label={runtimeComponentTitles[component.id]}>
     <header><div><h3>{runtimeComponentTitles[component.id]}<HelpTip label={runtimeComponentTitles[component.id]} text={`${caption} ${runtimeReasonText[component.reason]}`} /></h3></div><RuntimeBadge state={component.state} /></header>
     {needsExplanation && <p className="health-card-explanation">{runtimeReasonText[component.reason]}</p>}
     {children}
-    {details && <details className="health-card-details"><summary>指标口径、时间与历史</summary><div>{details}</div></details>}
+    {details && <OperationDetails label="查看详情" ariaLabel={`查看${runtimeComponentTitles[component.id]}详情`} className="health-card-details-trigger" popoverClassName="health-card-details-popover">{details}</OperationDetails>}
   </article>
 }
 
@@ -227,7 +232,7 @@ function QueueMeter({ value, capacity, label }: { value: number; capacity: numbe
   return <div className="health-queue-meter"><div><span>{label}</span><strong>{formatRuntimeNumber(value)} / {formatRuntimeNumber(capacity)}</strong></div>{capacity > 0 && <progress aria-label={label} value={Math.min(value, capacity)} max={capacity} />}</div>
 }
 
-function OperationDetails({ stats, title = '最近处理与累计记录' }: { stats: RuntimeOperationStats; title?: string }) {
+function RuntimeOperationDetails({ stats, title = '最近处理与累计记录' }: { stats: RuntimeOperationStats; title?: string }) {
   const result = stats.last_result === 'success' ? '成功' : stats.last_result === 'error' ? '失败' : stats.last_result === 'cancelled' ? '已取消' : stats.last_result === 'unknown' ? '未知' : '尚未运行'
   return <details className="health-operation-details"><summary>{title}<span>最近结果：{result}</span></summary><dl>
     <div><dt>最近尝试</dt><dd>{formatRuntimeTime(stats.last_attempt_at)}</dd></div>
@@ -248,7 +253,7 @@ function BillingCard({ snapshot }: { snapshot: RuntimeMetrics }) {
     <Metrics><Metric label="仅在内存" value={billing.unpersisted} unit="条" alert={billing.unpersisted > 0} /><Metric label="主库结算失败" value={billing.store_failures} unit="次" alert={billing.store_failures > 0} /><Metric label="最老等待" value={oldest} /><Metric label="金额无效事件" value={billing.invalid_cost_events} unit="条" alert={billing.invalid_cost_events > 0} /></Metrics>
     <p className="health-last-success">最近结算确认 <strong>{formatRuntimeTime(billing.last_success_at)}</strong></p>
     <div className="health-counter-line"><span>待结算文件累计失败 <b>{formatRuntimeNumber(billing.journal_failures)}</b></span><span>主库累计失败 <b>{formatRuntimeNumber(billing.store_failures)}</b></span><span>已删除 Token 事件 <b>{formatRuntimeNumber(billing.deleted_token_events)}</b></span></div>
-    <OperationDetails stats={billing.journal} title="待结算文件访问" /><OperationDetails stats={billing.settlement} title="主库结算记录" />
+    <RuntimeOperationDetails stats={billing.journal} title="待结算文件访问" /><RuntimeOperationDetails stats={billing.settlement} title="主库结算记录" />
   </>}>
     {billing.enabled && <>
       <Metrics compact><Metric label="已结算确认" value={billing.settled} unit="次" /><Metric label="待确认" value={billing.pending} unit="条" alert={billing.pending > 0} /></Metrics>
@@ -266,7 +271,7 @@ function QueueCard({ snapshot, id, stats, caption }: { snapshot: RuntimeMetrics;
     {stats.write_failed > 0 && <p className="health-loss-note">最终未保存的记录已停止该批写入重试，需结合服务端日志核对。</p>}
     {id === 'token_stats' && <p className="health-card-hint">失败统计允许在饱和时降级；成功费用使用独立持久结算。</p>}
     <p className="health-last-success">最近写入成功 <strong>{formatRuntimeTime(stats.operation.last_success_at)}</strong></p>
-    <OperationDetails stats={stats.operation} />
+    <RuntimeOperationDetails stats={stats.operation} />
   </>}>
     {stats.enabled && <>
       <Metrics compact><Metric label="待写入" value={stats.queued + stats.buffered} unit="条" alert={stats.queued + stats.buffered > 0} /><Metric label="最终未保存" value={stats.write_failed} unit="条" alert={stats.write_failed > 0} /></Metrics>
@@ -277,28 +282,27 @@ function QueueCard({ snapshot, id, stats, caption }: { snapshot: RuntimeMetrics;
 
 function ReplicationCard({ snapshot, id, stats }: { snapshot: RuntimeMetrics; id: 'log_replication' | 'trace_replication'; stats?: RuntimeReplicationStats }) {
   const trace = id === 'trace_replication'
-  return <HealthCard component={runtimeComponent(snapshot, id)} caption={trace ? '独立预算，最多 64 个批次。' : '共享同步等待队列。'} details={stats?.enabled && <>
+  return <HealthCard component={runtimeComponent(snapshot, id)} caption={`${trace ? '独立预算，最多 64 个批次。' : '共享同步等待队列。'}${!stats ? ' 未提供计数，暂不能确认同步情况。' : ''}`} details={stats?.enabled && <>
     <Metrics><Metric label={trace ? '等待与执行' : '共享队列等待'} value={stats.queued} unit="任务" /><Metric label="成功 / 失败" value={`${formatRuntimeNumber(stats.operation.succeeded)} / ${formatRuntimeNumber(stats.failed)}`} /><Metric label="累计丢弃" value={stats.dropped} unit="任务" alert={stats.dropped > 0} /><Metric label="正在执行" value={stats.operation.active} unit="任务" /></Metrics>
     <QueueMeter value={stats.queued} capacity={stats.capacity} label={trace ? '同步预算（包含执行中）' : '共享等待通道使用量'} />
     <p className="health-card-hint">{trace ? '计数单位是请求历史批次，单批最多 32 条请求。' : '共享队列包含日志与请求历史任务；失败、丢弃和正在执行的计数仅指日志任务。'}</p>
     {(stats.failed > 0 || stats.dropped > 0) && <p className="health-loss-note">复制失败或丢弃的任务不会自动补发。后续成功只说明处理恢复，请核对主库历史是否完整。</p>}
     <p className="health-last-success">最近同步成功 <strong>{formatRuntimeTime(stats.operation.last_success_at)}</strong></p>
-    <OperationDetails stats={stats.operation} />
+    <RuntimeOperationDetails stats={stats.operation} />
   </>}>
     {stats?.enabled && <>
       <Metrics compact><Metric label="待同步" value={stats.queued} unit="任务" /><Metric label="失败 / 丢弃" value={`${formatRuntimeNumber(stats.failed)} / ${formatRuntimeNumber(stats.dropped)}`} alert={stats.failed > 0 || stats.dropped > 0} /></Metrics>
     </>}
-    {!stats && runtimeComponent(snapshot, id).state === 'unknown' && <p className="health-card-hint">未提供计数，暂不能确认同步情况。</p>}
   </HealthCard>
 }
 
 function CacheCard({ snapshot }: { snapshot: RuntimeMetrics }) {
   const stats = snapshot.storage.cache_sync
-  return <HealthCard component={runtimeComponent(snapshot, 'cache_sync')} caption="主库写入后的本地副本。" wide details={snapshot.storage.mode === 'hybrid' && <>
+  return <HealthCard component={runtimeComponent(snapshot, 'cache_sync')} caption="主库写入后的本地副本。" details={snapshot.storage.mode === 'hybrid' && <>
     <Metrics><Metric label="累计成功" value={stats.succeeded} unit="次" /><Metric label="累计失败" value={stats.failed} unit="次" alert={stats.failed > 0} /><Metric label="操作次数" value={stats.attempts} unit="次" /><Metric label="正在同步" value={stats.active} unit="次" /></Metrics>
     {snapshot.storage.cache_may_be_stale && <p className="health-loss-note">先检查本地磁盘、权限和数据库错误。修复后按部署文档恢复并核对副本；其他操作成功无法验证此前所有数据差异。</p>}
     <p className="health-last-success">最近同步成功 <strong>{formatRuntimeTime(stats.last_success_at)}</strong></p>
-    <OperationDetails stats={stats} />
+    <RuntimeOperationDetails stats={stats} />
   </>}>
     {snapshot.storage.mode === 'hybrid' && <>
       <Metrics compact><Metric label="正在同步" value={stats.active} unit="次" /><Metric label="副本核对" value={snapshot.storage.cache_may_be_stale ? '需要核对' : '未观测到差异'} alert={snapshot.storage.cache_may_be_stale} /></Metrics>
@@ -313,7 +317,7 @@ function CleanupCard({ snapshot, id }: { snapshot: RuntimeMetrics; id: 'log_clea
   return <HealthCard component={runtimeComponent(snapshot, id)} caption={debug ? '启动检查，分批清理调试报文。' : '普通日志和完整请求共用保留期限。'} details={<>
     <Metrics><Metric label="清理周期" value={`${formatRuntimeNumber(stats.interval_ms / 60_000)} 分钟`} />{debug && <Metric label="按批次已删除" value={stats.deleted} unit="条" />}<Metric label="累计成功" value={stats.operation.succeeded} unit="次" /><Metric label="累计失败" value={stats.operation.failed} unit="次" alert={stats.operation.failed > 0} /></Metrics>
     <p className="health-last-success">最近清理成功 <strong>{formatRuntimeTime(stats.operation.last_success_at)}</strong></p>
-    <OperationDetails stats={stats.operation} />
+    <RuntimeOperationDetails stats={stats.operation} />
   </>}>
     <Metrics compact><Metric label="保留策略" value={retention} /><Metric label="下一次计划" value={stats.next_run_at ? formatRuntimeTime(stats.next_run_at) : stats.enabled ? '尚未安排' : '不再调度'} /></Metrics>
     <a className="health-card-link" href="#/system">查看保留设置<ArrowUpRight size={14} /></a>
@@ -349,7 +353,7 @@ function recoveryPhaseLabel(stats: RuntimeOperationStats, enabled: boolean, obse
 
 function RecoveryPhase({ label, stats, enabled, observed }: { label: string; stats: RuntimeOperationStats; enabled: boolean; observed: boolean }) {
   const state = !observed ? 'unknown' : !enabled ? 'disabled' : stats.failing ? 'warning' : stats.active > 0 ? 'working' : stats.succeeded > 0 ? 'healthy' : 'unknown'
-  return <div className="health-recovery-phase"><div><strong>{label}</strong><RuntimeBadge state={state} /></div><span>{enabled ? `最近成功 ${formatRuntimeTime(stats.last_success_at)}` : '未执行这项恢复'}</span><OperationDetails stats={stats} title="恢复处理记录" /></div>
+  return <div className="health-recovery-phase"><div><strong>{label}</strong><RuntimeBadge state={state} /></div><span>{enabled ? `最近成功 ${formatRuntimeTime(stats.last_success_at)}` : '未执行这项恢复'}</span><RuntimeOperationDetails stats={stats} title="恢复处理记录" /></div>
 }
 
 function WebsocketCard({ snapshot }: { snapshot: RuntimeMetrics }) {
@@ -371,7 +375,7 @@ function WebsocketCard({ snapshot }: { snapshot: RuntimeMetrics }) {
 function OptionalComponentRow({ snapshot, id }: { snapshot: RuntimeMetrics; id: RuntimeHealthComponent['id'] }) {
   const component = runtimeComponent(snapshot, id)
   return <article id={`runtime-${id}`} tabIndex={-1} className="runtime-optional-row" aria-label={runtimeComponentTitles[id]}>
-    <div><h3>{runtimeComponentTitles[id]}<HelpTip label={runtimeComponentTitles[id]} text={runtimeReasonText[component.reason]} /></h3><p>{runtimeReasonText[component.reason]}</p></div>
+    <div><h3>{runtimeComponentTitles[id]}<HelpTip label={runtimeComponentTitles[id]} text={runtimeReasonText[component.reason]} /></h3>{component.state !== 'unknown' && <p>{runtimeReasonText[component.reason]}</p>}</div>
     <RuntimeBadge state={component.state} />
   </article>
 }

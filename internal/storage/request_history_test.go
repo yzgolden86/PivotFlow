@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -163,6 +164,68 @@ func TestRequestHistory_RequestTraceRoundTripIdempotenceFiltersAndStats(t *testi
 	}
 	if *statsWithProbe != *stats {
 		t.Fatalf("probe log changed request stats: before=%+v after=%+v", stats, statsWithProbe)
+	}
+}
+
+func TestRequestHistory_ListShowsCompactAttemptResultsAndFiltersRecoveredFailures(t *testing.T) {
+	store := createTestSQLiteStore(t)
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Millisecond)
+
+	recovered := testRequestTrace("pf_req_recovered_failure", "recovered", "success", now.Add(-3*time.Minute), 7,
+		model.RequestAttempt{Number: 1, StartedAt: now.Add(-3 * time.Minute).UnixMilli(), StatusCode: 401, Outcome: "error", Upstream: true, ChannelName: "first channel"},
+		model.RequestAttempt{Number: 2, StartedAt: now.Add(-3*time.Minute + 250*time.Millisecond).UnixMilli(), StatusCode: 200, Outcome: "success", Upstream: true, ChannelName: "second channel"},
+	)
+	direct := testRequestTrace("pf_req_direct_success", "direct", "success", now.Add(-2*time.Minute), 7,
+		model.RequestAttempt{Number: 1, StartedAt: now.Add(-2 * time.Minute).UnixMilli(), StatusCode: 200, Outcome: "success", Upstream: true},
+	)
+	direct.AttemptCount, direct.UpstreamAttemptCount, direct.UpstreamSuccessCount = 1, 1, 1
+	failed := testRequestTrace("pf_req_final_failure", "failed", "error", now.Add(-time.Minute), 7,
+		model.RequestAttempt{Number: 1, StartedAt: now.Add(-time.Minute).UnixMilli(), StatusCode: 503, Outcome: "error", Upstream: true},
+		model.RequestAttempt{Number: 2, StartedAt: now.Add(-time.Minute + 400*time.Millisecond).UnixMilli(), StatusCode: 503, Outcome: "error", Upstream: true},
+	)
+	failed.UpstreamAttemptCount, failed.UpstreamSuccessCount = 2, 0
+	if err := store.BatchAddRequestTraces(ctx, []*model.RequestTrace{recovered, direct, failed}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, total, err := store.ListRequestTraces(ctx, now.Add(-time.Hour), now, 10, 0, nil)
+	if err != nil || total != 3 || len(all) != 3 {
+		t.Fatalf("unfiltered list count=%d rows=%d err=%v", total, len(all), err)
+	}
+	var recoveredListRow *model.RequestTrace
+	for _, trace := range all {
+		if trace.RequestID == recovered.RequestID {
+			recoveredListRow = trace
+		}
+	}
+	if recoveredListRow == nil || recoveredListRow.Attempts != nil {
+		t.Fatalf("recovered list row=%+v, want summary without full attempts", recoveredListRow)
+	}
+	wantEvents := []model.RequestAttemptSummary{
+		{Number: 1, StartedAt: recovered.Attempts[0].StartedAt, StatusCode: 401, Outcome: "error", Upstream: true},
+		{Number: 2, StartedAt: recovered.Attempts[1].StartedAt, StatusCode: 200, Outcome: "success", Upstream: true},
+	}
+	if !reflect.DeepEqual(recoveredListRow.AttemptSummaries, wantEvents) {
+		t.Fatalf("compact attempt summaries=%+v, want %+v", recoveredListRow.AttemptSummaries, wantEvents)
+	}
+
+	filter := &model.RequestTraceFilter{UpstreamFailuresOnly: true}
+	rows, count, err := store.ListRequestTraces(ctx, now.Add(-time.Hour), now, 10, 0, filter)
+	if err != nil || count != 2 || len(rows) != 2 {
+		t.Fatalf("failure-only list count=%d rows=%d err=%v, want recovered and final failures", count, len(rows), err)
+	}
+	ids := map[string]bool{}
+	for _, trace := range rows {
+		ids[trace.RequestID] = true
+	}
+	if !ids[recovered.RequestID] || !ids[failed.RequestID] || ids[direct.RequestID] {
+		t.Fatalf("failure-only request IDs=%v, want recovered + final failure, without direct success", ids)
+	}
+	stats, err := store.GetRequestTraceStats(ctx, now.Add(-time.Hour), now, filter)
+	if err != nil || stats.Requests != 2 || stats.Successes != 1 || stats.Errors != 1 {
+		t.Fatalf("failure-only stats=%+v err=%v, want 2 requests (1 final success, 1 final error)", stats, err)
 	}
 }
 
