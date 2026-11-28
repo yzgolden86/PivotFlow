@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { editByteSetting, groupSettingsForWorkspace, settingGroup } from './settingsWorkspace.ts'
+import { balanceSamplingSetting, editByteSetting, groupSettingsForWorkspace, settingGroup } from './settingsWorkspace.ts'
 
-test('fixed daily balance controls appear with automatic tasks', () => {
-  const keys = ['site_daily_balance_enabled', 'site_daily_balance_time', 'site_daily_checkin_time', 'site_daily_announcement_time']
+test('balance sampling interval and the existing time and enable controls appear together with automatic tasks', () => {
+  const keys = ['site_daily_balance_enabled', 'site_daily_balance_time', 'site_balance_sample_interval_minutes', 'site_daily_checkin_time', 'site_daily_announcement_time']
   for (const key of keys) assert.equal(settingGroup(key), 'automation')
   const sections = groupSettingsForWorkspace(keys.map((key) => ({ key })))
   assert.equal(sections.length, 1)
   assert.equal(sections[0].title, '自动任务')
-  assert.equal(sections[0].settings.length, 4)
+  assert.equal(sections[0].settings.length, 5)
 })
 
 test('timeout navigation separates defaults, protocols and connection policy without losing unfamiliar settings', () => {
@@ -64,4 +64,25 @@ test('repairing a byte draft clears errors and compares exact bytes with the sav
   const outOfRange = editByteSetting('request_cache_max_entry_bytes', '0', '1048576')
   assert.equal(outOfRange.value, null)
   assert.equal(outOfRange.dirty, true)
+})
+
+test('balance settings use sampling labels while retaining the existing enable and time keys', () => {
+  assert.equal(balanceSamplingSetting('site_daily_balance_enabled')?.label, '余额自动采样')
+  assert.equal(balanceSamplingSetting('site_daily_balance_time')?.label, '采样基准时间')
+  assert.equal(balanceSamplingSetting('site_balance_sample_interval_minutes')?.label, '余额采样间隔')
+  const help = balanceSamplingSetting('site_daily_balance_time')?.help ?? ''
+  assert.match(help, /00:05.*01:05/)
+  assert.doesNotMatch(help, /每日只记录一次/)
+  assert.equal(balanceSamplingSetting('site_daily_checkin_time'), undefined)
+})
+
+test('the interval selector offers only supported cadence values and describes the default hour', () => {
+  const setting = balanceSamplingSetting('site_balance_sample_interval_minutes')
+  assert.ok(setting)
+  assert.deepEqual(setting.options, [
+    ['15', '每 15 分钟'], ['30', '每 30 分钟'], ['60', '每小时'], ['120', '每 2 小时'],
+    ['360', '每 6 小时'], ['720', '每 12 小时'], ['1440', '每日'],
+  ])
+  assert.match(setting.help, /默认.*每小时|默认.*60/)
+  assert.match(setting.help, /最新.*采样|采样.*最新/)
 })

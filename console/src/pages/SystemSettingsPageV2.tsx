@@ -23,7 +23,7 @@ import {
   validateWallpaperInput,
 } from '../settingsFields'
 import type { ByteSettingKey } from '../settingsFields'
-import { editByteSetting, groupSettingsForWorkspace, settingGroup } from './settingsWorkspace'
+import { balanceSamplingSetting, editByteSetting, groupSettingsForWorkspace, settingGroup } from './settingsWorkspace'
 import {
   applyThemeCustomization, backgroundDimRange, glassPresetValues, readThemeCustomization, rerollWallpaper,
   resetThemeCustomization, surfaceBlurRange, surfaceOpacityRange, themeFontOptions,
@@ -1000,7 +1000,10 @@ function SettingInput({ setting, value, change, error, byteDraft, changeByteDraf
       {tips[optionValue] && <span className="setting-choice-tip" role="tooltip">{tips[optionValue]}</span>}
     </button>)}
   </div>
-  if (options) return <select value={value} aria-label={settingLabel(setting)} onChange={(event) => change(event.target.value)} disabled={!setting.editable}>{options.map(([optionValue, label]) => <option value={optionValue} key={optionValue}>{label}</option>)}</select>
+  if (options) {
+    const invalidInterval = setting.key === 'site_balance_sample_interval_minutes' && !options.some(([optionValue]) => value === optionValue)
+    return <select value={value} aria-label={settingLabel(setting)} aria-invalid={invalidInterval || undefined} onChange={(event) => change(event.target.value)} disabled={!setting.editable}>{invalidInterval && <option value={value} disabled>间隔无效，请重新选择</option>}{options.map(([optionValue, label]) => <option value={optionValue} key={optionValue}>{label}</option>)}</select>
+  }
   if (setting.value_type === 'json') return <textarea rows={4} value={value} aria-label={settingLabel(setting)} onChange={(event) => change(event.target.value)} disabled={!setting.editable} spellCheck={false} />
   const type = ['int', 'float', 'duration'].includes(setting.value_type) ? 'number' : 'text'
   const bounds = settingBounds(setting.key)
@@ -1047,8 +1050,6 @@ const labels: Record<string, string> = {
   channel_test_content: '健康检测提示词', channel_check_interval_hours: '自动健康检测间隔', enable_health_score: '按渠道健康度动态排序', success_rate_penalty_weight: '失败率惩罚权重', health_score_window_minutes: '健康度统计窗口', health_score_update_interval: '健康度刷新间隔', health_min_confident_sample: '健康度可信样本量', enable_ttfb_score: '加入首字延迟评分', ttfb_penalty_weight: '首字延迟惩罚权重', ttfb_max_slow_ratio: '首字慢速比上限', ttfb_min_confident_sample: '首字评分可信样本量',
   site_daily_checkin_time: '每日自动签到时间',
   site_daily_announcement_time: '每日自动刷新公告时间',
-  site_daily_balance_enabled: '每日余额统计',
-  site_daily_balance_time: '每日余额统计时间',
   log_retention_days: '请求日志保留时间', debug_log_enabled: '记录上游原始报文', debug_log_retention_minutes: '原始报文保留时间', auto_refresh_interval_seconds: '日志页面自动刷新间隔',
   responses_ws_max_sessions: '最大执行会话数', responses_ws_session_ttl_minutes: '空闲会话保留时间', responses_ws_max_transcript_bytes: '会话内容总容量', responses_ws_max_connections: '最大长连接数', responses_ws_max_connections_per_token: '单密钥最大长连接数',
   model_catalog_sync_interval_hours: '模型价格目录同步间隔', auto_update_interval_hours: '上游检查间隔', auto_update_channel: '上游检查通道', antigravity_sensitive_words: 'Antigravity 敏感词兼容',
@@ -1069,20 +1070,20 @@ const helps: Record<string, string> = {
   channel_test_content: '自动巡检渠道时发送的最小测试内容。', channel_check_interval_hours: '设为 0 可关闭定时巡检，小数支持分钟级间隔。', enable_health_score: '根据近期成功率动态调整同优先级渠道的顺序。', enable_ttfb_score: '在健康度排序中考虑首字响应速度。',
   site_daily_checkin_time: '到达该时间后，为当天尚未执行过的账号触发签到；分别按账号或站点时区计算。',
   site_daily_announcement_time: '到达该时间后，每个站点每天刷新一次公告；按站点时区计算。',
-  site_daily_balance_enabled: '每日固定时间读取启用账号的余额，记录相邻两日净变化。关闭后保留历史记录。',
-  site_daily_balance_time: '按北京时间采样，每日只记录一次；延误超过 15 分钟或采集失败会保留缺口。修改后重启生效。',
   debug_log_enabled: '会记录上游请求与响应原文，仅建议排障时短暂开启。', auto_refresh_interval_seconds: '日志页面按此间隔刷新历史请求和进行中请求；设为 0 关闭，隐藏浏览器标签页时会暂停。', model_catalog_sync_interval_hours: '从 models.dev 更新价格信息，不影响站点模型列表。', auto_update_interval_hours: '仅非容器部署生效，设为 0 关闭后台检查；融合版不会自动替换程序。',
   antigravity_sensitive_words: '使用零宽字符处理特定 systemInstruction 关键词。', global_cooldown_detection_rules: '没有渠道专属规则时使用的状态码与错误文本识别规则。',
 }
 
-function settingLabel(setting: SystemSetting): string { return labels[setting.key] || setting.description?.replace(/\([^)]*\)/g, '').trim() || setting.key }
-function settingHelp(setting: SystemSetting): string { return helps[setting.key] || humanizeDescription(setting.description) }
+function settingLabel(setting: SystemSetting): string { return balanceSamplingSetting(setting.key)?.label || labels[setting.key] || setting.description?.replace(/\([^)]*\)/g, '').trim() || setting.key }
+function settingHelp(setting: SystemSetting): string { return balanceSamplingSetting(setting.key)?.help || helps[setting.key] || humanizeDescription(setting.description) }
 function humanizeDescription(description: string): string {
   const cleaned = (description || '').replace(/\([^)]*\)/g, '').replace(/（[^）]*）/g, '').trim()
   return cleaned && cleaned !== description ? cleaned : description || '调整此项运行参数。'
 }
 
 function settingOptions(key: string): Array<[string, string]> | null {
+  const balanceOptions = balanceSamplingSetting(key)?.options
+  if (balanceOptions) return balanceOptions
   if (key === 'auto_update_channel') return [['stable', '稳定版'], ['preview', '稳定版与预览版']]
   if (key === 'route_strategy') return [['balanced', '均衡轮询'], ['sticky', '粘性轮询']]
   return null
@@ -1097,6 +1098,7 @@ const optionTips: Record<string, Record<string, string>> = {
 }
 
 function settingUnit(key: string): string {
+  if (key === 'site_balance_sample_interval_minutes') return '' // The choice labels already include the cadence unit.
   if (key === 'request_cache_ttl_seconds') return '秒'
   if (key === 'request_cache_max_entries') return '条'
   if (isByteSettingKey(key)) return byteSettingUnit(key)

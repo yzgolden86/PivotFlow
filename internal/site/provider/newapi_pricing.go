@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -72,10 +73,16 @@ func (p *NewAPI) FetchPricing(ctx context.Context, req AccountRequest) (SitePric
 		}
 		billingExpr := strings.TrimSpace(row.BillingExpr)
 		billingTerms := parseBillingTerms(billingExpr)
+		perCallPrice, valid := parsePerCallPrice(row.ModelPrice)
+		var perCallPriceValid *bool
+		if row.QuotaType == 1 {
+			perCallPriceValid = &valid
+		}
 		pricing.Models = append(pricing.Models, ModelPrice{
 			Model:                  name,
 			QuotaType:              row.QuotaType,
-			PerCallPrice:           parsePerCallPrice(row.ModelPrice),
+			PerCallPrice:           perCallPrice,
+			PerCallPriceValid:      perCallPriceValid,
 			ModelRatio:             positiveRatio(row.ModelRatio, 1),
 			CompletionRatio:        positiveRatio(row.CompletionRatio, 1),
 			CacheRatio:             positiveRatio(firstRatio(row.CacheRatio, row.CacheRatioAlt), 1),
@@ -93,23 +100,24 @@ func (p *NewAPI) FetchPricing(ctx context.Context, req AccountRequest) (SitePric
 
 // parsePerCallPrice reads model_price, which is either a bare number or an
 // object with input/output. Only the input side is charged per call; that is
-// what the upstream deducts.
-func parsePerCallPrice(raw json.RawMessage) float64 {
-	if len(raw) == 0 {
-		return 0
+// what the upstream deducts. Validity must survive parsing: an absent or invalid
+// input is unknown, whereas an explicit zero is a known free price.
+func parsePerCallPrice(raw json.RawMessage) (float64, bool) {
+	var scalar *float64
+	if err := json.Unmarshal(raw, &scalar); err != nil {
+		var object struct {
+			Input  *float64 `json:"input"`
+			Output float64  `json:"output"`
+		}
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return 0, false
+		}
+		scalar = object.Input
 	}
-	var scalar float64
-	if err := json.Unmarshal(raw, &scalar); err == nil {
-		return scalar
+	if scalar == nil || *scalar < 0 || math.IsNaN(*scalar) || math.IsInf(*scalar, 0) {
+		return 0, false
 	}
-	var object struct {
-		Input  float64 `json:"input"`
-		Output float64 `json:"output"`
-	}
-	if err := json.Unmarshal(raw, &object); err == nil {
-		return object.Input
-	}
-	return 0
+	return *scalar, true
 }
 
 func firstRatio(values ...*float64) *float64 {
@@ -204,10 +212,14 @@ func (m ModelPrice) USDPerMillion(groupRatio float64) (input, output, cacheRead,
 }
 
 // PerCallUSD returns the fixed charge for a per-call model, or 0 if this model
-// is billed per token.
+// is billed per token. An explicitly invalid upstream price returns NaN so
+// callers' finite-cost validation cannot mistake an unknown charge for free.
 func (m ModelPrice) PerCallUSD(groupRatio float64) float64 {
 	if m.QuotaType != 1 {
 		return 0
+	}
+	if m.PerCallPriceValid != nil && !*m.PerCallPriceValid {
+		return math.NaN()
 	}
 	return m.PerCallPrice * groupRatio
 }

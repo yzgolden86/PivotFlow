@@ -99,17 +99,29 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 	checkinMinute := s.dailyCheckinMinute()
 	announcementMinute := s.dailyAnnouncementMinute()
 	balanceEnabled, _, balanceMinute := s.dailyBalanceSettings()
+	balanceInterval := s.balanceSampleInterval()
 	balanceAt, balanceDue := dailyBalanceWindow(now, balanceMinute)
+	if balanceInterval < 1440 {
+		balanceAt, balanceDue = intervalBalanceWindow(now, balanceMinute, balanceInterval)
+	}
 	balanceDue = balanceDue && balanceEnabled
 	sampledAccounts := make(map[int64]bool)
 	if balanceDue {
 		day := balanceAt.Format("2006-01-02")
-		observations, err := s.store.ListSiteAccountDailyBalances(ctx, day, day)
+		var observations []*model.SiteAccountDailyBalance
+		var err error
+		if balanceInterval < 1440 {
+			observations, err = s.store.ListSiteAccountBalanceSamples(ctx, day, day)
+		} else {
+			observations, err = s.store.ListSiteAccountDailyBalances(ctx, day, day)
+		}
 		if err != nil {
 			balanceDue = false
 		} else {
 			for _, observation := range observations {
-				sampledAccounts[observation.SiteAccountID] = true
+				if balanceInterval == 1440 || observation.ScheduledAt == balanceAt.UnixMilli() {
+					sampledAccounts[observation.SiteAccountID] = true
+				}
 			}
 		}
 	}
@@ -134,7 +146,11 @@ func (s *siteControlService) runSchedule(ctx context.Context, now time.Time) {
 					continue
 				}
 				if balanceDue && !sampledAccounts[account.ID] {
-					s.runScheduledDailyBalance(ctx, site, account, balanceAt)
+					if balanceInterval == 1440 {
+						s.runScheduledDailyBalance(ctx, site, account, balanceAt)
+					} else {
+						s.runBalanceObservation(ctx, site, account, balanceAt, balanceInterval)
+					}
 				}
 				loc := loadSiteLocation(account.Timezone, site.Timezone)
 				localNow := now.In(loc)

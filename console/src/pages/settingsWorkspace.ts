@@ -1,9 +1,23 @@
 import { parseByteSettingValue, type ByteSettingKey } from '../settingsFields.ts'
+import { BALANCE_SAMPLE_INTERVALS } from './balanceHistoryChart.ts'
 
 export type SettingsGroupKey = 'appearance' | 'automation' | 'routing' | 'cache' | 'timeouts' | 'cooldown' | 'capacity' | 'health' | 'logs' | 'websocket' | 'maintenance' | 'advanced'
 
+const balanceSamplingSettings: Record<string, { label: string; help: string; options?: Array<[string, string]> }> = {
+  site_daily_balance_enabled: { label: '余额自动采样', help: '按采样间隔读取启用账号的余额，每天保留截至最新成功采样的净变化。关闭后保留历史记录。' },
+  site_daily_balance_time: { label: '采样基准时间', help: '按北京时间以此时间为采样相位，之后按间隔重复。例如每小时、基准 00:05 时，在 00:05、01:05、02:05 等时点采样；失败保留缺口。修改后重启生效。' },
+  site_balance_sample_interval_minutes: {
+    label: '余额采样间隔', help: '默认每小时（60 分钟）采样，按采样基准时间重复。每日图仍为一天一点，显示截至当天最新成功采样的净变化；缺少前日比较时可展示自当日首次采样以来的变化。修改后重启生效。',
+    options: BALANCE_SAMPLE_INTERVALS.map((minutes) => [String(minutes), minutes === 1440 ? '每日' : minutes === 60 ? '每小时' : minutes < 60 ? `每 ${minutes} 分钟` : `每 ${minutes / 60} 小时`]),
+  },
+}
+
+export function balanceSamplingSetting(key: string): typeof balanceSamplingSettings[string] | undefined {
+  return Object.hasOwn(balanceSamplingSettings, key) ? balanceSamplingSettings[key] : undefined
+}
+
 export function settingGroup(key: string): SettingsGroupKey {
-  if (['site_daily_checkin_time', 'site_daily_announcement_time', 'site_daily_balance_enabled', 'site_daily_balance_time'].includes(key)) return 'automation'
+  if (['site_daily_checkin_time', 'site_daily_announcement_time', 'site_daily_balance_enabled', 'site_daily_balance_time', 'site_balance_sample_interval_minutes'].includes(key)) return 'automation'
   if (/^request_cache_/.test(key)) return 'cache'
   if (key === 'cooldown_fallback_enabled') return 'routing'
   if (/^cooldown_|global_cooldown/.test(key)) return 'cooldown'

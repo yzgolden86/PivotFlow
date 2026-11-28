@@ -68,9 +68,13 @@ func (s *siteControlService) pruneSiteHistory(ctx context.Context, cutoff, expir
 	leases := s.pruneSiteHistoryTable("site_task_leases", func() (int64, error) {
 		return s.store.DeleteExpiredSiteTaskLeases(ctx, expiredBefore, siteHistoryPruneBatch)
 	})
-	if tasks+runs+leases > 0 {
-		log.Printf("[SITE] history prune: tasks=%d runs=%d leases=%d (older than %s)",
-			tasks, runs, leases, time.UnixMilli(cutoff).Format("2006-01-02"))
+	balanceDay := time.UnixMilli(expiredBefore).In(dailyBalanceLocation()).AddDate(0, 0, -90).Format("2006-01-02")
+	balances := s.pruneSiteHistoryTable("site_account_balance_samples", func() (int64, error) {
+		return s.store.DeleteSiteAccountBalanceSamplesBefore(ctx, balanceDay, siteHistoryPruneBatch)
+	})
+	if tasks+runs+leases+balances > 0 {
+		log.Printf("[SITE] history prune: tasks=%d runs=%d leases=%d balance_samples=%d (older than %s)",
+			tasks, runs, leases, balances, time.UnixMilli(cutoff).Format("2006-01-02"))
 	}
 }
 

@@ -53,13 +53,25 @@ func (s *siteControlService) dailyBalanceSettings() (bool, string, int) {
 }
 
 func (s *siteControlService) runScheduledDailyBalance(ctx context.Context, site *model.Site, account *model.SiteAccount, scheduled time.Time) {
+	s.runBalanceObservation(ctx, site, account, scheduled, 0)
+}
+
+func (s *siteControlService) runBalanceObservation(ctx context.Context, site *model.Site, account *model.SiteAccount, scheduled time.Time, interval int) {
 	adapter, err := s.adapter(site)
 	if err != nil || !adapter.Capabilities().Balance {
 		return
 	}
 	day := scheduled.Format("2006-01-02")
+	key := fmt.Sprintf("daily_balance:%d:%s", account.ID, day)
+	create, complete := s.store.CreateSiteAccountDailyBalance, s.store.CompleteSiteAccountDailyBalance
+	cutoff := scheduled.Add(siteDailyBalanceWindow)
+	if interval > 0 {
+		key = fmt.Sprintf("balance_sample:%d:%d", account.ID, scheduled.UnixMilli())
+		create, complete = s.store.CreateSiteAccountBalanceSample, s.store.CompleteSiteAccountBalanceSample
+		cutoff = intervalBalanceCutoff(scheduled, interval)
+	}
 	spec := siteTaskSpec{
-		key: fmt.Sprintf("daily_balance:%d:%s", account.ID, day), kind: "refresh", siteID: site.ID, accountID: account.ID, total: 1,
+		key: key, kind: "refresh", siteID: site.ID, accountID: account.ID, total: 1,
 		// Share the ordinary refresh lease so this read cannot race account writes.
 		leaseKey: fmt.Sprintf("site:%d:account:%d:refresh", site.ID, account.ID), leaseDuration: siteTaskLeaseDuration, parent: ctx,
 	}
@@ -72,7 +84,6 @@ func (s *siteControlService) runScheduledDailyBalance(ctx context.Context, site 
 		defer finish()
 		// A long queue or restart must not masquerade as an on-time observation.
 		now := time.Now()
-		cutoff := scheduled.Add(siteDailyBalanceWindow)
 		if now.Before(scheduled) || !now.Before(cutoff) {
 			s.updateTask(runCtx, task, model.SiteTaskStatusCancelled, "", "cancelled")
 			return
@@ -91,7 +102,7 @@ func (s *siteControlService) runScheduledDailyBalance(ctx context.Context, site 
 			return
 		}
 		sample := &model.SiteAccountDailyBalance{SiteAccountID: latest.ID, LocalDay: day, ScheduledAt: scheduled.UnixMilli(), Currency: strings.ToUpper(strings.TrimSpace(latest.BalanceCurrency)), Status: "unknown"}
-		claimed, err := s.store.CreateSiteAccountDailyBalance(sampleCtx, sample)
+		claimed, err := create(sampleCtx, sample)
 		if err != nil || !claimed {
 			if err != nil {
 				s.updateTask(runCtx, task, model.SiteTaskStatusFailed, "", siteTaskError(err))
@@ -144,7 +155,7 @@ func (s *siteControlService) runScheduledDailyBalance(ctx context.Context, site 
 		}
 		// Preserve the terminal observation even when the task was cancelled.
 		persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		completed, persistErr := s.store.CompleteSiteAccountDailyBalance(persistCtx, sample)
+		completed, persistErr := complete(persistCtx, sample)
 		cancel()
 		if persistErr != nil || !completed {
 			log.Printf("[SITE] daily balance persistence failed for account %d on %s", account.ID, day)

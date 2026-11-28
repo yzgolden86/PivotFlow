@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { BalanceHistoryInput } from './balanceHistoryChart.ts'
-import { balanceHistoryCharts, balanceHistoryOverlay, balanceScheduleCaption, dailyComparisonLabel, formatBalanceAmount, formatDailyDelta, selectBalanceCurrencies } from './balanceHistoryChart.ts'
+import { balanceHistoryCharts, balanceHistoryOverlay, balanceScheduleCaption, dailyComparisonLabel, formatBalanceAmount, formatBalanceSampleTime, formatDailyDelta, selectBalanceCurrencies } from './balanceHistoryChart.ts'
 
 type DailyPoint = BalanceHistoryInput
 
@@ -395,4 +395,117 @@ test('empty and future-only samples retain the explicit calendar without inventi
   const future = balanceHistoryOverlay([point('2026-11-27', 999)], 14, '2026-11-26')
   assert.equal(future.days.length, 14)
   assert.ok(future.series.every((chart) => chart.points.length === 0 && !chart.hasData))
+})
+
+test('finite partial daily deltas are measured points, including actual zero and negative net changes', () => {
+  const [chart] = balanceHistoryCharts([
+    { ...point('2026-11-01', -3, 'partial'), change_basis: 'first_sample' },
+    { ...point('2026-11-02', 0, 'partial'), change_basis: 'first_sample' },
+    { ...point('2026-11-03', 4, 'partial'), change_basis: 'previous_day' },
+  ])
+  assert.deepEqual(chart.points.map((item) => item.dailyDelta), [-3, 0, 4])
+  assert.ok(chart.points.every((item) => item.y != null))
+  assert.equal(chart.points[1].y, chart.zeroY)
+  assert.equal(chart.paths.length, 1)
+  assert.equal(chart.unknownPoints, 0)
+  assert.equal(chart.hasData, true)
+})
+
+test('partial status alone never supplies a missing or malformed daily delta', () => {
+  for (const value of [null, undefined, NaN, Infinity, -Infinity, '0', false]) {
+    const observation = { ...point('2026-11-01', null, 'partial'), daily_delta: value, change_basis: 'first_sample' } as unknown as DailyPoint
+    const [chart] = balanceHistoryCharts([observation])
+    assert.equal(chart.latest.dailyDelta, null)
+    assert.equal(chart.latest.y, null)
+    assert.equal(chart.hasData, false)
+    assert.deepEqual(chart.ticks, [])
+    assert.equal(dailyComparisonLabel(chart.latest), '日差额无效')
+  }
+})
+
+test('hourly observations still produce one latest point per day and retain old daily measurements', () => {
+  const legacy = { ...point('2026-11-26', -7), updated_at: 1 }
+  const source = [legacy,
+    { ...point('2026-11-27', null, 'baseline'), updated_at: 2 },
+    { ...point('2026-11-27', 2, 'partial'), change_basis: 'first_sample', updated_at: 3 },
+    { ...point('2026-11-27', 5, 'partial'), change_basis: 'first_sample', updated_at: 4 },
+  ]
+  const before = structuredClone(source)
+  const overlay = balanceHistoryOverlay(source, 7, '2026-11-27')
+  assert.deepEqual(source, before)
+  assert.equal(overlay.days.length, 7)
+  assert.deepEqual(overlay.series[0].points.map((item) => [item.day, item.dailyDelta]), [['2026-11-26', -7], ['2026-11-27', 5]])
+  assert.equal(overlay.series[0].latest?.changeBasis, 'first_sample')
+  assert.equal(overlay.series[0].latest?.updatedAt, 4)
+})
+
+test('comparison basis is optional and unknown basis values never invent a first-sample or previous-day claim', () => {
+  for (const basis of [undefined, null, 'unexpected', 1, false]) {
+    const observation = { ...point('2026-11-01', 2, 'partial'), change_basis: basis } as unknown as DailyPoint
+    const [chart] = balanceHistoryCharts([observation])
+    assert.equal(chart.latest.dailyDelta, 2)
+    assert.equal(chart.latest.changeBasis, null)
+    assert.match(dailyComparisonLabel(chart.latest), /部分时段/)
+    assert.doesNotMatch(dailyComparisonLabel(chart.latest), /首次|前日/)
+  }
+})
+
+test('hover comparison labels distinguish the first same-day sample from a previous-day comparison', () => {
+  const [first] = balanceHistoryCharts([{ ...point('2026-11-01', -3, 'partial'), change_basis: 'first_sample' }])
+  assert.match(dailyComparisonLabel(first.latest), /净减少/)
+  assert.match(dailyComparisonLabel(first.latest), /当日首次采样/)
+  const [previous] = balanceHistoryCharts([{ ...point('2026-11-02', 4), change_basis: 'previous_day' }])
+  assert.match(dailyComparisonLabel(previous.latest), /净增加/)
+  assert.match(dailyComparisonLabel(previous.latest), /前日最后采样/)
+  const [legacy] = balanceHistoryCharts([point('2026-11-03', 0)])
+  assert.equal(dailyComparisonLabel(legacy.latest), '无净变化')
+})
+
+test('conflicting comparison bases at the same timestamp are not presented as an authoritative measurement', () => {
+  const first = { ...point('2026-11-01', 2, 'partial'), change_basis: 'first_sample' }
+  const second = { ...first, change_basis: 'previous_day' }
+  const [chart] = balanceHistoryCharts([first, second])
+  assert.equal(chart.latest.dailyDelta, null)
+  assert.equal(chart.latest.comparisonStatus, 'incomplete')
+})
+
+test('interval schedule captions describe allowed minute/hour/day cadences and the preserved phase anchor', () => {
+  const schedule = { enabled: true, time: '00:05', timezone: 'Asia/Shanghai' }
+  for (const [interval_minutes, expected] of [
+    [15, '每 15 分钟 · 基准 00:05 · 北京时间'], [30, '每 30 分钟 · 基准 00:05 · 北京时间'],
+    [60, '每小时 · 基准 00:05 · 北京时间'], [120, '每 2 小时 · 基准 00:05 · 北京时间'],
+    [360, '每 6 小时 · 基准 00:05 · 北京时间'], [720, '每 12 小时 · 基准 00:05 · 北京时间'],
+    [1440, '每日 00:05 · 北京时间'],
+  ] as const) assert.equal(balanceScheduleCaption({ ...schedule, interval_minutes }), expected)
+  assert.equal(balanceScheduleCaption({ ...schedule, interval_minutes: 60, timezone: 'UTC' }), '每小时 · 基准 00:05 · UTC')
+})
+
+test('malformed interval metadata fails closed instead of silently claiming hourly or legacy daily sampling', () => {
+  const schedule = { enabled: true, time: '00:05', timezone: 'Asia/Shanghai' }
+  for (const interval_minutes of [undefined, null, '60', true, 0, -15, 45, 60.5, 1441, NaN, Infinity]) {
+    assert.equal(balanceScheduleCaption({ ...schedule, interval_minutes }), '采样时间未提供')
+  }
+  assert.equal(balanceScheduleCaption(schedule), '每日 00:05 · 北京时间', 'legacy metadata without the new field keeps its old caption')
+})
+
+test('actual sampling readouts use Beijing time and preserve the collection date across midnight', () => {
+  assert.equal(formatBalanceSampleTime(Date.parse('2026-11-27T16:05:07Z')), '实际采样：2026-11-28 00:05:07（北京时间）')
+  assert.equal(formatBalanceSampleTime(Date.parse('2026-12-31T16:00:00Z')), '实际采样：2027-01-01 00:00:00（北京时间）')
+})
+
+test('missing or invalid actual sampling times remain unknown rather than displaying the epoch or a guessed time', () => {
+  for (const timestamp of [null, undefined, 0, -1, NaN, Infinity, -Infinity, Number.MAX_VALUE, '1795795507000', false]) {
+    assert.equal(formatBalanceSampleTime(timestamp), '实际采样：未知')
+  }
+})
+
+test('actual sampling readouts use the latest observation collection time rather than its scheduled slot', () => {
+  const scheduled_at = Date.parse('2026-11-28T00:05:00Z')
+  const [chart] = balanceHistoryCharts([
+    { ...point('2026-11-28', 2, 'partial'), scheduled_at, updated_at: scheduled_at + 7_000 },
+    { ...point('2026-11-28', 3, 'partial'), scheduled_at: scheduled_at + 3_600_000, updated_at: scheduled_at + 3_611_000 },
+  ])
+  assert.equal(formatBalanceSampleTime(chart.latest.updatedAt), '实际采样：2026-11-28 09:05:11（北京时间）')
+  const [unknown] = balanceHistoryCharts([{ ...point('2026-11-28', 2), scheduled_at, updated_at: NaN }])
+  assert.equal(formatBalanceSampleTime(unknown.latest.updatedAt), '实际采样：未知')
 })

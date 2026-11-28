@@ -474,6 +474,7 @@ type sitePricingModelPayload struct {
 	Model              string   `json:"model"`
 	QuotaType          int      `json:"quota_type"`
 	PerCallPrice       float64  `json:"per_call_price"`
+	PerCallPriceValid  *bool    `json:"per_call_price_valid,omitempty"`
 	ModelRatio         float64  `json:"model_ratio"`
 	CompletionRatio    float64  `json:"completion_ratio"`
 	CacheRatio         float64  `json:"cache_ratio"`
@@ -502,7 +503,8 @@ func buildSitePricingPayload(siteID int64, pricing provider.SitePricing) sitePri
 		}
 		models = append(models, sitePricingModelPayload{
 			Model: price.Model, QuotaType: price.QuotaType, PerCallPrice: price.PerCallPrice,
-			ModelRatio: price.ModelRatio, CompletionRatio: price.CompletionRatio,
+			PerCallPriceValid: price.PerCallPriceValid,
+			ModelRatio:        price.ModelRatio, CompletionRatio: price.CompletionRatio,
 			CacheRatio: price.CacheRatio, CacheCreationRatio: price.CacheCreationRatio,
 			Groups: groups, InputPrice: input, OutputPrice: output,
 			CacheReadPrice: cacheRead, CacheWritePrice: cacheWrite,

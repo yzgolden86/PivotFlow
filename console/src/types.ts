@@ -924,7 +924,8 @@ export interface SiteBalanceHistoryPoint {
   updated_at: number
   daily_delta?: number | null
   known_accounts?: number
-  comparison_status?: 'complete' | 'baseline' | 'missing_previous' | 'coverage_changed' | 'incomplete' | 'overflow'
+  comparison_status?: 'complete' | 'partial' | 'baseline' | 'missing_previous' | 'coverage_changed' | 'incomplete' | 'overflow'
+  change_basis?: 'first_sample' | 'previous_day'
   scheduled_at?: number
 }
 
@@ -935,7 +936,7 @@ export interface StatsSnapshot {
   is_today: boolean
   balance_history?: SiteBalanceHistoryPoint[]
   balance_as_of_day?: string
-  balance_schedule?: { enabled: boolean; time: string; timezone: string }
+  balance_schedule?: { enabled: boolean; time: string; timezone: string; interval_minutes?: number }
   cost_summary?: CostSummary | null
 }
 
@@ -1088,6 +1089,7 @@ export interface SiteModelPrice {
   model: string
   quota_type: number
   per_call_price: number
+  per_call_price_valid?: boolean
   model_ratio: number
   completion_ratio: number
   cache_ratio: number

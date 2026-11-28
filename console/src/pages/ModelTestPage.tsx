@@ -18,17 +18,18 @@ import {
 } from 'lucide-react'
 import { getChannels, getSiteChannelBindings, getSiteInventory, getSiteModels, getSitePricing, testChannel, testSiteAccountModel } from '../api'
 import HelpTip from '../components/HelpTip'
-import type { Channel, ChannelTestResult, Site, SiteAccount, SiteAccountModel, SiteChannelBinding, SiteModelPrice, SitePricingSnapshot } from '../types'
+import type { Channel, ChannelTestResult, Site, SiteAccount, SiteAccountModel, SiteChannelBinding, SitePricingSnapshot } from '../types'
 import { EmptyState, ErrorState, formatMoney, formatNumber, formatTime, LoadingState, OperationNotice, PageHeader } from './shared'
 import { useLocation } from 'react-router-dom'
 import { VendorMark } from './vendorMarks'
-import { createModelPricingLoader } from './modelPricingLoader'
+import { createModelPricingLoader, retainModelPricingSnapshot, type ModelPricingOutcomes } from './modelPricingLoader'
+import { catalogPricingFacts, catalogPricingSiteIds, modelPricingSources } from './modelPricingLoaderSources'
+import { modelPricingFeedback, modelPricingFields, modelPricingSummary } from './modelPricingPresentation'
 import './modelCatalogPresentation.css'
 import {
   catalogFactForStatus,
   catalogTestDisabledReason,
   catalogTestSelection,
-  channelSiteId,
   channelsForSite,
   eligibleAccountTestTargets,
   eligibleChannelTestTargets,
@@ -67,6 +68,8 @@ export default function ModelTestPage() {
   const [siteModels, setSiteModels] = useState<SiteAccountModel[]>([])
   const [channelBindings, setChannelBindings] = useState<SiteChannelBinding[]>([])
   const [sitePricing, setSitePricing] = useState<Record<number, SitePricingSnapshot>>({})
+  const [pendingPricingSites, setPendingPricingSites] = useState<ReadonlySet<number>>(new Set())
+  const [pricingOutcomes, setPricingOutcomes] = useState<ModelPricingOutcomes>({})
   const [channelId, setChannelId] = useState(0)
   const [accountId, setAccountId] = useState(0)
   const [model, setModel] = useState('')
@@ -89,13 +92,24 @@ export default function ModelTestPage() {
 
   const loadPricing = useCallback(async (siteIds: number[], signal?: AbortSignal, refresh = false) => {
     const sequence = ++pricingSequence.current
+    setPendingPricingSites(new Set(siteIds))
     await pricingLoader.load(siteIds, (siteId, pricing) => {
       if (signal?.aborted || sequence !== pricingSequence.current) return
       setSitePricing((current) => {
         if (signal?.aborted || sequence !== pricingSequence.current) return current
-        return { ...current, [siteId]: pricing }
+        return { ...current, [siteId]: retainModelPricingSnapshot(current[siteId], pricing) }
       })
-    }, { signal, refresh })
+    }, { signal, refresh, onSettled: (siteId, outcome) => {
+      if (signal?.aborted || sequence !== pricingSequence.current) return
+      setPricingOutcomes((current) => signal?.aborted || sequence !== pricingSequence.current
+        ? current : { ...current, [siteId]: outcome })
+      setPendingPricingSites((current) => {
+        if (signal?.aborted || sequence !== pricingSequence.current) return current
+        const next = new Set(current)
+        next.delete(siteId)
+        return next
+      })
+    } })
   }, [pricingLoader])
 
   // keepSelection：手动刷新只重新取数，不能重放 URL 参数，否则用户当前选好的
@@ -106,6 +120,7 @@ export default function ModelTestPage() {
     // Stop the previous price queue as soon as a new catalog load starts.
     const pricingLoadSequence = ++pricingSequence.current
     pricingLoader.abort()
+    setPendingPricingSites(new Set())
     setLoading(true)
     setError('')
     try {
@@ -182,21 +197,10 @@ export default function ModelTestPage() {
           setModel(requestedModel && selectedModels.includes(requestedModel) ? requestedModel : (selectedModels[0] || ''))
         }
       }
-      // Pricing discovery must resolve owners through all inventory accounts so
-      // disabled owners still map to a site, and must add direct channel owners
-      // using the same direct-then-binding priority as the catalog rows.
+      // Resolve prices for represented catalog sources first, using every account
+      // so disabled owners still map to their direct-testable channels.
       const inventoryAccountsByID = new Map(inventory.accounts.map((account) => [account.id, account]))
-      const siteByAccount = new Map(inventory.accounts.map((account) => [account.id, account.site_id]))
-      const bindingByChannel = new Map(
-        bindingResponse
-          .filter((binding) => Boolean(binding.channel_id))
-          .map((binding) => [binding.channel_id as number, binding]),
-      )
-      const pricingSiteIds = [
-        ...bindingResponse.map((binding) => siteByAccount.get(binding.site_account_id)),
-        ...modelResponse.data.map((fact) => siteByAccount.get(fact.site_account_id)),
-        ...availableChannels.map((channel) => channelSiteId(channel, bindingByChannel.get(channel.id), inventoryAccountsByID)),
-      ].filter((siteId): siteId is number => Boolean(siteId))
+      const pricingSiteIds = catalogPricingSiteIds(availableChannels, modelResponse.data, bindingResponse, inventoryAccountsByID)
       if (!signal?.aborted && pricingLoadSequence === pricingSequence.current) {
         void loadPricing(pricingSiteIds, signal, options.force)
       }
@@ -339,7 +343,7 @@ export default function ModelTestPage() {
       </div>
 
       {loading ? <LoadingState label="正在汇总站点与渠道模型" /> : error && !channels.length && !accounts.length ? <ErrorState message={error} retry={() => void load()} /> : view === 'catalog' ? (
-        <ModelCatalog models={siteModels} sites={sites} accounts={accounts} channels={channels} channelTargets={channelTargets} accountTargets={accountTargets} channelBindings={channelBindings} sitePricing={sitePricing} siteMap={siteMap} accountMap={accountMap} probe={openProbe} />
+        <ModelCatalog models={siteModels} sites={sites} accounts={accounts} channels={channels} channelTargets={channelTargets} accountTargets={accountTargets} channelBindings={channelBindings} sitePricing={sitePricing} pendingPricingSites={pendingPricingSites} pricingOutcomes={pricingOutcomes} siteMap={siteMap} accountMap={accountMap} probe={openProbe} />
       ) : (
         <div className="test-layout">
           <section className="test-composer">
@@ -373,7 +377,7 @@ export default function ModelTestPage() {
   )
 }
 
-function ModelCatalog({ models: siteModels, sites, accounts, channels, channelTargets, accountTargets, channelBindings, sitePricing, siteMap, accountMap, probe }: {
+function ModelCatalog({ models: siteModels, sites, accounts, channels, channelTargets, accountTargets, channelBindings, sitePricing, pendingPricingSites, pricingOutcomes, siteMap, accountMap, probe }: {
   models: SiteAccountModel[]
   sites: Site[]
   accounts: SiteAccount[]
@@ -382,6 +386,8 @@ function ModelCatalog({ models: siteModels, sites, accounts, channels, channelTa
   accountTargets: ModelTestTarget[]
   channelBindings: SiteChannelBinding[]
   sitePricing: Record<number, SitePricingSnapshot>
+  pendingPricingSites: ReadonlySet<number>
+  pricingOutcomes: ModelPricingOutcomes
   siteMap: Map<number, Site>
   accountMap: Map<number, SiteAccount>
   probe: (model: CatalogModel, fact?: SiteAccountModel, channels?: readonly Channel[]) => void
@@ -418,11 +424,13 @@ function ModelCatalog({ models: siteModels, sites, accounts, channels, channelTa
   }, [accountMap, channelTargets, channels, siteMap, siteModels])
   const rows = useMemo(() => catalogModels.map((item) => {
     const rowChannels = channelsForSite(item.channels, siteId, channelBindings, accountMap)
+    const pricingFacts = catalogPricingFacts(item.facts, siteId, status, accountMap, siteMap)
     return {
       item,
       // Scope facts and channel fallbacks to the selected site so site A never
       // borrows site B's channel for its stale or disabled fact.
       fact: catalogFactForStatus(factsForSite(item.facts, siteId, accountMap), status, accountMap, siteMap),
+      pricingSources: modelPricingSources(rowChannels, pricingFacts, channelBindings, accountMap, status),
       channels: rowChannels,
       channelMatchesSite: siteId === 0 || rowChannels.length > 0,
     }
@@ -481,26 +489,29 @@ function ModelCatalog({ models: siteModels, sites, accounts, channels, channelTa
         <span>{vendor.name}</span><b>{count}</b>
       </button>)}
     </div>
-    {!visible.length ? <EmptyState label={catalogModels.length ? '没有符合条件的模型' : '暂无可用测试目标'} /> : layout === 'cards' ? <div className="model-card-grid">{visible.map(({ item, fact, channels: rowChannels }) => <ModelCard key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`} item={item} fact={fact} channels={rowChannels} siteMap={siteMap} accountMap={accountMap} channelBindings={channelBindings} sitePricing={sitePricing} probe={probe} />)}</div> : <div className="records-panel model-records"><div className="record-head model-grid"><span>模型</span><span>站点 / 账号</span><span>路由协议</span><span>来源</span><span>最近发现</span><span>状态 / 操作</span></div>{visible.map(({ item, fact, channels: rowChannels }) => {
+    {!visible.length ? <EmptyState label={catalogModels.length ? '没有符合条件的模型' : '暂无可用测试目标'} /> : layout === 'cards' ? <div className="model-card-grid">{visible.map(({ item, fact, pricingSources, channels: rowChannels }) => <ModelCard key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`} item={item} fact={fact} pricingSources={pricingSources} channels={rowChannels} siteMap={siteMap} accountMap={accountMap} sitePricing={sitePricing} pendingPricingSites={pendingPricingSites} pricingOutcomes={pricingOutcomes} probe={probe} />)}</div> : <div className="records-panel model-records"><div className="record-head model-grid"><span>模型</span><span>站点 / 账号</span><span>路由协议</span><span>来源</span><span>最近发现</span><span>状态 / 操作</span></div>{visible.map(({ item, fact, pricingSources, channels: rowChannels }) => {
       const account = fact ? accountMap.get(fact.site_account_id) : undefined
       const site = siteMap.get(account?.site_id || 0)
       const channelLabel = rowChannels.length > 2 ? `${rowChannels[0].name}、${rowChannels[1].name} 等 ${rowChannels.length} 个渠道` : rowChannels.map((channel) => channel.name).join('、') || '尚未投影到渠道'
-      const pricing = modelPricingSummary(item, fact, rowChannels, sitePricing, channelBindings, accountMap)
+      const pricing = modelPricingSummary(item.model, pricingSources, sitePricing)
+      const pricingFeedback = modelPricingFeedback(pricing, pricingSources, sitePricing, pendingPricingSites, pricingOutcomes)
       const selection = catalogTestSelection(item.model, fact, rowChannels, accountMap, siteMap)
       const reason = catalogTestDisabledReason(fact, rowChannels, accountMap, siteMap)
-      return <article className="record-row model-grid" key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`}><div><strong title={item.model}>{item.model}</strong><span>{rowChannels.length ? `${rowChannels.length} 个渠道可直测` : '尚未投影到渠道'}</span>{pricing ? <em className="model-price-line" title={pricingSourceTitle(pricing)}>{modelPricingLine(pricing)}</em> : null}</div><div>{fact ? <>{account?.site_id ? <a className="entity-link model-entity-link model-entity-link--site" href={`#/sites?focus_site_id=${account.site_id}`}><strong>{site?.name || `站点 #${account.site_id}`}</strong></a> : <strong>{site?.name || '未知站点'}</strong>}{fact.site_account_id ? <a className="entity-link model-entity-link model-entity-link--account" href={`#/accounts?focus_account_id=${fact.site_account_id}`}><span>{account?.label || `账号 #${fact.site_account_id}`}</span></a> : <span>未知账号</span>}</> : <strong title={channelLabel}>{channelLabel}</strong>}</div><div><strong>{fact ? routeLabel(fact.route_type) : '自动识别'}</strong><span>{fact ? fact.route_type : '按渠道协议转换'}</span></div><div><strong>{fact ? sourceLabel(fact.source) : '渠道配置'}</strong><span>{fact ? fact.source : 'channel_models'}</span></div><div><strong>{fact?.last_seen_at ? formatTime(fact.last_seen_at) : '—'}</strong><span>{fact ? (fact.stale ? '需要重新刷新' : '当前快照') : '渠道当前配置'}</span></div><div className="model-row-action"><span className={`status-badge status-badge--${selection ? 'success' : fact?.disabled ? 'muted' : 'warning'}`}>{selection ? '可测试' : fact?.disabled ? '停用' : '无测试目标'}</span><button className="icon-button icon-button--surface" type="button" disabled={!selection} onClick={() => probe(item, fact, rowChannels)} aria-label={selection?.kind === 'site_account' ? `直测 ${item.model}` : `渠道测试 ${item.model}`} title={selection ? (selection.kind === 'site_account' ? '站点账号直测' : '渠道路由测试') : reason}><Play size={15} /></button></div></article>
+      return <article className="record-row model-grid" key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`}><div><strong title={item.model}>{item.model}</strong><span>{rowChannels.length ? `${rowChannels.length} 个渠道可直测` : '尚未投影到渠道'}</span><em className="model-price-line" data-state={pricingFeedback.state} aria-busy={pricingFeedback.pending} title={pricingFeedback.description}>{pricingFeedback.line}</em></div><div>{fact ? <>{account?.site_id ? <a className="entity-link model-entity-link model-entity-link--site" href={`#/sites?focus_site_id=${account.site_id}`}><strong>{site?.name || `站点 #${account.site_id}`}</strong></a> : <strong>{site?.name || '未知站点'}</strong>}{fact.site_account_id ? <a className="entity-link model-entity-link model-entity-link--account" href={`#/accounts?focus_account_id=${fact.site_account_id}`}><span>{account?.label || `账号 #${fact.site_account_id}`}</span></a> : <span>未知账号</span>}</> : <strong title={channelLabel}>{channelLabel}</strong>}</div><div><strong>{fact ? routeLabel(fact.route_type) : '自动识别'}</strong><span>{fact ? fact.route_type : '按渠道协议转换'}</span></div><div><strong>{fact ? sourceLabel(fact.source) : '渠道配置'}</strong><span>{fact ? fact.source : 'channel_models'}</span></div><div><strong>{fact?.last_seen_at ? formatTime(fact.last_seen_at) : '—'}</strong><span>{fact ? (fact.stale ? '需要重新刷新' : '当前快照') : '渠道当前配置'}</span></div><div className="model-row-action"><span className={`status-badge status-badge--${selection ? 'success' : fact?.disabled ? 'muted' : 'warning'}`}>{selection ? '可测试' : fact?.disabled ? '停用' : '无测试目标'}</span><button className="icon-button icon-button--surface" type="button" disabled={!selection} onClick={() => probe(item, fact, rowChannels)} aria-label={selection?.kind === 'site_account' ? `直测 ${item.model}` : `渠道测试 ${item.model}`} title={selection ? (selection.kind === 'site_account' ? '站点账号直测' : '渠道路由测试') : reason}><Play size={15} /></button></div></article>
     })}</div>}
   </>
 }
 
-function ModelCard({ item, fact, channels, siteMap, accountMap, channelBindings, sitePricing, probe }: {
+function ModelCard({ item, fact, pricingSources, channels, siteMap, accountMap, sitePricing, pendingPricingSites, pricingOutcomes, probe }: {
   item: CatalogModel
   fact?: SiteAccountModel
+  pricingSources: Array<{ siteId: number; group: string }>
   channels: Channel[]
   siteMap: Map<number, Site>
   accountMap: Map<number, SiteAccount>
-  channelBindings: SiteChannelBinding[]
   sitePricing: Record<number, SitePricingSnapshot>
+  pendingPricingSites: ReadonlySet<number>
+  pricingOutcomes: ModelPricingOutcomes
   probe: (model: CatalogModel, fact?: SiteAccountModel, channels?: readonly Channel[]) => void
 }) {
   const account = fact ? accountMap.get(fact.site_account_id) : undefined
@@ -510,7 +521,11 @@ function ModelCard({ item, fact, channels, siteMap, accountMap, channelBindings,
   const disabledReason = catalogTestDisabledReason(fact, channels, accountMap, siteMap)
   const tone = selection ? 'success' : fact?.disabled ? 'muted' : 'warning'
   const statusLabel = selection ? '可测试' : fact?.disabled ? '停用' : fact?.stale ? '过期' : '无测试目标'
-  const pricing = modelPricingSummary(item, fact, channels, sitePricing, channelBindings, accountMap)
+  const pricing = modelPricingSummary(item.model, pricingSources, sitePricing)
+  const pricingFeedback = modelPricingFeedback(pricing, pricingSources, sitePricing, pendingPricingSites, pricingOutcomes)
+  const priceFields = modelPricingFields(pricing, pricingFeedback.pending, pricingFeedback.state)
+  const route = fact ? routeLabel(fact.route_type) : '自动识别'
+  const source = fact ? sourceLabel(fact.source) : '渠道配置'
   return <article className={`model-card model-card--${tone} model-vendor--${vendor.key}`} key={`${fact ? `${fact.site_account_id}:` : 'channel:'}${item.model}`}>
     <header>
       <span className="model-vendor" aria-hidden="true" title={vendor.name}><VendorMark vendor={vendor.key} size={26} /></span>
@@ -519,30 +534,19 @@ function ModelCard({ item, fact, channels, siteMap, accountMap, channelBindings,
     </header>
     <div className="model-card-badges">
       <span className={`status-badge status-badge--${tone}`}><ShieldCheck size={12} />{statusLabel}</span>
-      <span className="model-meta-badge"><Route size={12} />{fact ? routeLabel(fact.route_type) : '自动识别'}</span>
-      <span className="model-meta-badge">{fact ? sourceLabel(fact.source) : '渠道配置'}</span>
+      <HelpTip label={`${item.model} 路由协议 ${route}`} text={route} triggerClassName="model-meta-badge" triggerContent={<><Route size={12} /><span className="model-meta-badge-label">{route}</span></>} />
+      <HelpTip label={`${item.model} 模型来源 ${source}`} text={source} triggerClassName="model-meta-badge" triggerContent={<span className="model-meta-badge-label">{source}</span>} />
     </div>
     <dl className="model-card-meta">
       <div><dt><Server size={12} />来源</dt><dd>{fact ? <>{account?.site_id ? <a className="entity-link model-entity-link model-entity-link--site" href={`#/sites?focus_site_id=${account.site_id}`}>{site?.name || `站点 #${account.site_id}`}</a> : <>{site?.name || '未知站点'}</>}{fact.site_account_id ? <a className="entity-link model-entity-link model-entity-link--account" href={`#/accounts?focus_account_id=${fact.site_account_id}`}>{account?.label || `账号 #${fact.site_account_id}`}</a> : <span>未知账号</span>}</> : '渠道配置'}</dd></div>
       <div><dt><CalendarClock size={12} />发现</dt><dd>{fact?.last_seen_at ? formatTime(fact.last_seen_at) : '渠道当前配置'}</dd></div>
     </dl>
-    {pricing ? <div className="model-pricing-strip" title={pricingSourceTitle(pricing)}>
-      {pricing.kind === 'call' ? <>
-        <span><small>计费</small><strong>按次</strong></span>
-        <span><small>价格</small><strong>{formatPriceRange(pricing.perCallPrices)}</strong></span>
-        <span><small>来源</small><strong>{pricing.sourceCount}</strong></span>
-      </> : pricing.kind === 'mixed' ? <>
-        <span><small>输入</small><strong>{formatPriceRange(pricing.inputPrices)}/M</strong></span>
-        <span><small>输出</small><strong>{formatPriceRange(pricing.outputPrices)}/M</strong></span>
-        <span><small>按次</small><strong>{formatPriceRange(pricing.perCallPrices)}</strong></span>
-      </> : <>
-        <span><small>输入</small><strong>{formatPriceRange(pricing.inputPrices)}/M</strong></span>
-        <span><small>输出</small><strong>{formatPriceRange(pricing.outputPrices)}/M</strong></span>
-        <span><small>倍率</small><strong>{formatRatioPair(pricing.modelRatios, pricing.completionRatios)}</strong></span>
-      </>}
-    </div> : null}
+    <div className={`model-pricing-strip${pricing ? '' : ' model-pricing-strip--placeholder'}`} data-state={pricingFeedback.state} aria-label="上游模型价目" aria-busy={pricingFeedback.pending} title={pricingFeedback.description}>
+      {priceFields.map(({ label, value }) => <span key={label}><small>{label}</small><strong title={`${label} ${value}`}>{value}</strong></span>)}
+      <HelpTip label={`${item.model} 价目`} text={pricingFeedback.description} />
+    </div>
     <div className="model-card-channels">
-      {channels.length ? <ul aria-label={`${item.model} 的 ${channels.length} 个渠道`} tabIndex={channels.length > 3 ? 0 : undefined}>
+      {channels.length ? <ul aria-label={`${item.model} 的 ${channels.length} 个渠道`} tabIndex={channels.length > 2 ? 0 : undefined}>
         {channels.map((channel) => <li key={channel.id}><span title={channel.name}>{channel.name}</span><HelpTip label={`渠道 ${channel.name}`} text={`${channel.name} · 渠道 #${channel.id} · 优先级 ${channel.priority} · ${channel.enabled ? '已启用' : '已停用，可直测'}`} /></li>)}
       </ul> : <span className="model-card-no-channels">尚未投影到渠道</span>}
     </div>
@@ -578,128 +582,6 @@ const modelVendors: ModelVendor[] = [
   { key: 'meta', matches: ['meta', 'llama'], name: 'Llama', mark: 'MA' },
   { key: 'mistral', matches: ['mistral'], name: 'Mistral', mark: 'MI' },
 ]
-
-type ModelPricingSummary = {
-  kind: 'token' | 'call' | 'mixed'
-  inputPrices: number[]
-  outputPrices: number[]
-  modelRatios: number[]
-  completionRatios: number[]
-  perCallPrices: number[]
-  sourceCount: number
-}
-
-function modelPricingSummary(
-  item: CatalogModel,
-  fact: SiteAccountModel | undefined,
-  channels: readonly Channel[],
-  sitePricing: Record<number, SitePricingSnapshot>,
-  channelBindings: SiteChannelBinding[],
-  accountMap: Map<number, SiteAccount>,
-): ModelPricingSummary | null {
-  const summary: ModelPricingSummary = {
-    kind: 'token',
-    inputPrices: [],
-    outputPrices: [],
-    modelRatios: [],
-    completionRatios: [],
-    perCallPrices: [],
-    sourceCount: 0,
-  }
-  const bindingByChannel = new Map(channelBindings.filter((binding) => binding.channel_id).map((binding) => [binding.channel_id as number, binding]))
-  const candidates: Array<{ siteId: number; group: string }> = []
-  for (const channel of channels) {
-    const binding = bindingByChannel.get(channel.id)
-    const siteId = channelSiteId(channel, binding, accountMap)
-    if (siteId) candidates.push({ siteId, group: binding?.pricing_group || 'default' })
-  }
-  if (fact) {
-    const account = accountMap.get(fact.site_account_id)
-    if (account?.site_id) candidates.push({ siteId: account.site_id, group: 'default' })
-  }
-
-  const seen = new Set<string>()
-  let hasTokenPrice = false
-  let hasCallPrice = false
-  for (const candidate of candidates) {
-    const key = `${candidate.siteId}:${candidate.group}`
-    if (seen.has(key)) continue
-    const snapshot = sitePricing[candidate.siteId]
-    const price = findSiteModelPrice(snapshot, item.model)
-    if (!snapshot?.available || !price) continue
-    if (price.groups.length && !price.groups.includes(candidate.group)) continue
-    seen.add(key)
-    const groupRatio = snapshot.group_ratio?.[candidate.group] ?? snapshot.group_ratio?.default ?? 1
-    if (price.quota_type === 1) {
-      hasCallPrice = true
-      summary.perCallPrices.push(price.per_call_price * groupRatio)
-    } else {
-      hasTokenPrice = true
-      summary.inputPrices.push(price.input_price * groupRatio)
-      summary.outputPrices.push(price.output_price * groupRatio)
-      summary.modelRatios.push(price.model_ratio)
-      summary.completionRatios.push(price.completion_ratio)
-    }
-  }
-  summary.kind = hasTokenPrice && hasCallPrice ? 'mixed' : hasCallPrice ? 'call' : 'token'
-  summary.sourceCount = seen.size
-  return summary.sourceCount ? summary : null
-}
-
-function findSiteModelPrice(snapshot: SitePricingSnapshot | undefined, model: string): SiteModelPrice | undefined {
-  if (!snapshot) return undefined
-  const exact = snapshot.models.find((item) => item.model === model)
-  if (exact) return exact
-  const normalized = model.toLowerCase()
-  return snapshot.models.find((item) => item.model.toLowerCase() === normalized)
-}
-
-function pricingSourceTitle(pricing: ModelPricingSummary): string {
-  return `${pricing.sourceCount} 个上游价目来源，按渠道分组倍率换算`
-}
-
-function modelPricingLine(pricing: ModelPricingSummary): string {
-  const parts: string[] = []
-  if (pricing.inputPrices.length) parts.push(`输入 ${formatPriceRange(pricing.inputPrices)}/M`)
-  if (pricing.outputPrices.length) parts.push(`输出 ${formatPriceRange(pricing.outputPrices)}/M`)
-  if (pricing.modelRatios.length && pricing.completionRatios.length) parts.push(`倍率 ${formatRatioPair(pricing.modelRatios, pricing.completionRatios)}`)
-  if (pricing.perCallPrices.length) parts.push(`按次 ${formatPriceRange(pricing.perCallPrices)}`)
-  return parts.join(' · ')
-}
-
-function formatPriceRange(values: number[]): string {
-  const valid = values.filter((value) => Number.isFinite(value))
-  if (!valid.length) return '—'
-  const minimum = Math.min(...valid)
-  const maximum = Math.max(...valid)
-  return minimum === maximum ? formatPrice(minimum) : `${formatPrice(minimum)}–${formatPrice(maximum)}`
-}
-
-function formatPrice(value: number): string {
-  if (!Number.isFinite(value)) return '—'
-  const digits = value >= 1 || value === 0 ? 2 : value >= .01 ? 3 : 4
-  return `$${value.toFixed(digits)}`
-}
-
-function formatRatioPair(modelRatios: number[], completionRatios: number[]): string {
-  const model = formatRatioRange(modelRatios)
-  const completion = formatRatioRange(completionRatios)
-  return `${model}/${completion}`
-}
-
-function formatRatioRange(values: number[]): string {
-  const valid = values.filter((value) => Number.isFinite(value))
-  if (!valid.length) return '—'
-  const minimum = Math.min(...valid)
-  const maximum = Math.max(...valid)
-  return minimum === maximum ? formatRatioValue(minimum) : `${formatRatioValue(minimum)}–${formatRatioValue(maximum)}`
-}
-
-function formatRatioValue(value: number): string {
-  if (!Number.isFinite(value)) return '—'
-  if (Number.isInteger(value)) return `${value}×`
-  return `${value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}×`
-}
 
 function modelVendor(value: string): ModelVendor {
   const lower = value.toLowerCase()

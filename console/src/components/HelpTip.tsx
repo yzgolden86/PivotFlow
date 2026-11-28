@@ -1,10 +1,12 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { CircleHelp } from 'lucide-react'
 import { helpTipPosition } from './helpTipPosition'
 import useFocusLayer from './useFocusLayer'
 
-export default function HelpTip({ label, text, code }: { label: string; text: string; code?: string }) {
+export default function HelpTip({ label, text, code, triggerContent, triggerClassName }: {
+  label: string; text: string; code?: string; triggerContent?: ReactNode; triggerClassName?: string
+}) {
   const [mode, setMode] = useState<'closed' | 'preview' | 'pinned'>('closed')
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
   const trigger = useRef<HTMLButtonElement>(null)
@@ -43,13 +45,13 @@ export default function HelpTip({ label, text, code }: { label: string; text: st
   }, [open])
 
   return <span className="help-tip">
-    <button ref={trigger} className="help-tip-trigger" type="button" aria-label={`${label} 的说明`} aria-expanded={open} aria-describedby={open ? id : undefined}
+    <button ref={trigger} className={`help-tip-trigger${triggerClassName ? ` ${triggerClassName}` : ''}`} type="button" aria-label={`${label} 的说明`} aria-expanded={open} aria-describedby={open ? id : undefined}
       onPointerEnter={(event) => { if (event.pointerType === 'mouse') setMode((current) => current === 'closed' ? 'preview' : current) }}
       onPointerLeave={() => setMode((current) => current === 'preview' ? 'closed' : current)}
       onFocus={(event) => { if (event.currentTarget.matches(':focus-visible')) setMode('preview') }}
       onBlur={() => setMode('closed')}
       onClick={(event) => { event.stopPropagation(); setMode((current) => current === 'pinned' ? 'closed' : 'pinned') }}>
-      <CircleHelp size={15} aria-hidden="true" />
+      {triggerContent ?? <CircleHelp size={15} aria-hidden="true" />}
     </button>
     {open && createPortal(<span ref={bubble} id={id} className="help-tip-bubble" role="tooltip" style={{ ...position, visibility: position ? 'visible' : 'hidden' }}>
       {text}{code && <code>{code}</code>}

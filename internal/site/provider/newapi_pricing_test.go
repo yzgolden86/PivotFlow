@@ -413,17 +413,86 @@ func TestRatioToUSDConstant(t *testing.T) {
 
 func TestParsePerCallPrice(t *testing.T) {
 	cases := []struct {
-		raw  string
-		want float64
+		raw   string
+		want  float64
+		valid bool
 	}{
-		{`0.07`, 0.07},
-		{`{"input":0.03,"output":0.11}`, 0.03},
-		{`"nonsense"`, 0},
-		{`null`, 0},
-		{``, 0},
+		{`0.07`, 0.07, true},
+		{`0`, 0, true},
+		{`{"input":0.03,"output":0.11}`, 0.03, true},
+		{`{"input":0}`, 0, true},
+		{`"nonsense"`, 0, false},
+		{`null`, 0, false},
+		{``, 0, false},
+		{`{"input":`, 0, false},
 	}
 	for _, tc := range cases {
-		got := parsePerCallPrice(json.RawMessage(tc.raw))
+		got, valid := parsePerCallPrice(json.RawMessage(tc.raw))
 		almost(t, got, tc.want, "parsePerCallPrice("+tc.raw+")")
+		if valid != tc.valid {
+			t.Errorf("parsePerCallPrice(%s) validity=%v, want %v", tc.raw, valid, tc.valid)
+		}
+	}
+}
+
+func TestFetchPricingPerCallPriceValidity(t *testing.T) {
+	cases := []struct {
+		name  string
+		raw   string
+		valid bool
+		want  float64
+	}{
+		{name: "scalar paid", raw: `0.07`, valid: true, want: 0.14},
+		{name: "scalar free", raw: `0`, valid: true},
+		{name: "object paid", raw: `{"input":0.03,"output":0.11}`, valid: true, want: 0.06},
+		{name: "object free", raw: `{"input":0,"output":0.11}`, valid: true},
+		{name: "object input only", raw: `{"input":0.02}`, valid: true, want: 0.04},
+		{name: "missing"},
+		{name: "null", raw: `null`},
+		{name: "empty object", raw: `{}`},
+		{name: "output only", raw: `{"output":0.11}`},
+		{name: "null input", raw: `{"input":null}`},
+		{name: "malformed input", raw: `{"input":"invalid"}`},
+		{name: "string", raw: `"invalid"`},
+		{name: "numeric string", raw: `"0"`},
+		{name: "boolean", raw: `false`},
+		{name: "array", raw: `[]`},
+		{name: "negative scalar", raw: `-0.07`},
+		{name: "negative input", raw: `{"input":-0.03}`},
+		{name: "overflow scalar", raw: `1e309`},
+		{name: "overflow input", raw: `{"input":1e309}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			priceField := ""
+			if tc.raw != "" {
+				priceField = `,"model_price":` + tc.raw
+			}
+			server := pricingTestServer(t, `{"success":true,"data":[{"model_name":"per-call","quota_type":1`+priceField+`}]}`, http.StatusOK)
+			pricing, err := newPricingProvider().FetchPricing(context.Background(), pricingRequest(server.URL))
+			if err != nil {
+				t.Fatal(err)
+			}
+			price, ok := findModel(pricing, "per-call")
+			if !ok {
+				t.Fatal("invalid prices must retain the model row for an honest unknown display")
+			}
+			if price.PerCallPriceValid == nil || *price.PerCallPriceValid != tc.valid {
+				t.Fatalf("per-call validity=%v, want explicit %v", price.PerCallPriceValid, tc.valid)
+			}
+			got := price.PerCallUSD(2)
+			if !tc.valid {
+				if price.PerCallPrice != 0 {
+					t.Fatalf("invalid numeric price=%v, want a JSON-safe zero with validity false", price.PerCallPrice)
+				}
+				if !math.IsNaN(got) {
+					t.Fatalf("invalid per-call price produced a usable charge %v", got)
+				}
+				return
+			}
+			if math.IsNaN(got) || math.IsInf(got, 0) || math.Abs(got-tc.want) > 1e-9 {
+				t.Fatalf("per-call charge=%v, want %v", got, tc.want)
+			}
+		})
 	}
 }

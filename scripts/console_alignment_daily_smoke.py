@@ -451,7 +451,7 @@ def settings_case(runner, page, data):
     settings_geometry(runner, page, 'timeouts')
     runner.photo(page, 'timeouts')
     page.get_by_role('complementary', name='设置分类').get_by_role('button', name=re.compile('^自动任务')).click()
-    enabled = page.get_by_role('switch', name='每日余额统计', exact=True)
+    enabled = page.locator('[data-setting-key="site_daily_balance_enabled"]').get_by_role('switch', name='余额自动采样', exact=True)
     clock = page.locator('[data-setting-key="site_daily_balance_time"] input[type="time"]')
     expect(enabled).to_have_attribute('aria-checked', 'true')
     expect(clock).to_have_value('00:05')
@@ -740,7 +740,9 @@ def shared_readout(runner, page, points, day):
         currency = value.get_attribute('data-currency')
         expect(value).to_have_attribute('data-day', day)
         runner.check(not value.evaluate('(element) => element.hasAttribute("title")'), 'Per-day readouts keep diagnostic explanations out of hover tooltips')
-        expect(value).not_to_contain_text(re.compile('未知|无记录|已记录|采样|差额|基线|账号范围|覆盖|溢出'))
+        # The amount stays concise. Comparison basis and actual collection time
+        # belong only in this on-demand readout, never the permanent chart UI.
+        expect(value.locator('b')).not_to_contain_text(re.compile('未知|无记录|已记录|采样|差额|基线|账号范围|覆盖|溢出'))
         fact = next((p for p in points if p['day'] == day and p['currency'] == currency), None)
         if fact is None:
             expect(value).to_have_attribute('data-status', 'missing')
@@ -748,6 +750,7 @@ def shared_readout(runner, page, points, day):
             expect(value.locator('b')).to_have_text(f'{currency} —')
         else:
             expect(value).to_have_attribute('data-status', fact['comparison_status'])
+            expect(value.locator('.balance-history-sample-time')).to_have_text(re.compile(r'^实际采样：'))
             if fact['daily_delta'] is not None and fact['comparison_status'] == 'complete':
                 # Require the exact formatted original amount, including decimals and sign.
                 amount = fact['daily_delta']

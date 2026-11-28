@@ -82,8 +82,9 @@ var systemSettingRuntimeEffects = map[string]string{
 	"channel_check_interval_hours":            "渠道定时巡检调度器",
 	"site_daily_checkin_time":                 "站点每日签到调度器",
 	"site_daily_announcement_time":            "站点每日公告刷新调度器",
-	"site_daily_balance_enabled":              "每日余额统计调度器开关",
-	"site_daily_balance_time":                 "每日余额固定采样时间",
+	"site_daily_balance_enabled":              "余额自动采样调度器开关",
+	"site_daily_balance_time":                 "余额采样基准时间",
+	"site_balance_sample_interval_minutes":    "余额自动采样间隔",
 	"model_catalog_sync_interval_hours":       "模型价格目录同步器",
 	"auto_update_interval_hours":              "版本检查调度器",
 	"auto_update_channel":                     "版本发布通道选择",
@@ -474,6 +475,10 @@ func validateSettingValue(key, valueType, value string) error {
 		}
 		// 按配置项定义具体约束
 		switch key {
+		case "site_balance_sample_interval_minutes":
+			if !validBalanceSampleInterval(intVal) {
+				return fmt.Errorf("%s must be one of 15, 30, 60, 120, 360, 720, 1440", key)
+			}
 		case "max_key_retries":
 			if intVal < 1 {
 				return fmt.Errorf("max_key_retries must be >= 1")

@@ -75,7 +75,11 @@
 .data-dashboard-page .balance-history-hit { position: absolute; top: 0; bottom: 0; width: 28px; padding: 0; transform: translateX(-50%); background: transparent; border: 0; border-radius: var(--radius-control); cursor: pointer; }
 .data-dashboard-page .balance-history-hit:hover { background: color-mix(in srgb, var(--blue) 7%, transparent); }
 .data-dashboard-page .balance-history-hit:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
-.data-dashboard-page .balance-history-no-values { position: absolute; inset: 30% 12%; color: var(--text-secondary); font-size: 13px; text-align: center; pointer-events: none; }
+.data-dashboard-page .balance-history-no-values { position: absolute; z-index: 1; inset: 30% 4% auto; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 4px; color: var(--text-secondary); font-size: 13px; text-align: center; pointer-events: none; }
+.data-dashboard-page .balance-history-no-values .help-tip-trigger { pointer-events: auto; }
+.data-dashboard-page .balance-history-no-values > span { min-width: 0; overflow-wrap: anywhere; }
+.data-dashboard-page .balance-history-zero--empty { stroke-opacity: 0; }
+.data-dashboard-page .balance-history-empty strong { display: flex; align-items: center; gap: 8px; }
 .data-dashboard-page .balance-history-axis { display: flex; justify-content: space-between; margin: 0 8%; color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
 .data-dashboard-page .balance-history-line-plot > .balance-history-readout { position: absolute; z-index: 2; top: 10px; display: grid; width: min(280px, calc(100% - 16px)); grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 10px; margin: 0; padding: 8px 10px; transform: translateX(-50%); color: var(--text-secondary); background: color-mix(in srgb, var(--surface) 94%, transparent); border: 1px solid var(--border-strong); border-radius: var(--radius-control); box-shadow: var(--elev-2); font-size: 12px; line-height: 1.45; font-variant-numeric: tabular-nums; pointer-events: none; }
 .data-dashboard-page .balance-history-line-plot > .balance-history-readout > strong { grid-column: 1 / -1; color: var(--text); }

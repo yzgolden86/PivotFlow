@@ -354,6 +354,10 @@ type ModelPrice struct {
 	QuotaType int
 	// PerCallPrice is the fixed charge for QuotaType 1, before the group ratio.
 	PerCallPrice float64
+	// PerCallPriceValid distinguishes an explicit nonnegative price (including
+	// zero) from a missing or malformed upstream value. Nil preserves legacy
+	// producers that do not report validity; it is unset for per-token rows.
+	PerCallPriceValid *bool
 	// ModelRatio scales the input price. Output is additionally scaled by
 	// CompletionRatio; cache reads and writes by their own ratios.
 	ModelRatio         float64

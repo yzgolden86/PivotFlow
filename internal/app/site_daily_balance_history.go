@@ -22,9 +22,16 @@ func (s *Server) siteBalanceHistory(ctx context.Context, _ time.Time, endTime ti
 	samples, err := s.store.ListSiteAccountDailyBalances(ctx, visibleStart.AddDate(0, 0, -1).Format("2006-01-02"), endDay.Format("2006-01-02"))
 	if err != nil {
 		log.Printf("[WARN] load fixed daily balance history failed")
+		samples = nil
+	}
+	intervalSamples, err := s.store.ListSiteAccountBalanceSamples(ctx, visibleStart.AddDate(0, 0, -1).Format("2006-01-02"), endDay.Format("2006-01-02"))
+	if err != nil {
+		log.Printf("[WARN] load interval balance history failed")
+		// Without interval records we cannot establish which legacy dates were
+		// superseded. Do not restore an older, conflicting daily calculation.
 		return nil
 	}
-	return aggregateDailyBalanceHistory(samples, visibleStart.Format("2006-01-02"))
+	return mergeIntervalBalanceHistory(samples, intervalSamples, visibleStart.Format("2006-01-02"))
 }
 
 type dailyBalanceGroup struct {

@@ -8,7 +8,7 @@ import { donutSlicePath, donutSlices } from './donutGeometry'
 import { EmptyState, ErrorState, formatMoney, formatNumber, LoadingState, PageHeader, successTone } from './shared'
 import { analyzeCostSummary, COST_BASIS_FILTER_OPTIONS, COST_SOURCE_FILTER_OPTIONS, COST_STATUS_FILTER_OPTIONS } from '../costSemantics.ts'
 import { moneyDigits } from '../format.ts'
-import { balanceHistoryOverlay, balanceScheduleCaption, formatBalanceAmount, formatDailyDelta, selectBalanceCurrencies } from './balanceHistoryChart.ts'
+import { balanceHistoryNotice, balanceHistoryOverlay, balanceScheduleCaption, dailyComparisonLabel, formatBalanceAmount, formatBalanceSampleTime, formatDailyDelta, selectBalanceCurrencies } from './balanceHistoryChart.ts'
 import type { BalanceChartPoint, BalanceHistoryDays, BalanceHistoryInput } from './balanceHistoryChart.ts'
 import { statsDistribution } from './statsDistribution.ts'
 import type { DistributionItem, DistributionMode } from './statsDistribution.ts'
@@ -364,11 +364,12 @@ function BalanceHistoryPanel({ points, schedule, days, asOfDay, onDaysChange }: 
   const currencies = overlay.series.map((chart) => chart.currency)
   const selected = selectBalanceCurrencies(currencies, requestedCurrencies)
   const charts = selected.map((currency) => overlay.series.find((chart) => chart.currency === currency)!)
+  const notice = balanceHistoryNotice(charts, schedule)
   const day = overlay.days.find((item) => item.day === activeDay) ?? null
   const label = (currency: string) => currency || '币种未知'
   const digits = (chart: typeof charts[number]) => moneyDigits(chart.points.map((item) => item.dailyDelta ?? undefined))
   const displayDelta = (value: number | null, currency: string) => value == null ? '—' : formatDailyDelta(value, currency)
-  const describe = (item: BalanceChartPoint, currency: string) => `${item.day}，${label(currency)} 每日净变化 ${displayDelta(item.dailyDelta, currency)}`
+  const describe = (item: BalanceChartPoint, currency: string) => `${item.day}，${label(currency)} 每日净变化 ${displayDelta(item.dailyDelta, currency)}，${dailyComparisonLabel(item)}`
   const selectDay = (value: string) => {
     pinnedDay.current = value
     setActiveDay(value)
@@ -389,7 +390,7 @@ function BalanceHistoryPanel({ points, schedule, days, asOfDay, onDaysChange }: 
   }
   return <section className="balance-change-panel balance-history-lines" data-balance-start-day={overlay.startDay} data-balance-end-day={overlay.endDay} aria-label="余额变化">
     <header>
-      <div><WalletCards size={17} /><h2>余额变化</h2><HelpTip label="余额变化" text={`按${days}日固定日历展示；${balanceScheduleCaption(schedule)}。各币种共用日期与中心零线，左右轴分别使用原币种独立刻度，不做汇率转换或相加。日差额只比较连续日期、相同账号集合且采样完整的记录；曲线只连接有效日期，不补零。`}/></div>
+      <div><WalletCards size={17} /><h2>余额变化</h2><HelpTip label="余额变化" text={`按${days}日固定日历展示，每日一点，截至当天最新成功采样；${balanceScheduleCaption(schedule)}。各币种共用日期与中心零线，左右轴分别使用原币种独立刻度，不做汇率转换或相加。优先比较前日最后采样与当日最新采样；缺少前日可比较记录时可展示自当日首次采样以来的部分时段净变化，具体依据见悬停读数。只采用服务端确认可比较的同一账号集合记录，曲线只连接有效日期，不补零。`}/></div>
       <div className="balance-history-header-controls">
         <div className="balance-history-range" role="group" aria-label="余额变化区间">
           {([7, 14] as const).map((value) => <button type="button" className={days === value ? 'is-active' : ''} aria-pressed={days === value} onClick={() => changeDays(value)} key={value}>{value}日</button>)}
@@ -411,7 +412,7 @@ function BalanceHistoryPanel({ points, schedule, days, asOfDay, onDaysChange }: 
           <svg className="balance-history-overlay" viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="各币种每日净变化平滑曲线图">
             <desc>{charts.flatMap((chart) => chart.points.map((item) => describe(item, chart.currency))).join('；')}。左右轴各用原币种刻度，不换算，不相加。缺口不连线。</desc>
             {[34, 92, 208, 266].map((y) => <line className="balance-history-grid-line" x1="80" x2="920" y1={y} y2={y} key={y} />)}
-            <line className="balance-history-zero" x1="80" x2="920" y1={overlay.zeroY} y2={overlay.zeroY} />
+            <line className={`balance-history-zero${notice.state !== 'ready' ? ' balance-history-zero--empty' : ''}`} x1="80" x2="920" y1={overlay.zeroY} y2={overlay.zeroY} />
             {charts.map((chart, seriesIndex) => <g className={`balance-series-${seriesIndex}`} key={chart.currency}>
               {chart.paths.map((path, pathIndex) => <path className="balance-history-line" data-currency={chart.currency} data-style={seriesIndex === 0 ? 'solid' : 'dashed'} d={path} key={pathIndex} />)}
               {chart.isolatedPoints.map((point) => <line className="balance-history-isolated" data-currency={chart.currency} x1={Math.max(80, point.x - 8)} x2={Math.min(920, point.x + 8)} y1={point.y ?? overlay.zeroY} y2={point.y ?? overlay.zeroY} key={`${point.day}-${point.x}`} />)}
@@ -436,11 +437,11 @@ function BalanceHistoryPanel({ points, schedule, days, asOfDay, onDaysChange }: 
               }
             }}
           />)}
-          {!charts.some((chart) => chart.hasData) && <span className="balance-history-no-values">暂无可比较的每日净变化</span>}
-          {day && <div className="balance-history-readout" aria-live="polite" role="status" style={{ left: `${Math.min(75, Math.max(25, day.x / 10))}%` }}>
+          {notice.state !== 'ready' && <div className="balance-history-no-values" data-state={notice.state} role="status"><span>{notice.title}</span><HelpTip label="余额记录状态" text={notice.description} /></div>}
+          {day && <div className="balance-history-readout" aria-live="polite" role="status" style={{ left: `${Math.min(75, Math.max(25, day.x / 10))}%`, gridTemplateColumns: charts.length === 1 ? 'minmax(0, 1fr)' : undefined }}>
             <strong>{formatDay(day.day)}</strong>{charts.map((chart, index) => {
               const item = chart.points.find((point) => point.day === day.day)
-              return <span className={`balance-history-readout-value balance-series-${index}`} data-currency={chart.currency} data-status={item?.comparisonStatus ?? 'missing'} data-day={day.day} data-value={item?.dailyDelta ?? ''} key={chart.currency}><b>{label(chart.currency)} {displayDelta(item?.dailyDelta ?? null, chart.currency)}</b></span>
+              return <span className={`balance-history-readout-value balance-series-${index}`} data-currency={chart.currency} data-status={item?.comparisonStatus ?? 'missing'} data-change-basis={item?.changeBasis ?? undefined} data-day={day.day} data-value={item?.dailyDelta ?? ''} key={chart.currency}><b>{label(chart.currency)} {displayDelta(item?.dailyDelta ?? null, chart.currency)}</b>{item && <span>{dailyComparisonLabel(item)}</span>}<span className="balance-history-sample-time">{formatBalanceSampleTime(item?.updatedAt ?? null)}</span></span>
             })}
           </div>}
         </div>
@@ -448,7 +449,7 @@ function BalanceHistoryPanel({ points, schedule, days, asOfDay, onDaysChange }: 
       </div>
     </> : <div className="balance-history-empty" aria-label="每日余额变化等待数据">
       <span><WalletCards size={18} /></span>
-      <div><strong>暂无余额变化</strong><span>{overlay.startDay ? `${formatDay(overlay.startDay)} – ${formatDay(overlay.endDay)} · 当前日期范围没有可用记录` : '当前日期范围没有可用记录'}</span></div>
+      <div><strong>{notice.title}<HelpTip label="余额记录状态" text={notice.description} /></strong><span>{overlay.startDay ? `${formatDay(overlay.startDay)} – ${formatDay(overlay.endDay)}` : ''}</span></div>
     </div>}
   </section>
 }

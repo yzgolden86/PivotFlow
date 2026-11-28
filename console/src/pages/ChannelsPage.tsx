@@ -305,23 +305,30 @@ export default function ChannelsPage() {
         { label: '来源', value: details.source === 'site_sync' ? '站点同步' : details.source === 'manual' ? '手工添加' : details.source || '未知' },
         { label: '同步归属', value: details.site_sync_ownership === 'manual' ? '手动接管' : details.site_sync_ownership === 'projected' ? '自动投影' : '不适用' },
         { label: '关联账号', value: details.site_account_id ? <a href={`#/accounts?focus_account_id=${details.site_account_id}`} onClick={() => setDetails(null)}>账号 #{details.site_account_id}</a> : '未关联' },
-        { label: '认证类型', value: details.auth_type || '未知' },
-        { label: '地址与声明协议', value: <DetailList values={details.urls.map((url) => <><DetailURL value={url.url} /><small>{url.exact ? '精确地址' : '基础地址'} · {url.protocols?.length ? url.protocols.join(' / ') : '自动协商'}</small></>)} /> },
-        { label: '协议转换', value: protocolMode(details.protocol_transform_mode) },
-        { label: '模型与映射', value: <DetailList values={details.models.map((model) => <><code>{model.model}</code>{model.redirect_model && <> → <code>{model.redirect_model}</code></>}{model.disabled && <small>已停用</small>}</>)} /> },
-        { label: '基础优先级', value: details.priority },
-        { label: '有效优先级', value: details.effective_priority?.toFixed(1) ?? '未知' },
-        { label: '窗口成功率', value: details.success_rate === undefined ? '未知' : formatChannelSuccessRate(details.success_rate) },
-        { label: '成本倍率', value: details.auth_type === 'api_key' ? `按最终选中的 Key 倍率计算；渠道默认 ${details.cost_multiplier ?? 1}x` : `${details.cost_multiplier ?? 1}x` },
-        { label: 'RPM 限制', value: details.rpm_limit || '不限' },
-        { label: '最大并发', value: details.max_concurrency || '不限' },
-        { label: '每日费用软限额', value: details.daily_cost_limit ? `${details.daily_cost_limit.toFixed(2)} USD` : '不限' },
-        { label: 'Key 数量', value: details.auth_type === 'api_key' ? `总数 ${details.key_count} · 有效 ${details.effective_key_count ?? '未知'}（排除禁用或冷却中的 Key）` : '不适用' },
-        { label: '冷却范围', value: isCooling(details) ? cooldownSummary(details) : '当前没有冷却' },
-        { label: '渠道冷却结束', value: details.cooldown_until ? detailDate(details.cooldown_until) : '当前没有渠道冷却' },
-        { label: '可用时段', value: details.available_time_start && details.available_time_end ? `${details.available_time_start}–${details.available_time_end}` : '未设置时段限制' },
-        { label: '代理方式', value: details.proxy_url ? '自定义代理已配置' : '使用默认代理设置' },
-        { label: '自动健康检测', value: details.scheduled_check_enabled === undefined ? '未知' : details.scheduled_check_enabled ? `已启用 · ${details.scheduled_check_model || '检测模型未设置'}` : '已停用' },
+      ]} groups={[
+        { title: '连接与模型', facts: [
+          { label: '认证类型', value: details.auth_type || '未知' },
+          { label: '协议转换', value: protocolMode(details.protocol_transform_mode) },
+          { label: '地址与声明协议', wide: true, value: <DetailList values={details.urls.map((url) => <><DetailURL value={url.url} /><small>{url.exact ? '精确地址' : '基础地址'} · {url.protocols?.length ? url.protocols.join(' / ') : '自动协商'}</small></>)} /> },
+          { label: '模型与映射', wide: true, value: <DetailList values={details.models.map((model) => <><code>{model.model}</code>{model.redirect_model && <> → <code>{model.redirect_model}</code></>}{model.disabled && <small>已停用</small>}</>)} /> },
+        ] },
+        { title: '路由与限额', facts: [
+          { label: '基础优先级', value: details.priority },
+          { label: '有效优先级', value: details.effective_priority?.toFixed(1) ?? '未知' },
+          { label: '窗口成功率', value: details.success_rate === undefined ? '未知' : formatChannelSuccessRate(details.success_rate) },
+          { label: '成本倍率', value: details.auth_type === 'api_key' ? `按最终选中的 Key 倍率计算；渠道默认 ${details.cost_multiplier ?? 1}x` : `${details.cost_multiplier ?? 1}x` },
+          { label: 'RPM 限制', value: details.rpm_limit || '不限' },
+          { label: '最大并发', value: details.max_concurrency || '不限' },
+          { label: '每日费用软限额', value: details.daily_cost_limit ? `${details.daily_cost_limit.toFixed(2)} USD` : '不限' },
+          { label: 'Key 数量', value: details.auth_type === 'api_key' ? `总数 ${details.key_count} · 有效 ${details.effective_key_count ?? '未知'}（排除禁用或冷却中的 Key）` : '不适用' },
+        ] },
+        { title: '运行与健康', facts: [
+          { label: '冷却范围', value: isCooling(details) ? cooldownSummary(details) : '当前没有冷却' },
+          { label: '渠道冷却结束', value: details.cooldown_until ? detailDate(details.cooldown_until) : '当前没有渠道冷却' },
+          { label: '可用时段', value: details.available_time_start && details.available_time_end ? `${details.available_time_start}–${details.available_time_end}` : '未设置时段限制' },
+          { label: '代理方式', value: details.proxy_url ? '自定义代理已配置' : '使用默认代理设置' },
+          { label: '自动健康检测', wide: true, value: details.scheduled_check_enabled === undefined ? '未知' : details.scheduled_check_enabled ? `已启用 · ${details.scheduled_check_model || '检测模型未设置'}` : '已停用' },
+        ] },
       ]} />}
     </div>
   )
@@ -358,14 +365,18 @@ function ChannelRouteDiagnosticsModal({ channelId, channel, scope, scopeError, c
     <Modal title={`${target?.channel_name || channel?.name || `渠道 #${channelId || '无效 ID'}`} · 渠道诊断`} close={close} wide>
       <div className="route-diagnostic-panel channel-diagnostic-workspace" data-channel-id={channelId}>
         {scopeError ? <div className="channel-route-recovery" role="alert"><span>{scopeError}</span><Link to="/channels">返回渠道列表重新选择</Link></div> : <>
+        <div className="channel-diagnostic-toolbar">
         <div className="route-diagnostic-controls">
           <form className="channel-diagnostic-model-form" onSubmit={(event) => { event.preventDefault(); if (!validRouteText(modelDraft, 512)) { setModelInvalid(true); return } changeScope({ model: modelDraft }) }}><label><span>请求模型</span><input aria-label="渠道诊断请求模型" value={modelDraft} aria-invalid={modelInvalid || undefined} aria-describedby={modelInvalid ? modelErrorId : undefined} onChange={(event) => { setModelDraft(boundedRouteText(event.target.value, 512)); setModelInvalid(false) }} onKeyDown={(event) => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault() }} spellCheck={false} /></label><button className="secondary-button" type="submit">查看</button>{modelInvalid && <p id={modelErrorId} role="alert">请求模型最多 512 个字符，且不能包含控制字符。</p>}</form>
           <label><span>客户端协议</span><select aria-label="客户端协议" value={protocol} onChange={(event) => changeScope({ clientProtocol: event.target.value })}>{routeDiagnosticProtocols.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
           <label><span>访问令牌</span><select aria-label="访问令牌" value={tokenIdValue} onChange={(event) => changeScope({ tokenId: event.target.value })}><option value="">全局视角</option>{tokenIdValue && !tokens.some((token) => String(token.id) === tokenIdValue) && <option value={tokenIdValue}>所选令牌未载入 · #{tokenIdValue}</option>}{tokens.map((token) => <option value={token.id} key={token.id}>{authTokenLabel(token)}</option>)}</select></label>
           <button className="secondary-button" type="button" onClick={() => void refresh()} disabled={loading || !model}><RefreshCw className={loading ? 'spin' : ''} size={15} />{loading ? '诊断中' : '重新诊断'}</button>
         </div>
+        <div className="channel-diagnostic-toolbar-footer">
         {models.length > 0 && <label className="channel-diagnostic-model-choice">渠道配置模型<select aria-label="选择渠道配置模型" value={models.includes(model) ? model : ''} onChange={(event) => changeScope({ model: event.target.value })}><option value="" disabled>选择配置名；保留当前请求名</option>{models.map((name) => <option key={name} value={name}>{name}{channel?.models.find((item) => item.model === name)?.disabled ? ' · 已停用' : ''}</option>)}</select></label>}
         <div className="channel-diagnostic-links"><Link className="channel-route-workspace-link" to={globalURL}><Route size={15} />模型路由</Link><HelpTip label="渠道与模型诊断" text="两个入口共用当前请求的路由求值。渠道诊断查看指定渠道及其候选池；模型路由查看完整相关渠道。请求模型、协议与令牌保持，不改成统一名称，也不会自动探测。" /><Link to="/channels">返回渠道列表</Link></div>
+        </div>
+        </div>
         {tokenObservation.error && <p className="inline-error" role="alert">访问令牌清单读取失败，当前范围保持。<button className="text-button" type="button" onClick={tokenObservation.refresh}>重试令牌清单</button></p>}
         {snapshot?.route_strategy === 'sticky' && snapshot.sticky ? (
           <div className="route-diagnostic-sticky">
@@ -375,18 +386,18 @@ function ChannelRouteDiagnosticsModal({ channelId, channel, scope, scopeError, c
         {state.message && state.status !== 'error' && state.status !== 'not-found' && state.status !== 'empty' && <p className="channel-route-recovery" role={state.status === 'stale' ? 'alert' : 'status'}>{state.message}{state.status === 'stale' && <button className="text-button" type="button" onClick={refresh}>重试当前范围</button>}</p>}
         {state.status === 'loading' && !snapshot ? <LoadingState label="正在计算候选池" /> : state.status === 'error' || state.status === 'not-found' ? <ErrorState message={state.message} retry={() => void refresh()} /> : state.status === 'empty' ? <EmptyState label={state.message} /> : snapshot ? (
           <>
-            <div className="route-diagnostic-summary">
-              <article><small>当前策略</small><strong>{strategyLabel}</strong></article>
-              <article><small>候选渠道</small><strong>{snapshot.candidates.length}</strong></article>
-              <article><small>今日已保存上游尝试</small><strong>{snapshot.actual_total_requests}</strong></article>
-              <article className={target?.attemptable ? 'is-success' : 'is-warning'}><small>当前尝试状态</small><strong>{attemptStateLabel(target?.attempt_status || '')}</strong></article>
-            </div>
+            <dl className="route-diagnostic-summary">
+              <div><dt>当前策略</dt><dd>{strategyLabel}</dd></div>
+              <div><dt>候选渠道</dt><dd>{snapshot.candidates.length}</dd></div>
+              <div><dt>今日已保存上游尝试</dt><dd>{snapshot.actual_total_requests}</dd></div>
+              <div className={target?.attemptable ? 'is-success' : 'is-warning'}><dt>当前尝试状态</dt><dd>{attemptStateLabel(target?.attempt_status || '')}</dd></div>
+            </dl>
             {snapshot.warnings.length > 0 && <ul className="route-diagnostic-readable-reasons">{snapshot.warnings.map((code) => <li key={code}>{routeWarningLabel(code)}</li>)}</ul>}
             {snapshot.summary.length > 0 && <details className="route-diagnostic-callout"><summary>{snapshot.summary[0]}</summary><ul>{snapshot.summary.slice(1).map((text, index) => <li key={index}>{text}</li>)}</ul></details>}
-            {target && <RouteDiagnosticChannelCard diagnostic={target} actualTotal={snapshot.actual_total_requests} highlight />}
+            {target && <section className="channel-diagnostic-target" aria-labelledby={`${modelErrorId}-target`}><h3 id={`${modelErrorId}-target`}>当前渠道</h3><RouteDiagnosticChannelCard diagnostic={target} actualTotal={snapshot.actual_total_requests} highlight /></section>}
             <section className="route-diagnostic-candidates">
-              <header><strong>候选池 · 优先级层</strong><HelpTip label="候选池说明" text="列表表示当前候选池。权重按启用 Key 数减当前冷却数计算；模型范围内 Key 与尝试能力另行检查。低层份额是故障转移时的条件参考。历史占比来自本机今日保存的精确模型与协议上游尝试。" /></header>
-              {snapshot.candidates.length ? <div className="route-diagnostic-list">{snapshot.candidates.map((item) => <RouteDiagnosticChannelCard diagnostic={item} actualTotal={snapshot.actual_total_requests} key={item.channel_id} />)}</div> : <EmptyState label="当前模型没有可用候选渠道" />}
+              <header><h3 id={`${modelErrorId}-candidates`}>候选池 · 优先级层</h3><HelpTip label="候选池说明" text="列表表示当前候选池。权重按启用 Key 数减当前冷却数计算；模型范围内 Key 与尝试能力另行检查。低层份额是故障转移时的条件参考。历史占比来自本机今日保存的精确模型与协议上游尝试。" /></header>
+              {snapshot.candidates.length ? <div className="route-diagnostic-list" role="region" aria-labelledby={`${modelErrorId}-candidates`} tabIndex={0}>{snapshot.candidates.map((item) => <RouteDiagnosticChannelCard diagnostic={item} actualTotal={snapshot.actual_total_requests} key={item.channel_id} />)}</div> : <EmptyState label="当前模型没有可用候选渠道" />}
             </section>
           </>
         ) : <EmptyState label="暂无路由诊断数据" />}
@@ -401,21 +412,21 @@ function RouteDiagnosticChannelCard({ diagnostic, actualTotal, highlight = false
   return (
     <article className={`route-diagnostic-channel${highlight ? ' is-highlight' : ''}`}>
       <header>
-        <div><strong title={diagnostic.channel_name}>{diagnostic.channel_name}</strong><small>#{diagnostic.channel_id}</small></div>
+        <div className="channel-diagnostic-identity"><strong title={diagnostic.channel_name}>{diagnostic.channel_name}</strong><small>#{diagnostic.channel_id}</small></div>
         <div className="route-diagnostic-shares">
           <span>{weightReferenceLabel(diagnostic)}</span>
           <span className={actualTotal > 0 ? '' : 'is-muted'}>{diagnostic.actual_known ? `已保存尝试 ${(diagnostic.actual_share * 100).toFixed(1)}%` : '历史未知'}</span>
         </div>
       </header>
-      <div className="route-diagnostic-metrics">
-        <span title="优先级层">{diagnostic.candidate && diagnostic.candidate_position ? `第 ${diagnostic.candidate_position} 层` : '未排序'}</span>
-        <span title="可用 Key / 允许当前模型的启用 Key">Key {diagnostic.active_key_count}/{diagnostic.model_eligible_key_count}</span>
-        <span>轮询权重 {diagnostic.routing_weight}</span>
-        <span>{attemptStateLabel(diagnostic.attempt_status)}</span>
-        <span>{healthObservationLabel(diagnostic)}</span>
-        <span title="当前 RPM / 限制">RPM {diagnostic.rpm_limit ? `${diagnostic.current_rpm}/${diagnostic.rpm_limit}` : '不限'}</span>
-        <span title="当前并发 / 限制">并发 {diagnostic.max_concurrency ? `${diagnostic.active_concurrency}/${diagnostic.max_concurrency}` : '不限'}</span>
-      </div>
+      <dl className="route-diagnostic-metrics">
+        <div><dt>优先级层</dt><dd>{diagnostic.candidate && diagnostic.candidate_position ? `第 ${diagnostic.candidate_position} 层` : '未排序'}</dd></div>
+        <div><dt title="可用 Key / 允许当前模型的启用 Key">可用 / 模型 Key</dt><dd>{diagnostic.active_key_count}/{diagnostic.model_eligible_key_count}</dd></div>
+        <div><dt>轮询权重</dt><dd>{diagnostic.routing_weight}</dd></div>
+        <div><dt>尝试状态</dt><dd>{attemptStateLabel(diagnostic.attempt_status)}</dd></div>
+        <div className="channel-diagnostic-health"><dt>健康观察</dt><dd>{healthObservationLabel(diagnostic)}</dd></div>
+        <div><dt title="当前 RPM / 限制">RPM</dt><dd>{diagnostic.rpm_limit ? `${diagnostic.current_rpm}/${diagnostic.rpm_limit}` : '不限'}</dd></div>
+        <div><dt title="当前并发 / 限制">并发</dt><dd>{diagnostic.max_concurrency ? `${diagnostic.active_concurrency}/${diagnostic.max_concurrency}` : '不限'}</dd></div>
+      </dl>
       {diagnostic.reasons.length > 0 && (
         <details className={`route-diagnostic-reasons${blockingCount ? ' is-blocking' : ''}`}><summary>{blockingCount ? `${blockingCount} 项阻断` : `${diagnostic.reasons.length} 项说明`}</summary><ul className="route-diagnostic-readable-reasons">{diagnostic.reasons.map((reason, index) => <li key={`${reason.code}:${index}`}>{({ admission: '准入', candidate: '候选', attempt: '尝试' } as Record<string, string>)[reason.stage] || '观察'} · {reason.message}</li>)}</ul></details>
       )}

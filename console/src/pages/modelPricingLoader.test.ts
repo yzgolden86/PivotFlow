@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { SitePricingSnapshot } from '../types.ts'
-import { createModelPricingLoader } from './modelPricingLoader.ts'
+import { createModelPricingLoader, retainModelPricingSnapshot } from './modelPricingLoader.ts'
+import { modelPricingFeedback, type ModelPricingSummary } from './modelPricingPresentation.ts'
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
 function deferred<T>() {
@@ -171,4 +172,109 @@ test('an already-aborted parent starts no reads and an old parent cannot cancel 
   assert.deepEqual(reads.map(({ siteId, refresh }) => ({ siteId, refresh })), [
     { siteId: 2, refresh: false }, { siteId: 3, refresh: true },
   ])
+})
+
+test('each finished site leaves the loading state even on failure or malformed pricing while slow sites stay pending', async () => {
+  const slow = deferred<SitePricingSnapshot>()
+  const pending = new Set([1, 2, 3, 4, 5])
+  const published: number[] = []
+  const settled: number[] = []
+  const loader = createModelPricingLoader((siteId) => {
+    if (siteId === 1) return slow.promise
+    if (siteId === 2) return Promise.reject(new Error('provider unavailable'))
+    if (siteId === 3) return Promise.resolve({ ...snapshot(3), models: null } as unknown as SitePricingSnapshot)
+    if (siteId === 5) throw new Error('synchronous provider failure')
+    return Promise.resolve(snapshot(siteId))
+  })
+  const done = loader.load([1, 2, 3, 4, 5], (siteId) => published.push(siteId), {
+    onSettled(siteId: number) { pending.delete(siteId); settled.push(siteId) },
+  })
+  await tick()
+  const earlyPending = [...pending]
+  const earlyPublished = [...published]
+  slow.resolve(snapshot(1))
+  await done
+  assert.deepEqual(earlyPending, [1])
+  assert.deepEqual(earlyPublished, [4])
+  assert.deepEqual([...pending], [])
+  assert.deepEqual(settled.slice().sort(), [1, 2, 3, 4, 5])
+})
+
+test('cancelled runs cannot clear pending state belonging to their replacement', async () => {
+  const oldGate = deferred<SitePricingSnapshot>(), nextGate = deferred<SitePricingSnapshot>()
+  const settled: string[] = []
+  const loader = createModelPricingLoader((siteId) => siteId === 1 ? oldGate.promise : nextGate.promise)
+  const old = loader.load([1], () => {}, { onSettled: () => settled.push('old') })
+  const next = loader.load([2], () => {}, { onSettled: () => settled.push('next') })
+  oldGate.resolve(snapshot(1)); await old; await tick()
+  const afterOld = [...settled]
+  nextGate.resolve(snapshot(2)); await next
+  assert.deepEqual(afterOld, [])
+  assert.deepEqual(settled, ['next'])
+})
+
+test('a failed refresh marks retained successful site pricing stale, and a later success clears that outcome', async () => {
+  const snapshots: Record<number, SitePricingSnapshot> = {}
+  const outcomes: Partial<Record<number, 'ready' | 'failed' | 'unavailable'>> = {}
+  let fail = false
+  const loader = createModelPricingLoader(async (siteId) => {
+    if (fail) throw new Error('synthetic refresh unavailable')
+    return snapshot(siteId)
+  })
+  const options = { onSettled: (siteId: number, outcome: 'ready' | 'failed' | 'unavailable') => { outcomes[siteId] = outcome } }
+  await loader.load([1], (siteId, value) => { snapshots[siteId] = value }, options)
+  const first = snapshots[1]
+  assert.equal(outcomes[1], 'ready')
+  fail = true
+  await loader.load([1], (siteId, value) => { snapshots[siteId] = value }, { ...options, refresh: true })
+  assert.equal(snapshots[1], first)
+  assert.equal(outcomes[1], 'failed')
+  const pricing: ModelPricingSummary = { kind: 'token', inputPrices: [1], outputPrices: [2],
+    modelRatios: [1], completionRatios: [2], perCallPrices: [], sourceCount: 1, sourceSiteIds: [1] }
+  const feedback = modelPricingFeedback(pricing, [{ siteId: 1 }], snapshots, new Set(), outcomes)
+  assert.equal(feedback.failed, true)
+  assert.equal(feedback.stale, true)
+  assert.match(feedback.description, /更新失败/)
+  assert.match(feedback.description, /旧价目/)
+  fail = false
+  await loader.load([1], (siteId, value) => { snapshots[siteId] = value }, options)
+  assert.equal(outcomes[1], 'ready')
+  assert.equal(modelPricingFeedback(pricing, [{ siteId: 1 }], snapshots, new Set(), outcomes).stale, false)
+})
+
+test('failed, malformed and unavailable reads have explicit per-site outcomes and cancelled reads cannot overwrite them', async () => {
+  const old = deferred<SitePricingSnapshot>()
+  const outcomes: Partial<Record<number, 'ready' | 'failed' | 'unavailable'>> = {}
+  const loader = createModelPricingLoader((siteId) => {
+    if (siteId === 1) return old.promise
+    if (siteId === 2) return Promise.reject(new Error('synthetic failure'))
+    if (siteId === 3) return Promise.resolve({ ...snapshot(3), models: null } as unknown as SitePricingSnapshot)
+    return Promise.resolve({ ...snapshot(siteId), available: false })
+  })
+  const options = { onSettled: (siteId: number, outcome: 'ready' | 'failed' | 'unavailable') => { outcomes[siteId] = outcome } }
+  const cancelled = loader.load([1], () => {}, options)
+  await loader.load([2, 3, 4], () => {}, options)
+  old.resolve(snapshot(1)); await cancelled; await tick()
+  assert.deepEqual(outcomes, { 2: 'failed', 3: 'failed', 4: 'unavailable' })
+})
+
+test('unavailable refreshes retain the last successful snapshot explicitly until successful recovery', async () => {
+  let current: SitePricingSnapshot | undefined
+  let available = true
+  let outcome: 'ready' | 'failed' | 'unavailable' | undefined
+  const loader = createModelPricingLoader(async () => ({ ...snapshot(1), available }))
+  const publish = (_: number, value: SitePricingSnapshot) => { current = retainModelPricingSnapshot(current, value) }
+  const options = { onSettled: (_: number, value: 'ready' | 'failed' | 'unavailable') => { outcome = value } }
+  await loader.load([1], publish, options)
+  const successful = current
+  available = false
+  await loader.load([1], publish, { ...options, refresh: true })
+  assert.equal(current, successful)
+  assert.equal(outcome, 'unavailable')
+  available = true
+  await loader.load([1], publish, options)
+  assert.notEqual(current, successful)
+  assert.equal(outcome, 'ready')
+  const unavailable = { ...snapshot(2), available: false }
+  assert.equal(retainModelPricingSnapshot(undefined, unavailable), unavailable)
 })

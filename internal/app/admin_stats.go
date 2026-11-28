@@ -156,7 +156,7 @@ func (s *Server) HandleStats(c *gin.Context) {
 		"channel_health":    channelHealth,
 		"balance_history":   balanceHistory,
 		"balance_as_of_day": balanceAsOf.In(dailyBalanceLocation()).Format("2006-01-02"),
-		"balance_schedule":  gin.H{"enabled": balanceEnabled, "time": balanceTime, "timezone": "Asia/Shanghai"},
+		"balance_schedule":  gin.H{"enabled": balanceEnabled, "time": balanceTime, "timezone": "Asia/Shanghai", "interval_minutes": s.siteControl.balanceSampleInterval()},
 		"duration_seconds":  durationSeconds,
 		"rpm_stats":         rpmStats,
 		"is_today":          isToday,

@@ -1,22 +1,36 @@
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 import { Modal } from './siteShared'
+import './resourceDetailsPresentation.css'
 
 export interface ResourceFact {
   label: string
   value: ReactNode
+  wide?: boolean
 }
 
-export default function ResourceDetails({ title, facts, close }: {
+export interface ResourceFactGroup {
   title: string
   facts: ResourceFact[]
+}
+
+export default function ResourceDetails({ title, facts, groups = [], close }: {
+  title: string
+  facts: ResourceFact[]
+  groups?: ResourceFactGroup[]
   close: () => void
 }) {
+  const headingId = useId()
   return <Modal title={title} close={close} wide>
-    <dl className="resource-details">
-      {facts.map(({ label, value }) => <div className="resource-detail-fact" key={label}>
-        <dt>{label}</dt><dd>{value ?? '未知'}</dd>
-      </div>)}
-    </dl>
+    <div className="resource-details resource-details--compact">
+      {[{ title: '基本信息', facts }, ...groups].map((group, index) => <section className="resource-details-group" key={index} aria-labelledby={`${headingId}-${index}`}>
+        <h3 id={`${headingId}-${index}`}>{group.title}</h3>
+        <dl className="resource-details-grid">
+          {group.facts.map(({ label, value, wide }) => <div className={`resource-detail-fact${wide ? ' resource-detail-fact--wide' : ''}`} key={label}>
+            <dt>{label}</dt><dd>{value ?? '未知'}</dd>
+          </div>)}
+        </dl>
+      </section>)}
+    </div>
   </Modal>
 }
 
@@ -45,7 +59,7 @@ export function DetailURL({ value }: { value?: string }) {
 }
 
 export function DetailList({ values, empty = '未配置' }: { values: ReactNode[]; empty?: string }) {
-  return values.length ? <ul className="resource-detail-list">{values.map((value, index) => <li key={index}>{value}</li>)}</ul> : <>{empty}</>
+  return values.length ? <ul className="resource-detail-list" tabIndex={0}>{values.map((value, index) => <li key={index}>{value}</li>)}</ul> : <>{empty}</>
 }
 
 export function detailDate(value?: number | string): string {

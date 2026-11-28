@@ -42,6 +42,14 @@ type SiteStore interface {
 	CreateSiteAccountDailyBalance(ctx context.Context, sample *model.SiteAccountDailyBalance) (bool, error)
 	CompleteSiteAccountDailyBalance(ctx context.Context, sample *model.SiteAccountDailyBalance) (bool, error)
 	ListSiteAccountDailyBalances(ctx context.Context, sinceDay, untilDay string) ([]*model.SiteAccountDailyBalance, error)
+	// Interval observations reuse the daily record shape, but claim and finish
+	// once per account/scheduled_at slot. Legacy daily history stays separate.
+	CreateSiteAccountBalanceSample(ctx context.Context, sample *model.SiteAccountDailyBalance) (bool, error)
+	CompleteSiteAccountBalanceSample(ctx context.Context, sample *model.SiteAccountDailyBalance) (bool, error)
+	ListSiteAccountBalanceSamples(ctx context.Context, sinceDay, untilDay string) ([]*model.SiteAccountDailyBalance, error)
+	// Delete up to limit observations strictly before beforeDay. The caller
+	// supplies its retention cutoff and repeats bounded passes as needed.
+	DeleteSiteAccountBalanceSamplesBefore(ctx context.Context, beforeDay string, limit int) (int64, error)
 
 	UpsertSiteAnnouncements(ctx context.Context, announcements []model.SiteAnnouncement) error
 	ListSiteAnnouncements(ctx context.Context, filter model.SiteAnnouncementFilter) ([]*model.SiteAnnouncement, int, error)

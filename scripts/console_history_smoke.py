@@ -72,6 +72,15 @@ class HistoryData(RefinementData):
                 else:
                     trace['truncated'] = True
             self.request_traces[0].update(cache_status='hit', cache_reason='reused')
+        if case.startswith('history-layout-'):
+            trace = self.request_traces[0]
+            trace.update(attempt_count=8, upstream_attempt_count=8, upstream_success_count=1)
+            trace['attempt_summaries'] = [
+                {'number': index + 1, 'started_at': trace['started_at'] + index * 1000,
+                 'status_code': 200 if index == 7 else 403,
+                 'outcome': 'success' if index == 7 else 'error', 'upstream': True}
+                for index in range(8)
+            ]
 
     def release_stats(self):
         self.hold_stats = False
@@ -130,6 +139,32 @@ class HistoryData(RefinementData):
 
 
 def history_cases(runner):
+    def desktop_layout(page, data):
+        expect(page.locator('.request-ledger-row').first).to_be_visible()
+        sizes = page.locator('.request-filter-bar > select').evaluate_all('''fields => fields.map((el, index) => {
+          const style = getComputedStyle(el), canvas = document.createElement('canvas'), context = canvas.getContext('2d');
+          context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+          return {index, width: el.getBoundingClientRect().width,
+            required: context.measureText(el.selectedOptions[0].text).width + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + 18};
+        })''')
+        runner.metrics.setdefault('desktop_filter_sizes', {})[str(page.viewport_size['width'])] = sizes
+        runner.check(all(item['width'] >= item['required'] for item in sizes),
+                     f'Selected filter labels must fit beside their native arrows: {sizes}')
+        row = page.locator('.request-ledger-row').first
+        geometry = row.evaluate('''el => {
+          const row = el.getBoundingClientRect(), attempt = el.children[2].getBoundingClientRect();
+          return {start: (attempt.x-row.x)/row.width, share: attempt.width/row.width};
+        }''')
+        runner.check(geometry['start'] <= .57 and geometry['share'] >= .30,
+                     f'Retry sequence needs space before timing column: {geometry}')
+        sequence = row.locator('.request-attempt-sequence')
+        expect(sequence.locator('.request-attempt-step')).to_have_count(8)
+        sequence.evaluate('el => { el.scrollLeft = el.scrollWidth }')
+        runner.check(sequence.locator('.request-attempt-step').last.evaluate('el => {const a=el.getBoundingClientRect(),b=el.parentElement.getBoundingClientRect();return a.right<=b.right+1&&a.x>=b.x-1}'),
+                     'The final success must remain reachable in a long retry sequence')
+    for width in (1920, 1440, 1280, 1024):
+        runner.case(f'history-layout-{width}', desktop_layout, path='/logs?view=requests', width=width)
+
     def independent_loading(page, data):
         rows = page.locator('.request-ledger-row')
         try:

@@ -89,6 +89,7 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineDebugLogsTable,
 		schema.DefineModelFingerprintsTable,
 		schema.DefineFingerprintTestResultsTable,
+		schema.DefineSiteAccountBalanceSamplesTable,
 	}
 
 	// 一次性预查全库索引，避免每张表单独 SELECT 网络往返
@@ -680,8 +681,9 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"channel_check_interval_hours", "5", "float", "渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭)", "5"},
 		{"site_daily_checkin_time", "08:00", "string", "站点账号每日自动签到时间(HH:MM,按账号或站点时区)", "08:00"},
 		{"site_daily_announcement_time", "09:00", "string", "站点每日自动刷新公告时间(HH:MM,按站点时区)", "09:00"},
-		{"site_daily_balance_enabled", "true", "bool", "每日固定采集站点余额并统计净变化", "true"},
-		{"site_daily_balance_time", "00:05", "string", "每日余额统计时间(HH:MM,北京时间)", "00:05"},
+		{"site_daily_balance_enabled", "true", "bool", "按配置间隔采集站点余额并统计每日净变化", "true"},
+		{"site_daily_balance_time", "00:05", "string", "余额采样基准时间(HH:MM,北京时间)", "00:05"},
+		{"site_balance_sample_interval_minutes", "60", "int", "余额自动采样间隔(分钟：15/30/60/120/360/720/1440)", "60"},
 		{"model_catalog_sync_interval_hours", "6", "float", "从 models.dev 同步官方模型定价目录的间隔（小时，支持小数）；0 仅关闭网络同步，继续使用最近缓存或内置定价；不影响渠道模型列表", "6"},
 		{"auto_update_interval_hours", "12", "int", "非容器部署的上游版本检查间隔（整数小时；0=关闭检查；启用时最低1小时；融合版只读）", "12"},
 		{"auto_update_channel", "stable", "string", "非容器部署的版本检查渠道（stable=稳定版，preview=稳定版和测试版；融合版只读检查）", "stable"},
@@ -752,6 +754,14 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		keyCol := quoteKeyIdent(dialect)
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
+		for _, setting := range settings {
+			if setting.key != "site_daily_balance_enabled" && setting.key != "site_daily_balance_time" {
+				continue
+			}
+			if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL), setting.desc, setting.defaultVal, setting.valueType, setting.key); err != nil {
+				return fmt.Errorf("refresh setting metadata %s: %w", setting.key, err)
+			}
+		}
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL),
 			"流式请求首个有效内容超时(秒,0=禁用)",
 			"0",

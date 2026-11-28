@@ -152,7 +152,7 @@ func dailyBalanceService(t *testing.T, adapter provider.SiteAdapter) (*siteContr
 	wg := &sync.WaitGroup{}
 	service := &siteControlService{store: store, cipher: cipher, registry: provider.NewRegistry(adapter), baseCtx: ctx, wg: wg}
 	now := time.Now().In(dailyBalanceLocation())
-	if err := store.BatchUpdateSettings(ctx, map[string]string{"site_daily_balance_time": now.Format("15:04"), "site_daily_balance_enabled": "true", "site_daily_announcement_time": "23:59"}); err != nil {
+	if err := store.BatchUpdateSettings(ctx, map[string]string{"site_daily_balance_time": now.Format("15:04"), "site_daily_balance_enabled": "true", "site_balance_sample_interval_minutes": "1440", "site_daily_announcement_time": "23:59"}); err != nil {
 		t.Fatal(err)
 	}
 	service.configService = NewConfigService(store)

@@ -19,6 +19,11 @@ func (s *balanceWindowStore) ListSiteAccountDailyBalances(_ context.Context, fro
 	return nil, nil
 }
 
+func (s *balanceWindowStore) ListSiteAccountBalanceSamples(_ context.Context, from, until string) ([]*model.SiteAccountDailyBalance, error) {
+	s.from, s.until = from, until
+	return nil, nil
+}
+
 func TestBalanceWindowIndependentOfRequestRange(t *testing.T) {
 	end := time.Date(2026, 11, 25, 17, 30, 0, 0, time.UTC) // Nov 26 in Shanghai.
 	for _, name := range []string{"today", "this_week", "this_month", "last_month"} {

@@ -1,11 +1,15 @@
 .request-filter-bar > .request-model-controls { display: flex; min-width: 0; max-width: 620px; flex: 1 1 340px; align-items: center; gap: 8px; }
 .request-model-controls > .request-model-filter { flex: 1 1 auto; max-width: none; }
 .request-filter-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.request-filter-bar > select { flex: 0 0 auto; min-width: 112px; max-width: 100%; }
+.request-filter-bar > select:first-child { width: 96px; min-width: 96px; }
+.request-filter-bar > select[aria-label="历史客户端协议"] { min-width: 116px; }
+.request-filter-bar > select[aria-label="上游尝试状态"] { min-width: 146px; }
 
-@media (min-width: 1440px) {
+@media (min-width: 1680px) {
   .request-filter-bar {
     display: grid;
-    grid-template-columns: 70px minmax(78px, .58fr) minmax(104px, .8fr) 94px 92px minmax(118px, .9fr) max-content minmax(120px, 1fr) minmax(260px, 1.6fr);
+    grid-template-columns: 96px minmax(96px, .65fr) minmax(114px, .85fr) 116px 112px minmax(146px, .95fr) max-content minmax(128px, 1fr) minmax(280px, 1.8fr);
     gap: 8px;
   }
   .request-filter-bar > select { width: 100%; min-width: 0; }
@@ -37,7 +41,7 @@
 .request-ledger-head,
 .request-ledger-row {
   min-width: 900px;
-  grid-template-columns: minmax(220px, 1.1fr) minmax(250px, 1.3fr) minmax(180px, 1fr) 106px 28px;
+  grid-template-columns: minmax(190px, .95fr) minmax(210px, 1fr) minmax(280px, 1.55fr) 96px 28px;
 }
 .request-ledger-row { min-height: 76px; padding-block: 8px; }
 .request-ledger-result > .request-channel-name {
@@ -193,6 +197,7 @@
   .filter-bar.request-filter-bar { flex-direction: row; }
   .request-filter-bar .request-filter-count { margin-inline: auto; }
   .request-filter-bar > select,
+  .request-filter-bar > select:first-child,
   .request-filter-bar .request-token-search,
   .request-filter-bar .request-search {
     width: 100%;

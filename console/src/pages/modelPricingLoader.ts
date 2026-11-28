@@ -2,7 +2,13 @@ import type { SitePricingSnapshot } from '../types'
 
 type ReadPricing = (siteId: number, refresh: boolean, signal: AbortSignal) => Promise<SitePricingSnapshot>
 type PublishPricing = (siteId: number, snapshot: SitePricingSnapshot) => void
-type PricingOptions = { signal?: AbortSignal; refresh?: boolean }
+export type ModelPricingOutcome = 'ready' | 'failed' | 'unavailable'
+export type ModelPricingOutcomes = Readonly<Partial<Record<number, ModelPricingOutcome>>>
+type PricingOptions = { signal?: AbortSignal; refresh?: boolean; onSettled?: (siteId: number, outcome: ModelPricingOutcome) => void }
+
+export function retainModelPricingSnapshot(previous: SitePricingSnapshot | undefined, next: SitePricingSnapshot): SitePricingSnapshot {
+  return previous?.available && !next.available ? previous : next
+}
 
 export function createModelPricingLoader(read: ReadPricing) {
   type Run = {
@@ -12,6 +18,7 @@ export function createModelPricingLoader(read: ReadPricing) {
     controller: AbortController
     refresh: boolean
     publish: PublishPricing
+    onSettled?: (siteId: number, outcome: ModelPricingOutcome) => void
     resolve: () => void
     detach: () => void
   }
@@ -29,21 +36,26 @@ export function createModelPricingLoader(read: ReadPricing) {
   const abort = () => { if (current) cancel(current) }
 
   const readOne = async (run: Run, siteId: number) => {
+    let outcome: ModelPricingOutcome = 'failed'
     try {
       const value = await read(siteId, run.refresh, run.controller.signal)
       if (current === run && !run.controller.signal.aborted
-          && value && !Array.isArray(value) && Array.isArray(value.models)) {
+          && value && !Array.isArray(value) && typeof value.available === 'boolean' && Array.isArray(value.models)) {
         run.publish(siteId, { ...value, group_ratio: value.group_ratio || {} })
+        outcome = value.available ? 'ready' : 'unavailable'
       }
     } catch {
       // One unavailable site's management prices must not stop other sites.
     } finally {
       active--
       run.remaining--
-      if (current === run && run.remaining === 0) {
-        current = null
-        run.detach()
-        run.resolve()
+      if (current === run && !run.controller.signal.aborted) {
+        run.onSettled?.(siteId, outcome)
+        if (run.remaining === 0) {
+          current = null
+          run.detach()
+          run.resolve()
+        }
       }
       // Avoid recursive pumping when a reader throws synchronously.
       queueMicrotask(pump)
@@ -69,7 +81,7 @@ export function createModelPricingLoader(read: ReadPricing) {
       let resolve!: () => void
       const done = new Promise<void>((complete) => { resolve = complete })
       const run: Run = { ids, next: 0, remaining: ids.length, controller: new AbortController(),
-        refresh: options.refresh ?? false, publish, resolve, detach: () => {} }
+        refresh: options.refresh ?? false, publish, onSettled: options.onSettled, resolve, detach: () => {} }
       current = run
       if (options.signal) {
         const parent = options.signal

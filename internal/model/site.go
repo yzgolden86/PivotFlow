@@ -119,8 +119,9 @@ type SiteAccountBalanceSnapshot struct {
 	CreatedAt     int64   `json:"created_at"`
 }
 
-// SiteBalanceHistoryPoint summarizes fixed daily observations by currency.
-// Only consecutive observations of the exact same account cohort are compared.
+// SiteBalanceHistoryPoint summarizes observed daily net changes by currency.
+// First-sample intraday comparisons are partial; whole-day endpoint comparisons
+// require the exact same account cohort on consecutive days.
 type SiteBalanceHistoryPoint struct {
 	Day              string   `json:"day"`
 	Currency         string   `json:"currency"`
@@ -129,6 +130,7 @@ type SiteBalanceHistoryPoint struct {
 	Accounts         int      `json:"accounts"`
 	KnownAccounts    int      `json:"known_accounts"`
 	ComparisonStatus string   `json:"comparison_status"`
+	ChangeBasis      string   `json:"change_basis,omitempty"`
 	ScheduledAt      int64    `json:"scheduled_at"`
 	UpdatedAt        int64    `json:"updated_at"`
 }

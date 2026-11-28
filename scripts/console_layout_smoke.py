@@ -758,7 +758,9 @@ def model_pricing(runner, page, data):
     expect(free_card.locator('.model-pricing-strip')).to_contain_text('$0.00/M')
     expect(call_card.locator('.model-pricing-strip')).to_contain_text('按次')
     expect(call_card.locator('.model-pricing-strip')).to_contain_text('$0.040')
-    expect(unpriced_card.locator('.model-pricing-strip')).to_have_count(0)
+    expect(unpriced_card.locator('.model-pricing-strip')).to_have_attribute('aria-busy', 'false')
+    expect(unpriced_card.locator('.model-pricing-strip')).to_contain_text('暂无价目')
+    expect(unpriced_card.locator('.model-pricing-strip')).not_to_contain_text('$0.00')
     runner.check(any(call['path'] == '/admin/site-pricing' and call['query'].get('site_id')
                      == [str(data.accounts[0]['site_id'])] for call in data.calls),
                  'Model prices are loaded for their owning site')
@@ -768,6 +770,8 @@ def model_pricing(runner, page, data):
         by_row.setdefault(box['top'], []).append(box['height'])
     runner.check(all(max(heights) - min(heights) <= 1 for heights in by_row.values()),
                  'Priced and unpriced model cards stay aligned in each row')
+    runner.check(max(box['height'] for box in boxes) - min(box['height'] for box in boxes) <= 1,
+                 'Priced and unpriced model cards retain the same height across rows')
     token_card.scroll_into_view_if_needed()
     runner.photo(page, 'prices-card')
     page.get_by_role('button', name='列表视图', exact=True).click()
@@ -777,10 +781,10 @@ def model_pricing(runner, page, data):
     expect(token_row.locator('.model-price-line')).to_contain_text('输入 $2.00/M')
     expect(token_row.locator('.model-price-line')).to_contain_text('输出 $8.00/M')
     expect(rows.filter(has=page.locator('strong[title="layout-model-004"]')).locator('.model-price-line')).to_contain_text('按次 $0.040')
-    expect(rows.filter(has=page.locator('strong[title="layout-model-002"]')).locator('.model-price-line')).to_have_count(0)
+    expect(rows.filter(has=page.locator('strong[title="layout-model-002"]')).locator('.model-price-line')).to_have_text('暂无价目')
     token_row.scroll_into_view_if_needed()
     runner.photo(page, 'prices-list')
-    runner.record(token_prices=['$2.00/M', '$8.00/M'], per_call_price='$0.040', unpriced_hidden=True)
+    runner.record(token_prices=['$2.00/M', '$8.00/M'], per_call_price='$0.040', unpriced_not_free=True)
 
 
 def settings(runner, page, data):
@@ -914,6 +918,8 @@ def related(runner, page, data, profile):
             by_row.setdefault(box['top'], []).append(box['height'])
         runner.check(all(max(heights) - min(heights) <= 1 for heights in by_row.values()),
                      'Model cards align to a uniform height within each visual row')
+        runner.check(max(box['height'] for box in card_boxes) - min(box['height'] for box in card_boxes) <= 1,
+                     'Dense and sparse model cards keep the same height across visual rows')
         runner.check(max(box['height'] for box in card_boxes) < 300,
                      'Sparse model cards do not retain a large artificial minimum height')
         channel_lists = cards.locator('.model-card-channels > ul')
